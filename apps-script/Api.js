@@ -7,6 +7,10 @@
  * failure (a Sheets error, a missing or repeated Log header, a bad setting). The page
  * never receives a phone number, a User Token, a Profiles row, a start date, or anyone's
  * shift count or hours. Log columns are found by header on every call.
+ *
+ * Each flag a check-in or check-out writes to Admin Alerts? is also copied to the Flags
+ * tab (raiseFlags_), after the Log write and under the same lock. The Log row is the
+ * record: a failed copy is logged and never changes the reply.
  */
 
 /** Serves the page shell, which holds no volunteer data. */
@@ -76,7 +80,7 @@ function apiCheckIn(code, id, arrivalIso, digits) {
     });
     if (decision.refusal) return refusal(decision.refusal);
     const shiftId = Utilities.getUuid();
-    appendLogRow_(
+    const logRow = appendLogRow_(
       checkInCells(
         decision.volunteer,
         today,
@@ -86,6 +90,17 @@ function apiCheckIn(code, id, arrivalIso, digits) {
         shiftId,
       ),
       cols,
+    );
+    raiseFlags_(
+      {
+        date: today,
+        name: volunteerFullName(decision.volunteer),
+        shiftId,
+        raisedAtMs: now.getTime(),
+        source: flagSources().checkIn,
+        logRow,
+      },
+      decision.flags,
     );
     return {
       ok: true,
@@ -129,6 +144,17 @@ function apiCheckOut(code, id, digits, checkOutIso) {
     });
     if (decision.refusal) return refusal(decision.refusal);
     updateLogRow_(decision.row, decision.cells, cols);
+    raiseFlags_(
+      {
+        date: decision.open.dateText,
+        name: decision.open.name,
+        shiftId: decision.open.shiftId,
+        raisedAtMs: now.getTime(),
+        source: flagSources().checkOut,
+        logRow: decision.row,
+      },
+      decision.flags,
+    );
     return {
       ok: true,
       id: decision.volunteer.id,
