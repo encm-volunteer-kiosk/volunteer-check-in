@@ -100,16 +100,18 @@
 
 .checkin-sidebar {
   position: fixed;
-  top: 0; right: 0; bottom: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
   width: var(--sidebar-width);
-  z-index: 5;                       /* above content (2–3), below keyboard (10) */
-  overflow-y: auto;                 /* scrolls itself when the list is long */
+  z-index: 5; /* above content (2–3), below keyboard (10) */
+  overflow-y: auto; /* scrolls itself when the list is long */
   background: rgba(255, 253, 250, 0.97);
   border-left: 1px solid var(--border);
   box-shadow: -12px 0 40px rgba(8, 47, 88, 0.14);
   padding: 24px 16px;
   display: grid;
-  align-content: start;             /* stack items at the top */
+  align-content: start; /* stack items at the top */
   gap: 10px;
 }
 
@@ -119,7 +121,7 @@
   font-size: 14px;
   font-weight: 900;
   letter-spacing: 1.25px;
-  text-transform: uppercase;        /* same lettering as .welcome-note */
+  text-transform: uppercase; /* same lettering as .welcome-note */
 }
 
 .sidebar-empty {
