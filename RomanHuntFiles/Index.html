@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; background: #f6f4ef; color: #222; font-size: 22px; }
+  h1 { font-size: 34px; margin: 0 0 16px; }
+  input { width: 100%; font-size: 28px; padding: 16px; border: 2px solid #888; border-radius: 10px; margin-bottom: 16px; }
+  button { font-size: 26px; padding: 20px; border: none; border-radius: 12px; cursor: pointer; }
+  button:disabled { opacity: .5; }
+  .person { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 10px; background: #fff; border: 2px solid #ccc; text-align: left; }
+  .person .status { font-size: 18px; color: #2a7a2a; }
+  .hint { color: #666; font-size: 20px; }
+  .primary { background: #2a6db0; color: #fff; }
+  .secondary { background: #ddd; }
+  .row { display: flex; gap: 16px; margin-top: 24px; }
+  .row button { flex: 1; }
+  .screen { display: none; }
+  .screen.on { display: block; }
+  #msg { font-size: 30px; text-align: center; margin-top: 60px; }
+  #error { color: #b00020; margin-top: 12px; min-height: 1em; }
+  label { display: block; margin: 12px 0 4px; }
+</style>
+</head>
+<body>
+
+<div id="home" class="screen on">
+  <h1>Welcome! Tap your name to check in or out.</h1>
+  <input id="search" placeholder="Start typing your last name" autocomplete="off">
+  <div id="results"></div>
+  <div class="row"><button class="secondary" onclick="showNew()">I'm new here</button></div>
+</div>
+
+<div id="confirm" class="screen">
+  <h1 id="confirmText"></h1>
+  <div class="row">
+    <button class="secondary" onclick="reset()">Back</button>
+    <button class="primary" id="confirmBtn" onclick="doToggle(selected.id)">Yes</button>
+  </div>
+</div>
+
+<div id="newForm" class="screen">
+  <h1>Welcome! Add yourself.</h1>
+  <label>First initial</label>
+  <input id="newInitial" maxlength="1" autocomplete="off">
+  <label>Last name</label>
+  <input id="newLast" autocomplete="off" oninput="checkDuplicate()">
+  <div id="hintBox" style="display:none">
+    <label>Someone else has that name. Add a nickname or note so you can find yourself (e.g. "Jay" or "Tuesdays"):</label>
+    <input id="newHint" autocomplete="off">
+  </div>
+  <div class="row">
+    <button class="secondary" onclick="reset()">Back</button>
+    <button class="primary" id="addBtn" onclick="submitNew()">Add me &amp; check in</button>
+  </div>
+</div>
+
+<div id="done" class="screen"><div id="msg"></div></div>
+
+<div id="error"></div>
+
+<script>
+  let roster = [];
+  let selected = null;
+  let idleTimer = null;
+  const $ = id => document.getElementById(id);
+
+  function show(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.toggle('on', s.id === id));
+    clearTimeout(idleTimer);
+    // Walk-away protection: any screen but home returns home after 30 s.
+    if (id !== 'home') idleTimer = setTimeout(reset, id === 'done' ? 4000 : 30000);
+  }
+
+  function reset() {
+    selected = null;
+    $('search').value = '';
+    $('results').innerHTML = '';
+    $('error').textContent = '';
+    setBusy(false);
+    show('home');
+    $('search').focus();
+  }
+
+  function setBusy(b) { document.querySelectorAll('button').forEach(x => (x.disabled = b)); }
+
+  function fail(err) { setBusy(false); $('error').textContent = (err && err.message) || 'Something went wrong. Please try again.'; }
+
+  function loadRoster() {
+    google.script.run.withSuccessHandler(r => { roster = r; renderResults(); }).withFailureHandler(fail).getRoster();
+  }
+
+  function nameKey(v) { return v.name.toLowerCase(); }
+
+  function renderResults() {
+    const q = $('search').value.trim().toLowerCase();
+    const box = $('results');
+    box.innerHTML = '';
+    if (!q) return;
+    const counts = {};
+    roster.forEach(v => (counts[nameKey(v)] = (counts[nameKey(v)] || 0) + 1));
+    roster
+      .filter(v => v.last.toLowerCase().startsWith(q))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .slice(0, 12)
+      .forEach(v => {
+        const b = document.createElement('button');
+        b.className = 'person';
+        const left = document.createElement('span');
+        left.textContent = v.name;
+        if (counts[nameKey(v)] > 1) {   // only show the hint when names collide
+          const h = document.createElement('span');
+          h.className = 'hint';
+          h.textContent = '  ' + (v.hint || '(ask a coordinator)');
+          left.appendChild(h);
+        }
+        const right = document.createElement('span');
+        right.className = 'status';
+        right.textContent = v.inSince ? 'Here since ' + v.inSince : '';
+        b.append(left, right);
+        b.onclick = () => pick(v);
+        box.appendChild(b);
+      });
+  }
+
+  function pick(v) {
+    selected = v;
+    const label = v.name + (v.hint ? ' (' + v.hint + ')' : '');
+    $('confirmText').textContent = v.inSince
+      ? 'Check out ' + label + '? You checked in at ' + v.inSince + '.'
+      : 'Check in ' + label + '?';
+    $('confirmBtn').textContent = v.inSince ? 'Yes, check me out' : 'Yes, check me in';
+    show('confirm');
+  }
+
+  function doToggle(id) {
+    setBusy(true);
+    google.script.run
+      .withSuccessHandler(r => {
+        $('msg').textContent = r.action === 'in'
+          ? 'Thanks, ' + r.name + '! Checked in at ' + r.time + '.'
+          : 'Thank you, ' + r.name + '! You volunteered ' + r.hours + ' hours today.';
+        setBusy(false);
+        show('done');
+        loadRoster();
+      })
+      .withFailureHandler(fail)
+      .toggleShift(id);
+  }
+
+  function showNew() {
+    ['newInitial', 'newLast', 'newHint'].forEach(id => ($(id).value = ''));
+    $('hintBox').style.display = 'none';
+    $('error').textContent = '';
+    show('newForm');
+    $('newInitial').focus();
+  }
+
+  function isDuplicate() {
+    const key = ($('newInitial').value.trim().toUpperCase() + '. ' + $('newLast').value.trim()).toLowerCase();
+    return roster.some(v => nameKey(v) === key);
+  }
+
+  function checkDuplicate() { $('hintBox').style.display = isDuplicate() ? 'block' : 'none'; }
+
+  function submitNew() {
+    const initial = $('newInitial').value.trim(), last = $('newLast').value.trim(), hint = $('newHint').value.trim();
+    if (!initial || !last) return fail({ message: 'Please enter your first initial and last name.' });
+    if (isDuplicate() && !hint) { checkDuplicate(); return fail({ message: 'Please add a nickname or note.' }); }
+    setBusy(true);
+    google.script.run.withSuccessHandler(id => doToggle(id)).withFailureHandler(fail).addVolunteer(initial, last, hint);
+  }
+
+  $('search').addEventListener('input', renderResults);
+  $('newInitial').addEventListener('input', checkDuplicate);
+  loadRoster();
+  setInterval(loadRoster, 5 * 60 * 1000);  // pick up roster edits made in the Sheet
+</script>
+</body>
+</html>
