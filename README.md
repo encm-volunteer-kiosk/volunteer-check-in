@@ -103,9 +103,11 @@ The kiosk writes these alerts here and nothing else:
 - `check-out differs by N min`, at check-out, when the stated check-out is more than
   "Check-out flag minutes" (Settings) from the tap.
 - `check-in time unreadable, stated hours left blank`, at check-out, when someone has
-  edited the row's check-in times into something the kiosk can't read. The tablet still
-  shows the volunteer as checked in, and the row still closes at check-out, with blank
-  hours, and counts as a shift of 0 hours until staff fix the times and hours by hand.
+  edited the row's check-in times into something the kiosk can't read, such as `9ish` or
+  a time on another date. A time typed alone, such as `9:00 AM`, is read (see Rows typed
+  by hand), so it doesn't raise this alert. The tablet still shows the volunteer as
+  checked in, and the row still closes at check-out, with blank hours, and counts as a
+  shift of 0 hours until staff fix the times and hours by hand.
 
 Check-out adds its alert after whatever the cell holds, joined with `; `. Text staff typed
 there is kept.
@@ -130,10 +132,18 @@ sheet counts toward milestones only when it has the volunteer's User Token and S
 `closed`. The menu can close one only when it has a Shift ID and Status `open`. Leaving
 Check-In Entered By and Check-Out Entered By blank marks a row as typed by hand.
 
-Every time on a row must be on that row's Date. Type a full date and time, such as
-`2026-11-12 9:00 AM`. A time typed alone (`9:00 AM`) is stored by Sheets as a time on
-30 December 1899; the kiosk reads such a time as unreadable rather than counting a shift
-120 years long.
+Every time on a row is on that row's Date. A time typed alone, such as `9:00 AM` or
+`2:30 pm`, is read as that time on the row's Date, in Central time, to the minute. This
+works in a date-time cell, where Sheets stores it as a time on 30 December 1899, and in a
+cell formatted as plain text. A full date and time, such as `2026-11-12 9:00 AM`, must
+still be on the row's Date; one on any other day can't be read. Type a time, not a date
+alone: a date with no time is not a time of day.
+
+The kiosk takes a typed time as typed and never rewrites the cell. A check-out typed
+before the check-in, such as `12:15 AM` for a shift that ran past midnight, is not
+refused: its hours are whatever the hours cell holds, and the menu's overlap check passes
+over that row. Hours already in a row are not worked out again when a time is fixed by
+hand, so fix the hours too.
 
 ## Check-out time
 
@@ -249,9 +259,10 @@ It refuses, and says why, when:
   window opened. Close the window and open Fix a sign-out again.
 - more than one open row has that Shift ID, as when a row was copied in the sheet. Fix or
   delete the extra row in the sheet, then try again.
-- the row's Date or check-in time can't be read, so its hours can't be worked out. The
-  list shows such a row as "check-in time unreadable". Fix the Date or check-in time in
-  the sheet, then try again.
+- the row's Date or check-in time can't be read, so its hours can't be worked out: a
+  check-in such as `9ish`, or a time on another date. A time typed alone, such as
+  `9:00 AM`, is read on the row's Date. The list shows such a row as "check-in time
+  unreadable". Fix the Date or check-in time in the sheet, then try again.
 - the time can't be read, or is in the future. Up to 5 minutes ahead is taken as now.
 - the time is before the row's check-in. Correct the time; if the check-in time itself
   is wrong, fix it in the sheet first.
