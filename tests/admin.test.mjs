@@ -914,6 +914,28 @@ test("the admin menu's Add a shift and Fix a sign-out leave the Flags tab untouc
   assert.deepEqual(s.errors, []);
 });
 
+test("apiCheckOut on a row whose Date was typed as text writes the Flags Date as yyyy-MM-dd", () => {
+  const open = logRow({
+    "Shift ID": "s-open",
+    "User Token": "tok-sam",
+    Status: "open",
+    Date: "11/12/2026",
+    "Volunteer Name": "Sam Lee",
+    "Check-In Entered By": "kiosk",
+  });
+  const s = kiosk({ log: [LOG_HEADER, open] });
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30)));
+  assert.equal(reply.ok, true);
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+  const flags = s.sheets.Flags;
+  assert.ok(flags.getLastRow() >= 2);
+  for (let r = 2; r <= flags.getLastRow(); r++) {
+    assert.equal(flags.rowByHeader(r).Date, TODAY);
+  }
+  // The Log cell keeps what staff typed.
+  assert.equal(s.sheets.Log.rowByHeader(2).Date, "11/12/2026");
+});
+
 test("adminFixSignOut closes a row whose check-in was typed as a time with no date", () => {
   const typed = kioskOpen("s-1", DAY, "09:00");
   // Sheets keeps "9:00 AM" typed into the cell as 9:00 on 1899-12-30.

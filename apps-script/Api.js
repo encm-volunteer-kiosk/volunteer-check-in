@@ -146,7 +146,7 @@ function apiCheckOut(code, id, digits, checkOutIso) {
     updateLogRow_(decision.row, decision.cells, cols);
     raiseFlags_(
       {
-        date: decision.open.dateText,
+        date: rowDate(decision.open.dateText),
         name: decision.open.name,
         shiftId: decision.open.shiftId,
         raisedAtMs: now.getTime(),
