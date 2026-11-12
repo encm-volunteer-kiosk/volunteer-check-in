@@ -229,14 +229,41 @@ function cellText_(value) {
 }
 
 /**
- * A date-time cell as {ms, date}: its milliseconds and its Central yyyy-MM-dd. ms is NaN
- * and date empty when the cell isn't a readable time.
+ * A date-time cell as {ms, date, clock}: its milliseconds, its Central yyyy-MM-dd and its
+ * Central "HH:mm". A date value has all three; Sheets keeps a time typed with no date as a
+ * date on 1899-12-30, whose clock is the time as typed. Text that clockText (Logic.js)
+ * reads as a time of day gives only the clock, with ms NaN and date empty; other text is
+ * read by Date.parse, with clock empty. ms is NaN and date and clock empty when the cell
+ * isn't a readable time.
  */
 function cellTime_(value) {
-  let ms = NaN;
-  if (isDate_(value)) ms = value.getTime();
-  else if (cellString(value)) ms = Date.parse(cellString(value));
-  return isFinite(ms) ? { ms, date: centralDate_(new Date(ms)) } : { ms: NaN, date: "" };
+  const none = { ms: NaN, date: "", clock: "" };
+  if (isDate_(value)) {
+    const ms = value.getTime();
+    if (!isFinite(ms)) return none;
+    return {
+      ms,
+      date: centralDate_(value),
+      clock: Utilities.formatDate(value, kioskTimeZone(), "HH:mm"),
+    };
+  }
+  const text = cellString(value);
+  const clock = clockText(text);
+  if (clock) return { ms: NaN, date: "", clock };
+  const ms = text ? Date.parse(text) : NaN;
+  return isFinite(ms) ? { ms, date: centralDate_(new Date(ms)), clock: "" } : none;
+}
+
+/**
+ * A Central time on a date as {ms, date}: dateText yyyy-MM-dd and timeText "HH:mm". ms is
+ * NaN and date '' when either can't be read. A time skipped when daylight time starts
+ * reads as the later time Utilities.parseDate gives.
+ */
+function timeOnDate_(dateText, timeText) {
+  const text = adminDateTimeText(dateText, timeText);
+  if (!text) return { ms: NaN, date: "" };
+  const parsed = Utilities.parseDate(text, kioskTimeZone(), "yyyy-MM-dd HH:mm");
+  return { ms: parsed.getTime(), date: centralDate_(parsed) };
 }
 
 function centralDate_(date) {
@@ -332,9 +359,12 @@ function getProfiles_(settings) {
 // ---------------------------------------------------------------------------
 // Log
 
-/** The read functions logEntry (Logic.js) uses to turn cells into text and times. */
+/**
+ * The read functions logEntry (Logic.js) uses to turn cells into text and times, and to
+ * put a time with no date on the row's Date.
+ */
 function logRead_() {
-  return { text: cellText_, time: cellTime_ };
+  return { text: cellText_, time: cellTime_, at: timeOnDate_ };
 }
 
 /** The number format a Log column of this kind (logColumnKinds) gets. */

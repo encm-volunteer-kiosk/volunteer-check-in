@@ -284,6 +284,12 @@ function server(opts = {}) {
         assert.equal(tz, TZ);
         if (format === "yyyy-MM-dd") return centralDate(date.getTime());
         if (format === "h:mm a") return clock(date.getTime());
+        // A time typed with no date comes back as a date on 1899-12-30 whose Central clock
+        // is the time as typed.
+        if (format === "HH:mm") {
+          const p = centralParts(date.getTime());
+          return p.hour + ":" + p.minute;
+        }
         throw new Error("format " + format);
       },
       parseDate: (text, tz, format) => {
@@ -728,8 +734,8 @@ test("adminFixSignOut on a row inside a menu shift names the shift to fix first"
 
 test("adminFixSignOut refuses a row whose check-in time can't be read", () => {
   const broken = kioskOpen("s-1", DAY, "09:00");
-  // A time typed without a date reads as 1899-12-30, not on the row's Date.
-  broken[LOG_HEADER.indexOf("Check-In\nStated\n(user)")] = new Date(Date.UTC(1899, 11, 30, 15));
+  // Text that is neither a time of day nor a date-time can't be read.
+  broken[LOG_HEADER.indexOf("Check-In\nStated\n(user)")] = "9ish";
   broken[LOG_HEADER.indexOf("Check-In\nRecorded\n(timestamp)")] = "";
   const s = server({ keys: ["k"], log: [LOG_HEADER, broken] });
   const reply = plain(
@@ -906,4 +912,25 @@ test("the admin menu's Add a shift and Fix a sign-out leave the Flags tab untouc
   assert.equal(JSON.stringify(s.sheets.Flags), before);
   assert.ok(!s.calls.includes("SpreadsheetApp.newDataValidation"));
   assert.deepEqual(s.errors, []);
+});
+
+test("adminFixSignOut closes a row whose check-in was typed as a time with no date", () => {
+  const typed = kioskOpen("s-1", DAY, "09:00");
+  // Sheets keeps "9:00 AM" typed into the cell as 9:00 on 1899-12-30.
+  typed[LOG_HEADER.indexOf("Check-In\nStated\n(user)")] = at("1899-12-30", "09:00");
+  typed[LOG_HEADER.indexOf("Check-In\nRecorded\n(timestamp)")] = "";
+  const s = server({ keys: ["k"], log: [LOG_HEADER, typed] });
+  assert.deepEqual(plain(s.ctx.adminOpenShifts("k")).shifts, [
+    { shiftId: "s-1", label: "Mon 2026-06-01 · Sam Lee · in 9:00 AM" },
+  ]);
+  const reply = plain(
+    s.ctx.adminFixSignOut("k", { shiftId: "s-1", outTime: "12:15", initials: "ab" }),
+  );
+  assert.deepEqual(reply, { ok: true, row: 2, name: "Sam Lee", hours: 3.25 });
+  const row = s.sheets.Log.rowByHeader(2);
+  assert.equal(row.Status, "closed");
+  assert.equal(row["Check-Out Stated (user)"].getTime(), at(DAY, "12:15").getTime());
+  assert.equal(row["Hours Served (stated)"], 3.25);
+  // The typed cell is never rewritten.
+  assert.equal(row["Check-In Stated (user)"].getTime(), at("1899-12-30", "09:00").getTime());
 });
