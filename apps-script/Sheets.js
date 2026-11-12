@@ -17,16 +17,18 @@ const DATE_TIME_FORMAT = "yyyy-mm-dd h:mm am/pm";
 // Run by hand from the editor
 
 /**
- * Refuses a call that doesn't come from the script owner in the Apps Script editor.
- * setupSheets and setupSampleProfiles have no trailing _ so the editor's Run menu lists
- * them, which also lets the page call them through google.script.run without the access
- * code. A web-app caller's active user is empty (anonymous) or not the account the script
- * runs as; in the editor both are the owner.
+ * Refuses a call unless the active user is known and is the account the script runs as
+ * (the effective user). That holds in the Apps Script editor, where both are the owner,
+ * and in the Kiosk admin menu and its dialogs, which run as the editor at the sheet. A
+ * web-app caller's active user is empty (anonymous) or not the account the script runs
+ * as, so it is refused. setupSheets and setupSampleProfiles have no trailing _ so the
+ * editor's Run menu lists them, which also lets the page call them through
+ * google.script.run without the access code; this check is what stops that.
  */
 function requireEditorRun_() {
   const active = Session.getActiveUser().getEmail();
   if (!active || active !== Session.getEffectiveUser().getEmail()) {
-    throw new Error("Run this from the Apps Script editor.");
+    throw new Error("Run this from the Apps Script editor or the Kiosk admin menu.");
   }
 }
 
