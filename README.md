@@ -21,9 +21,12 @@ so hours can be credited to each volunteer and reported to grantmakers.
   to it. Volunteers who share a name confirm the last four digits of their phone, and the
   digits decide which of them is signed in or out.
 - **Kiosk admin menu**: a menu in the Check-In Log spreadsheet for staff to add a shift a
-  volunteer forgot to log, or to close one they forgot to sign out of (see below).
-- **Not built yet**: the nightly close of shifts nobody signed out of, and a monthly
-  hours report.
+  volunteer forgot to log, to close one they forgot to sign out of, or to make a monthly
+  report (see below).
+- **Reports**: a Monthly Hours tab that updates by itself, a frozen monthly report with
+  CSV and PDF downloads, saved filter views on the Log, and a warning when someone edits
+  a column the kiosk fills (see Reports).
+- **Not built yet**: the nightly close of shifts nobody signed out of.
 
 Team design pages (private; ask Ethan for access):
 
@@ -57,7 +60,7 @@ an error naming the column, and `setupSheets` puts a missing one back (see Setup
 | A      | Date                           | The shift's date in Central time, as `yyyy-MM-dd` text.                |
 | B      | Day                            | The weekday of that date: Monday, Tuesday and so on.                   |
 | C      | Volunteer Name                 | First and last name from Volunteer Profiles.                           |
-| D      | Volunteer Role/Type            | Left blank for staff. The kiosk never reads or writes it.              |
+| D      | Volunteer Role/Type            | Left blank for staff. The kiosk never writes it; reports group by it.  |
 | E      | Check-In Recorded (timestamp)  | The server's clock when the volunteer tapped Check In.                 |
 | F      | Check-In Stated (user)         | The arrival time the volunteer chose, or E when they chose none.       |
 | G      | Check-Out Recorded (timestamp) | The server's clock when the volunteer tapped Check Out.                |
@@ -65,7 +68,7 @@ an error naming the column, and `setupSheets` puts a missing one back (see Setup
 | I      | Hours Served (timestamps)      | G minus E, in hours to 2 decimals.                                     |
 | J      | Hours Served (stated)          | H minus F, in hours to 2 decimals.                                     |
 | K      | Admin Alerts?                  | A note for staff when a stated time is far from the tap (below).       |
-| L      | Activity                       | Left blank for staff. The kiosk never reads or writes it.              |
+| L      | Activity                       | Left blank for staff. The kiosk never writes it; reports group by it.  |
 | M      | Notes                          | Notes an admin types in the Kiosk admin menu; otherwise staff's own.   |
 | N      | User Token                     | The volunteer's User Token from Volunteer Profiles, unhashed.          |
 | O      | Status                         | `open` from check-in until check-out, then `closed`.                   |
@@ -171,15 +174,17 @@ there.
 | Kiosk launch date             | the day `setupSheets` first ran | Only volunteers whose Profiles start date is on or after it get the first-shift milestone. |
 | Arrival flag minutes          | 15                              | How far a stated arrival may be from the tap before it gets an alert.                      |
 | Check-out flag minutes        | 15                              | How far a stated check-out may be from the tap before it gets an alert.                    |
+| Volunteer hour value          | blank                           | The dollar value of one volunteer hour, for the monthly report (see Reports).              |
 | Profiles problems             | blank                           | Written by the kiosk: Profiles rows it had to leave out, and why.                          |
 | Closing time Monday to Sunday | 17:00                           | Kept for the nightly close, which is not built yet.                                        |
 
-"Check-out flag minutes" is new with the check-out time picker. On a spreadsheet set up
-before it, run `setupSheets` once to add it.
+"Check-out flag minutes" is new with the check-out time picker, and "Volunteer hour value"
+with the reports. On a spreadsheet set up before them, run `setupSheets` once to add them.
 
 ## Kiosk admin menu
 
-Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with two items. Anyone
+Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with three items: Add a
+shift, Fix a sign-out, and Monthly report, which is described under Reports. Anyone
 who can edit the spreadsheet can use it. It runs as whoever has the sheet open, which at
 ENCM is the shared account, so:
 
@@ -278,6 +283,210 @@ to run `setupSheets`, which adds it.
 The menu can't be reached from the kiosk page. Every menu function checks that it was
 called from the open spreadsheet, through a window the menu opened.
 
+## Reports
+
+There are four tools for staff. All of them read the Log tab and none of them changes a
+Log cell. No report shows a User Token: tokens are read only to tell volunteers apart.
+
+- the **Monthly Hours** tab, a live table for the month you pick;
+- **Monthly report** in the Kiosk admin menu, which writes a report tab for a month and
+  gives you that tab as a CSV or PDF download;
+- saved **filter views** on the Log, for finding rows to check;
+- a **warning** when someone edits a column the kiosk fills.
+
+`setupReports` builds the first, third and fourth (see Setting up the reports).
+
+### Which rows count
+
+- A row **counts** when its Status is `closed` and it has a User Token. Only counted rows
+  add shifts, hours or volunteers to any figure.
+- **Hours** means Hours Served (stated), the hours ENCM credits and milestones count. The
+  only figure that uses Hours Served (timestamps) is the adjustments line (calculation 8).
+- A row's **month** comes from its Date, which must be a real day written `yyyy-MM-dd`
+  (a date the sheet holds as a date works too). A row with any other Date is in no month:
+  it counts in no month's figures and is listed for review in every report. The Day
+  column is never read; the weekday comes from the Date.
+- A **volunteer** is a User Token. The report shows the Volunteer Name from that
+  volunteer's latest counted shift in the month.
+- An **open** row (Status `open`) counts nowhere: no shift, no hours, not a volunteer.
+  The report lists open rows first under rows to review, and its first lines say how many
+  there are: "N open shifts in this month are not counted. Close them with Fix a
+  sign-out, then make the report again."
+- A row **added or closed with the Kiosk admin menu** counts like any other closed row
+  with a User Token, using its stated hours. It has no recorded time for the end the admin
+  entered, so it is never in the adjustments comparison. It is listed under rows entered
+  by an admin, with the initials.
+- **Auto-closed rows**: the nightly close isn't built, and what it will write isn't
+  decided. Whatever it writes, a row with a Status other than `open` or `closed` is not
+  counted and is listed for review. A row whose Check-In Entered By or Check-Out Entered
+  By holds something other than `kiosk` or initials, such as `auto-close`, is listed for
+  review too, and counts if it is `closed` with a User Token.
+
+### Monthly Hours tab
+
+Pick a month in B1 from the list. The list has every month with a Log row, up to this
+month, newest first. The tab then shows that month's stated hours, shifts, volunteers,
+average shift, open shifts not counted, and flagged rows, and under them each volunteer
+with their shifts and stated hours, sorted by name.
+
+The tab updates by itself as the Log changes. It changes nothing in the Log. Hidden
+columns hold the month's rows that the formulas read; leave them hidden.
+
+Two volunteers with the same name show as two lines with the same name here. The monthly
+report tells them apart.
+
+The tab warns before any edit except the month in B1. If someone types over a formula
+anyway, or the tab shows `#REF!`, run `setupReports` to put it back.
+
+### Monthly report
+
+**Monthly report** in the Kiosk admin menu opens a small window. Choose the month (it
+starts on last month, or this month when last month has no rows) and type your initials,
+as for the other menu items.
+
+The report is written to a new tab named for the month, such as `Report 2026-11`. Making
+a second report for the same month makes a new tab, `Report 2026-11 (2)`. The script
+never changes a report tab after writing it, so each one is a record of the Log as it was
+when the report was made. Delete old report tabs by hand when you no longer need them.
+Report tabs warn before an edit.
+
+The window then shows two links, **Download CSV** and **Download PDF**. Each downloads
+that report tab only, not the rest of the spreadsheet. The links work for anyone signed in
+to Google who can open the spreadsheet.
+
+The report's first lines say what it counts and who made it: "Counts closed shifts with a
+User Token, using stated hours. Made 2026-12-01 9:14 AM by JP from the Log tab." Log row
+numbers in the report are as of that moment; sorting the Log later changes them.
+
+The window refuses, and says why, when:
+
+- the initials are missing or aren't 1 to 5 letters;
+- no month is chosen ("Please choose a month."), or the month is after this one;
+- the kiosk is busy writing a row. Try again in a moment;
+- the window has been open more than 30 minutes. Close it and open the menu again.
+
+If the Log is missing a column the kiosk needs, the window shows the same message the kiosk
+gives, and no report is made. Run `setupSheets`, then try again.
+
+### What the report shows
+
+Every figure uses the month's counted rows and their stated hours, unless it says
+otherwise.
+
+1. **Stated hours**: the month's stated hours added up. A stated hours cell that is blank,
+   negative or not a number adds nothing. A number typed as text, such as "2.5", is read
+   as that number. Each such row is listed for review, which is why the total can differ
+   from a plain SUM of the column on those rows.
+2. **Hours per volunteer**: each volunteer's shifts and stated hours, by name, with a
+   total line. When two volunteers share a name, each name gets the date of that
+   volunteer's first shift ("Ana Ruiz · first shift 2026-11-03"), and the Log row too if
+   that date is the same.
+3. **Shifts and volunteers**: shifts is the number of counted rows; volunteers is the
+   number of different User Tokens among them.
+4. **New volunteers**: volunteers whose first counted shift in the whole Log is in this
+   month, with their names. Only the Log tab is read, so in the first month the kiosk is
+   used, every volunteer is new.
+5. **Average shift**: stated hours divided by shifts, to two decimals. Blank when there
+   are no shifts.
+6. **Hours by weekday**: shifts and stated hours for each day, Monday to Sunday, from the
+   Date.
+7. **Hours by Role/Type, and by Activity**: shifts and stated hours for each value in
+   those columns. Capital letters don't matter. A blank cell shows as "(not set)". If the
+   Log has no such column, the table says "(no Role/Type column)" or "(no Activity
+   column)".
+8. **Adjustments**: the only figure that uses Hours Served (timestamps). It looks at
+   counted shifts that have all four times and a number in Hours Served (timestamps),
+   which in practice means shifts signed in and out at the kiosk. A shift is adjusted when, at either end, the
+   stated time is 30 seconds or more from the tap. The report gives how many were
+   adjusted of how many it looked at, and stated hours minus timestamp hours over those
+   shifts.
+9. **Rows to review**: lines with the date, name, Status and Log row, in these groups,
+   each with its count:
+   - open shifts in the month, not counted;
+   - flagged rows in the month (Admin Alerts? not blank);
+   - rows in the month entered by an admin, with the initials;
+   - rows in the month whose Status is not `open` or `closed`, not counted;
+   - rows in the month with an end typed into the sheet or entered another way;
+   - counted shifts in the month whose stated hours are blank, text or negative;
+   - closed rows in the month with no User Token, not counted;
+   - rows anywhere in the Log whose Date isn't `yyyy-MM-dd`, in no month.
+10. **Year to date and milestones**: stated hours, shifts and volunteers from 1 January to
+    the end of the month. Then every milestone a volunteer crossed this month (10 shifts,
+    50 hours and so on), counted over the whole Log with stated hours, the way the kiosk
+    counts them. A milestone is listed on the date of the shift that reached it. A shift
+    added later with Add a shift for an earlier date can move that date. The first
+    completed shift isn't listed here; new volunteers covers it. A shift whose Date can't
+    be read has no place in date order, so it is left out of new volunteers and
+    milestones, and listed for review.
+11. **Volunteer value**: stated hours times the "Volunteer hour value" in Settings, to the
+    cent.
+12. **Month over month**: stated hours, shifts, volunteers and new volunteers for this
+    month and the month before, with the change and the percent change to one decimal.
+    The percent shows "n/a" when the month before had none.
+
+### Volunteer hour value
+
+This Settings row is blank until ENCM sets its rate. Type a dollar amount, such as
+`34.79` or `$34.79`. While it is blank, the report prints "Set Volunteer hour value in
+Settings" where the value would be. If the cell holds something that isn't a dollar
+amount, the report says it can't be read.
+
+### Filter views
+
+`setupReports` saves these filter views on the Log. In the Log, open Data > Filter views
+and pick one. A filter view changes only what you see; it changes nothing in the Log and
+nothing others see. Each title starts `Kiosk: `.
+
+| Title                           | Shows the rows where                                                                                   |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `Kiosk: This month`             | the Date is in this month. It moves on by itself each month.                                           |
+| `Kiosk: Last month`             | the Date is in last month.                                                                             |
+| `Kiosk: Open shifts`            | Status is `open`.                                                                                      |
+| `Kiosk: Flagged`                | Admin Alerts? is not blank.                                                                            |
+| `Kiosk: Admin-entered`          | either Entered By column holds an admin's initials.                                                    |
+| `Kiosk: Typed into the sheet`   | Shift ID or Check-In Entered By is blank, or the row isn't open and Check-Out Entered By is blank.     |
+| `Kiosk: Other status or source` | Status is not `open` or `closed`, or either Entered By holds something other than `kiosk` or initials. |
+
+Empty rows (no Date, name, User Token, Status or Shift ID) never show. Don't rename a
+`Kiosk: ` view: `setupReports` would add the view again under its own title. Views you
+make with other titles are yours, and `setupReports` leaves them alone.
+
+### Warnings on kiosk columns
+
+`setupReports` puts a warning on the Log columns the kiosk and the menu fill: Date, Day,
+Volunteer Name, the four time columns, both hours columns, User Token, Status, both
+Entered By columns and Shift ID. Editing one of them asks you to confirm first. Nothing is
+blocked: confirm, and the edit goes ahead. The kiosk and the menu write as before.
+
+Role/Type, Activity, Notes and Admin Alerts? have no warning; staff fill those.
+
+**Sorting the Log asks for confirmation too**, because a sort moves cells in the warned
+columns. Confirm, and the sort goes ahead. Sorting is still safe for the kiosk (see The
+Log).
+
+### Setting up the reports
+
+Run `setupReports` from the Apps Script editor, like `setupSheets`. The first time, Google
+asks to authorize the script again, for the Sheets service it uses to save filter views.
+Accept.
+
+It makes or repairs the Monthly Hours tab, the filter views and the warnings, from the
+Log's current columns. It keeps the month picked in B1. It changes only what it made: the
+Monthly Hours tab, the views titled `Kiosk: ` and the warnings it put on the Log. It never
+changes a Log cell, a report tab or any other tab, so running it again changes nothing. If
+the Log is missing a column the kiosk needs, it stops with the kiosk's message; run
+`setupSheets` first.
+
+**After inserting, deleting or moving a Log column, run `setupReports` again**, so the
+filter views and the Monthly Hours formulas follow the columns.
+
+To add the reports to a spreadsheet already in use, do these steps in this order:
+
+1. `pnpm push`. The kiosk page doesn't change, so a versioned web app deployment needs no
+   update, and the menu runs the pushed code.
+2. Run `setupSheets` from the editor. It adds the "Volunteer hour value" row to Settings.
+3. Run `setupReports` from the editor, and authorize it when asked.
+
 ## Setup
 
 1. `pnpm install`
@@ -293,11 +502,28 @@ called from the open spreadsheet, through a window the menu opened.
 7. Once, in the Apps Script editor, run `setupSheets` (creates the Log and Settings tabs),
    then `setupSampleProfiles` (builds an invented Volunteer Profiles file and points
    Settings at it). Then put a kiosk access code of at least 16 letters in Settings.
-   Both run only from the editor: called through the web app by anyone but the account
-   it runs as, they refuse.
+   Then run `setupReports` (see Reports). All three run only from the editor: called
+   through the web app by anyone but the account it runs as, they refuse.
 
 The development script points at a copy of Volunteer Profiles built from invented
 sample data, never at ENCM's real file.
+
+### Setting up the iPad
+
+The kiosk is built for an iPad in landscape, in Safari. Google shows the kiosk page inside
+a frame from another Google address. With Safari's default privacy setting, Safari keeps
+that frame's stored data only for the session, so the iPad forgets the access code
+whenever the page reloads. To make the iPad remember it:
+
+1. Open **Settings > Apps > Safari** (on iPadOS 17 and earlier, **Settings > Safari**)
+   and turn off **Prevent Cross-Site Tracking**. This switch covers all of Safari on the
+   iPad, so use an iPad kept for the kiosk.
+2. In Safari, use a normal tab, not a Private Browsing tab.
+3. Open the kiosk link and type the access code once.
+4. Reload the page. The kiosk should open without asking for the code again.
+
+If the kiosk ever asks for the code again after a long closure, type it once more. These
+steps have not yet been tried on ENCM's iPad; check step 4 when you set it up.
 
 ### What setupSheets does
 
@@ -331,6 +557,8 @@ Between steps 2 and 3 the new code meets the old header, and the tablet shows th
 can't reach the volunteer list. That clears as soon as step 3 finishes. Doing it in this
 order means old code never writes into the new layout.
 
+To add the reports to a sheet in use, follow the steps under Setting up the reports.
+
 ## Commands
 
 ```
@@ -352,6 +580,8 @@ src/api.ts                  the page's calls: Apps Script when served by it, els
 apps-script/Api.js          doGet and the api* functions the page calls
 apps-script/Admin.js        the Kiosk admin menu and its dialogs' server functions
 apps-script/AdminDialog.html the admin dialogs (plain HTML and JavaScript, committed source)
+apps-script/Reports.js      setupReports and the Monthly report menu item's server functions
+apps-script/Report.html     the Monthly report window (plain HTML and JavaScript, committed source)
 apps-script/Logic.js        the rules, as plain functions the Node tests load
 apps-script/Sheets.js       Log, Settings and Profiles access; setupSheets, setupSampleProfiles
 apps-script/SampleData.js   invented Volunteer Profiles rows for development

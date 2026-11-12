@@ -1,12 +1,15 @@
-// Tests for apps-script/Admin.js, the Kiosk admin menu. The server files are loaded into
+// Tests for apps-script/Admin.js, the Kiosk admin menu, and the public functions of
+// apps-script/Reports.js, which the menu's Monthly report item calls. The server files are loaded into
 // one global scope, as Apps Script loads them, with stand-ins for the Google services
 // that record every call. Two kinds of test:
 //
-// - The guard. Every public function in Admin.js (a top-level function whose name doesn't
-//   end in _) can be named by the kiosk page through google.script.run. Each must check
-//   that the person at the sheet runs it, and that it holds a dialog key the spreadsheet's
-//   menu issued, before it reads or writes anything. The list of functions comes from
-//   Admin.js's source, so a public function added later is held to the same rule.
+// - The guard. Every public function in Admin.js and Reports.js (a top-level function
+//   whose name doesn't end in _) can be named by the kiosk page through google.script.run.
+//   Each must check that the person at the sheet runs it, and that it holds a dialog key
+//   the spreadsheet's menu issued, before it reads or writes anything. Two kinds are
+//   exempt from the key only: the dialog openers, which make it, and setupReports, which
+//   runs from the editor as setupSheets does. The list of functions comes from the two
+//   files' source, so a public function added later is held to the same rule.
 // - The glue: the admin functions read and write an in-memory Log through Sheets.js.
 
 import { test } from "node:test";
@@ -16,11 +19,11 @@ import vm from "node:vm";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
-const SERVER_FILES = ["Logic.js", "Sheets.js", "Api.js", "Admin.js"].map((f) => [
+const SERVER_FILES = ["Logic.js", "Sheets.js", "Api.js", "Admin.js", "Reports.js"].map((f) => [
   f,
   read("apps-script/" + f),
 ]);
-const ADMIN_SOURCE = read("apps-script/Admin.js");
+const GUARDED_FILES = ["Admin.js", "Reports.js"].map((f) => [f, read("apps-script/" + f)]);
 
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const TZ = "America/Chicago";
@@ -237,15 +240,21 @@ function server(opts = {}) {
 // ---------------------------------------------------------------------------
 // The guard
 
-/** Top-level function names declared in Admin.js. */
-const declared = [...ADMIN_SOURCE.matchAll(/^function\s+([\w$]+)\s*\(/gm)].map((m) => m[1]);
+/** Top-level function names declared in Admin.js and Reports.js. */
+const declared = GUARDED_FILES.flatMap(([, source]) =>
+  [...source.matchAll(/^function\s+([\w$]+)\s*\(/gm)].map((m) => m[1]),
+);
 const PUBLIC = declared.filter((name) => !name.endsWith("_"));
 const isOpener = (name) => /^open\w*Dialog$/.test(name);
-const KEYED = PUBLIC.filter((name) => name !== "onOpen" && !isOpener(name));
+// Run by hand from the editor, guarded like setupSheets: no dialog, so no key.
+const EDITOR_ONLY = ["setupReports"];
+const KEYED = PUBLIC.filter(
+  (name) => name !== "onOpen" && !isOpener(name) && !EDITOR_ONLY.includes(name),
+);
 const onlyFrom = (calls, allowed) =>
   calls.filter((c) => !allowed.some((a) => (a.endsWith(".") ? c.startsWith(a) : c === a)));
 
-test("Admin.js declares the menu's public functions, and only functions", () => {
+test("Admin.js and Reports.js declare the menu's public functions, and only functions", () => {
   for (const name of [
     "onOpen",
     "openAddShiftDialog",
@@ -254,8 +263,15 @@ test("Admin.js declares the menu's public functions, and only functions", () => 
     "adminOpenShifts",
     "adminAddShift",
     "adminFixSignOut",
+    "setupReports",
+    "openMonthlyReportDialog",
+    "adminReportMonths",
+    "adminMonthlyReport",
   ]) {
     assert.ok(PUBLIC.includes(name), name);
+  }
+  for (const name of ["adminReportMonths", "adminMonthlyReport"]) {
+    assert.ok(KEYED.includes(name), name);
   }
   const { ctx, calls } = server();
   for (const name of declared) assert.equal(typeof ctx[name], "function", name);
@@ -263,10 +279,30 @@ test("Admin.js declares the menu's public functions, and only functions", () => 
   assert.deepEqual(calls, []);
   // Anything at the top level other than a function would be code that runs on every call
   // of the web app too.
-  const topLevel = ADMIN_SOURCE.split("\n").filter((line) => /^\S/.test(line));
-  for (const line of topLevel) {
-    assert.match(line, /^(function |\}|\/\*\*| \*|\/\/)/, line);
+  for (const [file, source] of GUARDED_FILES) {
+    const topLevel = source.split("\n").filter((line) => /^\S/.test(line));
+    for (const line of topLevel) {
+      assert.match(line, /^(function |\}|\/\*\*| \*|\/\/)/, file + ": " + line);
+    }
   }
+});
+
+test("every function the report dialog or menu names is public; every writer is private", () => {
+  const html = read("apps-script/Report.html");
+  const called = [...html.matchAll(/call\("(\w+)"/g)].map((m) => m[1]);
+  assert.deepEqual(called.sort(), ["adminMonthlyReport", "adminReportMonths"]);
+  for (const name of called) assert.ok(KEYED.includes(name), name);
+  // The Sheets-writing helpers end in _, so google.script.run can't name them.
+  const reports = GUARDED_FILES.find(([f]) => f === "Reports.js")[1];
+  const reportPublic = [...reports.matchAll(/^function\s+([\w$]+)\s*\(/gm)]
+    .map((m) => m[1])
+    .filter((n) => !n.endsWith("_"));
+  assert.deepEqual(reportPublic.sort(), [
+    "adminMonthlyReport",
+    "adminReportMonths",
+    "openMonthlyReportDialog",
+    "setupReports",
+  ]);
 });
 
 test("every public admin function refuses a caller who isn't the person at the sheet, before anything else", () => {
@@ -320,6 +356,7 @@ test("onOpen only adds the menu, and its items name the openers", () => {
     "Kiosk admin",
     ["Add a shift…", "openAddShiftDialog"],
     ["Fix a sign-out…", "openFixSignOutDialog"],
+    ["Monthly report…", "openMonthlyReportDialog"],
   ]);
   for (const [, fn] of menu.slice(1)) assert.ok(PUBLIC.filter(isOpener).includes(fn), fn);
   // From the web app it throws at getUi and does nothing else.
@@ -343,6 +380,20 @@ test("an opener puts a fresh key only into the dialog's HTML, and the key then w
   s.ctx.openFixSignOutDialog();
   assert.equal(s.shown[1].output.template.mode, "fix");
   assert.notEqual(s.shown[1].output.template.key, template.key);
+});
+
+test("the Monthly report opener serves Report.html with a fresh key, and the key then works", () => {
+  const s = server({ log: [LOG_HEADER] });
+  assert.equal(s.ctx.openMonthlyReportDialog(), undefined);
+  assert.equal(s.shown.length, 1);
+  const { template } = s.shown[0].output;
+  assert.equal(s.shown[0].title, "Monthly report");
+  assert.equal(template.file, "Report");
+  assert.ok(template.key);
+  assert.ok(s.cache.has("admin-key:" + template.key));
+  const reply = plain(s.ctx.adminReportMonths(template.key));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.months[0].month, centralDate(Date.now()).slice(0, 7));
 });
 
 // ---------------------------------------------------------------------------
