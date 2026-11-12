@@ -334,7 +334,7 @@ test("an opener puts a fresh key only into the dialog's HTML, and the key then w
   assert.equal(s.shown.length, 1);
   const { template } = s.shown[0].output;
   assert.equal(s.shown[0].title, "Add a shift");
-  assert.equal(template.file, "Admin");
+  assert.equal(template.file, "AdminDialog");
   assert.equal(template.mode, "add");
   assert.ok(template.key);
   assert.ok(s.cache.has("admin-key:" + template.key));
