@@ -400,7 +400,6 @@ function CheckedInSidebar({ volunteers, onSelect }: {
   volunteers: Volunteer[];
   onSelect: (v: Volunteer) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const checkedIn = volunteers
     .filter(v => Boolean(v.currentCheckIn && isToday(v.currentCheckIn)))
     // Earliest check-in first. currentCheckIn is an ISO time string, so turn it into
@@ -412,7 +411,7 @@ function CheckedInSidebar({ volunteers, onSelect }: {
       <aside className={`checkin-sidebar`}>
         <h2 className="checkin-sidebar-title">Checked In</h2>
         {checkedIn.length === 0 ? (
-          <p className="checkin-sidebar-empty">No one checked in yet.</p>
+          <p className="sidebar-empty">No one checked in yet.</p>
         ) : (
           checkedIn.map((volunteer) => (
           <VolunteerCard
@@ -420,7 +419,6 @@ function CheckedInSidebar({ volunteers, onSelect }: {
             volunteer={volunteer}
             onClick={() => {
               onSelect(volunteer);
-              setOpen(false);
             }}
           />
         ))
