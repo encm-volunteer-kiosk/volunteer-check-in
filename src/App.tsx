@@ -1,18 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  appreciationMessages,
-  checkIn,
-  checkOut,
-  isToday,
-  kioskStore,
-  type KioskData,
-  type Milestone,
-  type Volunteer,
-} from "./data";
+import { api, isRefusal, localApi, toVolunteer, usingLocalApi, type Refusal } from "./api";
+import logo from "./assets/encm-logo.png";
+import { appreciationMessages, isToday, type Milestone, type Volunteer } from "./data";
 
 type Screen = "welcome" | "confirm" | "checkout" | "success-in" | "success-out";
 type Result = { time: string; duration?: number; milestone?: Milestone | null; message: string };
+type ListState = "loading" | "ready" | "failed";
+type PhoneStep = "entry" | "missing" | null;
 const TZ = "America/Chicago";
+const ACCESS_CODE_KEY = "encm-kiosk-access-code";
+const LIST_REFRESH_MS = 5 * 60_000;
+const LIST_RETRY_MS = 30_000;
 
 const Icon = ({ name, size = 24 }: { name: string; size?: number }) => {
   const paths: Record<string, React.ReactNode> = {
@@ -93,7 +91,7 @@ function Header() {
   }).format(now);
   return (
     <header className="header">
-      <img className="logo" src="/encm-logo.png" alt="East Nashville Care Market" />
+      <img className="logo" src={logo} alt="East Nashville Care Market" />
       <div className="date">
         <span>Today is</span>
         <strong>{day}</strong>
@@ -153,72 +151,7 @@ function VolunteerCard({ volunteer, onClick }: { volunteer: Volunteer; onClick: 
   );
 }
 
-const keyboardRows = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"];
-
-function OnScreenKeyboard({
-  hasText,
-  onKey,
-  onBackspace,
-  onClear,
-}: {
-  hasText: boolean;
-  onKey: (key: string) => void;
-  onBackspace: () => void;
-  onClear: () => void;
-}) {
-  return (
-    <div className="app-keyboard" aria-label="On-screen keyboard">
-      {keyboardRows.map((row, rowIndex) => (
-        <div className="keyboard-row" key={row}>
-          {rowIndex === 2 && (
-            <button
-              type="button"
-              className="keyboard-action clear-key"
-              onClick={onClear}
-              disabled={!hasText}
-            >
-              Clear
-            </button>
-          )}
-          {[...row].map((letter) => (
-            <button
-              type="button"
-              className="letter-key"
-              key={letter}
-              onClick={() => onKey(letter)}
-              aria-label={`Type ${letter}`}
-            >
-              {letter}
-            </button>
-          ))}
-          {rowIndex === 2 && (
-            <>
-              <button
-                type="button"
-                className="keyboard-action space-key"
-                onClick={() => onKey(" ")}
-                disabled={!hasText}
-              >
-                Space
-              </button>
-              <button
-                type="button"
-                className="keyboard-action delete-key"
-                onClick={onBackspace}
-                disabled={!hasText}
-                aria-label="Backspace"
-              >
-                Delete
-              </button>
-            </>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-const minuteOptions = Array.from({ length: 12 }, (_, index) => index * 5);
+const minuteOptions = [0, 15, 30, 45];
 
 function TimeKeyboard({
   value,
@@ -237,9 +170,21 @@ function TimeKeyboard({
   const hour12 = hourValue % 12 || 12;
   const period = hourValue >= 12 ? "PM" : "AM";
 
+  // Minutes since midnight, Central. Nothing later than now can be chosen.
+  const nowMinutes = minutesOfDay(centralTimeValue());
+  const toMinutes = (hour: number, minute: number, nextPeriod: "AM" | "PM") =>
+    ((hour % 12) + (nextPeriod === "PM" ? 12 : 0)) * 60 + minute;
+  const isLater = (hour: number, minute: number, nextPeriod: "AM" | "PM") =>
+    toMinutes(hour, minute, nextPeriod) > nowMinutes;
+
   const updateTime = (hour: number, minute: number, nextPeriod: "AM" | "PM") => {
-    const hour24 = (hour % 12) + (nextPeriod === "PM" ? 12 : 0);
-    onChange(`${String(hour24).padStart(2, "0")}:${String(minute).padStart(2, "0")}`);
+    // A new hour or period keeps the chosen minutes unless that is later than now; then it
+    // takes the latest quarter hour that isn't.
+    const start = toMinutes(hour, 0, nextPeriod);
+    const total = Math.min(start + minute, Math.max(start, nowMinutes - (nowMinutes % 15)));
+    onChange(
+      `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`,
+    );
   };
 
   return (
@@ -251,6 +196,7 @@ function TimeKeyboard({
             className={`time-key${hour === hour12 ? " is-selected" : ""}`}
             key={hour}
             onClick={() => updateTime(hour, minuteValue, period)}
+            disabled={isLater(hour, 0, period)}
             aria-label={`${hour} o'clock`}
             aria-pressed={hour === hour12}
           >
@@ -265,6 +211,7 @@ function TimeKeyboard({
             className={`time-key${minute === minuteValue ? " is-selected" : ""}`}
             key={minute}
             onClick={() => updateTime(hour12, minute, period)}
+            disabled={isLater(hour12, minute, period)}
             aria-label={`${minute} minutes past the hour`}
             aria-pressed={minute === minuteValue}
           >
@@ -279,6 +226,7 @@ function TimeKeyboard({
             className={`keyboard-action period-key${option === period ? " is-selected" : ""}`}
             key={option}
             onClick={() => updateTime(hour12, minuteValue, option)}
+            disabled={isLater(hour12, 0, option)}
             aria-pressed={option === period}
           >
             {option}
@@ -305,9 +253,11 @@ function TimeKeyboard({
 
 function Welcome({
   volunteers,
+  listState,
   onSelect,
 }: {
   volunteers: Volunteer[];
+  listState: ListState;
   onSelect: (v: Volunteer) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -342,155 +292,217 @@ function Welcome({
       .slice(0, 3);
   }, [normalizedQuery, volunteers]);
 
-  const updateQuery = (next: string | ((current: string) => string)) => {
+  const cardRef = useRef<HTMLElement>(null);
+  // Set once the name box gets focus: room below the card, so the page can scroll the box
+  // and its results above the tablet keyboard. Never unset, so a tap on a result can't
+  // shift the layout under the finger.
+  const [typing, setTyping] = useState(false);
+
+  const updateQuery = (next: string) => {
     setQuery(next);
     window.requestAnimationFrame(() => searchRef.current?.focus());
   };
+  // Once the tablet keyboard has opened, bring the box and its results into view above it.
+  const keepResultsVisible = () => {
+    setTyping(true);
+    window.setTimeout(
+      () => cardRef.current?.scrollIntoView({ block: "start", behavior: "smooth" }),
+      350,
+    );
+  };
 
   return (
-    <>
-      <main className="welcome name-entry screen-enter">
-        <section className="hero name-entry-hero">
-          <div className="spark spark-hero">
-            <i />
-            <i />
-            <i />
-          </div>
-          <p className="welcome-note">{welcomeNote}</p>
-          <h1>
-            Hey there, <span>neighbor!</span>
-          </h1>
-          <p>Use the keyboard below, then tap your name.</p>
-        </section>
+    <main className={`welcome name-entry screen-enter${typing ? " is-typing" : ""}`}>
+      <section className="hero name-entry-hero">
+        <div className="spark spark-hero">
+          <i />
+          <i />
+          <i />
+        </div>
+        <p className="welcome-note">{welcomeNote}</p>
+        <h1>
+          Hey there, <span>neighbor!</span>
+        </h1>
+        <p>Tap the box below and type your name.</p>
+      </section>
 
-        <section className="name-search-card" aria-label="Find your volunteer profile">
-          <label className="search-field name-search-field">
-            <Icon name="search" size={29} />
-            <span className="sr-only">Type your first and last name</span>
-            <input
-              ref={searchRef}
-              autoFocus
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Enter your name"
-              autoComplete="off"
-              inputMode="none"
-              spellCheck={false}
-            />
-            {query && (
-              <button type="button" onClick={() => updateQuery("")} aria-label="Clear name">
-                Clear
-              </button>
-            )}
-          </label>
-
-          {normalizedQuery && results.length > 0 && (
-            <p className="match-prompt">
-              <Icon name="user" size={21} />
-              Tap your name below
-            </p>
+      <section className="name-search-card" aria-label="Find your volunteer profile" ref={cardRef}>
+        <label className="search-field name-search-field">
+          <Icon name="search" size={29} />
+          <span className="sr-only">Type your first and last name</span>
+          <input
+            ref={searchRef}
+            autoFocus
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onFocus={keepResultsVisible}
+            placeholder="Enter your name"
+            maxLength={60}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="words"
+            spellCheck={false}
+            enterKeyHint="search"
+          />
+          {query && (
+            <button type="button" onClick={() => updateQuery("")} aria-label="Clear name">
+              Clear
+            </button>
           )}
+        </label>
 
-          <div className="name-results" aria-live="polite">
-            {!normalizedQuery && (
-              <div className="type-prompt">
-                <Icon name="user" size={27} />
-                <span>Tap the large letters below to find your name.</span>
-              </div>
-            )}
-            {results.map((volunteer) => (
-              <VolunteerCard
-                key={volunteer.id}
-                volunteer={volunteer}
-                onClick={() => onSelect(volunteer)}
-              />
-            ))}
-            {normalizedQuery && results.length === 0 && (
-              <div className="no-name">
-                <strong>No matching volunteer found</strong>
-                <span>Double-check the spelling.</span>
-                <span className="board-member-message">
-                  If you still don&apos;t see your name, please see a board member for help.
-                </span>
-              </div>
-            )}
-          </div>
-        </section>
+        {normalizedQuery && results.length > 0 && (
+          <p className="match-prompt">
+            <Icon name="user" size={21} />
+            Tap your name below
+          </p>
+        )}
 
-        <p className="tagline">Good neighbors change lives.</p>
-      </main>
-      <OnScreenKeyboard
-        hasText={Boolean(query)}
-        onKey={(key) =>
-          updateQuery((current) => {
-            if (key === " " && (!current || current.endsWith(" "))) return current;
-            return `${current}${key}`.slice(0, 60);
-          })
-        }
-        onBackspace={() => updateQuery((current) => current.slice(0, -1))}
-        onClear={() => updateQuery("")}
+        <div className="name-results" aria-live="polite">
+          {listState === "failed" ? (
+            <div className="no-name">
+              <strong>This kiosk can&apos;t reach the volunteer list right now.</strong>
+              <span className="board-member-message">Please see a board member.</span>
+            </div>
+          ) : (
+            <>
+              {!normalizedQuery && (
+                <div className="type-prompt">
+                  <Icon name="user" size={27} />
+                  <span>Start typing to find your name.</span>
+                </div>
+              )}
+              {results.map((volunteer) => (
+                <VolunteerCard
+                  key={volunteer.id}
+                  volunteer={volunteer}
+                  onClick={() => onSelect(volunteer)}
+                />
+              ))}
+              {normalizedQuery &&
+                results.length === 0 &&
+                (listState === "loading" ? (
+                  <div className="no-name">
+                    <strong>Loading volunteers…</strong>
+                  </div>
+                ) : (
+                  <div className="no-name">
+                    <strong>No matching volunteer found</strong>
+                    <span>Double-check the spelling.</span>
+                    <span className="board-member-message">
+                      If you still don&apos;t see your name, please see a board member for help.
+                    </span>
+                  </div>
+                ))}
+            </>
+          )}
+        </div>
+      </section>
+
+      <p className="tagline">Good neighbors change lives.</p>
+    </main>
+  );
+}
+
+function PhoneDigits({
+  digits,
+  onChange,
+  onSubmit,
+}: {
+  digits: string;
+  onChange: (digits: string) => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <label className="phone-digits">
+      <span className="sr-only">Last four digits of your phone number</span>
+      <input
+        autoFocus
+        value={digits}
+        onChange={(event) => {
+          // Digits only. A pasted whole number keeps its last four; typing stops at four.
+          // No maxLength: it would cut "(615) 555-0142" to "(615" before this runs.
+          const typed = event.target.value.replace(/\D/g, "");
+          const pasted = typed.length - digits.length > 1;
+          onChange(typed.length > 4 && pasted ? typed.slice(-4) : typed.slice(0, 4));
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") onSubmit();
+        }}
+        type="text"
+        inputMode="numeric"
+        pattern="[0-9]*"
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
+        enterKeyHint="done"
+        placeholder="0000"
       />
-    </>
+    </label>
   );
 }
 
 function Confirmation({
   volunteer,
   checkout,
-  duplicateName,
+  phoneStep = null,
+  phoneDigits = "",
   arrivalTime,
+  arrivalPicker = false,
   saving,
   error,
   onArrivalTimeChange,
+  onOpenArrivalPicker,
+  onPhoneDigitsChange,
+  onPhoneContinue,
   onConfirm,
   onBack,
 }: {
   volunteer: Volunteer;
   checkout: boolean;
-  duplicateName?: boolean;
+  phoneStep?: PhoneStep;
+  phoneDigits?: string;
   arrivalTime?: string;
+  arrivalPicker?: boolean;
   saving: boolean;
   error: string;
   onArrivalTimeChange?: (time: string) => void;
+  onOpenArrivalPicker?: () => void;
+  onPhoneDigitsChange: (digits: string) => void;
+  onPhoneContinue: () => void;
   onConfirm: () => void;
   onBack: () => void;
 }) {
   const showTimeKeyboard = Boolean(
-    !checkout && !duplicateName && arrivalTime && onArrivalTimeChange,
+    !checkout && !phoneStep && arrivalPicker && arrivalTime && onArrivalTimeChange,
   );
+  const hasKeyboard = showTimeKeyboard;
+  const digitsMissing = Boolean(volunteer.needsPhoneCheck) && phoneDigits.length !== 4;
 
   return (
     <>
-      <main className={`center-screen screen-enter${showTimeKeyboard ? " has-keyboard" : ""}`}>
-        {!showTimeKeyboard && <BackButton onClick={onBack} />}
-        <section className={`panel confirmation-panel${showTimeKeyboard ? " with-keyboard" : ""}`}>
+      <main className={`center-screen screen-enter${hasKeyboard ? " has-keyboard" : ""}`}>
+        {!hasKeyboard && <BackButton onClick={onBack} />}
+        <section className={`panel confirmation-panel${hasKeyboard ? " with-keyboard" : ""}`}>
           <div className="spark">
             <i />
             <i />
             <i />
           </div>
-          <div className="eyebrow">
-            {duplicateName
-              ? "A little help needed"
-              : checkout
-                ? "Ready to wrap up?"
-                : "Welcome, neighbor"}
-          </div>
+          <div className="eyebrow">{checkout ? "Ready to wrap up?" : "Welcome, neighbor"}</div>
           <h1>
-            {duplicateName
-              ? "Let's get a coordinator"
-              : checkout
-                ? `Heading out, ${volunteer.firstName}?`
-                : `Hi, ${volunteer.firstName}!`}
+            {checkout ? `Heading out, ${volunteer.firstName}?` : `Hi, ${volunteer.firstName}!`}
           </h1>
           <p>
-            {duplicateName ? (
+            {phoneStep ? (
               <>
-                We found more than one volunteer named{" "}
+                There&apos;s more than one{" "}
                 <strong>
                   {volunteer.firstName} {volunteer.lastName}
                 </strong>
-                . A volunteer coordinator can help choose the right record.
+                .
+                {phoneStep === "entry" &&
+                  " Please enter the last four digits of your phone number."}
               </>
             ) : checkout ? (
               <>
@@ -500,10 +512,22 @@ function Confirmation({
               "Just making sure we have the right neighbor."
             )}
           </p>
-          {checkout && volunteer.currentCheckIn && (
+          {phoneStep === "entry" && (
+            <PhoneDigits
+              digits={phoneDigits}
+              onChange={onPhoneDigitsChange}
+              onSubmit={onPhoneContinue}
+            />
+          )}
+          {!phoneStep && checkout && volunteer.currentCheckIn && (
             <ShiftThanks checkedInAt={volunteer.currentCheckIn} />
           )}
-          {!checkout && !duplicateName && (
+          {!checkout && !phoneStep && !showTimeKeyboard && (
+            <div className="identity">
+              <Icon name="user" /> {volunteer.firstName} {volunteer.lastName}
+            </div>
+          )}
+          {showTimeKeyboard && (
             <div className="checkin-details">
               <div className="identity">
                 <Icon name="user" /> {volunteer.firstName} {volunteer.lastName}
@@ -514,15 +538,20 @@ function Confirmation({
                   What time did you arrive?
                 </span>
                 <output aria-live="polite">{formatTimeValue(arrivalTime!)}</output>
-                <small>Use the keyboard below to adjust your arrival time.</small>
+                <small>Tap to adjust your arrival time.</small>
               </div>
             </div>
           )}
           {error && <ErrorNotice text={error} />}
-          {!showTimeKeyboard && (
+          {!hasKeyboard && (
             <div className="button-stack">
-              {!duplicateName && (
-                <Button onClick={onConfirm} disabled={saving}>
+              {phoneStep === "entry" && (
+                <Button onClick={onPhoneContinue} disabled={phoneDigits.length < 4}>
+                  Continue
+                </Button>
+              )}
+              {!phoneStep && (
+                <Button onClick={onConfirm} disabled={saving || digitsMissing}>
                   {saving ? (
                     <>
                       <span className="spinner" /> Saving…
@@ -535,9 +564,19 @@ function Confirmation({
                 </Button>
               )}
               <Button variant="secondary" onClick={onBack} disabled={saving}>
-                {duplicateName ? "Go back" : checkout ? "Keep Volunteering" : "Go back"}
+                {checkout && !phoneStep ? "Keep Volunteering" : "Go back"}
               </Button>
             </div>
+          )}
+          {!checkout && !phoneStep && !showTimeKeyboard && onOpenArrivalPicker && (
+            <button
+              type="button"
+              className="text-button"
+              onClick={onOpenArrivalPicker}
+              disabled={saving}
+            >
+              Forgot to check in earlier? Change your arrival time
+            </button>
           )}
         </section>
       </main>
@@ -646,6 +685,78 @@ function Success({
   );
 }
 
+function Setup({
+  saving,
+  error,
+  onSave,
+}: {
+  saving: boolean;
+  error: string;
+  onSave: (code: string) => void;
+}) {
+  const [code, setCode] = useState("");
+  const codeRef = useRef<HTMLInputElement>(null);
+  const save = () => {
+    if (!saving && code.trim()) onSave(code.trim());
+  };
+
+  return (
+    <main className="welcome name-entry screen-enter">
+      <section className="hero name-entry-hero">
+        <h1>Set up this kiosk</h1>
+        <p>Board member: tap the box below, type the kiosk access code, then tap Save.</p>
+      </section>
+
+      <section className="name-search-card" aria-label="Kiosk access code">
+        <label className="search-field name-search-field">
+          <span className="sr-only">Kiosk access code</span>
+          <input
+            ref={codeRef}
+            autoFocus
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") save();
+            }}
+            type="password"
+            placeholder="Kiosk access code"
+            maxLength={200}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            enterKeyHint="done"
+          />
+          {code && (
+            <button
+              type="button"
+              onClick={() => {
+                setCode("");
+                codeRef.current?.focus();
+              }}
+              aria-label="Clear code"
+            >
+              Clear
+            </button>
+          )}
+        </label>
+        {error && <ErrorNotice text={error} />}
+        <div className="button-stack">
+          <Button onClick={save} disabled={saving || !code.trim()}>
+            {saving ? (
+              <>
+                <span className="spinner" /> Saving…
+              </>
+            ) : (
+              "Save"
+            )}
+          </Button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function DevTools({ onReset }: { onReset: () => void }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
@@ -691,6 +802,18 @@ function centralTimeValue(date = new Date()) {
   const part = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((item) => item.type === type)?.value ?? "00";
   return `${part("hour")}:${part("minute")}`;
+}
+
+function minutesOfDay(value: string) {
+  const [hour, minute] = value.split(":").map(Number);
+  return hour * 60 + minute;
+}
+
+/** The latest quarter hour at or before now, Central, as HH:MM. */
+function latestQuarterHour() {
+  const now = minutesOfDay(centralTimeValue());
+  const quarter = now - (now % 15);
+  return `${String(Math.floor(quarter / 60)).padStart(2, "0")}:${String(quarter % 60).padStart(2, "0")}`;
 }
 
 function formatTimeValue(value: string) {
@@ -757,16 +880,49 @@ function formatDuration(minutes: number) {
   }`;
 }
 
+// Blurs the focused input so the tablet's keyboard closes and can't cover the screen's
+// buttons or the arrival-time picker.
+function closeTabletKeyboard() {
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+}
+
+function readStoredCode(): string | null {
+  try {
+    return localStorage.getItem(ACCESS_CODE_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function storeCode(code: string | null) {
+  // If storage is blocked, the code lives only in memory and is asked again after a reload.
+  try {
+    if (code) localStorage.setItem(ACCESS_CODE_KEY, code);
+    else localStorage.removeItem(ACCESS_CODE_KEY);
+  } catch {}
+}
+
 export default function App() {
-  const [data, setData] = useState<KioskData>(() => kioskStore.load());
+  const [code, setCode] = useState<string | null>(readStoredCode);
+  const codeRef = useRef(code);
+  const [setupError, setSetupError] = useState("");
+  const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
+  const [listState, setListState] = useState<ListState>("loading");
+  const listRequested = useRef(0);
+  const listApplied = useRef(0);
+  const [messageIndex, setMessageIndex] = useState(0);
   const [screen, setScreen] = useState<Screen>("welcome");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<Result | null>(null);
   const [arrivalTime, setArrivalTime] = useState(() => centralTimeValue());
+  // Check-in sends the current time unless the volunteer opens the arrival-time picker.
+  const [arrivalPicker, setArrivalPicker] = useState(false);
+  const [phoneStep, setPhoneStep] = useState<PhoneStep>(null);
+  const [phoneDigits, setPhoneDigits] = useState("");
   const inactivityRef = useRef<number | null>(null);
-  const selected = data.volunteers.find((v) => v.id === selectedId) ?? null;
+  const selected = volunteers.find((v) => v.id === selectedId) ?? null;
 
   const goHome = () => {
     setScreen("welcome");
@@ -774,15 +930,78 @@ export default function App() {
     setError("");
     setResult(null);
     setArrivalTime(centralTimeValue());
+    setArrivalPicker(false);
+    setPhoneStep(null);
+    setPhoneDigits("");
   };
   const select = (volunteer: Volunteer) => {
+    closeTabletKeyboard();
     setSelectedId(volunteer.id);
     setError("");
     setArrivalTime(centralTimeValue());
+    setArrivalPicker(false);
+    setPhoneStep(volunteer.needsPhoneCheck ? "entry" : null);
+    setPhoneDigits("");
     setScreen(
       volunteer.currentCheckIn && isToday(volunteer.currentCheckIn) ? "checkout" : "confirm",
     );
   };
+
+  const applyCode = (next: string | null) => {
+    codeRef.current = next;
+    storeCode(next);
+    setCode(next);
+    setVolunteers([]);
+    setListState("loading");
+  };
+  // The server refused the stored code: back to the setup screen.
+  const lockKiosk = (message: string) => {
+    applyCode(null);
+    setSetupError(message);
+    goHome();
+  };
+
+  // Responses can arrive out of order; only one newer than the last applied is used.
+  function refreshList() {
+    const requestCode = codeRef.current;
+    if (!requestCode) return;
+    const seq = ++listRequested.current;
+    const isCurrent = () => seq > listApplied.current && codeRef.current === requestCode;
+    const failed = () => setListState((state) => (state === "ready" ? state : "failed"));
+    api.listVolunteers(requestCode).then(
+      (reply) => {
+        if (!isCurrent()) return;
+        listApplied.current = seq;
+        if (isRefusal(reply)) {
+          if (reply.refusal === "ACCESS") lockKiosk(reply.message);
+          else failed();
+          return;
+        }
+        setVolunteers(reply.map(toVolunteer));
+        setListState("ready");
+      },
+      () => {
+        if (isCurrent()) failed();
+      },
+    );
+  }
+
+  useEffect(() => {
+    if (!code) return;
+    refreshList();
+    const timer = window.setInterval(refreshList, LIST_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [code]);
+
+  useEffect(() => {
+    if (!code || listState !== "failed") return;
+    const timer = window.setInterval(refreshList, LIST_RETRY_MS);
+    return () => clearInterval(timer);
+  }, [code, listState]);
+
+  useEffect(() => {
+    if (selectedId && listState === "ready" && !selected) goHome();
+  }, [volunteers]);
 
   useEffect(() => {
     if (screen === "welcome") return;
@@ -805,22 +1024,69 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [screen]);
 
+  async function handleSaveCode(candidate: string) {
+    if (saving) return;
+    setSaving(true);
+    setSetupError("");
+    try {
+      const reply = await api.checkAccess(candidate);
+      if (isRefusal(reply)) setSetupError(reply.message);
+      else applyCode(candidate);
+    } catch {
+      setSetupError("We couldn't check the code. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function nextMessage() {
+    setMessageIndex((index) => index + 1);
+    return appreciationMessages[messageIndex % appreciationMessages.length];
+  }
+
+  function showRefusal(reply: Refusal) {
+    if (reply.refusal === "ACCESS") {
+      lockKiosk(reply.message);
+      return;
+    }
+    if (reply.refusal === "PHONE_WRONG" || reply.refusal === "PHONE_NEEDED") {
+      setPhoneDigits("");
+      setPhoneStep("entry");
+    } else if (reply.refusal === "PHONE_MISSING") {
+      setPhoneDigits("");
+      setPhoneStep("missing");
+    }
+    setError(reply.message);
+  }
+
+  // A same-name volunteer's call always carries exactly four digits.
+  const digitsMissing = () => Boolean(selected?.needsPhoneCheck) && phoneDigits.length !== 4;
+
   async function handleConfirm() {
-    if (!selected || saving) return;
+    if (!selected || saving || !code) return;
+    if (digitsMissing()) {
+      setPhoneStep("entry");
+      return;
+    }
     setError("");
-    const timestamp = centralTimeToIso(arrivalTime);
+    const timestamp = arrivalPicker ? centralTimeToIso(arrivalTime) : new Date().toISOString();
     if (new Date(timestamp).getTime() > Date.now() + 60_000) {
       setError("Your arrival time cannot be in the future. Please choose an earlier time.");
       return;
     }
     setSaving(true);
     try {
-      const next = checkIn(data, selected.id, timestamp);
-      const message = appreciationMessages[data.messageIndex % appreciationMessages.length];
-      next.messageIndex = data.messageIndex + 1;
-      await kioskStore.save(next);
-      setData(next);
-      setResult({ time: timestamp, message });
+      const reply = await api.checkIn(
+        code,
+        selected.id,
+        timestamp,
+        selected.needsPhoneCheck ? phoneDigits : null,
+      );
+      if (isRefusal(reply)) {
+        showRefusal(reply);
+        return;
+      }
+      setResult({ time: reply.arrivedAt, message: nextMessage() });
       setScreen("success-in");
     } catch {
       setError(
@@ -828,25 +1094,33 @@ export default function App() {
       );
     } finally {
       setSaving(false);
+      refreshList();
     }
   }
 
   async function handleCheckout() {
-    if (!selected || saving) return;
+    if (!selected || saving || !code) return;
+    if (digitsMissing()) {
+      setPhoneStep("entry");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      const timestamp = new Date().toISOString();
-      const completed = checkOut(data, selected.id, timestamp);
-      const message = appreciationMessages[data.messageIndex % appreciationMessages.length];
-      completed.data.messageIndex = data.messageIndex + 1;
-      await kioskStore.save(completed.data);
-      setData(completed.data);
+      const reply = await api.checkOut(
+        code,
+        selected.id,
+        selected.needsPhoneCheck ? phoneDigits : null,
+      );
+      if (isRefusal(reply)) {
+        showRefusal(reply);
+        return;
+      }
       setResult({
-        time: timestamp,
-        duration: completed.duration,
-        milestone: completed.earned,
-        message,
+        time: reply.signedOutAt,
+        duration: reply.minutes,
+        milestone: reply.milestone,
+        message: nextMessage(),
       });
       setScreen("success-out");
     } catch {
@@ -855,33 +1129,48 @@ export default function App() {
       );
     } finally {
       setSaving(false);
+      refreshList();
     }
   }
 
+  const phoneProps = {
+    phoneStep,
+    phoneDigits,
+    onPhoneDigitsChange: setPhoneDigits,
+    onPhoneContinue: () => {
+      if (phoneDigits.length !== 4) return;
+      closeTabletKeyboard();
+      setError("");
+      setPhoneStep(null);
+    },
+  };
+
   return (
-    <div className={`app-shell screen-${screen}`}>
-      {screen === "welcome" && (
+    <div className={`app-shell screen-${code ? screen : "welcome"}`}>
+      {!code && (
         <>
           <Header />
-          <Welcome
-            volunteers={data.volunteers.filter((volunteer) => volunteer.active)}
-            onSelect={select}
-          />
+          <Setup saving={saving} error={setupError} onSave={handleSaveCode} />
         </>
       )}
-      {screen === "confirm" && selected && (
+      {code && screen === "welcome" && (
+        <>
+          <Header />
+          <Welcome volunteers={volunteers} listState={listState} onSelect={select} />
+        </>
+      )}
+      {code && screen === "confirm" && selected && (
         <Confirmation
           volunteer={selected}
           checkout={false}
           arrivalTime={arrivalTime}
-          duplicateName={
-            data.volunteers.filter(
-              (v) =>
-                v.active &&
-                v.firstName.toLowerCase() === selected.firstName.toLowerCase() &&
-                v.lastName.toLowerCase() === selected.lastName.toLowerCase(),
-            ).length > 1
-          }
+          arrivalPicker={arrivalPicker}
+          onOpenArrivalPicker={() => {
+            setError("");
+            setArrivalTime(latestQuarterHour());
+            setArrivalPicker(true);
+          }}
+          {...phoneProps}
           saving={saving}
           error={error}
           onArrivalTimeChange={setArrivalTime}
@@ -889,28 +1178,32 @@ export default function App() {
           onBack={goHome}
         />
       )}
-      {screen === "checkout" && selected && (
+      {code && screen === "checkout" && selected && (
         <Confirmation
           volunteer={selected}
           checkout
+          {...phoneProps}
           saving={saving}
           error={error}
           onConfirm={handleCheckout}
           onBack={goHome}
         />
       )}
-      {screen === "success-in" && selected && result && (
+      {code && screen === "success-in" && selected && result && (
         <Success type="in" volunteer={selected} result={result} onDone={goHome} />
       )}
-      {screen === "success-out" && selected && result && (
+      {code && screen === "success-out" && selected && result && (
         <Success type="out" volunteer={selected} result={result} onDone={goHome} />
       )}
-      <DevTools
-        onReset={() => {
-          setData(kioskStore.reset());
-          goHome();
-        }}
-      />
+      {usingLocalApi && (
+        <DevTools
+          onReset={() => {
+            localApi.reset();
+            goHome();
+            refreshList();
+          }}
+        />
+      )}
     </div>
   );
 }

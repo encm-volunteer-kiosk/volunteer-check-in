@@ -7,6 +7,12 @@ data/
 
 # ENCM brand files and onboarding PDF templates. Add specific images when the UI needs them.
 assets/
+# The kiosk's own images, imported by the front end.
+!/src/assets/
+
+# Build outputs: the single-file kiosk page and the copy doGet serves.
+dist-gas/
+apps-script/Index.html
 
 # clasp keeps credentials in ~/.clasprc.json; never copy them here.
 .clasprc.json
