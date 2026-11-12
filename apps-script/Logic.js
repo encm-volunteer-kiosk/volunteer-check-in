@@ -13,7 +13,7 @@
 // Constants
 
 function kioskTimeZone() {
-  return 'America/Chicago';
+  return "America/Chicago";
 }
 
 /** A Settings access code shorter than this, after normalizeCode, counts as not set. */
@@ -41,33 +41,33 @@ function profilesCacheMaxBytes() {
 
 function logHeaders() {
   return [
-    'Shift ID',
-    'Volunteer ID',
-    'First name',
-    'Last name',
-    'Date',
-    'Tapped in at',
-    'Arrived at',
-    'Signed out at',
-    'Hours',
-    'Status',
-    'Flag',
-    'Staff note',
+    "Shift ID",
+    "Volunteer ID",
+    "First name",
+    "Last name",
+    "Date",
+    "Tapped in at",
+    "Arrived at",
+    "Signed out at",
+    "Hours",
+    "Status",
+    "Flag",
+    "Staff note",
   ];
 }
 
 /** Settings rows setupSheets creates when missing, as [name, default value]. */
 function settingsDefaults(todayDate) {
   const rows = [
-    ['Kiosk access code', ''],
-    ['Volunteer Profiles file ID', ''],
-    ['Volunteer Profiles tab', 'Volunteer Profiles'],
-    ['Kiosk launch date', todayDate],
-    ['Arrival flag minutes', String(defaultFlagMinutes())],
-    ['Profiles problems', ''],
+    ["Kiosk access code", ""],
+    ["Volunteer Profiles file ID", ""],
+    ["Volunteer Profiles tab", "Volunteer Profiles"],
+    ["Kiosk launch date", todayDate],
+    ["Arrival flag minutes", String(defaultFlagMinutes())],
+    ["Profiles problems", ""],
   ];
-  ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].forEach(
-    (day) => rows.push(['Closing time ' + day, '17:00']),
+  ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].forEach((day) =>
+    rows.push(["Closing time " + day, "17:00"]),
   );
   return rows;
 }
@@ -75,26 +75,26 @@ function settingsDefaults(todayDate) {
 /** Profiles headers the kiosk needs, after normalizeHeader. Email is never read. */
 function requiredProfileHeaders() {
   return {
-    firstName: 'volunteer first name',
-    lastName: 'volunteer last name',
-    token: 'onboarding token',
-    phone: 'volunteer phone',
-    startDate: 'start date mm/dd/yyyy',
+    firstName: "volunteer first name",
+    lastName: "volunteer last name",
+    token: "onboarding token",
+    phone: "volunteer phone",
+    startDate: "start date mm/dd/yyyy",
   };
 }
 
 function refusalMessages() {
   return {
-    ACCESS: 'This kiosk needs to be set up. Please ask a board member.',
+    ACCESS: "This kiosk needs to be set up. Please ask a board member.",
     NOT_FOUND: "We couldn't find your profile. Please see a board member.",
     ALREADY_IN: "You're already checked in today.",
     NOT_IN: "You're not checked in today.",
     ARRIVAL_FUTURE: "Your arrival time can't be in the future. Please choose an earlier time.",
-    ARRIVAL_OTHER_DAY: 'Please choose a time from today.',
-    PHONE_NEEDED: 'Please enter the last four digits of your phone number.',
+    ARRIVAL_OTHER_DAY: "Please choose a time from today.",
+    PHONE_NEEDED: "Please enter the last four digits of your phone number.",
     PHONE_WRONG: "Those digits don't match our records. Please try again or see a board member.",
-    PHONE_MISSING: 'We need to confirm who you are. Please see a board member.',
-    BUSY: 'The kiosk is busy. Please try again.',
+    PHONE_MISSING: "We need to confirm who you are. Please see a board member.",
+    BUSY: "The kiosk is busy. Please try again.",
   };
 }
 
@@ -102,42 +102,42 @@ function refusalMessages() {
 function milestones() {
   return [
     {
-      id: 'shift-1',
-      title: 'First completed shift',
-      message: 'Your first day making a difference. Welcome to the neighborhood!',
-      kind: 'shifts',
+      id: "shift-1",
+      title: "First completed shift",
+      message: "Your first day making a difference. Welcome to the neighborhood!",
+      kind: "shifts",
       threshold: 1,
       sinceLaunchOnly: true,
     },
     {
-      id: 'shift-10',
-      title: '10 shifts',
-      message: '10 shifts checked in here. Thank you for showing up for your neighbors!',
-      kind: 'shifts',
+      id: "shift-10",
+      title: "10 shifts",
+      message: "10 shifts checked in here. Thank you for showing up for your neighbors!",
+      kind: "shifts",
       threshold: 10,
       sinceLaunchOnly: false,
     },
     {
-      id: 'shift-25',
-      title: '25 shifts',
+      id: "shift-25",
+      title: "25 shifts",
       message: "25 shifts checked in here. That's something special.",
-      kind: 'shifts',
+      kind: "shifts",
       threshold: 25,
       sinceLaunchOnly: false,
     },
     {
-      id: 'hours-50',
-      title: '50 hours',
-      message: '50 hours logged here. 50 hours of care, kindness, and community.',
-      kind: 'hours',
+      id: "hours-50",
+      title: "50 hours",
+      message: "50 hours logged here. 50 hours of care, kindness, and community.",
+      kind: "hours",
       threshold: 50,
       sinceLaunchOnly: false,
     },
     {
-      id: 'hours-100',
-      title: '100 hours',
-      message: '100 hours logged here, making East Nashville stronger.',
-      kind: 'hours',
+      id: "hours-100",
+      title: "100 hours",
+      message: "100 hours logged here, making East Nashville stronger.",
+      kind: "hours",
       threshold: 100,
       sinceLaunchOnly: false,
     },
@@ -148,21 +148,23 @@ function milestones() {
 // Text
 
 function cellString(value) {
-  return value === null || value === undefined ? '' : String(value).trim();
+  return value === null || value === undefined ? "" : String(value).trim();
 }
 
 /** Newlines and runs of spaces become one space, trimmed, lower-cased. */
 function normalizeHeader(text) {
-  return cellString(text).replace(/\s+/g, ' ').toLowerCase();
+  return cellString(text).replace(/\s+/g, " ").toLowerCase();
 }
 
 function normalizeName(text) {
-  return cellString(text).replace(/\s+/g, ' ').toLowerCase();
+  return cellString(text).replace(/\s+/g, " ").toLowerCase();
 }
 
 /** Lower-case letters only, so a passphrase typed on the letter keyboard matches the sheet. */
 function normalizeCode(text) {
-  return cellString(text).toLowerCase().replace(/[^a-z]/g, '');
+  return cellString(text)
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
 }
 
 /**
@@ -171,7 +173,7 @@ function normalizeCode(text) {
  */
 function sheetText(text) {
   const s = cellString(text);
-  return s.charAt(0) === '=' ? "'" + s : s;
+  return s.charAt(0) === "=" ? "'" + s : s;
 }
 
 function utf8Length(text) {
@@ -185,9 +187,9 @@ function utf8Length(text) {
 
 /** Signed bytes, as Utilities.computeDigest returns them, to lowercase hex. */
 function bytesToHex(bytes) {
-  let hex = '';
+  let hex = "";
   for (let i = 0; i < bytes.length; i++) {
-    hex += ((bytes[i] + 256) % 256).toString(16).padStart(2, '0');
+    hex += ((bytes[i] + 256) % 256).toString(16).padStart(2, "0");
   }
   return hex;
 }
@@ -199,9 +201,9 @@ function idFromHash(hex) {
 
 /** Last four digits of a phone number, ignoring a trailing extension; empty if fewer than four. */
 function phoneLast4(text) {
-  const withoutExtension = cellString(text).replace(/\s*(?:ext\.?|x|#)\s*\d+\s*$/i, '');
-  const digits = withoutExtension.replace(/\D/g, '');
-  return digits.length >= 4 ? digits.slice(-4) : '';
+  const withoutExtension = cellString(text).replace(/\s*(?:ext\.?|x|#)\s*\d+\s*$/i, "");
+  const digits = withoutExtension.replace(/\D/g, "");
+  return digits.length >= 4 ? digits.slice(-4) : "";
 }
 
 /** Accepts yyyy-MM-dd and m/d/yyyy; returns yyyy-MM-dd, or empty for anything else. */
@@ -217,7 +219,7 @@ function parseStartDate(text) {
     day = Number(m[3]);
   } else {
     m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
-    if (!m) return '';
+    if (!m) return "";
     month = Number(m[1]);
     day = Number(m[2]);
     year = Number(m[3]);
@@ -228,9 +230,9 @@ function parseStartDate(text) {
     check.getUTCMonth() !== month - 1 ||
     check.getUTCDate() !== day
   ) {
-    return '';
+    return "";
   }
-  return year + '-' + String(month).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+  return year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
 }
 
 /**
@@ -247,14 +249,14 @@ function isRowToday(cellText, todayDate) {
 function parseFlagMinutes(text) {
   const s = cellString(text);
   const n = Number(s);
-  return s !== '' && isFinite(n) && n >= 0 ? n : defaultFlagMinutes();
+  return s !== "" && isFinite(n) && n >= 0 ? n : defaultFlagMinutes();
 }
 
 // ---------------------------------------------------------------------------
 // Volunteer Profiles
 
 function rowList(rowNumbers) {
-  return (rowNumbers.length === 1 ? 'row ' : 'rows ') + rowNumbers.join(', ');
+  return (rowNumbers.length === 1 ? "row " : "rows ") + rowNumbers.join(", ");
 }
 
 /**
@@ -283,13 +285,13 @@ function parseProfiles(headerRow, rows, hashFn) {
   rows.forEach((cells, i) => {
     const row = i + 2;
     const cell = (key) => cellString(cells[col[key]]);
-    const firstName = cell('firstName');
-    const lastName = cell('lastName');
+    const firstName = cell("firstName");
+    const lastName = cell("lastName");
     if (!firstName || !lastName) return;
-    const name = firstName + ' ' + lastName;
-    const token = cell('token');
+    const name = firstName + " " + lastName;
+    const token = cell("token");
     if (!token) {
-      problems.push({ row, text: 'row ' + row + ': ' + name + ' has no onboarding token' });
+      problems.push({ row, text: "row " + row + ": " + name + " has no onboarding token" });
       return;
     }
     candidates.push({
@@ -299,8 +301,8 @@ function parseProfiles(headerRow, rows, hashFn) {
         id: idFromHash(hashFn(token)),
         firstName,
         lastName,
-        phoneLast4: phoneLast4(cell('phone')),
-        startDate: parseStartDate(cell('startDate')),
+        phoneLast4: phoneLast4(cell("phone")),
+        startDate: parseStartDate(cell("startDate")),
         needsPhoneCheck: false,
       },
     });
@@ -321,7 +323,7 @@ function parseProfiles(headerRow, rows, hashFn) {
     const others = sharing.filter((o) => o !== c).map((o) => o.row);
     problems.push({
       row: c.row,
-      text: 'row ' + c.row + ': ' + c.name + ' has the same onboarding token as ' + rowList(others),
+      text: "row " + c.row + ": " + c.name + " has the same onboarding token as " + rowList(others),
     });
   });
 
@@ -352,18 +354,18 @@ function parseProfiles(headerRow, rows, hashFn) {
     if (!c.volunteer.phoneLast4) {
       problems.push({
         row: c.row,
-        text: 'row ' + c.row + ': ' + c.name + ' shares a name and has no usable phone number',
+        text: "row " + c.row + ": " + c.name + " shares a name and has no usable phone number",
       });
     } else if (clashes.has(c)) {
-      c.volunteer.phoneLast4 = '';
+      c.volunteer.phoneLast4 = "";
       problems.push({
         row: c.row,
         text:
-          'row ' +
+          "row " +
           c.row +
-          ': ' +
+          ": " +
           c.name +
-          ' shares a name and the last four phone digits with ' +
+          " shares a name and the last four phone digits with " +
           rowList(clashes.get(c)),
       });
     }
@@ -381,7 +383,7 @@ function findVolunteer(volunteers, id) {
 
 /** Same-name group key: normalized first and last name. */
 function volunteerNameKey(volunteer) {
-  return normalizeName(volunteer.firstName) + '|' + normalizeName(volunteer.lastName);
+  return normalizeName(volunteer.firstName) + "|" + normalizeName(volunteer.lastName);
 }
 
 /**
@@ -396,16 +398,15 @@ function volunteerNameKey(volunteer) {
  */
 function resolveVolunteer(volunteers, id, digits) {
   const tapped = findVolunteer(volunteers, id);
-  if (!tapped) return { refusal: 'NOT_FOUND' };
+  if (!tapped) return { refusal: "NOT_FOUND" };
   const phone = checkPhone(tapped, digits);
   if (!phone) return { volunteer: tapped };
-  if (phone !== 'PHONE_WRONG') return { refusal: phone };
+  if (phone !== "PHONE_WRONG") return { refusal: phone };
   const group = volunteerNameKey(tapped);
   const matches = volunteers.filter(
-    (v) =>
-      v.needsPhoneCheck && volunteerNameKey(v) === group && checkPhone(v, digits) === null,
+    (v) => v.needsPhoneCheck && volunteerNameKey(v) === group && checkPhone(v, digits) === null,
   );
-  return matches.length === 1 ? { volunteer: matches[0] } : { refusal: 'PHONE_WRONG' };
+  return matches.length === 1 ? { volunteer: matches[0] } : { refusal: "PHONE_WRONG" };
 }
 
 // ---------------------------------------------------------------------------
@@ -414,17 +415,17 @@ function resolveVolunteer(volunteers, id, digits) {
 /** null when the code matches a Settings code of at least minCodeLetters(), else 'ACCESS'. */
 function checkAccessCode(given, stored) {
   const expected = normalizeCode(stored);
-  if (expected.length < minCodeLetters()) return 'ACCESS';
-  return normalizeCode(given) === expected ? null : 'ACCESS';
+  if (expected.length < minCodeLetters()) return "ACCESS";
+  return normalizeCode(given) === expected ? null : "ACCESS";
 }
 
 /** null when no phone check is needed or the digits match, else a refusal code. */
 function checkPhone(volunteer, digits) {
   if (!volunteer.needsPhoneCheck) return null;
-  if (!volunteer.phoneLast4) return 'PHONE_MISSING';
-  const given = cellString(digits).replace(/\D/g, '');
-  if (!given) return 'PHONE_NEEDED';
-  return given === volunteer.phoneLast4 ? null : 'PHONE_WRONG';
+  if (!volunteer.phoneLast4) return "PHONE_MISSING";
+  const given = cellString(digits).replace(/\D/g, "");
+  if (!given) return "PHONE_NEEDED";
+  return given === volunteer.phoneLast4 ? null : "PHONE_WRONG";
 }
 
 /**
@@ -443,18 +444,18 @@ function arrivalMsFromIso(arrivalIso) {
  */
 function validateArrival(nowMs, arrivedMs, arrivedDate, todayDate) {
   if (arrivedMs === null) return { arrivedMs: nowMs };
-  if (typeof arrivedMs !== 'number' || !isFinite(arrivedMs)) return 'ARRIVAL_OTHER_DAY';
-  if (arrivedMs - nowMs > arrivalGraceMinutes() * 60000) return 'ARRIVAL_FUTURE';
+  if (typeof arrivedMs !== "number" || !isFinite(arrivedMs)) return "ARRIVAL_OTHER_DAY";
+  if (arrivedMs - nowMs > arrivalGraceMinutes() * 60000) return "ARRIVAL_FUTURE";
   if (arrivedMs > nowMs) return { arrivedMs: nowMs };
-  if (arrivedDate !== todayDate) return 'ARRIVAL_OTHER_DAY';
+  if (arrivedDate !== todayDate) return "ARRIVAL_OTHER_DAY";
   return { arrivedMs };
 }
 
 /** '' or 'arrival differs by N min', with N the rounded gap compared and printed alike. */
 function arrivalFlag(tappedMs, arrivedMs, thresholdMin) {
-  if (!isFinite(tappedMs) || !isFinite(arrivedMs)) return '';
+  if (!isFinite(tappedMs) || !isFinite(arrivedMs)) return "";
   const n = Math.round(Math.abs(tappedMs - arrivedMs) / 60000);
-  return n > thresholdMin ? 'arrival differs by ' + n + ' min' : '';
+  return n > thresholdMin ? "arrival differs by " + n + " min" : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -487,7 +488,7 @@ function milestoneCrossed(beforeShifts, beforeMinutes, addMinutes, startDate, la
   for (const m of milestones()) {
     if (m.sinceLaunchOnly && !(start && launch && start >= launch)) continue;
     const crossed =
-      m.kind === 'shifts'
+      m.kind === "shifts"
         ? beforeShifts < m.threshold && afterShifts >= m.threshold
         : beforeMinutes < m.threshold * 60 && afterMinutes >= m.threshold * 60;
     if (crossed) return { id: m.id, title: m.title, message: m.message };
@@ -515,7 +516,7 @@ function shiftStartMs(entry) {
 function findOpenShiftToday(entries, id, todayDate) {
   let found = null;
   entries.forEach((e) => {
-    if (e.id !== id || !isStatus(e, 'open') || !isRowToday(e.dateText, todayDate)) return;
+    if (e.id !== id || !isStatus(e, "open") || !isRowToday(e.dateText, todayDate)) return;
     if (!found || shiftStartMs(e) > shiftStartMs(found)) found = e;
   });
   return found;
@@ -526,7 +527,7 @@ function closedTotals(entries, id) {
   let shifts = 0;
   let minutes = 0;
   entries.forEach((e) => {
-    if (e.id !== id || !isStatus(e, 'closed')) return;
+    if (e.id !== id || !isStatus(e, "closed")) return;
     shifts += 1;
     minutes += minutesFromHours(e.hours);
   });
@@ -562,10 +563,10 @@ function decideCheckIn(input) {
   if (who.refusal) return { refusal: who.refusal };
   const volunteer = who.volunteer;
   if (findOpenShiftToday(input.entries, volunteer.id, input.todayDate)) {
-    return { refusal: 'ALREADY_IN' };
+    return { refusal: "ALREADY_IN" };
   }
   const arrival = validateArrival(input.nowMs, input.arrivedMs, input.arrivedDate, input.todayDate);
-  if (typeof arrival === 'string') return { refusal: arrival };
+  if (typeof arrival === "string") return { refusal: arrival };
   return {
     volunteer,
     arrivedMs: arrival.arrivedMs,
@@ -584,7 +585,7 @@ function decideCheckOut(input) {
   if (who.refusal) return { refusal: who.refusal };
   const volunteer = who.volunteer;
   const open = findOpenShiftToday(input.entries, volunteer.id, input.todayDate);
-  if (!open) return { refusal: 'NOT_IN' };
+  if (!open) return { refusal: "NOT_IN" };
   const hours = hoursBetween(shiftStartMs(open), input.nowMs);
   const minutes = minutesFromHours(hours);
   const before = closedTotals(input.entries, volunteer.id);
@@ -606,6 +607,6 @@ function decideCheckOut(input) {
 /** {ok: false, refusal, message} for a refusal code. */
 function refusal(code) {
   const message = refusalMessages()[code];
-  if (!message) throw new Error('Unknown refusal code: ' + code);
+  if (!message) throw new Error("Unknown refusal code: " + code);
   return { ok: false, refusal: code, message };
 }

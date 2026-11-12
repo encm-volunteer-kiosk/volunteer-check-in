@@ -7,9 +7,9 @@
  * them.
  */
 
-const LOG_TAB = 'Log';
-const SETTINGS_TAB = 'Settings';
-const DATE_TIME_FORMAT = 'yyyy-mm-dd h:mm am/pm';
+const LOG_TAB = "Log";
+const SETTINGS_TAB = "Settings";
+const DATE_TIME_FORMAT = "yyyy-mm-dd h:mm am/pm";
 
 // ---------------------------------------------------------------------------
 // Run by hand from the editor
@@ -24,7 +24,7 @@ const DATE_TIME_FORMAT = 'yyyy-mm-dd h:mm am/pm';
 function requireEditorRun_() {
   const active = Session.getActiveUser().getEmail();
   if (!active || active !== Session.getEffectiveUser().getEmail()) {
-    throw new Error('Run this from the Apps Script editor.');
+    throw new Error("Run this from the Apps Script editor.");
   }
 }
 
@@ -43,19 +43,19 @@ function setupSheets() {
   const log = ss.getSheetByName(LOG_TAB) || ss.insertSheet(LOG_TAB);
   const headers = logHeaders();
   const header = log.getRange(1, 1, 1, headers.length);
-  ['A:E', 'J:L'].forEach((a1) => log.getRange(a1).setNumberFormat('@'));
-  log.getRange('F:H').setNumberFormat(DATE_TIME_FORMAT);
-  log.getRange('I:I').setNumberFormat('0.00');
-  if (header.getValues()[0].every((v) => cellText_(v) === '')) {
+  ["A:E", "J:L"].forEach((a1) => log.getRange(a1).setNumberFormat("@"));
+  log.getRange("F:H").setNumberFormat(DATE_TIME_FORMAT);
+  log.getRange("I:I").setNumberFormat("0.00");
+  if (header.getValues()[0].every((v) => cellText_(v) === "")) {
     header.setValues([headers]);
   }
   log.setFrozenRows(1);
 
   const settings = ss.getSheetByName(SETTINGS_TAB) || ss.insertSheet(SETTINGS_TAB);
-  settings.getRange('A:B').setNumberFormat('@');
+  settings.getRange("A:B").setNumberFormat("@");
   const settingsHeader = settings.getRange(1, 1, 1, 2);
-  if (settingsHeader.getValues()[0].every((v) => cellText_(v) === '')) {
-    settingsHeader.setValues([['Setting', 'Value']]);
+  if (settingsHeader.getValues()[0].every((v) => cellText_(v) === "")) {
+    settingsHeader.setValues([["Setting", "Value"]]);
   }
   settings.setFrozenRows(1);
   const existing = readSettings_();
@@ -74,25 +74,25 @@ function setupSheets() {
  */
 function setupSampleProfiles() {
   requireEditorRun_();
-  if (readSettings_()['Volunteer Profiles file ID']) {
-    Logger.log('Settings already names a Volunteer Profiles file; nothing done.');
+  if (readSettings_()["Volunteer Profiles file ID"]) {
+    Logger.log("Settings already names a Volunteer Profiles file; nothing done.");
     return;
   }
   const rows = sampleProfileRows_();
-  const file = SpreadsheetApp.create('Volunteer Profiles (sample)');
+  const file = SpreadsheetApp.create("Volunteer Profiles (sample)");
   const sheet = file.getSheets()[0];
-  sheet.setName('Volunteer Profiles');
+  sheet.setName("Volunteer Profiles");
   sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
   sheet.setFrozenRows(1);
-  setSetting_('Volunteer Profiles file ID', file.getId());
-  Logger.log('Created ' + file.getUrl());
+  setSetting_("Volunteer Profiles file ID", file.getId());
+  Logger.log("Created " + file.getUrl());
 }
 
 // ---------------------------------------------------------------------------
 // Cells and time
 
 function isDate_(value) {
-  return Object.prototype.toString.call(value) === '[object Date]';
+  return Object.prototype.toString.call(value) === "[object Date]";
 }
 
 /** A cell as text: a Date as its Central yyyy-MM-dd, anything else trimmed. */
@@ -109,7 +109,7 @@ function cellMs_(value) {
 }
 
 function centralDate_(date) {
-  return Utilities.formatDate(date, kioskTimeZone(), 'yyyy-MM-dd');
+  return Utilities.formatDate(date, kioskTimeZone(), "yyyy-MM-dd");
 }
 
 function sha256Hex_(text) {
@@ -153,9 +153,9 @@ function setSetting_(name, value) {
   }
   if (!row) {
     row = sheet.getLastRow() + 1;
-    sheet.getRange(row, 1).setNumberFormat('@').setValue(name);
+    sheet.getRange(row, 1).setNumberFormat("@").setValue(name);
   }
-  sheet.getRange(row, 2).setNumberFormat('@').setValue(value);
+  sheet.getRange(row, 2).setNumberFormat("@").setValue(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,12 +167,12 @@ function setSetting_(name, value) {
  * rewrites the Settings "Profiles problems" value. Never writes to Profiles.
  */
 function getProfiles_(settings) {
-  const fileId = settings['Volunteer Profiles file ID'];
-  const tabName = settings['Volunteer Profiles tab'] || 'Volunteer Profiles';
+  const fileId = settings["Volunteer Profiles file ID"];
+  const tabName = settings["Volunteer Profiles tab"] || "Volunteer Profiles";
   if (!fileId) throw new Error('The Settings value "Volunteer Profiles file ID" is empty.');
 
   const cache = CacheService.getScriptCache();
-  const key = 'profiles:' + fileId + ':' + tabName;
+  const key = "profiles:" + fileId + ":" + tabName;
   const hit = cache.get(key);
   if (hit) return JSON.parse(hit);
 
@@ -184,9 +184,9 @@ function getProfiles_(settings) {
     .map((row) => row.map(cellText_));
   const parsed = parseProfiles(values[0] || [], values.slice(1), sha256Hex_);
 
-  const problems = parsed.problems.map((p) => p.text).join('\n');
-  if (problems !== (settings['Profiles problems'] || '')) {
-    setSetting_('Profiles problems', problems);
+  const problems = parsed.problems.map((p) => p.text).join("\n");
+  if (problems !== (settings["Profiles problems"] || "")) {
+    setSetting_("Profiles problems", problems);
   }
 
   const json = JSON.stringify(parsed.volunteers);
@@ -206,7 +206,7 @@ function logEntry_(cells, row) {
     dateText: cellText_(cells[4]),
     tappedMs: cellMs_(cells[5]),
     arrivedMs: cellMs_(cells[6]),
-    hours: cells[8] === '' ? NaN : Number(cells[8]),
+    hours: cells[8] === "" ? NaN : Number(cells[8]),
     status: cellText_(cells[9]),
   };
 }
@@ -247,7 +247,7 @@ function writeCheckIn_(volunteer, todayDate, tapped, arrived, flag) {
   const row = sheet.getLastRow() + 1;
   if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 50);
   const shiftId = Utilities.getUuid();
-  sheet.getRangeList(['A' + row + ':E' + row, 'J' + row + ':K' + row]).setNumberFormat('@');
+  sheet.getRangeList(["A" + row + ":E" + row, "J" + row + ":K" + row]).setNumberFormat("@");
   sheet.getRange(row, 6, 1, 2).setNumberFormat(DATE_TIME_FORMAT);
   sheet
     .getRange(row, 1, 1, 11)
@@ -260,9 +260,9 @@ function writeCheckIn_(volunteer, todayDate, tapped, arrived, flag) {
         todayDate,
         tapped,
         arrived,
-        '',
-        '',
-        'open',
+        "",
+        "",
+        "open",
         flag,
       ],
     ]);
@@ -273,6 +273,6 @@ function writeCheckIn_(volunteer, todayDate, tapped, arrived, flag) {
 function writeCheckOut_(row, signedOut, hours) {
   const sheet = sheet_(LOG_TAB);
   sheet.getRange(row, 8).setNumberFormat(DATE_TIME_FORMAT);
-  sheet.getRange(row, 10).setNumberFormat('@');
-  sheet.getRange(row, 8, 1, 3).setValues([[signedOut, hours, 'closed']]);
+  sheet.getRange(row, 10).setNumberFormat("@");
+  sheet.getRange(row, 8, 1, 3).setValues([[signedOut, hours, "closed"]]);
 }

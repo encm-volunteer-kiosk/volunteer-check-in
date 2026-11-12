@@ -11,9 +11,9 @@
 /** Serves the page shell, which holds no volunteer data. */
 function doGet() {
   // From a file, not a template: the bundled page can contain the "<?" scriptlet marker.
-  return HtmlService.createHtmlOutputFromFile('Index')
-    .setTitle('Volunteer Check-In')
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
+  return HtmlService.createHtmlOutputFromFile("Index")
+    .setTitle("Volunteer Check-In")
+    .addMetaTag("viewport", "width=device-width, initial-scale=1")
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
 }
 
@@ -62,8 +62,8 @@ function apiCheckIn(code, id, arrivalIso, digits) {
       todayDate: today,
       nowMs: now.getTime(),
       arrivedMs,
-      arrivedDate: Number.isFinite(arrivedMs) ? centralDate_(new Date(arrivedMs)) : '',
-      flagMinutes: parseFlagMinutes(settings['Arrival flag minutes']),
+      arrivedDate: Number.isFinite(arrivedMs) ? centralDate_(new Date(arrivedMs)) : "",
+      flagMinutes: parseFlagMinutes(settings["Arrival flag minutes"]),
     });
     if (decision.refusal) return refusal(decision.refusal);
     const arrived = new Date(decision.arrivedMs);
@@ -96,7 +96,7 @@ function apiCheckOut(code, id, digits) {
       entries: readLog_(),
       todayDate: centralDate_(now),
       nowMs: now.getTime(),
-      launchDate: settings['Kiosk launch date'],
+      launchDate: settings["Kiosk launch date"],
     });
     if (decision.refusal) return refusal(decision.refusal);
     writeCheckOut_(decision.row, now, decision.hours);
@@ -117,15 +117,15 @@ function apiCheckOut(code, id, digits) {
  * the link lock the real tablet out.
  */
 function accessRefusal_(code) {
-  if (!checkAccessCode(code, readSettings_()['Kiosk access code'])) return null;
+  if (!checkAccessCode(code, readSettings_()["Kiosk access code"])) return null;
   Utilities.sleep(1000);
-  return refusal('ACCESS');
+  return refusal("ACCESS");
 }
 
 /** Runs fn under the script lock, or returns BUSY if the lock isn't free within 10 seconds. */
 function withLock_(fn) {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(10000)) return refusal('BUSY');
+  if (!lock.tryLock(10000)) return refusal("BUSY");
   try {
     return fn();
   } finally {
