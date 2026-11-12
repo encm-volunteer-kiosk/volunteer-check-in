@@ -407,7 +407,7 @@ function CheckedInSidebar({ volunteers, onSelect }: {
     .sort((a, b) => Date.parse(a.currentCheckIn!) - Date.parse(b.currentCheckIn!));
 
   return (
-    <>
+
       <aside className={`checkin-sidebar`}>
         <h2 className="checkin-sidebar-title">Checked In</h2>
         {checkedIn.length === 0 ? (
@@ -424,7 +424,6 @@ function CheckedInSidebar({ volunteers, onSelect }: {
         ))
         )}
       </aside>
-    </>
   );
 }
 
