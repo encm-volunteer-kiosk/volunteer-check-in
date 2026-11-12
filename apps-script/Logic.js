@@ -2333,12 +2333,19 @@ function hundredthsFormula(ref) {
  * Hidden N holds the month list: every month with a dated Log row up to the current month,
  * plus the current month, newest first, as reportMonths lists them.
  *
- * Where the live tab can differ from the frozen report: a time typed with no date counts
- * as a shift start here, while the report reads it as unreadable (this changes only which
- * name labels a volunteer with two rows on one date); a text hours cell is read with VALUE,
- * which reads a few texts Number doesn't, such as "50%" or "$5" (such rows are listed for
- * review); and TEXT and TODAY use the spreadsheet's time zone, where the report uses
- * Central.
+ * Where the live tab can differ from the frozen report (rows with odd hours are listed for
+ * review in the report, so the frozen record stays right):
+ * - A check-in time with no date, or on a date other than the row's Date, counts as a
+ *   shift start here, while the report reads it as unreadable. This changes only which
+ *   name labels a volunteer with two rows on one date.
+ * - A text hours cell is read with VALUE, which reads texts Number doesn't: "50%" and "$5",
+ *   but also date and time text, so "1/2" counts as about 46,000 hours and "2:30" as 0.10
+ *   here, and 0 in the report.
+ * - An hours cell holding a date value counts as its serial number here; Apps Script reads
+ *   it as a Date, and the report counts 0.
+ * - The table's SORT and TRIM can order and space names differently from labelOrder and
+ *   cellString.
+ * - TEXT and TODAY use the spreadsheet's time zone, where the report uses Central.
  */
 function monthlyHoursFormulas(cols, logTab) {
   const H = logHeaderNames();
