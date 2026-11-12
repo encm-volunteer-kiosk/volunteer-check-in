@@ -401,7 +401,11 @@ function CheckedInSidebar({ volunteers, onSelect }: {
   onSelect: (v: Volunteer) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const checkedIn = volunteers.filter(v => Boolean(v.currentCheckIn && isToday(v.currentCheckIn)));
+  const checkedIn = volunteers
+    .filter(v => Boolean(v.currentCheckIn && isToday(v.currentCheckIn)))
+    // Earliest check-in first. currentCheckIn is an ISO time string, so turn it into
+    // milliseconds to compare: a negative result puts a before b.
+    .sort((a, b) => Date.parse(a.currentCheckIn!) - Date.parse(b.currentCheckIn!));
 
   return (
     <>
