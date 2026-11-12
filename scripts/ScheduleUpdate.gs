@@ -14,7 +14,7 @@
  *   G (7) = Arrived at (never overwritten)
  *   H (8) = Signed out at (full date and time)
  *
- * After midnight, process the previous day's blank sign-outs.
+ * Process blank sign-outs for every arrival date before today.
  * Retry hourly so overnight finishes and three-hour fallbacks are not written early.
  */
 
@@ -32,9 +32,6 @@ const CONFIG = Object.freeze({
   LOG_CHECKOUT: 8,
 
   HEADER_ROWS: 1,
-
-  // -1 = previous day; 0 = current day
-  DAY_OFFSET: -1,
 
   FALLBACK_HOURS: 3,
 
@@ -61,7 +58,6 @@ function updateDailyCheckOuts() {
   let currentPhase = "INITIALIZATION";
   const counts = {
     shiftsRead: 0,
-    shiftsDayMatched: 0,
     usableShifts: 0,
     logRowsRead: 0,
     existingCheckout: 0,
@@ -107,7 +103,6 @@ function updateDailyCheckOuts() {
     startedAt: startedAt.toISOString(),
     logSheet: CONFIG.LOG_SHEET,
     shiftsSheet: CONFIG.SHIFTS_SHEET,
-    dayOffset: CONFIG.DAY_OFFSET,
     fallbackHours: CONFIG.FALLBACK_HOURS,
     dryRun: CONFIG.DRY_RUN,
     debugRows: CONFIG.DEBUG_ROWS,
@@ -146,13 +141,9 @@ function updateDailyCheckOuts() {
     const timezone = ss.getSpreadsheetTimeZone();
     const now = new Date();
     const today = Utilities.formatDate(now, timezone, "yyyy-MM-dd");
-    const targetDate = addDays(today, CONFIG.DAY_OFFSET);
     const weekdayNames = [
       "Sunday", "Monday", "Tuesday", "Wednesday",
       "Thursday", "Friday", "Saturday"
-    ];
-    const targetDay = weekdayNames[
-      new Date(targetDate + "T12:00:00Z").getUTCDay()
     ];
     const currentLocal = Utilities.formatDate(now, timezone, "yyyy-MM-dd HH:mm");
     log("INFO", "SHEETS_OPENED", {
@@ -164,13 +155,9 @@ function updateDailyCheckOuts() {
     });
     log("INFO", "PROCESSING_DATE", {
       today: today,
-      targetDate: targetDate,
-      targetDay: targetDay,
+      arrivalDateBefore: today,
       currentLocal: currentLocal,
-      dayOffset: CONFIG.DAY_OFFSET,
-      explanation: CONFIG.DAY_OFFSET === -1
-        ? "Running today processes yesterday's check-ins."
-        : "Processing based on configured DAY_OFFSET."
+      explanation: "Processing all earlier arrivals using each row's arrival date and weekday."
     });
 
     currentPhase = "READ_SHEETS";
@@ -233,8 +220,8 @@ function updateDailyCheckOuts() {
     });
     log("INFO", "COLUMN_VALIDATION_PASSED");
 
-    currentPhase = "COLLECT_DAY_SHIFTS";
-    const dayShifts = [];
+    currentPhase = "COLLECT_SHIFTS";
+    const availableShifts = [];
     for (let i = CONFIG.HEADER_ROWS; i < shifts.length; i++) {
       const shiftRow = i + 1;
       counts.shiftsRead++;
@@ -243,25 +230,14 @@ function updateDailyCheckOuts() {
       const scheduleText = shiftText[i][scheduleIdx];
       const startText = shiftText[i][startIdx];
       const finishText = shiftText[i][finishIdx];
-      let isTargetDay =
-        dayText === targetDay.toLowerCase() ||
-        dayText === targetDay.substring(0, 3).toLowerCase() ||
-        dayText === targetDate;
-      if (dayValue instanceof Date && !isNaN(dayValue.getTime())) {
-        const dateValue = Utilities.formatDate(dayValue, timezone, "yyyy-MM-dd");
-        isTargetDay = isTargetDay || dateValue === targetDate;
-      }
+      const dayDate = dayValue instanceof Date && !isNaN(dayValue.getTime())
+        ? Utilities.formatDate(dayValue, timezone, "yyyy-MM-dd")
+        : null;
       debug("SHIFT_ROW_READ", {
         shiftRow: shiftRow, dayRaw: describe(dayValue), dayDisplayed: dayText,
         scheduleDisplayed: scheduleText, startDisplayed: startText,
-        finishDisplayed: finishText,
-        targetDay: targetDay, isTargetDay: isTargetDay
+        finishDisplayed: finishText
       });
-      if (!isTargetDay) {
-        debug("SHIFT_SKIPPED", { shiftRow: shiftRow, reason: "DAY_NOT_MATCHED" });
-        continue;
-      }
-      counts.shiftsDayMatched++;
       const startMinutes = parseTime(startText);
       if (startMinutes === null) {
         log("WARN", "SHIFT_SKIPPED", {
@@ -278,36 +254,24 @@ function updateDailyCheckOuts() {
       }
       const overnight = finishMinutes <= startMinutes;
       const endMinutes = finishMinutes + (overnight ? 1440 : 0);
-      const finishDate = overnight ? addDays(targetDate, 1) : targetDate;
-      const scheduledFinish = finishDate + " " + formatMinutes(finishMinutes);
-      const checkout = Utilities.parseDate(
-        scheduledFinish, timezone, "yyyy-MM-dd HH:mm"
-      );
-      debug("SHIFT_MATCHED_DAY", {
-        shiftRow: shiftRow,
-        startMinutes: startMinutes,
-        finishMinutes: finishMinutes,
-        overnight: overnight,
-        scheduledFinish: scheduledFinish,
-        currentLocal: currentLocal,
-        isCompleted: checkout.getTime() <= now.getTime()
-      });
-      dayShifts.push({
+      availableShifts.push({
+        day: dayText,
+        date: dayDate,
         start: startMinutes,
         end: endMinutes,
-        checkout: checkout,
+        finishMinutes: finishMinutes,
+        overnight: overnight,
         shiftRow: shiftRow
       });
       counts.usableShifts++;
-      log("INFO", "DAY_SHIFT_ADDED", {
-        shiftRow: shiftRow, scheduledFinish: scheduledFinish,
+      log("INFO", "SHIFT_ADDED", {
+        shiftRow: shiftRow, day: dayText,
         startMinutes: startMinutes, endMinutes: endMinutes
       });
     }
     log("INFO", "SHIFT_COLLECTION_SUMMARY", {
       shiftsRead: counts.shiftsRead,
-      shiftsDayMatched: counts.shiftsDayMatched,
-      usableShifts: dayShifts.length
+      usableShifts: availableShifts.length
     });
 
     currentPhase = "PROCESS_LOG_ROWS";
@@ -341,11 +305,11 @@ function updateDailyCheckOuts() {
         continue;
       }
       const checkinDate = Utilities.formatDate(checkin, timezone, "yyyy-MM-dd");
-      if (checkinDate !== targetDate) {
+      if (checkinDate >= today) {
         counts.differentDate++;
         debug("LOG_ROW_SKIPPED", {
-          logRow: logRow, reason: "CHECKIN_DATE_NOT_TARGET_DATE",
-          checkInDate: checkinDate, targetDate: targetDate
+          logRow: logRow, reason: "CHECKIN_DATE_NOT_BEFORE_TODAY",
+          checkInDate: checkinDate, arrivalDateBefore: today
         });
         continue;
       }
@@ -359,10 +323,21 @@ function updateDailyCheckOuts() {
         });
         continue;
       }
-      const candidates = dayShifts.filter(shift => {
-        const inWindow = checkinMinutes >= shift.start && checkinMinutes < shift.end;
+      const checkinDay = weekdayNames[
+        new Date(checkinDate + "T12:00:00Z").getUTCDay()
+      ];
+      const candidates = availableShifts.filter(shift => {
+        const dayMatches =
+          shift.day === checkinDay.toLowerCase() ||
+          shift.day === checkinDay.substring(0, 3).toLowerCase() ||
+          shift.day === checkinDate ||
+          shift.date === checkinDate;
+        const inWindow = dayMatches &&
+          checkinMinutes >= shift.start && checkinMinutes < shift.end;
         debug("SHIFT_CANDIDATE_COMPARISON", {
           logRow: logRow, shiftRow: shift.shiftRow,
+          checkInDate: checkinDate, checkInDay: checkinDay,
+          shiftDay: shift.day, dayMatches: dayMatches,
           checkInTime: checkinTime, checkInMinutes: checkinMinutes,
           shiftStartMinutes: shift.start, shiftEndMinutes: shift.end,
           inWindow: inWindow
@@ -388,13 +363,23 @@ function updateDailyCheckOuts() {
         continue;
       }
       const matchedShift = uniqueShifts.size ? [...uniqueShifts.values()][0] : null;
-      const checkout = matchedShift
-        ? matchedShift.checkout
-        : new Date(checkin.getTime() + CONFIG.FALLBACK_HOURS * 60 * 60 * 1000);
+      let checkout;
+      if (matchedShift) {
+        const finishDate = matchedShift.overnight
+          ? addDays(checkinDate, 1)
+          : checkinDate;
+        checkout = Utilities.parseDate(
+          finishDate + " " + formatMinutes(matchedShift.finishMinutes),
+          timezone, "yyyy-MM-dd HH:mm"
+        );
+      } else {
+        checkout = new Date(checkin.getTime() + CONFIG.FALLBACK_HOURS * 60 * 60 * 1000);
+      }
       if (!matchedShift) {
         counts.fallbacks++;
         log("INFO", "FALLBACK_CHECKOUT_SELECTED", {
           logRow: logRow, reason: "NO_MATCHING_SHIFT",
+          checkInDate: checkinDate,
           checkInTime: checkinTime, fallbackHours: CONFIG.FALLBACK_HOURS,
           proposedCheckout: checkout.toISOString()
         });
@@ -410,6 +395,7 @@ function updateDailyCheckOuts() {
       counts.eligible++;
       log("INFO", "BEFORE_UPDATE", {
         logRow: logRow, matchedShiftRow: matchedShift ? matchedShift.shiftRow : null,
+        checkInDate: checkinDate, checkInDay: checkinDay,
         checkoutColumn: CONFIG.LOG_CHECKOUT,
         currentCheckout: describe(existingCheckout),
         proposedCheckout: Utilities.formatDate(
@@ -463,7 +449,7 @@ function updateDailyCheckOuts() {
       currentPhase = "PROCESS_LOG_ROWS";
     }
     log("INFO", "SUMMARY", {
-      targetDate: targetDate, targetDay: targetDay,
+      arrivalDateBefore: today,
       mode: CONFIG.DRY_RUN ? "DRY_RUN" : "LIVE",
       ...counts,
       skipped: counts.existingCheckout + counts.missingCheckIn +
@@ -516,6 +502,7 @@ function showSpreadsheetId() {
 function testCheckoutDiagnostics() {
   console.log("[SCHEDULE_CHECKOUT] DIAGNOSTIC_PREFLIGHT_START");
   const ss = getCheckoutSpreadsheet_();
+  const timezone = ss.getSpreadsheetTimeZone();
   [CONFIG.SHIFTS_SHEET, CONFIG.LOG_SHEET].forEach(name => {
     const sheet = ss.getSheetByName(name);
     if (!sheet) throw new Error("Missing worksheet: " + name);
@@ -524,8 +511,9 @@ function testCheckoutDiagnostics() {
         columns: sheet.getLastColumn() }));
   });
   console.log("[SCHEDULE_CHECKOUT] DIAGNOSTIC_PREFLIGHT_END " +
-    JSON.stringify({ spreadsheetId: ss.getId(), timezone: ss.getSpreadsheetTimeZone(),
-      dayOffset: CONFIG.DAY_OFFSET, dryRun: CONFIG.DRY_RUN }));
+    JSON.stringify({ spreadsheetId: ss.getId(), timezone: timezone,
+      arrivalDateBefore: Utilities.formatDate(new Date(), timezone, "yyyy-MM-dd"),
+      dryRun: CONFIG.DRY_RUN }));
 }
 
 
@@ -624,7 +612,7 @@ function formatMinutes(totalMinutes) {
 // ============================================
 
 /**
- * Run ONCE to replace this job's triggers with hourly previous-day retries.
+ * Run ONCE to replace this job's triggers with hourly past-date retries.
  */
 function createCheckoutTrigger() {
   const spreadsheet = getCheckoutSpreadsheet_();
@@ -651,7 +639,7 @@ function createCheckoutTrigger() {
   console.log("[SCHEDULE_CHECKOUT] TRIGGER_CREATED " + JSON.stringify({
     functionName: functionName,
     spreadsheetId: spreadsheet.getId(),
-    schedule: "hourly; previous-day arrivals only; wait until checkout is due",
+    schedule: "hourly; all arrivals before today; wait until checkout is due",
     timestamp: new Date().toISOString()
   }));
 }

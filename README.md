@@ -96,8 +96,11 @@ It uses the workbook's **Log** layout, not the older **2026-11 Log** tab:
 - Shifts B (2): **Shift Schedule**, a label such as Morning or Afternoon, not a time range.
 - Shifts D (4) / E (5): **Start** / **Finish**.
 
-After midnight in the spreadsheet's timezone, the job processes only the previous
-day's arrivals (`DAY_OFFSET: -1`). It ignores seconds when matching: an exact Start
+The job processes blank sign-outs for **all arrival dates before today** in the
+spreadsheet's timezone, including missed dates older than yesterday. Each row's
+**Arrived at** date supplies the weekday used to match Shifts and the calendar date
+of its calculated sign-out; the execution date and Log's separate Date column are
+not used for that calculation. It ignores seconds when matching: an exact Start
 match wins; otherwise the arrival must be at or after Start and before Finish.
 When windows overlap, the latest Start wins. Duplicate windows are harmless;
 conflicting Finishes with the same winning Start produce a warning and no update.
@@ -119,17 +122,17 @@ To install:
    `pnpm push`; for a clasp-managed project, include it in that project's synced root
    before pushing so a deployment does not remove it.
 2. Set `DRY_RUN: true`, run `testCheckoutDiagnostics`, then `updateDailyCheckOuts`.
-   Check the execution logs for the target date, proposed sign-outs, and warnings.
+   Check the execution logs for the arrival-date cutoff, proposed sign-outs, and warnings.
 3. Set `DRY_RUN: false` and run `createCheckoutTrigger` once, authorizing access.
    It replaces this job's triggers in that project with an hourly trigger. The old
    `createMidnightTrigger` installer name also installs these hourly retries.
 
-Hourly retries do not sign out today's volunteers: they retry yesterday's blanks
+Hourly retries do not sign out today's volunteers: they retry all past-date blanks
 after midnight so, for example, an unmatched 11:45 PM arrival is left alone at
 12:30 AM and receives a 2:45 AM sign-out on the first run at or after 2:45 AM.
 Apps Script time-based triggers are approximate, not exact-minute alarms.
-Rows older than yesterday are not backfilled automatically. No email or popup
-alert is sent; results and errors appear in the Apps Script execution logs.
+Old blank sign-outs are backfilled automatically using their original arrival dates.
+No email or popup alert is sent; results and errors appear in the Apps Script execution logs.
 
 Local regression tests mock Google services; production needs no Node dependencies:
 `node --test tests/schedule-update.test.mjs`.

@@ -322,7 +322,7 @@ test("reads numeric Sheets time values without parsing the schedule label", () =
   assert.equal(h.writes[0].value.toISOString(), "2026-11-12T21:00:00.000Z");
 });
 
-test("never overwrites existing sign-outs or modifies today's or older arrivals", () => {
+test("preserves existing sign-outs and today's arrivals while backfilling older blanks", () => {
   const h = harness({ rows: [
     logRow("2026-11-12T19:00:00Z", new Date("2026-11-12T20:00:00Z")),
     logRow("2026-11-13T06:01:00Z"),
@@ -331,10 +331,103 @@ test("never overwrites existing sign-outs or modifies today's or older arrivals"
     logRow("not a date"),
   ] });
   h.run();
-  assert.equal(h.writes.length, 0);
+  assert.equal(h.writes.length, 1);
+  assert.equal(h.writes[0].row, 4);
+  assert.equal(h.writes[0].column, 8);
+  assert.equal(h.writes[0].value.toISOString(), "2026-11-11T22:00:00.000Z");
   assert.equal(h.summary().existingCheckout, 1);
-  assert.equal(h.summary().differentDate, 2);
+  assert.equal(h.summary().differentDate, 1);
   assert.equal(h.summary().missingCheckIn, 2);
+});
+
+test("backfills multiple old dates using each arrival's weekday and original date", () => {
+  const h = harness({
+    rows: [
+      logRow("2026-11-10T13:15:00Z"),
+      logRow("2026-11-11T19:45:00Z"),
+      logRow("2026-11-12T19:45:00Z"),
+      logRow("2026-11-09T17:20:00Z"),
+    ],
+    shifts: [
+      ["Tuesday", "Morning", "Delivery", "6:30", "9:30"],
+      ["Wednesday", "Afternoon", "Operations", "12:00", "16:00"],
+      ...THURSDAY,
+      ["Monday", "Any", "Various", "", ""],
+    ],
+  });
+  h.run();
+  assert.deepEqual(h.writes.map(({ row, column, value }) => [
+    row, column, value.toISOString(),
+  ]), [
+    [2, 8, "2026-11-10T15:30:00.000Z"],
+    [3, 8, "2026-11-11T22:00:00.000Z"],
+    [4, 8, "2026-11-12T21:00:00.000Z"],
+    [5, 8, "2026-11-09T20:20:00.000Z"],
+  ]);
+  assert.equal(h.summary().updated, 4);
+  assert.equal(h.summary().fallbacks, 1);
+});
+
+test("backfills an old overnight shift using its arrival date across daylight saving", () => {
+  const h = harness({
+    rows: [logRow("2026-11-01T03:30:00Z")],
+    shifts: [["Saturday", "Evening", "Operations", "22:00", "02:00"]],
+  });
+  h.run();
+  assert.equal(h.writes[0].value.toISOString(), "2026-11-01T08:00:00.000Z");
+});
+
+test("backfills an old three-hour fallback across its original year boundary", () => {
+  const h = harness({
+    rows: [logRow("2026-01-01T05:45:00Z")], shifts: [],
+  });
+  h.run();
+  assert.equal(h.writes[0].value.toISOString(), "2026-01-01T08:45:00.000Z");
+});
+
+test("backfills abbreviated weekdays and date-specific shifts for older arrivals", () => {
+  const h = harness({
+    rows: [
+      logRow("2026-11-10T13:15:00Z"),
+      logRow("2026-11-11T19:45:00Z"),
+      logRow("2026-11-09T13:30:00Z"),
+    ],
+    shifts: [
+      ["Tue", "Morning", "Delivery", "6:30", "9:30"],
+      ["2026-11-11", "Afternoon", "Operations", "12:00", "16:00"],
+      [new Date("2026-11-09T06:00:00Z"), "Morning", "Operations", "7:00", "11:00"],
+    ],
+  });
+  h.run();
+  assert.deepEqual(h.writes.map(({ value }) => value.toISOString()), [
+    "2026-11-10T15:30:00.000Z",
+    "2026-11-11T22:00:00.000Z",
+    "2026-11-09T17:00:00.000Z",
+  ]);
+});
+
+test("backfilled sign-outs are preserved on subsequent runs", () => {
+  const h = harness({
+    rows: [logRow("2026-11-10T13:15:00Z"), logRow("2026-11-11T19:45:00Z")],
+    shifts: [],
+  });
+  h.run();
+  h.run();
+  assert.equal(h.writes.length, 2);
+  const summary = h.entries.filter((entry) => entry.event === "SUMMARY").at(-1).details;
+  assert.equal(summary.updated, 0);
+  assert.equal(summary.existingCheckout, 2);
+});
+
+test("excludes today's and future arrivals even when today's fallback is overdue", () => {
+  const h = harness({
+    rows: [logRow("2026-11-13T13:00:00Z"), logRow("2026-11-14T13:00:00Z")],
+    shifts: [],
+    now: "2026-11-13T20:00:00Z",
+  });
+  h.run();
+  assert.equal(h.writes.length, 0);
+  assert.equal(h.summary().differentDate, 2);
 });
 
 test("matches the arrival weekday, not the execution weekday", () => {
@@ -425,7 +518,7 @@ test("derives dates and weekdays dynamically across year and leap-month boundari
     });
     h.run();
     assert.equal(h.writes[0].value.toISOString(), expected);
-    assert.equal(h.summary().targetDate, expected.slice(0, 10));
+    assert.equal(h.summary().arrivalDateBefore, now.slice(0, 10));
   }
 });
 
@@ -460,7 +553,7 @@ test("a concurrent execution cannot write or release another execution's lock", 
   assert.equal(h.released(), false);
 });
 
-test("the trigger installer replaces only this job with hourly previous-day retries", () => {
+test("the trigger installer replaces only this job with hourly past-date retries", () => {
   const h = harness();
   h.install();
   assert.deepEqual(h.triggers, [{ handler: "updateDailyCheckOuts", hours: 1 }]);
