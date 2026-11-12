@@ -38,8 +38,11 @@ function apiListVolunteers(code) {
 }
 
 /**
- * Checks a volunteer in. digits is the phone's last four as a string, or null.
- * {ok: true, shiftId, arrivedAt, tappedAt} or a refusal.
+ * Checks a volunteer in. id is the list entry the volunteer tapped; digits is the
+ * phone's last four as a string, or null. In a same-name group the digits pick the
+ * member, so the volunteer checked in can be another member than the one tapped.
+ * {ok: true, id, shiftId, arrivedAt, tappedAt} or a refusal; id is the volunteer
+ * checked in.
  */
 function apiCheckIn(code, id, arrivalIso, digits) {
   const denied = accessRefusal_(code);
@@ -48,10 +51,10 @@ function apiCheckIn(code, id, arrivalIso, digits) {
     const now = new Date();
     const today = centralDate_(now);
     const settings = readSettings_();
-    const volunteer = findVolunteer(getProfiles_(settings), id);
     const arrivedMs = Date.parse(arrivalIso);
     const decision = decideCheckIn({
-      volunteer,
+      volunteers: getProfiles_(settings),
+      id,
       digits,
       entries: readTodayLog_(today),
       todayDate: today,
@@ -62,9 +65,10 @@ function apiCheckIn(code, id, arrivalIso, digits) {
     });
     if (decision.refusal) return refusal(decision.refusal);
     const arrived = new Date(decision.arrivedMs);
-    const shiftId = writeCheckIn_(volunteer, today, now, arrived, decision.flag);
+    const shiftId = writeCheckIn_(decision.volunteer, today, now, arrived, decision.flag);
     return {
       ok: true,
+      id: decision.volunteer.id,
       shiftId,
       arrivedAt: arrived.toISOString(),
       tappedAt: now.toISOString(),
@@ -73,9 +77,9 @@ function apiCheckIn(code, id, arrivalIso, digits) {
 }
 
 /**
- * Checks a volunteer out. digits is the phone's last four as a string, or null.
- * {ok: true, signedOutAt, minutes, milestone} or a refusal; milestone is
- * {id, title, message} or null.
+ * Checks a volunteer out. id and digits are as for apiCheckIn.
+ * {ok: true, id, signedOutAt, minutes, milestone} or a refusal; id is the volunteer
+ * checked out, and milestone is {id, title, message} or null.
  */
 function apiCheckOut(code, id, digits) {
   const denied = accessRefusal_(code);
@@ -84,7 +88,8 @@ function apiCheckOut(code, id, digits) {
     const now = new Date();
     const settings = readSettings_();
     const decision = decideCheckOut({
-      volunteer: findVolunteer(getProfiles_(settings), id),
+      volunteers: getProfiles_(settings),
+      id,
       digits,
       entries: readLog_(),
       todayDate: centralDate_(now),
@@ -95,6 +100,7 @@ function apiCheckOut(code, id, digits) {
     writeCheckOut_(decision.row, now, decision.hours);
     return {
       ok: true,
+      id: decision.volunteer.id,
       signedOutAt: now.toISOString(),
       minutes: decision.minutes,
       milestone: decision.milestone,

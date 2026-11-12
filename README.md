@@ -15,7 +15,8 @@ so hours can be credited to each volunteer and reported to grantmakers.
 - **Server**: Apps Script (`apps-script/`) bound to a Check-In Log spreadsheet with Log
   and Settings tabs. Each shift is one Log row.
 - **Names**: read from ENCM's existing Volunteer Profiles sheet. The kiosk never writes
-  to it. Volunteers who share a name confirm the last four digits of their phone.
+  to it. Volunteers who share a name confirm the last four digits of their phone, and the
+  digits decide which of them is signed in or out.
 - **Not built yet**: the nightly close of shifts nobody signed out of, and an Hours tab.
 
 Team design pages (private; ask Ethan for access):

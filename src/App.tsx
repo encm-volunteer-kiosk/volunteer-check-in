@@ -1059,6 +1059,12 @@ export default function App() {
     setError(reply.message);
   }
 
+  // In a same-name group the server picks the member by the digits, so the volunteer it
+  // acted on can be another entry than the one tapped. Screens after a success use that one.
+  function selectActedOn(id: string) {
+    if (volunteers.some((v) => v.id === id)) setSelectedId(id);
+  }
+
   // A same-name volunteer's call always carries exactly four digits.
   const digitsMissing = () => Boolean(selected?.needsPhoneCheck) && phoneDigits.length !== 4;
 
@@ -1086,6 +1092,7 @@ export default function App() {
         showRefusal(reply);
         return;
       }
+      selectActedOn(reply.id);
       setResult({ time: reply.arrivedAt, message: nextMessage() });
       setScreen("success-in");
     } catch {
@@ -1116,6 +1123,7 @@ export default function App() {
         showRefusal(reply);
         return;
       }
+      selectActedOn(reply.id);
       setResult({
         time: reply.signedOutAt,
         duration: reply.minutes,

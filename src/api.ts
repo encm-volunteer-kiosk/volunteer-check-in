@@ -25,8 +25,15 @@ export type VolunteerSummary = {
   needsPhoneCheck: boolean;
 };
 
-export type CheckInResult = { shiftId: string; arrivedAt: string; tappedAt: string };
-export type CheckOutResult = { signedOutAt: string; minutes: number; milestone: Milestone | null };
+// id is the volunteer the server acted on. In a same-name group the phone digits pick the
+// member, so it can differ from the entry the volunteer tapped.
+export type CheckInResult = { id: string; shiftId: string; arrivedAt: string; tappedAt: string };
+export type CheckOutResult = {
+  id: string;
+  signedOutAt: string;
+  minutes: number;
+  milestone: Milestone | null;
+};
 
 export interface KioskApi {
   checkAccess(code: string): Promise<true | Refusal>;
@@ -96,14 +103,14 @@ export const gasApi: KioskApi = {
   async checkIn(code, id, arrivalIso, phoneLast4) {
     const reply = await run((r) => r.apiCheckIn(code, id, arrivalIso, phoneLast4));
     if (!reply.ok) return refusalOf(reply);
-    const { shiftId, arrivedAt, tappedAt } = reply;
-    return { shiftId, arrivedAt, tappedAt } as CheckInResult;
+    const { id: actedOn, shiftId, arrivedAt, tappedAt } = reply;
+    return { id: actedOn, shiftId, arrivedAt, tappedAt } as CheckInResult;
   },
   async checkOut(code, id, phoneLast4) {
     const reply = await run((r) => r.apiCheckOut(code, id, phoneLast4));
     if (!reply.ok) return refusalOf(reply);
-    const { signedOutAt, minutes, milestone } = reply;
-    return { signedOutAt, minutes, milestone } as CheckOutResult;
+    const { id: actedOn, signedOutAt, minutes, milestone } = reply;
+    return { id: actedOn, signedOutAt, minutes, milestone } as CheckOutResult;
   },
 };
 
@@ -165,23 +172,31 @@ function localCodeOk(code: string) {
   return code.toLowerCase().replace(/[^a-z]/g, "").length >= localMinCodeLetters;
 }
 
-function localPhoneRefusal(data: KioskData, volunteer: Volunteer, digits: string | null) {
-  if (!sharesName(data, volunteer)) return null;
-  const onFile = localPhoneLast4[volunteer.id];
-  if (!onFile) return "PHONE_MISSING";
+// As on the server: in a same-name group the digits pick the member, so a volunteer who
+// tapped another member's entry is still the one checked in or out.
+function localResolve(
+  data: KioskData,
+  tapped: Volunteer,
+  digits: string | null,
+): Volunteer | string {
+  if (!sharesName(data, tapped)) return tapped;
+  if (!localPhoneLast4[tapped.id]) return "PHONE_MISSING";
   const given = (digits ?? "").replace(/\D/g, "");
   if (!given) return "PHONE_NEEDED";
-  return given === onFile ? null : "PHONE_WRONG";
+  const matches = data.volunteers.filter(
+    (v) => v.active && nameKey(v) === nameKey(tapped) && localPhoneLast4[v.id] === given,
+  );
+  return matches.length === 1 ? matches[0] : "PHONE_WRONG";
 }
 
-/** The volunteer and the refusal, if any, common to check-in and check-out. */
+/** The volunteer acted on, or the refusal, common to check-in and check-out. */
 function localLookup(code: string, id: string, digits: string | null) {
   if (!localCodeOk(code)) return { refusal: refuse("ACCESS") };
   const data = loadLocal();
-  const volunteer = data.volunteers.find((v) => v.id === id && v.active);
-  if (!volunteer) return { refusal: refuse("NOT_FOUND") };
-  const phone = localPhoneRefusal(data, volunteer, digits);
-  if (phone) return { refusal: refuse(phone) };
+  const tapped = data.volunteers.find((v) => v.id === id && v.active);
+  if (!tapped) return { refusal: refuse("NOT_FOUND") };
+  const volunteer = localResolve(data, tapped, digits);
+  if (typeof volunteer === "string") return { refusal: refuse(volunteer) };
   return { data, volunteer };
 }
 
@@ -213,10 +228,11 @@ export const localApi: KioskApi & { reset(): void } = {
     if (asked > now + localArrivalGraceMs) return refuse("ARRIVAL_FUTURE");
     const arrivedAt = new Date(Math.min(asked, now)).toISOString();
     if (!isToday(arrivedAt)) return refuse("ARRIVAL_OTHER_DAY");
-    const next = checkIn(data, id, arrivedAt);
+    const next = checkIn(data, volunteer.id, arrivedAt);
     await kioskStore.save(next);
     localData = next;
     return {
+      id: volunteer.id,
       shiftId: next.events[next.events.length - 1].shiftId,
       arrivedAt,
       tappedAt: new Date(now).toISOString(),
@@ -228,10 +244,15 @@ export const localApi: KioskApi & { reset(): void } = {
     const { data, volunteer } = found;
     if (!volunteer.currentCheckIn || !isToday(volunteer.currentCheckIn)) return refuse("NOT_IN");
     const signedOutAt = new Date().toISOString();
-    const completed = checkOut(data, id, signedOutAt);
+    const completed = checkOut(data, volunteer.id, signedOutAt);
     await kioskStore.save(completed.data);
     localData = completed.data;
-    return { signedOutAt, minutes: completed.duration, milestone: completed.earned };
+    return {
+      id: volunteer.id,
+      signedOutAt,
+      minutes: completed.duration,
+      milestone: completed.earned,
+    };
   },
   reset() {
     localData = withTwin(kioskStore.reset());

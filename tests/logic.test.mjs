@@ -623,12 +623,20 @@ test('volunteerSummaries gives only today\'s open arrival and no private fields'
   ]);
 });
 
-const VOL = { id: ID, phoneLast4: '0131', startDate: '2026-11-05', needsPhoneCheck: false };
+const VOL = {
+  id: ID,
+  firstName: 'Sam',
+  lastName: 'Lee',
+  phoneLast4: '0131',
+  startDate: '2026-11-05',
+  needsPhoneCheck: false,
+};
 const TWIN = { ...VOL, needsPhoneCheck: true };
 const checkIn = (fields) =>
   plain(
     L.decideCheckIn({
-      volunteer: VOL,
+      volunteers: [VOL],
+      id: ID,
       digits: null,
       entries: [],
       todayDate: TODAY,
@@ -641,10 +649,18 @@ const checkIn = (fields) =>
   );
 
 test('decideCheckIn accepts and flags', () => {
-  assert.deepEqual(checkIn({}), { arrivedMs: NOW - 20 * MIN, flag: 'arrival differs by 20 min' });
-  assert.deepEqual(checkIn({ arrivedMs: NOW - 5 * MIN }), { arrivedMs: NOW - 5 * MIN, flag: '' });
-  assert.deepEqual(checkIn({ arrivedMs: NOW + 3 * MIN }), { arrivedMs: NOW, flag: '' });
-  assert.deepEqual(checkIn({ volunteer: TWIN, digits: '0131' }).flag, 'arrival differs by 20 min');
+  assert.deepEqual(checkIn({}), {
+    volunteer: VOL,
+    arrivedMs: NOW - 20 * MIN,
+    flag: 'arrival differs by 20 min',
+  });
+  assert.deepEqual(checkIn({ arrivedMs: NOW - 5 * MIN }), {
+    volunteer: VOL,
+    arrivedMs: NOW - 5 * MIN,
+    flag: '',
+  });
+  assert.deepEqual(checkIn({ arrivedMs: NOW + 3 * MIN }), { volunteer: VOL, arrivedMs: NOW, flag: '' });
+  assert.deepEqual(checkIn({ volunteers: [TWIN], digits: '0131' }).flag, 'arrival differs by 20 min');
   // Yesterday's open row is left for the auto-close and doesn't block today.
   assert.deepEqual(checkIn({ entries: [entry(2, { dateText: '2026-11-11' })] }).flag, 'arrival differs by 20 min');
 });
@@ -652,15 +668,17 @@ test('decideCheckIn accepts and flags', () => {
 test('decideCheckIn refuses in order', () => {
   const open = [entry(2, {})];
   const late = { arrivedMs: NOW + HOUR };
-  assert.deepEqual(checkIn({ volunteer: null, entries: open, ...late }), { refusal: 'NOT_FOUND' });
-  assert.deepEqual(checkIn({ volunteer: { ...TWIN, phoneLast4: '' }, entries: open }), {
+  assert.deepEqual(checkIn({ id: 'zzzzzzzzzzzzzzzz', entries: open, ...late }), {
+    refusal: 'NOT_FOUND',
+  });
+  assert.deepEqual(checkIn({ volunteers: [{ ...TWIN, phoneLast4: '' }], entries: open }), {
     refusal: 'PHONE_MISSING',
   });
-  assert.deepEqual(checkIn({ volunteer: TWIN, entries: open }), { refusal: 'PHONE_NEEDED' });
-  assert.deepEqual(checkIn({ volunteer: TWIN, digits: '9999', entries: open }), {
+  assert.deepEqual(checkIn({ volunteers: [TWIN], entries: open }), { refusal: 'PHONE_NEEDED' });
+  assert.deepEqual(checkIn({ volunteers: [TWIN], digits: '9999', entries: open }), {
     refusal: 'PHONE_WRONG',
   });
-  assert.deepEqual(checkIn({ volunteer: TWIN, digits: '0131', entries: open, ...late }), {
+  assert.deepEqual(checkIn({ volunteers: [TWIN], digits: '0131', entries: open, ...late }), {
     refusal: 'ALREADY_IN',
   });
   assert.deepEqual(checkIn(late), { refusal: 'ARRIVAL_FUTURE' });
@@ -672,7 +690,8 @@ test('decideCheckIn refuses in order', () => {
 const checkOut = (fields) =>
   plain(
     L.decideCheckOut({
-      volunteer: VOL,
+      volunteers: [VOL],
+      id: ID,
       digits: null,
       entries: [entry(9, {})],
       todayDate: TODAY,
@@ -685,6 +704,7 @@ const checkOut = (fields) =>
 test('decideCheckOut closes today\'s open row and picks the milestone', () => {
   const first = checkOut({});
   assert.deepEqual(first, {
+    volunteer: VOL,
     row: 9,
     hours: 2,
     minutes: 120,
@@ -704,15 +724,102 @@ test('decideCheckOut closes today\'s open row and picks the milestone', () => {
 });
 
 test('decideCheckOut refuses in order', () => {
-  assert.deepEqual(checkOut({ volunteer: null }), { refusal: 'NOT_FOUND' });
-  assert.deepEqual(checkOut({ volunteer: TWIN }), { refusal: 'PHONE_NEEDED' });
-  assert.deepEqual(checkOut({ volunteer: TWIN, digits: '0000' }), { refusal: 'PHONE_WRONG' });
-  assert.deepEqual(checkOut({ volunteer: TWIN, digits: '0131' }).row, 9);
+  assert.deepEqual(checkOut({ id: 'zzzzzzzzzzzzzzzz' }), { refusal: 'NOT_FOUND' });
+  assert.deepEqual(checkOut({ volunteers: [TWIN] }), { refusal: 'PHONE_NEEDED' });
+  assert.deepEqual(checkOut({ volunteers: [TWIN], digits: '0000' }), { refusal: 'PHONE_WRONG' });
+  assert.deepEqual(checkOut({ volunteers: [TWIN], digits: '0131' }).row, 9);
   assert.deepEqual(checkOut({ entries: [] }), { refusal: 'NOT_IN' });
   assert.deepEqual(checkOut({ entries: [entry(9, { dateText: '2026-11-11' })] }), {
     refusal: 'NOT_IN',
   });
   assert.deepEqual(checkOut({ entries: [entry(9, { status: 'closed', hours: 1 })] }), {
+    refusal: 'NOT_IN',
+  });
+});
+
+// A same-name group as parseProfiles lists it: two Sam Lees told apart by their last
+// four, a third whose phone is unusable, and Ruth, who shares only the digits.
+const group = () =>
+  parse([
+    person('Sam', 'Lee', 'tok-1', '615-555-0131'),
+    person('Ruth', 'Okafor', 'tok-2', '615-555-0132'),
+    person(' sam ', 'LEE', 'tok-3', '615-555-0132'),
+    person('Sam', 'Lee', 'tok-4', ''),
+  ]).volunteers;
+
+test('resolveVolunteer acts on the tapped volunteer when the digits are theirs', () => {
+  const list = group();
+  assert.equal(L.resolveVolunteer(list, idOf('tok-1'), '0131').volunteer.id, idOf('tok-1'));
+  assert.equal(L.resolveVolunteer(list, idOf('tok-3'), '0132').volunteer.id, idOf('tok-3'));
+  // No phone check outside a group: any digits, or none, pass.
+  assert.equal(L.resolveVolunteer(list, idOf('tok-2'), null).volunteer.id, idOf('tok-2'));
+  assert.equal(L.resolveVolunteer(list, idOf('tok-2'), '0131').volunteer.id, idOf('tok-2'));
+  assert.deepEqual(plain(L.resolveVolunteer(list, 'zzzzzzzzzzzzzzzz', '0131')), {
+    refusal: 'NOT_FOUND',
+  });
+  assert.deepEqual(plain(L.resolveVolunteer(list, idOf('tok-1'), '')), {
+    refusal: 'PHONE_NEEDED',
+  });
+});
+
+test('resolveVolunteer: the wrong same-name entry with the right digits acts on the right person', () => {
+  const list = group();
+  assert.equal(L.resolveVolunteer(list, idOf('tok-1'), '0132').volunteer.id, idOf('tok-3'));
+  assert.equal(L.resolveVolunteer(list, idOf('tok-3'), '0131').volunteer.id, idOf('tok-1'));
+  // Ruth has 0132 too, but she isn't in the group.
+  assert.notEqual(L.resolveVolunteer(list, idOf('tok-1'), '0132').volunteer.id, idOf('tok-2'));
+});
+
+test('resolveVolunteer: digits matching nobody in the group are PHONE_WRONG', () => {
+  const list = group();
+  assert.deepEqual(plain(L.resolveVolunteer(list, idOf('tok-1'), '9999')), {
+    refusal: 'PHONE_WRONG',
+  });
+  // Ruth's digits don't reach across names: she isn't a Sam Lee.
+  const withoutThird = list.filter((v) => v.id !== idOf('tok-3'));
+  assert.deepEqual(plain(L.resolveVolunteer(withoutThird, idOf('tok-1'), '0132')), {
+    refusal: 'PHONE_WRONG',
+  });
+});
+
+test('resolveVolunteer: a member without usable digits is PHONE_MISSING and never matched', () => {
+  const list = group();
+  for (const digits of ['0131', '0132', '9999', null]) {
+    assert.deepEqual(plain(L.resolveVolunteer(list, idOf('tok-4'), digits)), {
+      refusal: 'PHONE_MISSING',
+    });
+  }
+  // Two members sharing a last four are both blanked: their digits match nobody.
+  const shared = parse([
+    person('Sam', 'Lee', 'tok-1', '615-555-0131'),
+    person('Sam', 'Lee', 'tok-2', '615-555-0135'),
+    person('Sam', 'Lee', 'tok-3', '615-555-0135'),
+  ]).volunteers;
+  assert.deepEqual(plain(L.resolveVolunteer(shared, idOf('tok-1'), '0135')), {
+    refusal: 'PHONE_WRONG',
+  });
+  assert.deepEqual(plain(L.resolveVolunteer(shared, idOf('tok-2'), '0135')), {
+    refusal: 'PHONE_MISSING',
+  });
+  assert.equal(L.resolveVolunteer(shared, idOf('tok-2'), '0131').refusal, 'PHONE_MISSING');
+});
+
+test('check-in and check-out act on the member the digits pick', () => {
+  const list = group();
+  const tapped = idOf('tok-1');
+  const right = idOf('tok-3');
+  const inDecision = checkIn({ volunteers: list, id: tapped, digits: '0132' });
+  assert.equal(inDecision.volunteer.id, right);
+  // The right member's open row is what counts for ALREADY_IN and NOT_IN.
+  const openRight = [entry(2, { id: right })];
+  assert.deepEqual(checkIn({ volunteers: list, id: tapped, digits: '0132', entries: openRight }), {
+    refusal: 'ALREADY_IN',
+  });
+  assert.equal(checkIn({ volunteers: list, id: tapped, digits: '0131', entries: openRight }).volunteer.id, tapped);
+  const outDecision = checkOut({ volunteers: list, id: tapped, digits: '0132', entries: openRight });
+  assert.equal(outDecision.volunteer.id, right);
+  assert.equal(outDecision.row, 2);
+  assert.deepEqual(checkOut({ volunteers: list, id: right, digits: '0131', entries: openRight }), {
     refusal: 'NOT_IN',
   });
 });

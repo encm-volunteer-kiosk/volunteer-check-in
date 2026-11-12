@@ -325,16 +325,15 @@ function parseProfiles(headerRow, rows, hashFn) {
     });
   });
 
-  const nameKey = (v) => normalizeName(v.firstName) + '|' + normalizeName(v.lastName);
   const nameCounts = new Map();
   listed.forEach((c) => {
-    const key = nameKey(c.volunteer);
+    const key = volunteerNameKey(c.volunteer);
     nameCounts.set(key, (nameCounts.get(key) || 0) + 1);
   });
   // Within a same-name group the last four must tell members apart. A member whose last
   // four matches another member's can't be confirmed by phone, so they are treated like
   // a member with no usable phone: listed, refused with PHONE_MISSING, and reported.
-  const twins = listed.filter((c) => nameCounts.get(nameKey(c.volunteer)) > 1);
+  const twins = listed.filter((c) => nameCounts.get(volunteerNameKey(c.volunteer)) > 1);
   const clashes = new Map();
   twins.forEach((c) => {
     const rows = twins
@@ -343,7 +342,7 @@ function parseProfiles(headerRow, rows, hashFn) {
           o !== c &&
           c.volunteer.phoneLast4 &&
           o.volunteer.phoneLast4 === c.volunteer.phoneLast4 &&
-          nameKey(o.volunteer) === nameKey(c.volunteer),
+          volunteerNameKey(o.volunteer) === volunteerNameKey(c.volunteer),
       )
       .map((o) => o.row);
     if (rows.length) clashes.set(c, rows);
@@ -378,6 +377,35 @@ function findVolunteer(volunteers, id) {
   const wanted = cellString(id);
   if (!wanted) return null;
   return volunteers.find((v) => v.id === wanted) || null;
+}
+
+/** Same-name group key: normalized first and last name. */
+function volunteerNameKey(volunteer) {
+  return normalizeName(volunteer.firstName) + '|' + normalizeName(volunteer.lastName);
+}
+
+/**
+ * The volunteer a check-in or check-out acts on, as {volunteer}, or {refusal}.
+ *
+ * Members of a same-name group look alike in the list, so one of them can tap another's
+ * entry. Their digits then say who they are: when the digits don't match the tapped
+ * member, they are matched against every member of the group, and exactly one match is
+ * the volunteer acted on. A member whose phoneLast4 is blank (no usable phone, or a last
+ * four shared within the group) can't be matched, and tapping that member's entry gives
+ * PHONE_MISSING.
+ */
+function resolveVolunteer(volunteers, id, digits) {
+  const tapped = findVolunteer(volunteers, id);
+  if (!tapped) return { refusal: 'NOT_FOUND' };
+  const phone = checkPhone(tapped, digits);
+  if (!phone) return { volunteer: tapped };
+  if (phone !== 'PHONE_WRONG') return { refusal: phone };
+  const group = volunteerNameKey(tapped);
+  const matches = volunteers.filter(
+    (v) =>
+      v.needsPhoneCheck && volunteerNameKey(v) === group && checkPhone(v, digits) === null,
+  );
+  return matches.length === 1 ? { volunteer: matches[0] } : { refusal: 'PHONE_WRONG' };
 }
 
 // ---------------------------------------------------------------------------
@@ -515,40 +543,43 @@ function volunteerSummaries(volunteers, entries, todayDate) {
 
 /**
  * Checks a check-in in order: NOT_FOUND, phone, ALREADY_IN, ARRIVAL_FUTURE,
- * ARRIVAL_OTHER_DAY. Input: {volunteer (or null), digits, entries, todayDate, nowMs,
- * arrivedMs, arrivedDate, flagMinutes}. Returns {refusal} or {arrivedMs, flag}.
+ * ARRIVAL_OTHER_DAY. Input: {volunteers, id (the tapped entry), digits, entries,
+ * todayDate, nowMs, arrivedMs, arrivedDate, flagMinutes}. Returns {refusal} or
+ * {volunteer, arrivedMs, flag}; volunteer is the one resolveVolunteer found.
  */
 function decideCheckIn(input) {
-  if (!input.volunteer) return { refusal: 'NOT_FOUND' };
-  const phone = checkPhone(input.volunteer, input.digits);
-  if (phone) return { refusal: phone };
-  if (findOpenShiftToday(input.entries, input.volunteer.id, input.todayDate)) {
+  const who = resolveVolunteer(input.volunteers, input.id, input.digits);
+  if (who.refusal) return { refusal: who.refusal };
+  const volunteer = who.volunteer;
+  if (findOpenShiftToday(input.entries, volunteer.id, input.todayDate)) {
     return { refusal: 'ALREADY_IN' };
   }
   const arrival = validateArrival(input.nowMs, input.arrivedMs, input.arrivedDate, input.todayDate);
   if (typeof arrival === 'string') return { refusal: arrival };
   return {
+    volunteer,
     arrivedMs: arrival.arrivedMs,
     flag: arrivalFlag(input.nowMs, arrival.arrivedMs, input.flagMinutes),
   };
 }
 
 /**
- * Checks a check-out in order: NOT_FOUND, phone, NOT_IN. Input: {volunteer (or null),
- * digits, entries (the whole Log), todayDate, nowMs, launchDate}. Returns {refusal} or
- * {row, hours, minutes, milestone}, with the milestone counted from the closed rows
- * before this one.
+ * Checks a check-out in order: NOT_FOUND, phone, NOT_IN. Input: {volunteers, id (the
+ * tapped entry), digits, entries (the whole Log), todayDate, nowMs, launchDate}. Returns
+ * {refusal} or {volunteer, row, hours, minutes, milestone}, with volunteer the one
+ * resolveVolunteer found and the milestone counted from the closed rows before this one.
  */
 function decideCheckOut(input) {
-  if (!input.volunteer) return { refusal: 'NOT_FOUND' };
-  const phone = checkPhone(input.volunteer, input.digits);
-  if (phone) return { refusal: phone };
-  const open = findOpenShiftToday(input.entries, input.volunteer.id, input.todayDate);
+  const who = resolveVolunteer(input.volunteers, input.id, input.digits);
+  if (who.refusal) return { refusal: who.refusal };
+  const volunteer = who.volunteer;
+  const open = findOpenShiftToday(input.entries, volunteer.id, input.todayDate);
   if (!open) return { refusal: 'NOT_IN' };
   const hours = hoursBetween(shiftStartMs(open), input.nowMs);
   const minutes = minutesFromHours(hours);
-  const before = closedTotals(input.entries, input.volunteer.id);
+  const before = closedTotals(input.entries, volunteer.id);
   return {
+    volunteer,
     row: open.row,
     hours,
     minutes,
@@ -556,7 +587,7 @@ function decideCheckOut(input) {
       before.shifts,
       before.minutes,
       minutes,
-      input.volunteer.startDate,
+      volunteer.startDate,
       input.launchDate,
     ),
   };
