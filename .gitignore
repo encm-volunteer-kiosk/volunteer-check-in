@@ -1,0 +1,14 @@
+# Real ENCM volunteer data (names, DOB, addresses, emergency contacts). Never commit.
+data/
+*.xlsx
+*.csv
+# Invented sample data with the real column headers is the one exception.
+!sample-data/*.csv
+
+# ENCM brand files and onboarding PDF templates. Add specific images when the UI needs them.
+assets/
+
+# clasp keeps credentials in ~/.clasprc.json; never copy them here.
+.clasprc.json
+node_modules/
+.DS_Store

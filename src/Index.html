@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; }
+      input { font-size: 28px; padding: 16px; width: 100%; box-sizing: border-box; }
+    </style>
+  </head>
+  <body>
+    <!-- Placeholder. The real kiosk screens replace this. -->
+    <h1>Volunteer Check-In</h1>
+    <label for="name">Type your name</label>
+    <input id="name" autocomplete="off" autofocus>
+    <ul id="matches"></ul>
+    <script>
+      let names = [];
+      google.script.run.withSuccessHandler(list => { names = list; }).getNames();
+      document.getElementById('name').addEventListener('input', e => {
+        const q = e.target.value.trim().toLowerCase();
+        const ul = document.getElementById('matches');
+        ul.innerHTML = '';
+        if (q.length < 2) return;
+        names
+          .filter(n => (n.first + ' ' + n.last).toLowerCase().includes(q))
+          .slice(0, 8)
+          .forEach(n => {
+            const li = document.createElement('li');
+            li.textContent = n.first + ' ' + n.last;
+            ul.appendChild(li);
+          });
+      });
+    </script>
+  </body>
+</html>
