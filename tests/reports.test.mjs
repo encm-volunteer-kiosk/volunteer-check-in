@@ -966,3 +966,92 @@ test("filterViewRequests update views by title in place and add the rest", () =>
   });
   assert.equal(requests.length, 2, "a view with another title is never named");
 });
+
+// ---------------------------------------------------------------------------
+// What setupReports marks as its own
+
+test("each kind of report protection has its own marker, and no marker starts another", () => {
+  const p = plain(L.reportProtectionPrefixes());
+  assert.deepEqual(p, {
+    kioskColumn: "Kiosk column:",
+    monthlyHours: "Monthly Hours tab:",
+    reportTab: "Report tab:",
+  });
+  assert.ok(L.kioskWarnDescription().startsWith(p.kioskColumn));
+  assert.ok(L.monthlyHoursDescription().startsWith(p.monthlyHours));
+  assert.ok(L.reportTabDescription().startsWith(p.reportTab));
+  const all = Object.values(p);
+  for (const a of all) {
+    for (const b of all) if (a !== b) assert.ok(!a.startsWith(b), a + " / " + b);
+  }
+  // A report tab's description is never taken for one setupReports keeps up.
+  assert.ok(!L.reportTabDescription().startsWith(p.kioskColumn));
+  assert.ok(!L.reportTabDescription().startsWith(p.monthlyHours));
+  assert.equal(L.monthlyHoursTabName(), "Monthly Hours");
+});
+
+test("ownedProtectionPlan keeps its own, removes stale and duplicate own ones, adds missing, and names nothing else", () => {
+  const own = L.kioskWarnDescription();
+  const existing = [
+    { key: "A:A", description: own },
+    { key: "B:B", description: "Staff: payroll column" },
+    { key: "C:C", description: own }, // a column the map no longer names
+    { key: "A:A", description: own }, // a duplicate
+    { key: "D:D", description: "" },
+    { key: "E:E", description: L.reportTabDescription() },
+  ];
+  assert.deepEqual(plain(L.ownedProtectionPlan(["A:A", "D:D", "F:F"], existing, "Kiosk column:")), {
+    keep: [0],
+    remove: [2, 3],
+    add: ["D:D", "F:F"],
+  });
+  // A second run over what the first left changes nothing.
+  const after = [
+    { key: "A:A", description: own },
+    { key: "B:B", description: "Staff: payroll column" },
+    { key: "D:D", description: "" },
+    { key: "E:E", description: L.reportTabDescription() },
+    { key: "D:D", description: own },
+    { key: "F:F", description: own },
+  ];
+  assert.deepEqual(plain(L.ownedProtectionPlan(["A:A", "D:D", "F:F"], after, "Kiosk column:")), {
+    keep: [0, 4, 5],
+    remove: [],
+    add: [],
+  });
+  // The Monthly Hours tab: one sheet protection of its own, the report tab's left alone.
+  const sheetLevel = [
+    { key: "sheet", description: L.monthlyHoursDescription() },
+    { key: "sheet", description: L.monthlyHoursDescription() },
+    { key: "sheet", description: L.reportTabDescription() },
+  ];
+  assert.deepEqual(plain(L.ownedProtectionPlan(["sheet"], sheetLevel, "Monthly Hours tab:")), {
+    keep: [0],
+    remove: [1],
+    add: [],
+  });
+  assert.deepEqual(plain(L.ownedProtectionPlan(["sheet"], [], "Monthly Hours tab:")), {
+    keep: [],
+    remove: [],
+    add: ["sheet"],
+  });
+});
+
+test("pickerMonth keeps a yyyy-MM text month and otherwise shows the current month", () => {
+  assert.equal(L.pickerMonth("2026-09", "2026-11-12"), "2026-09");
+  assert.equal(L.pickerMonth(" 2025-12 ", "2026-11-12"), "2025-12");
+  for (const bad of ["", "2026-11-01", "2026-13", "2026-00", "Nov 2026", "2026-1"]) {
+    assert.equal(L.pickerMonth(bad, "2026-11-12"), "2026-11", bad);
+  }
+});
+
+test("setupReportsMessage gives the counts and says to rerun after a Log column moves", () => {
+  const text = L.setupReportsMessage({
+    views: { added: 0, updated: 7 },
+    warnings: { kept: 14, added: 0, removed: 0 },
+  });
+  assert.match(text, /Filter views: 7 updated, 0 added\./);
+  assert.match(text, /Kiosk column warnings: 14 kept, 0 added, 0 removed\./);
+  assert.match(text, /inserted, deleted or moved/);
+  assert.match(text, /until setupReports runs again/);
+});

@@ -1,0 +1,192 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top" />
+    <meta charset="utf-8" />
+    <!--
+      The Monthly report dialog, served by openMonthlyReportDialog (Reports.js) as a
+      template. The server puts the dialog key into the body's data attribute; nothing else
+      on the page is filled in by the server. Plain HTML and JavaScript, no build step. The
+      server checks the month and the initials again.
+    -->
+    <style>
+      body {
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 14px;
+        color: #202124;
+        margin: 0;
+        padding: 4px 8px 12px;
+      }
+      label {
+        display: block;
+        font-weight: bold;
+        margin: 12px 0 4px;
+      }
+      .hint {
+        font-weight: normal;
+        color: #5f6368;
+      }
+      input,
+      select {
+        font: inherit;
+        box-sizing: border-box;
+        padding: 6px;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+      }
+      select {
+        width: 100%;
+      }
+      .initials {
+        width: 8em;
+        text-transform: uppercase;
+      }
+      .buttons {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 16px;
+      }
+      button {
+        font: inherit;
+        padding: 8px 16px;
+        border-radius: 4px;
+        border: 1px solid #dadce0;
+        background: #fff;
+        cursor: pointer;
+      }
+      button.primary {
+        background: #1a73e8;
+        border-color: #1a73e8;
+        color: #fff;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .message {
+        margin-top: 12px;
+        padding: 8px;
+        border-radius: 4px;
+        display: none;
+      }
+      .message.error {
+        display: block;
+        background: #fce8e6;
+        color: #a50e0e;
+      }
+      .message.ok {
+        display: block;
+        background: #e6f4ea;
+        color: #0d652d;
+      }
+      .message.info {
+        display: block;
+        background: #f1f3f4;
+      }
+      .links {
+        display: flex;
+        gap: 16px;
+        margin-top: 8px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body data-key="<?= key ?>">
+    <form id="form">
+      <label for="month">Month</label>
+      <select id="month" disabled></select>
+
+      <label for="initials">Your initials</label>
+      <input id="initials" class="initials" type="text" maxlength="10" autocomplete="off" />
+      <div class="hint">
+        The report is written to a new tab. It counts closed shifts with a User Token, using stated
+        hours.
+      </div>
+    </form>
+
+    <div id="message" class="message" role="status"></div>
+    <div id="links" class="links" hidden>
+      <a id="csv" target="_blank" rel="noopener">Download CSV</a>
+      <a id="pdf" target="_blank" rel="noopener">Download PDF</a>
+    </div>
+
+    <div class="buttons">
+      <button type="button" id="close">Close</button>
+      <button type="button" id="make" class="primary" disabled>Make report</button>
+    </div>
+
+    <script>
+      const KEY = document.body.dataset.key;
+      const $ = (id) => document.getElementById(id);
+      let busy = false;
+      let loaded = false;
+
+      function show(text, kind) {
+        const box = $("message");
+        box.textContent = text;
+        box.className = "message " + (text ? kind : "");
+      }
+
+      function setBusy(on) {
+        busy = on;
+        $("make").disabled = on || !loaded;
+      }
+
+      function call(name, args, onOk) {
+        setBusy(true);
+        google.script.run
+          .withSuccessHandler((reply) => {
+            setBusy(false);
+            if (reply && reply.ok) onOk(reply);
+            else
+              show((reply && reply.message) || "Something went wrong. Please try again.", "error");
+          })
+          .withFailureHandler((error) => {
+            setBusy(false);
+            show((error && error.message) || String(error), "error");
+          })
+          [name](KEY, ...args);
+      }
+
+      function load() {
+        show("Loading…", "info");
+        call("adminReportMonths", [], (reply) => {
+          const select = $("month");
+          reply.months.forEach((m) =>
+            select.add(new Option(m.label + " (" + m.month + ")", m.month)),
+          );
+          select.value = reply.defaultMonth;
+          select.disabled = false;
+          loaded = true;
+          setBusy(false);
+          show("", "");
+        });
+      }
+
+      function make() {
+        if (busy || !loaded) return;
+        const form = { month: $("month").value, initials: $("initials").value };
+        if (!form.month) return show("Please choose a month.", "error");
+        $("links").hidden = true;
+        show("Making the report…", "info");
+        call("adminMonthlyReport", [form], (reply) => {
+          show("Report written to the tab " + reply.tabName + ".", "ok");
+          $("csv").href = reply.csvUrl;
+          $("pdf").href = reply.pdfUrl;
+          $("links").hidden = false;
+        });
+      }
+
+      $("make").addEventListener("click", make);
+      $("close").addEventListener("click", () => google.script.host.close());
+      $("form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        make();
+      });
+      load();
+    </script>
+  </body>
+</html>
