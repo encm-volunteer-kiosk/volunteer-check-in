@@ -515,16 +515,15 @@ a frame from another Google address. With Safari's default privacy setting, Safa
 that frame's stored data only for the session, so the iPad forgets the access code
 whenever the page reloads. To make the iPad remember it:
 
-1. Open **Settings > Apps > Safari** and turn off **Prevent Cross-Site Tracking**. This
-   switch covers all of Safari on the iPad, so use an iPad kept for the kiosk.
+1. Open **Settings > Apps > Safari** (on iPadOS 17 and earlier, **Settings > Safari**)
+   and turn off **Prevent Cross-Site Tracking**. This switch covers all of Safari on the
+   iPad, so use an iPad kept for the kiosk.
 2. In Safari, use a normal tab, not a Private Browsing tab.
 3. Open the kiosk link and type the access code once.
 4. Reload the page. The kiosk should open without asking for the code again.
 
-Safari also clears a site's stored data after about seven days of Safari use with no
-visit to that site, so after a closure longer than a week the code may need typing
-again. These steps have not yet been tried on ENCM's iPad; check step 4 when you set it
-up.
+If the kiosk ever asks for the code again after a long closure, type it once more. These
+steps have not yet been tried on ENCM's iPad; check step 4 when you set it up.
 
 ### What setupSheets does
 
