@@ -15,11 +15,26 @@ const DATE_TIME_FORMAT = 'yyyy-mm-dd h:mm am/pm';
 // Run by hand from the editor
 
 /**
+ * Refuses a call that doesn't come from the script owner in the Apps Script editor.
+ * setupSheets and setupSampleProfiles have no trailing _ so the editor's Run menu lists
+ * them, which also lets the page call them through google.script.run without the access
+ * code. A web-app caller's active user is empty (anonymous) or not the account the script
+ * runs as; in the editor both are the owner.
+ */
+function requireEditorRun_() {
+  const active = Session.getActiveUser().getEmail();
+  if (!active || active !== Session.getEffectiveUser().getEmail()) {
+    throw new Error('Run this from the Apps Script editor.');
+  }
+}
+
+/**
  * Creates the Log and Settings tabs, the Log header, formats and any missing Settings
  * row. Never overwrites a non-empty cell or deletes a row, so running it twice changes
- * nothing.
+ * nothing. Runs only from the Apps Script editor.
  */
 function setupSheets() {
+  requireEditorRun_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   if (ss.getSpreadsheetTimeZone() !== kioskTimeZone()) {
     ss.setSpreadsheetTimeZone(kioskTimeZone());
@@ -54,9 +69,11 @@ function setupSheets() {
 
 /**
  * Development only: creates "Volunteer Profiles (sample)" from SampleData.js and points
- * Settings at it. Does nothing when Settings already names a Profiles file.
+ * Settings at it. Does nothing when Settings already names a Profiles file. Runs only
+ * from the Apps Script editor.
  */
 function setupSampleProfiles() {
+  requireEditorRun_();
   if (readSettings_()['Volunteer Profiles file ID']) {
     Logger.log('Settings already names a Volunteer Profiles file; nothing done.');
     return;
