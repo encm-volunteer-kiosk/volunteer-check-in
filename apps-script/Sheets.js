@@ -101,11 +101,15 @@ function cellText_(value) {
   return cellString(value);
 }
 
-/** A date-time cell as milliseconds, NaN when it isn't a readable time. */
-function cellMs_(value) {
-  if (isDate_(value)) return value.getTime();
-  const s = cellString(value);
-  return s ? Date.parse(s) : NaN;
+/**
+ * A date-time cell as {ms, date}: its milliseconds and its Central yyyy-MM-dd. ms is NaN
+ * and date empty when the cell isn't a readable time.
+ */
+function cellTime_(value) {
+  let ms = NaN;
+  if (isDate_(value)) ms = value.getTime();
+  else if (cellString(value)) ms = Date.parse(cellString(value));
+  return isFinite(ms) ? { ms, date: centralDate_(new Date(ms)) } : { ms: NaN, date: "" };
 }
 
 function centralDate_(date) {
@@ -162,9 +166,11 @@ function setSetting_(name, value) {
 // Volunteer Profiles
 
 /**
- * The kiosk list [{id, firstName, lastName, phoneLast4, startDate, needsPhoneCheck}],
- * from the cache when it holds one. On a cache miss it reads Profiles in one call and
- * rewrites the Settings "Profiles problems" value. Never writes to Profiles.
+ * The kiosk list [{id, firstName, lastName, phoneLast4, startDate, needsPhoneCheck,
+ * token, row}], from the cache when it holds one. On a cache miss it reads Profiles in one
+ * call and rewrites the Settings "Profiles problems" value. Never writes to Profiles. The
+ * cache key carries profilesCacheVersion(), so a list cached in an older shape is never
+ * read.
  */
 function getProfiles_(settings) {
   const fileId = settings["Volunteer Profiles file ID"];
@@ -172,7 +178,7 @@ function getProfiles_(settings) {
   if (!fileId) throw new Error('The Settings value "Volunteer Profiles file ID" is empty.');
 
   const cache = CacheService.getScriptCache();
-  const key = "profiles:" + fileId + ":" + tabName;
+  const key = profilesCacheKey(fileId, tabName);
   const hit = cache.get(key);
   if (hit) return JSON.parse(hit);
 
@@ -199,36 +205,48 @@ function getProfiles_(settings) {
 // ---------------------------------------------------------------------------
 // Log
 
-function logEntry_(cells, row) {
-  return {
-    row,
-    id: cellText_(cells[1]),
-    dateText: cellText_(cells[4]),
-    tappedMs: cellMs_(cells[5]),
-    arrivedMs: cellMs_(cells[6]),
-    hours: cells[8] === "" ? NaN : Number(cells[8]),
-    status: cellText_(cells[9]),
-  };
+/** The read functions logEntry (Logic.js) uses to turn cells into text and times. */
+function logRead_() {
+  return { text: cellText_, time: cellTime_ };
 }
 
-/** Every Log row as a log entry (Logic.js). */
-function readLog_() {
-  const sheet = sheet_(LOG_TAB);
-  const last = sheet.getLastRow();
-  if (last < 2) return [];
-  const values = sheet.getRange(2, 1, last - 1, logHeaders().length).getValues();
-  return values.map((cells, i) => logEntry_(cells, i + 2));
+/** The number format a Log column of this kind (logColumnKinds) gets. */
+function logFormat_(kind) {
+  if (kind === "time") return DATE_TIME_FORMAT;
+  if (kind === "hours") return "0.00";
+  return "@";
 }
 
 /**
- * Log rows dated today, in any row order. Reads the Date column, then only the block
- * of rows from the first to the last of today's.
+ * The Log's header map (logColumns, Logic.js), from row 1 read once. Throws when a
+ * column the kiosk needs is missing or repeated.
  */
-function readTodayLog_(todayDate) {
+function readLogColumns_() {
+  const sheet = sheet_(LOG_TAB);
+  const width = Math.max(sheet.getLastColumn(), 1);
+  return logColumns(sheet.getRange(1, 1, 1, width).getValues()[0].map(cellText_));
+}
+
+/** Every Log row as a log entry (Logic.js), read across the Log's full width. */
+function readLog_(cols) {
   const sheet = sheet_(LOG_TAB);
   const last = sheet.getLastRow();
   if (last < 2) return [];
-  const dates = sheet.getRange(2, 5, last - 1, 1).getValues();
+  const values = sheet.getRange(2, 1, last - 1, sheet.getLastColumn()).getValues();
+  const read = logRead_();
+  return values.map((cells, i) => logEntry(cells, i + 2, cols, read));
+}
+
+/**
+ * Log rows dated today, in any row order. Reads the Date column found by the header
+ * map, then only the block of rows from the first to the last of today's, across the
+ * full width.
+ */
+function readTodayLog_(todayDate, cols) {
+  const sheet = sheet_(LOG_TAB);
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  const dates = sheet.getRange(2, cols[logHeaderNames().date] + 1, last - 1, 1).getValues();
   const today = [];
   dates.forEach((cells, i) => {
     if (isRowToday(cellText_(cells[0]), todayDate)) today.push(i + 2);
@@ -236,43 +254,34 @@ function readTodayLog_(todayDate) {
   if (!today.length) return [];
   const first = today[0];
   const values = sheet
-    .getRange(first, 1, today[today.length - 1] - first + 1, logHeaders().length)
+    .getRange(first, 1, today[today.length - 1] - first + 1, sheet.getLastColumn())
     .getValues();
-  return today.map((row) => logEntry_(values[row - first], row));
+  const read = logRead_();
+  return today.map((row) => logEntry(values[row - first], row, cols, read));
 }
 
-/** Writes an open shift on the next empty Log row. Returns the shift ID. */
-function writeCheckIn_(volunteer, todayDate, tapped, arrived, flag) {
+/**
+ * Writes a cell map (Logic.js) on one row. Each cell gets its column's format before its
+ * value, in case staff reformatted the column; times go in as Dates. Columns the map
+ * doesn't name are left alone.
+ */
+function writeLogCells_(sheet, row, cells, cols) {
+  cellWrites(cells, cols).forEach((w) => {
+    const value = w.kind === "time" && w.value !== "" ? new Date(w.value) : w.value;
+    sheet.getRange(row, w.col).setNumberFormat(logFormat_(w.kind)).setValue(value);
+  });
+}
+
+/** Writes a new row (a cell map) on the next empty Log row. Returns the row number. */
+function appendLogRow_(cells, cols) {
   const sheet = sheet_(LOG_TAB);
   const row = sheet.getLastRow() + 1;
   if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 50);
-  const shiftId = Utilities.getUuid();
-  sheet.getRangeList(["A" + row + ":E" + row, "J" + row + ":K" + row]).setNumberFormat("@");
-  sheet.getRange(row, 6, 1, 2).setNumberFormat(DATE_TIME_FORMAT);
-  sheet
-    .getRange(row, 1, 1, 11)
-    .setValues([
-      [
-        shiftId,
-        volunteer.id,
-        sheetText(volunteer.firstName),
-        sheetText(volunteer.lastName),
-        todayDate,
-        tapped,
-        arrived,
-        "",
-        "",
-        "open",
-        flag,
-      ],
-    ]);
-  return shiftId;
+  writeLogCells_(sheet, row, cells, cols);
+  return row;
 }
 
-/** Closes a shift: Signed out at, Hours, Status closed. */
-function writeCheckOut_(row, signedOut, hours) {
-  const sheet = sheet_(LOG_TAB);
-  sheet.getRange(row, 8).setNumberFormat(DATE_TIME_FORMAT);
-  sheet.getRange(row, 10).setNumberFormat("@");
-  sheet.getRange(row, 8, 1, 3).setValues([[signedOut, hours, "closed"]]);
+/** Writes a cell map onto an existing Log row. */
+function updateLogRow_(row, cells, cols) {
+  writeLogCells_(sheet_(LOG_TAB), row, cells, cols);
 }
