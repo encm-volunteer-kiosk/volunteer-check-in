@@ -1,7 +1,7 @@
 // Tests for setupSheets (apps-script/Sheets.js) and the pure header helpers it uses in
 // apps-script/Logic.js. Logic.js and Sheets.js are loaded into one context the way Apps
-// Script loads them, with a small in-memory stand-in for SpreadsheetApp, so the real
-// setupSheets runs against it.
+// Script loads them, with a small in-memory stand-in for SpreadsheetApp and the advanced
+// Sheets service's filter views, so the real setupSheets runs against it.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -86,13 +86,23 @@ class FakeRange {
     }
     return this;
   }
+  setDataValidation(rule) {
+    this.sheet.validations.set(
+      this.row + "," + this.col + "," + this.rows + "," + this.cols,
+      JSON.stringify(rule),
+    );
+    return this;
+  }
 }
 
 class FakeSheet {
-  constructor(name, maxRows = 1000, maxCols = 26) {
+  constructor(name, maxRows = 1000, maxCols = 26, sheetId = 0) {
     this.name = name;
+    this.sheetId = sheetId;
     this.values = new Map();
     this.formats = new Map();
+    // Data validations by "row,col,rows,cols" of the range they were set on.
+    this.validations = new Map();
     this.maxRows = maxRows;
     this.maxCols = maxCols;
     this.frozen = 0;
@@ -110,6 +120,9 @@ class FakeSheet {
   }
   getName() {
     return this.name;
+  }
+  getSheetId() {
+    return this.sheetId;
   }
   setName(name) {
     this.name = name;
@@ -158,6 +171,7 @@ class FakeSheet {
       name: this.name,
       values: [...this.values.entries()].sort(),
       formats: [...this.formats.entries()].sort(),
+      validations: [...this.validations.entries()].sort(),
       maxCols: this.maxCols,
       frozen: this.frozen,
     };
@@ -168,13 +182,20 @@ class FakeSpreadsheet {
   constructor() {
     this.sheets = [];
     this.timeZone = "America/Chicago";
+    // Filter views by sheetId, as the advanced Sheets service holds them.
+    this.views = new Map();
+    this.nextSheetId = 100;
+    this.nextViewId = 1;
+  }
+  getId() {
+    return "file-1";
   }
   getSheetByName(name) {
     return this.sheets.find((s) => s.name === name) || null;
   }
   insertSheet(name) {
     assert.equal(this.getSheetByName(name), null, "a tab named " + name + " already exists");
-    const sheet = new FakeSheet(name);
+    const sheet = new FakeSheet(name, 1000, 26, this.nextSheetId++);
     this.sheets.push(sheet);
     return sheet;
   }
@@ -188,14 +209,67 @@ class FakeSpreadsheet {
     return this.sheets.map((s) => s.name);
   }
   snapshot() {
-    return { timeZone: this.timeZone, sheets: this.sheets.map((s) => s.snapshot()) };
+    return {
+      timeZone: this.timeZone,
+      sheets: this.sheets.map((s) => s.snapshot()),
+      views: [...this.views.entries()].sort(),
+    };
   }
 }
 
-/** A fresh context with Logic.js and Sheets.js loaded and SpreadsheetApp pointing at ss. */
-function server(ss) {
+/** The advanced Sheets service's filter-view calls, on ss.views. */
+function sheetsService(ss) {
+  return {
+    Spreadsheets: {
+      get: (id, params) => {
+        assert.equal(id, "file-1");
+        assert.match(params.fields, /filterViews\(filterViewId,title\)/);
+        return {
+          sheets: ss.sheets.map((s) => {
+            const out = { properties: { sheetId: s.sheetId } };
+            const views = ss.views.get(s.sheetId);
+            if (views && views.length) out.filterViews = plain(views);
+            return out;
+          }),
+        };
+      },
+      batchUpdate: (body, id) => {
+        assert.equal(id, "file-1");
+        for (const r of body.requests) {
+          if (r.addFilterView) {
+            const view = { ...plain(r.addFilterView.filter), filterViewId: ss.nextViewId++ };
+            const list = ss.views.get(view.range.sheetId) || [];
+            list.push(view);
+            ss.views.set(view.range.sheetId, list);
+          } else {
+            const { filterViewId, ...view } = plain(r.updateFilterView.filter);
+            assert.equal(r.updateFilterView.fields, "title,range,filterSpecs,sortSpecs");
+            const list = ss.views.get(view.range.sheetId) || [];
+            const i = list.findIndex((v) => v.filterViewId === filterViewId);
+            assert.ok(i >= 0, "updated view exists");
+            list[i] = { ...view, filterViewId };
+          }
+        }
+      },
+    },
+  };
+}
+
+/**
+ * A fresh context with Logic.js and Sheets.js loaded and SpreadsheetApp pointing at ss.
+ * opts.noSheetsService leaves the advanced Sheets service out, as when it is off.
+ */
+function server(ss, opts = {}) {
+  const checkbox = () => {
+    const rule = {};
+    const b = {
+      requireCheckbox: () => ((rule.checkbox = true), b),
+      build: () => rule,
+    };
+    return b;
+  };
   const ctx = {
-    SpreadsheetApp: { getActiveSpreadsheet: () => ss },
+    SpreadsheetApp: { getActiveSpreadsheet: () => ss, newDataValidation: checkbox },
     Session: {
       getActiveUser: () => ({ getEmail: () => OWNER }),
       getEffectiveUser: () => ({ getEmail: () => OWNER }),
@@ -207,6 +281,7 @@ function server(ss) {
       },
     },
   };
+  if (!opts.noSheetsService) ctx.Sheets = sheetsService(ss);
   vm.createContext(ctx);
   vm.runInContext(read("apps-script/Logic.js"), ctx);
   vm.runInContext(read("apps-script/Sheets.js"), ctx);
@@ -214,7 +289,7 @@ function server(ss) {
 }
 
 function sheetWith(ss, name, rows, maxCols = 26) {
-  const sheet = new FakeSheet(name, 1000, maxCols);
+  const sheet = new FakeSheet(name, 1000, maxCols, ss.nextSheetId++);
   rows.forEach((line, r) => line.forEach((v, c) => sheet.set(r + 1, c + 1, v)));
   ss.sheets.push(sheet);
   return sheet;
@@ -349,7 +424,7 @@ test("an old-layout Log is renamed and a new Log started; old rows are left as t
   const before = JSON.stringify(old.values ? [...old.values.entries()].sort() : null);
   const S = server(ss);
   S.setupSheets();
-  assert.deepEqual(ss.tabNames(), ["Log (old layout)", "Settings", "Log"]);
+  assert.deepEqual(ss.tabNames(), ["Log (old layout)", "Settings", "Log", "Flags"]);
   assert.equal(ss.getSheetByName("Log (old layout)"), old);
   assert.equal(JSON.stringify([...old.values.entries()].sort()), before);
   const log = ss.getSheetByName("Log");
@@ -455,4 +530,141 @@ test("setupSheets refuses a caller that isn't the script owner", () => {
   S.Session.getActiveUser = () => ({ getEmail: () => "" });
   assert.throws(() => S.setupSheets(), /Run this from the Apps Script editor/);
   assert.deepEqual(ss.tabNames(), []);
+});
+
+// ---------------------------------------------------------------------------
+// The Flags tab
+
+const FLAG_HEADERS = [
+  "Date",
+  "Volunteer Name",
+  "Shift ID",
+  "Reason",
+  "Raised At",
+  "Reviewed",
+  "Reviewed By",
+  "Notes",
+  "Source",
+  "Log Row",
+];
+const CHECKBOX = JSON.stringify({ checkbox: true });
+
+test("setupSheets makes the Flags tab: header, formats, checkbox, frozen row and view", () => {
+  const ss = new FakeSpreadsheet();
+  const S = server(ss);
+  S.setupSheets();
+  assert.deepEqual(ss.tabNames(), ["Log", "Settings", "Flags"]);
+  const flags = ss.getSheetByName("Flags");
+  assert.deepEqual(flags.row(1), FLAG_HEADERS);
+  assert.equal(flags.getLastRow(), 1);
+  assert.equal(flags.frozen, 1);
+  // The checkbox covers Reviewed (F) from row 2 to the tab's last row, and nothing else.
+  assert.deepEqual([...flags.validations.entries()], [["2,6,999,1", CHECKBOX]]);
+  const want = ["@", "@", "@", "@", TIME_FORMAT, undefined, "@", "@", "@", "0"];
+  want.forEach((format, i) => {
+    assert.equal(flags.format(2, i + 1), format, "format of " + FLAG_HEADERS[i]);
+    assert.equal(flags.format(1000, i + 1), format, "format of " + FLAG_HEADERS[i] + " to the end");
+  });
+  assert.deepEqual(plain(ss.views.get(flags.sheetId)), [
+    {
+      title: "Flags: Unreviewed",
+      range: { sheetId: flags.sheetId },
+      filterSpecs: [
+        {
+          columnIndex: 5,
+          filterCriteria: {
+            condition: {
+              type: "CUSTOM_FORMULA",
+              values: [{ userEnteredValue: '=AND(TRIM($C2) <> "", $F2 <> TRUE)' }],
+            },
+          },
+        },
+      ],
+      sortSpecs: [{ dimensionIndex: 4, sortOrder: "DESCENDING" }],
+      filterViewId: 1,
+    },
+  ]);
+  // No view goes on the Log.
+  assert.equal(ss.views.get(ss.getSheetByName("Log").sheetId), undefined);
+
+  const first = JSON.stringify(ss.snapshot());
+  S.setupSheets();
+  assert.equal(JSON.stringify(ss.snapshot()), first, "a second run changes nothing");
+  assert.equal(ss.views.get(flags.sheetId).length, 1);
+});
+
+test("the Flags view is updated in place by title; other views are left alone", () => {
+  const ss = new FakeSpreadsheet();
+  const flags = sheetWith(ss, "Flags", [FLAG_HEADERS]);
+  const staff = { title: "Mine", range: { sheetId: flags.sheetId }, filterViewId: 50 };
+  const kiosk = { title: "Kiosk: Flagged", range: { sheetId: flags.sheetId }, filterViewId: 51 };
+  const stale = { title: "Flags: Unreviewed", range: { sheetId: flags.sheetId }, filterViewId: 52 };
+  ss.views.set(flags.sheetId, [staff, kiosk, stale]);
+  server(ss).setupSheets();
+  const views = ss.views.get(flags.sheetId);
+  assert.deepEqual(views.slice(0, 2), [staff, kiosk]);
+  assert.equal(views.length, 3);
+  assert.equal(views[2].filterViewId, 52);
+  assert.equal(views[2].sortSpecs[0].dimensionIndex, 4);
+});
+
+test("a Flags tab with a staff column and no Reviewed By gets nothing overwritten", () => {
+  const ss = new FakeSpreadsheet();
+  const header = [
+    "Date",
+    "Volunteer Name",
+    "Shift ID",
+    "Checked with",
+    "Reason",
+    "Raised At",
+    "Reviewed",
+    "Notes",
+    "Source",
+    "Log Row",
+  ];
+  const row = ["2026-11-12", "Sam Lee", "s-1", "Andrea", "arrival differs by 24 min"];
+  const flags = sheetWith(ss, "Flags", [header, row]);
+  const S = server(ss);
+  S.setupSheets();
+  assert.deepEqual(flags.row(1), header, "Reviewed By isn't required, so it isn't added");
+  assert.deepEqual(flags.row(2).slice(0, 5), row);
+  assert.equal(flags.format(2, 4), undefined, "the staff column keeps its own format");
+  assert.deepEqual([...flags.validations.keys()], ["2,7,999,1"]);
+  assert.doesNotThrow(() => S.flagColumns(flags.row(1)));
+});
+
+test("a Flags tab missing Source and Log Row gets them after the last header", () => {
+  const ss = new FakeSpreadsheet();
+  const flags = sheetWith(ss, "Flags", [FLAG_HEADERS.slice(0, 8)], 8);
+  server(ss).setupSheets();
+  assert.deepEqual(flags.row(1), FLAG_HEADERS);
+  assert.equal(flags.getMaxColumns(), 10);
+  assert.equal(flags.format(2, 10), "0");
+});
+
+test("a validation staff set on another Flags column survives setupSheets", () => {
+  const ss = new FakeSpreadsheet();
+  const flags = sheetWith(ss, "Flags", [FLAG_HEADERS]);
+  flags.getRange(2, 7, 999, 1).setDataValidation({ list: "initials" });
+  server(ss).setupSheets();
+  assert.deepEqual([...flags.validations.entries()].sort(), [
+    ["2,6,999,1", CHECKBOX],
+    ["2,7,999,1", JSON.stringify({ list: "initials" })],
+  ]);
+});
+
+test("without the advanced Sheets service, setupSheets names the view step and the rest is done", () => {
+  const ss = new FakeSpreadsheet();
+  const S = server(ss, { noSheetsService: true });
+  assert.throws(
+    () => S.setupSheets(),
+    /^Error: The Flags tab is set up, but the "Flags: Unreviewed" view could not be made: .+\. Check that the Sheets API advanced service is on \(it is in appsscript\.json\), then run setupSheets\(\) again\.$/,
+  );
+  const flags = ss.getSheetByName("Flags");
+  assert.deepEqual(flags.row(1), FLAG_HEADERS);
+  assert.equal(flags.frozen, 1);
+  assert.deepEqual([...flags.validations.entries()], [["2,6,999,1", CHECKBOX]]);
+  assert.deepEqual(ss.getSheetByName("Log").row(1), LOG_HEADERS);
+  assert.equal(ss.getSheetByName("Settings").getDataRange().getValues().length, 16);
+  assert.equal(ss.views.size, 0);
 });

@@ -1,6 +1,6 @@
 /**
- * Sheet access for the volunteer check-in kiosk: the Log and Settings tabs of the bound
- * Check-In Log spreadsheet, and Volunteer Profiles, which is only ever read.
+ * Sheet access for the volunteer check-in kiosk: the Log, Settings and Flags tabs of the
+ * bound Check-In Log spreadsheet, and Volunteer Profiles, which is only ever read.
  *
  * Every decision lives in Logic.js. Functions here read cells into plain values and
  * write values back. Names ending in _ are private to the server: the page can't call
@@ -11,6 +11,7 @@ const LOG_TAB = "Log";
 /** Where setupSheets moves a Log tab still in the kiosk's old column layout. */
 const OLD_LOG_TAB = "Log (old layout)";
 const SETTINGS_TAB = "Settings";
+const FLAGS_TAB = "Flags";
 const DATE_TIME_FORMAT = "yyyy-mm-dd h:mm am/pm";
 
 // ---------------------------------------------------------------------------
@@ -33,10 +34,12 @@ function requireEditorRun_() {
 }
 
 /**
- * Creates or updates the Log and Settings tabs: the Log header, formats and any missing
- * Settings row (setupLog_ for the Log). Writes only empty cells and creates or renames
- * tabs; never changes a cell with text in it or deletes a row, so running it twice
- * changes nothing. Runs only from the Apps Script editor.
+ * Creates or updates the Log, Settings and Flags tabs: the Log header, formats and any
+ * missing Settings row (setupLog_ for the Log), then the Flags tab (setupFlags_), last so
+ * a failure there leaves the Log and Settings set up. Writes only empty cells, creates or
+ * renames tabs, sets formats, the Flags tab's Reviewed checkbox and its "Flags:
+ * Unreviewed" view; never changes a cell with text in it or deletes a row, so running it
+ * twice changes nothing. Runs only from the Apps Script editor.
  */
 function setupSheets() {
   requireEditorRun_();
@@ -61,6 +64,8 @@ function setupSheets() {
   if (missing.length) {
     settings.getRange(settings.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
   }
+
+  setupFlags_(ss);
 }
 
 /**
@@ -105,6 +110,82 @@ function setupLog_(ss) {
     log.getRange(1, f.col, log.getMaxRows(), 1).setNumberFormat(logFormat_(f.kind)),
   );
   log.setFrozenRows(1);
+}
+
+/**
+ * The Flags part of setupSheets, in this order:
+ * - No Flags tab: create it. Write the headers flagHeaderWrites (Logic.js) names into
+ *   empty cells of row 1, so an empty row gets the full header.
+ * - Set each Flags column's format by its header, put checkbox validation on the Reviewed
+ *   column from row 2 to the tab's last row (that column only, so a validation staff set
+ *   elsewhere stays), and freeze row 1.
+ * - Last: add or update the "Flags: Unreviewed" filter view through the advanced Sheets
+ *   service. A view with that title is updated in place; no other view is touched. When
+ *   this step fails, everything above is already done, and the error says what to check.
+ */
+function setupFlags_(ss) {
+  const sheet = ss.getSheetByName(FLAGS_TAB) || ss.insertSheet(FLAGS_TAB);
+  const writes = flagHeaderWrites(logHeaderRow_(sheet));
+  if (writes.length) {
+    const first = writes[0].col;
+    const last = writes[writes.length - 1].col;
+    if (last > sheet.getMaxColumns()) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), last - sheet.getMaxColumns());
+    }
+    sheet
+      .getRange(1, first, 1, writes.length)
+      .setNumberFormat("@")
+      .setValues([writes.map((w) => w.header)]);
+  }
+  const header = logHeaderRow_(sheet);
+  flagColumnFormats(header).forEach((f) => {
+    const format = flagFormat_(f.kind);
+    if (format) sheet.getRange(1, f.col, sheet.getMaxRows(), 1).setNumberFormat(format);
+  });
+  const cols = flagColumns(header);
+  if (sheet.getMaxRows() >= 2) {
+    sheet
+      .getRange(2, cols[flagHeaderNames().reviewed] + 1, sheet.getMaxRows() - 1, 1)
+      .setDataValidation(checkboxRule_());
+  }
+  sheet.setFrozenRows(1);
+
+  try {
+    const sheetId = sheet.getSheetId();
+    const got = Sheets.Spreadsheets.get(ss.getId(), {
+      fields: "sheets(properties(sheetId),filterViews(filterViewId,title))",
+    });
+    const tab = (got.sheets || []).find((s) => s.properties && s.properties.sheetId === sheetId);
+    const found = ((tab && tab.filterViews) || []).find(
+      (v) => cellString(v.title) === flagsViewTitle(),
+    );
+    Sheets.Spreadsheets.batchUpdate(
+      { requests: flagFilterViewRequests(cols, sheetId, found ? found.filterViewId : null) },
+      ss.getId(),
+    );
+  } catch (e) {
+    const message = cellString(e && e.message ? e.message : e).replace(/\.$/, "");
+    throw new Error(
+      'The Flags tab is set up, but the "' +
+        flagsViewTitle() +
+        '" view could not be made: ' +
+        message +
+        ". Check that the Sheets API advanced service is on (it is in appsscript.json), then run setupSheets() again.",
+    );
+  }
+}
+
+/** The number format a Flags column of this kind (flagColumnKinds) gets; none for the checkbox. */
+function flagFormat_(kind) {
+  if (kind === "time") return DATE_TIME_FORMAT;
+  if (kind === "number") return "0";
+  if (kind === "checkbox") return "";
+  return "@";
+}
+
+/** The Reviewed column's validation: a tickbox. */
+function checkboxRule_() {
+  return SpreadsheetApp.newDataValidation().requireCheckbox().build();
 }
 
 /** Row 1 of a tab as text, at least one cell wide. */
@@ -330,4 +411,74 @@ function appendLogRow_(cells, cols) {
 /** Writes a cell map onto an existing Log row. */
 function updateLogRow_(row, cells, cols) {
   writeLogCells_(sheet_(LOG_TAB), row, cells, cols);
+}
+
+// ---------------------------------------------------------------------------
+// Flags
+
+/**
+ * Appends Flags rows (flagRows, Logic.js) below the tab's last row. Reads the header once
+ * and places each value by flagColumns, so columns may be in any order. Grows the tab
+ * first when the rows would pass its last grid row. Then one setNumberFormats and one
+ * setValues across the full width, and the checkbox on the new Reviewed cells, so the
+ * tickbox doesn't depend on what inserting rows copied. Throws when the tab or a header it
+ * needs is missing.
+ */
+function appendFlagRows_(rows) {
+  if (!rows.length) return;
+  const sheet = sheet_(FLAGS_TAB);
+  const header = logHeaderRow_(sheet);
+  const cols = flagColumns(header);
+  const width = header.length;
+  const first = sheet.getLastRow() + 1;
+  const last = first + rows.length - 1;
+  if (last > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), Math.max(50, last - sheet.getMaxRows()));
+  }
+  const kinds = flagColumnKinds();
+  const range = sheet.getRange(first, 1, rows.length, width);
+  // Staff's columns keep the format they have; the script's get theirs.
+  const formats = range.getNumberFormats();
+  Object.keys(cols).forEach((h) => {
+    const format = flagFormat_(kinds[h]);
+    if (cols[h] >= 0 && format) formats.forEach((line) => (line[cols[h]] = format));
+  });
+  const raisedAt = cols[flagHeaderNames().raisedAt];
+  const values = rows.map((cells) => {
+    const line = flagRowValues(cells, cols, width);
+    if (typeof line[raisedAt] === "number") line[raisedAt] = new Date(line[raisedAt]);
+    return line;
+  });
+  range.setNumberFormats(formats);
+  range.setValues(values);
+  sheet
+    .getRange(first, cols[flagHeaderNames().reviewed] + 1, rows.length, 1)
+    .setDataValidation(checkboxRule_());
+}
+
+/**
+ * Copies a call's flags to the Flags tab, after the call's Log write and under the same
+ * lock. base is as for flagRows (Logic.js) and reasons the texts. With no reasons it does
+ * nothing and returns true. Otherwise it flushes first, outside the try, so a Log write
+ * that fails still fails the call. Then, in one try: build the rows, append them, and
+ * flush, so a failed Flags write fails here and not at the lock's closing flush. Returns
+ * true, or false after logging the Shift ID and the error. The Log row is the record: a
+ * failed copy never undoes or retries it.
+ */
+function raiseFlags_(base, reasons) {
+  if (!reasons || !reasons.length) return true;
+  SpreadsheetApp.flush();
+  try {
+    appendFlagRows_(flagRows(base, reasons));
+    SpreadsheetApp.flush();
+    return true;
+  } catch (e) {
+    console.error(
+      "Flags: not copied for Shift ID " +
+        cellString(base && base.shiftId) +
+        ": " +
+        (e && e.message ? e.message : String(e)),
+    );
+    return false;
+  }
 }

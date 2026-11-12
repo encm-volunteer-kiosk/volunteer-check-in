@@ -1004,12 +1004,24 @@ function unreadableStartAlert() {
 }
 
 /**
+ * The flags a kiosk check-out raises, in the order Admin Alerts? gets them: the check-out
+ * flag when there is one, then unreadableStartAlert() when the open row has no readable
+ * start. The Flags tab gets one row for each, so it and Admin Alerts? never disagree.
+ */
+function checkOutFlags(open, flag) {
+  const flags = [];
+  if (cellString(flag)) flags.push(cellString(flag));
+  if (!hasReadableStart(open)) flags.push(unreadableStartAlert());
+  return flags;
+}
+
+/**
  * The cells a kiosk check-out writes on the open row. nowMs is the tap (Check-Out
  * Recorded), statedOutMs the stated check-out, flag the check-out flag or ''. Each hours
  * value pairs times of one kind and is blank when either is unreadable. Admin Alerts? is
- * written only when there is something to add, and then keeps what the cell held. A row
- * whose start can't be read closes with blank stated hours and an alert saying so, not
- * with a zero.
+ * written only when checkOutFlags has something to add, and then keeps what the cell
+ * held. A row whose start can't be read closes with blank stated hours and an alert
+ * saying so, not with a zero.
  */
 function checkOutCells(open, nowMs, statedOutMs, flag) {
   const H = logHeaderNames();
@@ -1021,8 +1033,8 @@ function checkOutCells(open, nowMs, statedOutMs, flag) {
     [H.status]: "closed",
     [H.outBy]: "kiosk",
   };
-  const added = appendText(flag, hasReadableStart(open) ? "" : unreadableStartAlert());
-  if (added) cells[H.alerts] = sheetText(appendText(open.alerts, added));
+  const flags = checkOutFlags(open, flag);
+  if (flags.length) cells[H.alerts] = sheetText(flags.reduce(appendText, open.alerts));
   return cells;
 }
 
@@ -1033,7 +1045,9 @@ function checkOutCells(open, nowMs, statedOutMs, flag) {
  * Checks a check-in in order: NOT_FOUND, phone, ALREADY_IN, ARRIVAL_FUTURE,
  * ARRIVAL_OTHER_DAY. Input: {volunteers, id (the tapped entry), digits, entries,
  * todayDate, nowMs, arrivedMs (null for server time), arrivedDate, flagMinutes}. Returns
- * {refusal} or {volunteer, arrivedMs, flag}; volunteer is the one resolveVolunteer found.
+ * {refusal} or {volunteer, arrivedMs, flag, flags}; volunteer is the one resolveVolunteer
+ * found, flag the arrival flag or '', and flags the list the Flags tab gets: [flag], or []
+ * when nothing is flagged.
  */
 function decideCheckIn(input) {
   const who = resolveVolunteer(input.volunteers, input.id, input.digits);
@@ -1044,10 +1058,12 @@ function decideCheckIn(input) {
   }
   const arrival = validateArrival(input.nowMs, input.arrivedMs, input.arrivedDate, input.todayDate);
   if (typeof arrival === "string") return { refusal: arrival };
+  const flag = arrivalFlag(input.nowMs, arrival.arrivedMs, input.flagMinutes);
   return {
     volunteer,
     arrivedMs: arrival.arrivedMs,
-    flag: arrivalFlag(input.nowMs, arrival.arrivedMs, input.flagMinutes),
+    flag,
+    flags: flag ? [flag] : [],
   };
 }
 
@@ -1057,10 +1073,11 @@ function decideCheckIn(input) {
  * (the tapped entry), digits, entries (the whole Log), todayDate, nowMs, outMs (null for
  * server time), outDate, flagMinutes, launchDate}.
  *
- * Returns {refusal} or {volunteer, row, cells, minutes, milestone, statedOutMs}:
- * volunteer is the one resolveVolunteer found, row the open row, cells its check-out cell
- * map, minutes the whole minutes this shift adds toward milestones, and the milestone is
- * counted from the closed rows before this one.
+ * Returns {refusal} or {volunteer, row, cells, minutes, milestone, statedOutMs, flags,
+ * open}: volunteer is the one resolveVolunteer found, row the open row, cells its
+ * check-out cell map, minutes the whole minutes this shift adds toward milestones, and the
+ * milestone is counted from the closed rows before this one. flags is checkOutFlags, the
+ * texts the cells add to Admin Alerts?, and open the open row's entry.
  */
 function decideCheckOut(input) {
   const who = resolveVolunteer(input.volunteers, input.id, input.digits);
@@ -1096,6 +1113,8 @@ function decideCheckOut(input) {
       input.launchDate,
     ),
     statedOutMs: out.outMs,
+    flags: checkOutFlags(open, flag),
+    open,
   };
 }
 
@@ -2680,4 +2699,214 @@ function setupReportsMessage(counts) {
     "Kiosk column warnings: " + w.kept + " kept, " + w.added + " added, " + w.removed + " removed.",
     "The filter views name Log columns by letter. After a Log column is inserted, deleted or moved, they look at the wrong column until setupReports runs again, so run it again then.",
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// The Flags tab
+//
+// One row per flag, for staff to tick off as reviewed. The Log row is the record: Admin
+// Alerts? keeps every kiosk flag, and a Flags row is a copy for review. The script only
+// appends Flags rows. It reads the Flags header to place its writes and never reads a
+// Flags row back, so staff may sort, filter or delete rows. Reviewed By and Notes are
+// staff's; the script writes Reviewed once, unticked, on the row it appends.
+
+/** The Flags headers, keyed by the short names the code uses, in the order a new tab gets them. */
+function flagHeaderNames() {
+  return {
+    date: "Date",
+    name: "Volunteer Name",
+    shiftId: "Shift ID",
+    reason: "Reason",
+    raisedAt: "Raised At",
+    reviewed: "Reviewed",
+    reviewedBy: "Reviewed By",
+    notes: "Notes",
+    source: "Source",
+    logRow: "Log Row",
+  };
+}
+
+/** The Flags header row a new tab gets. */
+function flagHeaders() {
+  const names = flagHeaderNames();
+  return Object.keys(names).map((key) => names[key]);
+}
+
+/** The headers the script writes: every one except Reviewed By and Notes, which are staff's. */
+function requiredFlagHeaders() {
+  const F = flagHeaderNames();
+  return flagHeaders().filter((h) => h !== F.reviewedBy && h !== F.notes);
+}
+
+/** Each Flags header's kind, which sets its number format: "text", "time", "checkbox" or "number". */
+function flagColumnKinds() {
+  const F = flagHeaderNames();
+  const kinds = {};
+  flagHeaders().forEach((h) => (kinds[h] = "text"));
+  kinds[F.raisedAt] = "time";
+  kinds[F.reviewed] = "checkbox";
+  kinds[F.logRow] = "number";
+  return kinds;
+}
+
+/** Where a flag came from, the Source column. auto-close is kept for the nightly close. */
+function flagSources() {
+  return {
+    checkIn: "kiosk check-in",
+    checkOut: "kiosk check-out",
+    autoClose: "auto-close",
+  };
+}
+
+/** The title of the filter view setupSheets keeps on the Flags tab. */
+function flagsViewTitle() {
+  return "Flags: Unreviewed";
+}
+
+/**
+ * Maps each Flags header to its 0-based index in headerRow, comparing normalizeHeader
+ * forms. A required header must be there exactly once, else this throws. Reviewed By and
+ * Notes map to their leftmost column, or to -1 when there is none.
+ */
+function flagColumns(headerRow) {
+  const required = requiredFlagHeaders();
+  const cols = {};
+  flagHeaders().forEach((h) => {
+    const found = logHeaderIndexes(headerRow, h);
+    if (required.indexOf(h) >= 0) {
+      if (!found.length) {
+        throw new Error(
+          'The Flags tab has no "' + normalizeHeader(h) + '" column. Run setupSheets().',
+        );
+      }
+      if (found.length > 1) {
+        throw new Error(
+          'The Flags tab has more than one "' +
+            normalizeHeader(h) +
+            '" column. Rename or remove the extra one.',
+        );
+      }
+    }
+    cols[h] = found.length ? found[0] : -1;
+  });
+  return cols;
+}
+
+/**
+ * The header cells setupSheets writes in row 1 of the Flags tab, as [{col (1-based),
+ * header}]. An empty row gets the full flagHeaders() from column A. Otherwise each
+ * required header the row lacks goes into the empty cells to the right of the last
+ * header, in flagHeaders() order. Reviewed By and Notes are not added: they are staff's.
+ */
+function flagHeaderWrites(headerRow) {
+  let last = -1;
+  headerRow.forEach((cell, i) => {
+    if (cellString(cell) !== "") last = i;
+  });
+  if (last < 0) return flagHeaders().map((header, i) => ({ col: i + 1, header }));
+  const missing = requiredFlagHeaders().filter((h) => logHeaderIndexes(headerRow, h).length === 0);
+  return missing.map((header, i) => ({ col: last + 2 + i, header }));
+}
+
+/**
+ * The kind of each Flags column of a header row, as [{col (1-based), kind}] in column
+ * order, kind as in flagColumnKinds(). Columns with other headers are staff's and left out.
+ */
+function flagColumnFormats(headerRow) {
+  const kinds = flagColumnKinds();
+  const formats = [];
+  flagHeaders().forEach((h) =>
+    logHeaderIndexes(headerRow, h).forEach((i) => formats.push({ col: i + 1, kind: kinds[h] })),
+  );
+  return formats.sort((a, b) => a.col - b.col);
+}
+
+/**
+ * The Flags rows for one call, one header-keyed map per reason. base is {date, name,
+ * shiftId, raisedAtMs, source, logRow}: the Log row's Date, Volunteer Name and Shift ID,
+ * the call's time, where the flag came from and the Log row number. Reviewed is false.
+ * A blank reason gives no row. Throws when the Shift ID is empty, since it is the key that
+ * finds the Log row. No User Token goes on a Flags row.
+ */
+function flagRows(base, reasons) {
+  const b = base || {};
+  if (!cellString(b.shiftId)) throw new Error("A Flags row can't be written without a Shift ID.");
+  const F = flagHeaderNames();
+  return (reasons || [])
+    .filter((reason) => cellString(reason) !== "")
+    .map((reason) => ({
+      [F.date]: sheetText(b.date),
+      [F.name]: sheetText(b.name),
+      [F.shiftId]: sheetText(b.shiftId),
+      [F.reason]: sheetText(reason),
+      [F.raisedAt]: b.raisedAtMs,
+      [F.reviewed]: false,
+      [F.source]: sheetText(b.source),
+      [F.logRow]: b.logRow,
+    }));
+}
+
+/**
+ * One Flags row map (flagRows) as a row of width cells, each value under its header's
+ * column in cols (flagColumns) and blank elsewhere. Raised At stays in milliseconds, or
+ * blank when it isn't a number; Log Row is blank when it isn't a number. Throws on a key
+ * that isn't a Flags header, or whose column the tab lacks.
+ */
+function flagRowValues(cells, cols, width) {
+  const kinds = flagColumnKinds();
+  const row = Array.from({ length: width }, () => "");
+  Object.keys(cells).forEach((key) => {
+    if (!kinds[key]) throw new Error('"' + normalizeHeader(key) + '" is not a Flags header.');
+    const at = cols[key];
+    if (typeof at !== "number" || at < 0 || at >= width) {
+      throw new Error(
+        'The Flags tab has no "' + normalizeHeader(key) + '" column. Run setupSheets().',
+      );
+    }
+    let value = cells[key];
+    if (kinds[key] === "time" || kinds[key] === "number") {
+      value = typeof value === "number" && isFinite(value) ? value : "";
+    } else if (kinds[key] === "text") {
+      value = value === null || value === undefined ? "" : String(value);
+    }
+    row[at] = value;
+  });
+  return row;
+}
+
+/**
+ * The batchUpdate request that keeps the "Flags: Unreviewed" filter view on the Flags tab:
+ * rows with a Shift ID whose Reviewed isn't ticked, newest Raised At first. cols is the
+ * flagColumns map, sheetId the tab's, existingViewId the id of the view with that title
+ * when there is one: that view is updated in place, so its link keeps working; otherwise
+ * one is added. Returns a list of one request.
+ */
+function flagFilterViewRequests(cols, sheetId, existingViewId) {
+  const F = flagHeaderNames();
+  const letter = (header) => "$" + columnLetter(cols[header]) + "2";
+  const formula = "=AND(TRIM(" + letter(F.shiftId) + ') <> "", ' + letter(F.reviewed) + " <> TRUE)";
+  const view = {
+    title: flagsViewTitle(),
+    range: { sheetId },
+    filterSpecs: [
+      {
+        columnIndex: cols[F.reviewed],
+        filterCriteria: {
+          condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: formula }] },
+        },
+      },
+    ],
+    sortSpecs: [{ dimensionIndex: cols[F.raisedAt], sortOrder: "DESCENDING" }],
+  };
+  if (existingViewId === null || existingViewId === undefined || existingViewId === "") {
+    return [{ addFilterView: { filter: view } }];
+  }
+  return [
+    {
+      updateFilterView: {
+        filter: Object.assign({ filterViewId: existingViewId }, view),
+        fields: "title,range,filterSpecs,sortSpecs",
+      },
+    },
+  ];
 }

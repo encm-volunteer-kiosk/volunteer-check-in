@@ -10,7 +10,8 @@
 //   exempt from the key only: the dialog openers, which make it, and setupReports, which
 //   runs from the editor as setupSheets does. The list of functions comes from the two
 //   files' source, so a public function added later is held to the same rule.
-// - The glue: the admin functions read and write an in-memory Log through Sheets.js.
+// - The glue: the admin functions read and write an in-memory Log through Sheets.js, and
+//   the kiosk's check-in and check-out copy their flags to an in-memory Flags tab.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -27,6 +28,20 @@ const GUARDED_FILES = ["Admin.js", "Reports.js"].map((f) => [f, read("apps-scrip
 
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const TZ = "America/Chicago";
+// The Flags tab, with a staff column between the script's headers.
+const FLAG_HEADER = [
+  "Shift ID",
+  "Date",
+  "Volunteer Name",
+  "Reason",
+  "Staff column",
+  "Raised At",
+  "Reviewed",
+  "Reviewed By",
+  "Notes",
+  "Source",
+  "Log Row",
+];
 
 // ---------------------------------------------------------------------------
 // Central time without Apps Script
@@ -70,11 +85,19 @@ const clock = (ms) => {
 // ---------------------------------------------------------------------------
 // Stand-ins for the Google services
 
-/** A sheet held as rows of cells; row and column numbers are 1-based, as in Apps Script. */
+/**
+ * A sheet held as rows of cells; row and column numbers are 1-based, as in Apps Script.
+ * A write past the last grid row (maxRows) fails, as it does in Sheets, so an append must
+ * grow the sheet with insertRowsAfter first.
+ */
 class FakeSheet {
-  constructor(rows) {
+  constructor(rows, maxRows = 1000) {
     this.rows = rows.map((r) => r.slice());
     this.formats = {};
+    this.maxRows = maxRows;
+    this.inserted = [];
+    // Data validations by "row:col".
+    this.validations = {};
   }
   getLastRow() {
     let last = this.rows.length;
@@ -85,9 +108,20 @@ class FakeSheet {
     return Math.max(0, ...this.rows.map((r) => r.length));
   }
   getMaxRows() {
-    return 1000;
+    return this.maxRows;
   }
-  insertRowsAfter() {}
+  insertRowsAfter(after, count) {
+    assert.equal(after, this.maxRows, "rows are only added at the end");
+    this.inserted.push(count);
+    this.maxRows += count;
+  }
+  put(row, col, value) {
+    assert.ok(row <= this.maxRows, "write past the last grid row " + this.maxRows + ": " + row);
+    while (this.rows.length < row) this.rows.push([]);
+    const r = this.rows[row - 1];
+    while (r.length < col) r.push("");
+    r[col - 1] = value;
+  }
   getDataRange() {
     return this.getRange(1, 1, this.getLastRow(), this.getLastColumn());
   }
@@ -106,10 +140,33 @@ class FakeSheet {
         return range;
       },
       setValue: (value) => {
-        while (sheet.rows.length < row) sheet.rows.push([]);
-        const r = sheet.rows[row - 1];
-        while (r.length < col) r.push("");
-        r[col - 1] = value;
+        sheet.put(row, col, value);
+        return range;
+      },
+      setValues: (values) => {
+        assert.equal(values.length, rows, "setValues row count");
+        values.forEach((line, i) => {
+          assert.equal(line.length, cols, "setValues column count");
+          line.forEach((v, j) => sheet.put(row + i, col + j, v));
+        });
+        return range;
+      },
+      getNumberFormats: () =>
+        Array.from({ length: rows }, (_, i) =>
+          Array.from({ length: cols }, (_, j) => sheet.formats[row + i + ":" + (col + j)] ?? ""),
+        ),
+      setNumberFormats: (formats) => {
+        assert.equal(formats.length, rows, "setNumberFormats row count");
+        formats.forEach((line, i) => {
+          assert.equal(line.length, cols, "setNumberFormats column count");
+          line.forEach((f, j) => (sheet.formats[row + i + ":" + (col + j)] = f));
+        });
+        return range;
+      },
+      setDataValidation: (rule) => {
+        for (let i = 0; i < rows; i++) {
+          for (let j = 0; j < cols; j++) sheet.validations[row + i + ":" + (col + j)] = rule;
+        }
         return range;
       },
     };
@@ -129,13 +186,21 @@ class FakeSheet {
  * A fresh server scope. calls records every service call as "Service.method" in order.
  * opts: active and effective (the two Session emails), ui (false: getUi throws), log and
  * settings (rows), volunteers (the cached Profiles list), keys (dialog keys already
- * issued).
+ * issued), flags (the Flags tab's rows, FLAG_HEADER alone by default; null for no Flags
+ * tab), flagsMaxRows (its last grid row), now (a fixed server clock, in ms), onFlush
+ * (run on each SpreadsheetApp.flush). errors
+ * collects what the server logs with console.error.
  */
 function server(opts = {}) {
   const calls = [];
   const cache = new Map();
+  const errors = [];
   const sheets = {
     Log: new FakeSheet(opts.log || [[]]),
+    Flags:
+      opts.flags === null
+        ? undefined
+        : new FakeSheet(opts.flags || [FLAG_HEADER], opts.flagsMaxRows ?? 1000),
     Settings: new FakeSheet(
       opts.settings || [
         ["Setting", "Value"],
@@ -170,7 +235,7 @@ function server(opts = {}) {
   });
 
   const ctx = {
-    console,
+    console: { log: console.log, error: (...args) => errors.push(args.join(" ")) },
     Session: service("Session", {
       getActiveUser: () => email(opts.active ?? "staff@example.org"),
       getEffectiveUser: () => email(opts.effective ?? opts.active ?? "staff@example.org"),
@@ -195,7 +260,11 @@ function server(opts = {}) {
         };
       },
       getActiveSpreadsheet: () => ({ getSheetByName: (name) => sheets[name] || null }),
-      flush: () => {},
+      flush: () => (opts.onFlush ? opts.onFlush() : undefined),
+      newDataValidation: () => {
+        const b = { requireCheckbox: () => b, build: () => "checkbox" };
+        return b;
+      },
     }),
     HtmlService: service("HtmlService", {
       createTemplateFromFile: (file) => {
@@ -225,6 +294,17 @@ function server(opts = {}) {
     }),
   };
   vm.createContext(ctx);
+  if (opts.now !== undefined) {
+    const RealDate = vm.runInContext("Date", ctx);
+    ctx.Date = class extends RealDate {
+      constructor(...args) {
+        super(...(args.length ? args : [opts.now]));
+      }
+      static now() {
+        return opts.now;
+      }
+    };
+  }
   for (const [file, source] of SERVER_FILES) vm.runInContext(source, ctx, { filename: file });
   if (opts.volunteers) {
     cache.set(
@@ -234,7 +314,7 @@ function server(opts = {}) {
   }
   for (const key of opts.keys || []) cache.set(ctx.adminKeyCacheKey(key), "1");
   calls.length = 0;
-  return { ctx, calls, cache, sheets, shown, menu };
+  return { ctx, calls, cache, sheets, shown, menu, errors };
 }
 
 // ---------------------------------------------------------------------------
@@ -657,4 +737,173 @@ test("adminFixSignOut refuses a row whose check-in time can't be read", () => {
   );
   assert.equal(reply.refusal, "ADMIN_BAD_ROW");
   assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+});
+
+// ---------------------------------------------------------------------------
+// The kiosk's flags on the Flags tab
+
+const CODE = "lettersonlylettersonly";
+const KIOSK_SETTINGS = [
+  ["Setting", "Value"],
+  ["Volunteer Profiles file ID", "file-1"],
+  ["Volunteer Profiles tab", "Volunteer Profiles"],
+  ["Kiosk access code", CODE],
+];
+const TODAY = "2026-11-12";
+const NOW = centralMs(TODAY + " 10:00");
+const minutesBefore = (n) => new Date(NOW - n * 60000).toISOString();
+const kiosk = (opts) =>
+  server({ now: NOW, settings: KIOSK_SETTINGS, volunteers: [SAM], log: [LOG_HEADER], ...opts });
+
+test("apiCheckIn with an arrival flag appends one Flags row with the Log's text", () => {
+  const s = kiosk({});
+  const reply = plain(s.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(24), null));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.shiftId, "uuid-1");
+  const log = s.sheets.Log.rowByHeader(2);
+  assert.equal(log["Admin Alerts?"], "arrival differs by 24 min");
+
+  const flags = s.sheets.Flags;
+  assert.equal(flags.getLastRow(), 2);
+  const row = flags.rowByHeader(2);
+  assert.equal(row["Raised At"].getTime(), NOW);
+  delete row["Raised At"];
+  assert.deepEqual(row, {
+    "Shift ID": "uuid-1",
+    Date: TODAY,
+    "Volunteer Name": "Sam Lee",
+    Reason: log["Admin Alerts?"],
+    "Staff column": "",
+    Reviewed: false,
+    "Reviewed By": "",
+    Notes: "",
+    Source: "kiosk check-in",
+    "Log Row": 2,
+  });
+  // No User Token on the Flags tab.
+  assert.ok(!flags.rows[1].includes("tok-sam"));
+  // The new Reviewed cell has the tickbox; each script column its format.
+  const col = (h) => FLAG_HEADER.indexOf(h) + 1;
+  assert.deepEqual(flags.validations, { ["2:" + col("Reviewed")]: "checkbox" });
+  assert.equal(flags.formats["2:" + col("Raised At")], "yyyy-mm-dd h:mm am/pm");
+  assert.equal(flags.formats["2:" + col("Log Row")], "0");
+  assert.equal(flags.formats["2:" + col("Shift ID")], "@");
+  assert.equal(flags.formats["2:" + col("Staff column")], "", "a staff column keeps its format");
+  assert.deepEqual(s.errors, []);
+  assert.deepEqual(flags.inserted, []);
+
+  // A check-in with nothing flagged appends no Flags row.
+  const quiet = kiosk({});
+  assert.equal(plain(quiet.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(quiet.sheets.Flags.getLastRow(), 1);
+});
+
+test("apiCheckIn with the Flags tab missing still writes the Log row and logs the Shift ID", () => {
+  const s = kiosk({ flags: null });
+  const reply = plain(s.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(24), null));
+  assert.equal(reply.ok, true);
+  assert.equal(s.sheets.Log.rowByHeader(2)["Admin Alerts?"], "arrival differs by 24 min");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+  assert.deepEqual(s.errors, [
+    'Flags: not copied for Shift ID uuid-1: The "Flags" tab is missing. Run setupSheets().',
+  ]);
+});
+
+test("a Flags builder that throws is caught: the check-in stands and the error is logged", () => {
+  const s = kiosk({});
+  s.ctx.flagRows = () => {
+    throw new Error("builder broke");
+  };
+  const reply = plain(s.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(24), null));
+  assert.equal(reply.ok, true);
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+  assert.equal(s.sheets.Flags.getLastRow(), 1);
+  assert.deepEqual(s.errors, ["Flags: not copied for Shift ID uuid-1: builder broke"]);
+});
+
+test("a Log write that fails still fails the check-in; the Flags step doesn't swallow it", () => {
+  const s = kiosk({
+    onFlush: () => {
+      throw new Error("Log write failed");
+    },
+  });
+  assert.throws(() => s.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(24), null), /Log write failed/);
+  assert.deepEqual(s.errors, []);
+  assert.equal(s.sheets.Flags.getLastRow(), 1);
+});
+
+test("apiCheckOut with two flags on a full Flags tab grows it and writes both rows", () => {
+  // Today's open row with both check-in times blank: no readable start.
+  const open = logRow({
+    "Shift ID": "s-open",
+    "User Token": "tok-sam",
+    Status: "open",
+    Date: TODAY,
+    "Volunteer Name": "Sam Lee",
+    "Check-In Entered By": "kiosk",
+  });
+  const earlier = FLAG_HEADER.map((h) =>
+    h === "Shift ID" ? "s-old" : h === "Reviewed" ? true : "",
+  );
+  const s = kiosk({ log: [LOG_HEADER, open], flags: [FLAG_HEADER, earlier], flagsMaxRows: 2 });
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30)));
+  assert.equal(reply.ok, true);
+  const log = s.sheets.Log.rowByHeader(2);
+  assert.equal(log.Status, "closed");
+  assert.equal(
+    log["Admin Alerts?"],
+    "check-out differs by 30 min; check-in time unreadable, stated hours left blank",
+  );
+
+  const flags = s.sheets.Flags;
+  assert.deepEqual(flags.inserted, [50], "the append grew the tab before writing");
+  assert.equal(flags.getLastRow(), 4);
+  const reasons = [3, 4].map((r) => flags.rowByHeader(r));
+  assert.deepEqual(
+    reasons.map((r) => r.Reason),
+    ["check-out differs by 30 min", "check-in time unreadable, stated hours left blank"],
+  );
+  for (const r of reasons) {
+    assert.equal(r["Shift ID"], "s-open");
+    assert.equal(r.Date, TODAY);
+    assert.equal(r["Volunteer Name"], "Sam Lee");
+    assert.equal(r.Source, "kiosk check-out");
+    assert.equal(r["Log Row"], 2);
+    assert.equal(r.Reviewed, false);
+    assert.equal(r["Raised At"].getTime(), NOW);
+  }
+  const reviewed = FLAG_HEADER.indexOf("Reviewed") + 1;
+  assert.deepEqual(flags.validations, {
+    ["3:" + reviewed]: "checkbox",
+    ["4:" + reviewed]: "checkbox",
+  });
+  // The row staff ticked is untouched.
+  assert.equal(flags.rowByHeader(2).Reviewed, true);
+  assert.deepEqual(s.errors, []);
+});
+
+test("apiCheckOut with nothing flagged appends no Flags row", () => {
+  const open = kioskOpen("s-open", TODAY, "08:00");
+  const s = kiosk({ log: [LOG_HEADER, open] });
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+  assert.equal(s.sheets.Flags.getLastRow(), 1);
+  assert.deepEqual(s.errors, []);
+});
+
+test("the admin menu's Add a shift and Fix a sign-out leave the Flags tab untouched", () => {
+  const s = server({
+    keys: ["k"],
+    volunteers: [SAM],
+    log: [LOG_HEADER, kioskOpen("s-1", "2026-06-02", "09:00")],
+  });
+  const before = JSON.stringify(s.sheets.Flags);
+  assert.equal(plain(s.ctx.adminAddShift("k", addForm({}))).ok, true);
+  assert.equal(
+    plain(s.ctx.adminFixSignOut("k", { shiftId: "s-1", outTime: "12:15", initials: "ab" })).ok,
+    true,
+  );
+  assert.equal(JSON.stringify(s.sheets.Flags), before);
+  assert.ok(!s.calls.includes("SpreadsheetApp.newDataValidation"));
+  assert.deepEqual(s.errors, []);
 });

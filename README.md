@@ -23,6 +23,8 @@ so hours can be credited to each volunteer and reported to grantmakers.
 - **Kiosk admin menu**: a menu in the Check-In Log spreadsheet for staff to add a shift a
   volunteer forgot to log, to close one they forgot to sign out of, or to make a monthly
   report (see below).
+- **Flags tab**: each alert the kiosk writes is also copied to a Flags tab, one row per
+  alert, for staff to tick off as reviewed (see Flags tab).
 - **Reports**: a Monthly Hours tab that updates by itself, a frozen monthly report with
   CSV and PDF downloads, saved filter views on the Log, and a warning when someone edits
   a column the kiosk fills (see Reports).
@@ -110,6 +112,9 @@ The kiosk writes these alerts here and nothing else:
 Check-out adds its alert after whatever the cell holds, joined with `; `. Text staff typed
 there is kept.
 
+Each alert the kiosk writes here is also copied to the Flags tab, one row per alert, for
+review (see Flags tab). Text staff type here is not copied.
+
 ### User Token and who can see the Log
 
 User Token is the same value as the Onboarding Token column in Volunteer Profiles; ENCM
@@ -159,6 +164,56 @@ A check-out earlier than the recorded check-in tap is allowed: a volunteer who s
 arrived at 9:00, taps in at 11:00 and states they left at 10:00 is credited 1 stated hour,
 and the arrival alert marks the row. The server accepts any minute; the 15-minute steps
 are only the tablet's.
+
+## Flags tab
+
+A flag is an alert the kiosk writes to Admin Alerts? on the Log: a stated arrival or
+check-out far from the tap, or a check-in time it couldn't read. Each one is also copied
+to a tab named `Flags`, one row per flag, so staff can tick it off once someone has looked
+at it. The Log row is still the record: Admin Alerts? keeps every flag.
+
+Only the kiosk adds Flags rows, at check-in and at check-out. The Kiosk admin menu adds
+none: shifts added or closed with it carry the admin's initials in the Entered By columns
+and show in the `Kiosk: Admin-entered` filter view (see Reports). Editing the Log by hand
+adds no Flags row.
+
+| Column | Header         | What it holds                                                     |
+| ------ | -------------- | ----------------------------------------------------------------- |
+| A      | Date           | The Log row's Date.                                               |
+| B      | Volunteer Name | The Log row's Volunteer Name.                                     |
+| C      | Shift ID       | The Log row's Shift ID: the sure way to find the row on the Log.  |
+| D      | Reason         | The alert, word for word as in Admin Alerts?.                     |
+| E      | Raised At      | The server's clock when the kiosk raised it.                      |
+| F      | Reviewed       | A tickbox. Tick it once you've looked at the flag.                |
+| G      | Reviewed By    | Your initials.                                                    |
+| H      | Notes          | What you found or did.                                            |
+| I      | Source         | `kiosk check-in` or `kiosk check-out`.                            |
+| J      | Log Row        | The Log row number then. A hint only: sorting the Log moves rows. |
+
+To review: open Data > Filter views > `Flags: Unreviewed`. It shows the flags not yet
+ticked, newest first. Tick Reviewed, type your initials in Reviewed By, and add a note if
+there's something to say. A ticked flag leaves the view. The sheet's edit history (right
+click a cell > Show edit history) shows who ticked it and when.
+
+The kiosk only adds rows to this tab. It finds its columns by header, as on the Log, and
+never reads a Flags row back, so sorting, filtering or deleting Flags rows is safe, and so
+are columns of your own. Reviewed By and Notes are yours; the kiosk never writes them.
+There is no User Token on this tab; find it on the Log row by Shift ID if you need it.
+
+A flag can be missing from this tab only when the tab was broken at the time (renamed,
+deleted or missing a header), or when a row typed by hand with no Shift ID is closed at
+the tablet. The check-in or check-out still goes through, the
+flag is still in Admin Alerts? and in the `Kiosk: Flagged` view, and the Apps Script
+executions log has a line `Flags: not copied for Shift ID ...`. Run `setupSheets` to repair
+the tab. Flags raised before the Flags tab was added are only in Admin Alerts?.
+
+### Two counts of flagged
+
+"Flagged rows" on Monthly Hours and the flagged rows in the monthly report count **Log
+rows** in the month whose Admin Alerts? isn't blank, and the `Kiosk: Flagged` filter view
+shows every such Log row. The Flags tab lists **each flag**, with whether someone has
+reviewed it. A check-out can raise two flags on one row, and staff can type in Admin
+Alerts? too, so the counts differ on purpose.
 
 ## Settings
 
@@ -499,9 +554,9 @@ To add the reports to a spreadsheet already in use, do these steps in this order
    `.clasp.json` (script ID, `rootDir: apps-script`) is committed at the repo root.
 6. `pnpm push` builds the page and pushes everything in `apps-script/`. A push replaces
    the whole remote project, so change code here, never in the Apps Script editor.
-7. Once, in the Apps Script editor, run `setupSheets` (creates the Log and Settings tabs),
-   then `setupSampleProfiles` (builds an invented Volunteer Profiles file and points
-   Settings at it). Then put a kiosk access code of at least 16 letters in Settings.
+7. Once, in the Apps Script editor, run `setupSheets` (creates the Log, Settings and
+   Flags tabs), then `setupSampleProfiles` (builds an invented Volunteer Profiles file and
+   points Settings at it). Then put a kiosk access code of at least 16 letters in Settings.
    Then run `setupReports` (see Reports). All three run only from the editor: called
    through the web app by anyone but the account it runs as, they refuse.
 
@@ -527,7 +582,8 @@ steps have not yet been tried on ENCM's iPad; check step 4 when you set it up.
 
 ### What setupSheets does
 
-`setupSheets` writes only empty cells and creates or renames tabs. It never changes a
+`setupSheets` writes only empty cells, creates or renames tabs, and sets formats, the
+Flags tab's Reviewed tickbox and its `Flags: Unreviewed` filter view. It never changes a
 cell with text in it and never deletes a row, so running it again changes nothing.
 
 - No Log tab: it creates one with the full header, A to R as in the table above.
@@ -541,6 +597,14 @@ cell with text in it and never deletes a row, so running it again changes nothin
   Activity are not added; they are staff's.
 - It then sets each kiosk column's format (text, date and time, or hours to 2 decimals)
   by its header, freezes row 1, and adds any missing Settings row.
+- Last, the Flags tab: it creates the tab if there is none and writes any missing header
+  after the last one (Reviewed By and Notes are not added; they are staff's). It sets each
+  Flags column's format, puts the tickbox on Reviewed from row 2 to the bottom of the tab
+  (only that column), freezes row 1, and adds or updates the `Flags: Unreviewed` filter
+  view. That view uses the Sheets API advanced service, as `setupReports` does, so the
+  first run may ask you to authorize the script again. If the view can't be made,
+  `setupSheets` stops with a message saying so; everything before it is done, and the
+  kiosk copies flags to the tab without the view.
 
 ### Updating a sheet that's already in use
 
@@ -556,6 +620,11 @@ Log's columns, as the move to ENCM's column names did, do these steps in this or
 Between steps 2 and 3 the new code meets the old header, and the tablet shows that it
 can't reach the volunteer list. That clears as soon as step 3 finishes. Doing it in this
 order means old code never writes into the new layout.
+
+To add the Flags tab to a sheet in use, do the same three steps: `pnpm push`, update a
+versioned deployment, then run `setupSheets`. Until `setupSheets` has made the tab, the
+kiosk works as before and its flags go to Admin Alerts? only; each one it couldn't copy
+is named in the executions log. `setupReports` doesn't need running again.
 
 To add the reports to a sheet in use, follow the steps under Setting up the reports.
 
@@ -583,7 +652,7 @@ apps-script/AdminDialog.html the admin dialogs (plain HTML and JavaScript, commi
 apps-script/Reports.js      setupReports and the Monthly report menu item's server functions
 apps-script/Report.html     the Monthly report window (plain HTML and JavaScript, committed source)
 apps-script/Logic.js        the rules, as plain functions the Node tests load
-apps-script/Sheets.js       Log, Settings and Profiles access; setupSheets, setupSampleProfiles
+apps-script/Sheets.js       Log, Settings, Flags and Profiles access; setupSheets, setupSampleProfiles
 apps-script/SampleData.js   invented Volunteer Profiles rows for development
 apps-script/Index.html      the page doGet serves; a build output, not committed
 scripts/copy-to-gas.mjs     checks the single-file build and copies it into apps-script/
