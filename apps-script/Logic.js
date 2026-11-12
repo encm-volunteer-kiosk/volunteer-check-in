@@ -811,20 +811,63 @@ function hoursCell(value) {
   return s === "" ? NaN : Number(s);
 }
 
+/** The date Sheets gives a time typed with no date: day zero, 30 December 1899. */
+function timeOnlyDate() {
+  return "1899-12-30";
+}
+
+/**
+ * A typed time of day as "HH:mm", or '' when text isn't one. Takes h:mm or h:mm:ss,
+ * optionally followed by AM or PM in any case, with or without a space before it and
+ * with or without dots ("9:00 AM", "9:00am", "9:00 p.m."). Hours run 1 to 12 with AM or
+ * PM and 0 to 23 without; minutes and seconds 00 to 59. Seconds are dropped. "12:00 AM" is
+ * midnight and "12:30 PM" half past noon.
+ */
+function clockText(text) {
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([ap])\.?\s*m\.?)?$/i.exec(cellString(text));
+  if (!m || Number(m[2]) > 59 || (m[3] !== undefined && Number(m[3]) > 59)) return "";
+  let hour = Number(m[1]);
+  if (m[4]) {
+    if (hour < 1 || hour > 12) return "";
+    hour = (hour % 12) + (m[4].toLowerCase() === "p" ? 12 : 0);
+  } else if (hour > 23) return "";
+  return String(hour).padStart(2, "0") + ":" + m[2];
+}
+
+/**
+ * A time cell's milliseconds on the row's Date day (yyyy-MM-dd), NaN when it isn't on that
+ * day. t is read.time's {ms, date, clock}. A full date-time counts when its Central date
+ * is day. A time with no date (a clock with date 1899-12-30, or a clock from text) is put
+ * on day by read.at, and counts when the result is on day: a time skipped when daylight
+ * time starts reads as the later time read.at gives, and NaN only if that is another day.
+ * A read without at reads every time with no date as NaN.
+ */
+function rowTimeMs(t, day, read) {
+  if (!t || !day) return NaN;
+  if (t.date === day) return typeof t.ms === "number" && isFinite(t.ms) ? t.ms : NaN;
+  const clock = cellString(t.clock);
+  const noDate = t.date === timeOnlyDate() || cellString(t.date) === "";
+  if (!clock || !noDate || !read || typeof read.at !== "function") return NaN;
+  const on = read.at(day, clock);
+  return on && on.date === day && typeof on.ms === "number" && isFinite(on.ms) ? on.ms : NaN;
+}
+
 /**
  * One Log row as the entry the rest of this file uses:
  * {row, shiftId, token, name, dateText, recordedInMs, statedInMs, recordedOutMs,
  * statedOutMs, recordedHours, statedHours, alerts, notes, status}.
  *
  * cells is the row's raw values, row its sheet row number, cols the logColumns map. read
- * holds two functions the caller supplies: read.text(value) gives a cell as text (a date
- * as its Central yyyy-MM-dd), and read.time(value) gives {ms, date}, with date the
- * value's Central yyyy-MM-dd.
+ * holds the functions the caller supplies: read.text(value) gives a cell as text (a date
+ * as its Central yyyy-MM-dd), read.time(value) gives {ms, date, clock}, with date the
+ * value's Central yyyy-MM-dd and clock its Central "HH:mm" when it has one, and
+ * read.at(dateText, clock) gives {ms, date} for a Central "HH:mm" on a yyyy-MM-dd.
  *
- * Every time on a row is on that row's Date. A time cell whose Central date isn't the
- * row's Date reads as NaN (unreadable): a time typed without a date (Sheets stores it on
- * 1899-12-30) must never turn into a shift a hundred years long. Hours are NaN when
- * blank.
+ * Every time on a row is on that row's Date (rowTimeMs). A full date-time whose Central
+ * date is the row's Date is kept. A time with no date, such as "9:00 AM" typed into the
+ * cell (Sheets stores it on 1899-12-30) or typed as text, is read as that time on the
+ * row's Date, to the minute. Anything else reads as NaN (unreadable), so a full date-time
+ * on another day can't make a shift days long. Hours are NaN when blank.
  */
 function logEntry(cells, row, cols, read) {
   const H = logHeaderNames();
@@ -838,8 +881,7 @@ function logEntry(cells, row, cols, read) {
   const time = (header) => {
     const value = raw(header);
     if (cellString(value) === "") return NaN;
-    const t = read.time(value);
-    return t && day && t.date === day && typeof t.ms === "number" && isFinite(t.ms) ? t.ms : NaN;
+    return rowTimeMs(read.time(value), day, read);
   };
   return {
     row,
@@ -1207,7 +1249,9 @@ function shiftEndMs(entry) {
 /**
  * The first closed row (earliest start) of this token on date whose times overlap
  * startMs to endMs, or null. Overlap means newIn < oldOut and oldIn < newOut, so shifts
- * that only touch don't overlap. Rows whose start or end can't be read are skipped.
+ * that only touch don't overlap. Rows whose start or end can't be read are skipped, and so
+ * are rows whose end reads before their start (a check-out typed past midnight), which
+ * have no window.
  */
 function findOverlap(entries, token, date, startMs, endMs) {
   let found = null;
@@ -1215,7 +1259,7 @@ function findOverlap(entries, token, date, startMs, endMs) {
     if (!isTokenRow(e, token) || !isStatus(e, "closed") || rowDate(e.dateText) !== date) return;
     const oldIn = shiftStartMs(e);
     const oldOut = shiftEndMs(e);
-    if (!isFinite(oldIn) || !isFinite(oldOut)) return;
+    if (!isFinite(oldIn) || !isFinite(oldOut) || oldOut < oldIn) return;
     if (startMs < oldOut && oldIn < endMs && (!found || oldIn < shiftStartMs(found))) found = e;
   });
   return found;
