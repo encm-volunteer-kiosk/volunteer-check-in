@@ -66,7 +66,7 @@
   position: fixed;
   z-index: -2;
   inset: 0;
-  background: url("/encm-neighborhood-wide.webp") center center / cover no-repeat;
+  background: url("./assets/encm-neighborhood-wide.webp") center center / cover no-repeat;
 }
 .app-shell::after {
   content: "";
@@ -80,11 +80,6 @@
     rgba(255, 250, 240, 0.06) 72%,
     transparent 100%
   );
-}
-.app-shell.screen-welcome::before {
-  bottom: var(--keyboard-dock-height);
-  background-size: 100% 100%;
-  background-position: center bottom;
 }
 
 .header {
@@ -153,6 +148,9 @@
 .name-entry {
   max-width: 840px;
   padding-bottom: 112px;
+}
+.name-entry.is-typing {
+  padding-bottom: 75svh;
 }
 .name-entry > .tagline {
   display: none;
@@ -304,20 +302,11 @@
   cursor: default;
   opacity: 0.42;
 }
-.letter-key {
-  flex: 1 1 0;
-}
 .keyboard-action {
   flex: 1.4 1 0;
   background: #aeb6be !important;
   color: #102231 !important;
   font-size: 15px !important;
-}
-.space-key {
-  flex-grow: 2.25;
-}
-.delete-key {
-  font-weight: 900;
 }
 .time-keyboard .time-key {
   flex: 1 1 0;
@@ -809,6 +798,31 @@
 .checkin-details .arrival-time small {
   font-size: 12px;
 }
+.phone-digits {
+  display: block;
+  width: min(260px, 100%);
+  margin: 0 auto 4px;
+}
+.phone-digits input {
+  width: 100%;
+  min-height: 70px;
+  padding: 4px 14px;
+  border: 2px solid #6ba8c2;
+  border-radius: 12px;
+  background: white;
+  color: var(--navy);
+  text-align: center;
+  letter-spacing: 12px;
+  font-size: 34px;
+  font-weight: 900;
+}
+.phone-digits input::placeholder {
+  color: #c4d3dc;
+}
+.phone-digits input:focus {
+  outline: 4px solid var(--focus);
+  outline-offset: 3px;
+}
 .confirmation-panel.with-keyboard .button-stack {
   grid-template-columns: 1fr 1fr;
   margin-top: 12px;
@@ -849,6 +863,21 @@
 }
 .button:disabled {
   opacity: 0.68;
+}
+.text-button {
+  min-height: 48px;
+  margin-top: 12px;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: var(--blue-dark);
+  font-size: 17px;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.text-button:disabled {
+  opacity: 0.5;
 }
 .error-notice {
   padding: 11px 13px;
@@ -1249,28 +1278,6 @@
   }
   .neighborhood {
     height: 108px;
-  }
-}
-
-@media (min-width: 601px) {
-  .app-shell:has(.welcome) {
-    height: 100svh;
-    height: 100dvh;
-    min-height: 0;
-    overflow: clip;
-  }
-  .app-shell:has(.welcome) .welcome {
-    height: calc(100svh - 92px);
-    height: calc(100dvh - 92px);
-    min-height: 0;
-    overflow: clip;
-  }
-}
-
-@media (orientation: portrait) and (min-width: 601px) and (max-width: 900px) {
-  .app-shell:has(.welcome) .welcome {
-    height: calc(100svh - 104px);
-    height: calc(100dvh - 104px);
   }
 }
 

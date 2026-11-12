@@ -9,6 +9,9 @@ export type Volunteer = {
   currentCheckIn: string | null;
   completedShiftCount: number;
   totalVolunteerMinutes: number;
+  // Shares a first and last name with another volunteer, so the kiosk asks for the last
+  // four digits of their phone number.
+  needsPhoneCheck?: boolean;
 };
 
 export type VolunteerEvent = {
