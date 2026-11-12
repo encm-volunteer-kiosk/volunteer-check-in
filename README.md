@@ -17,7 +17,8 @@ so hours can be credited to each volunteer and reported to grantmakers.
 - **Names**: read from ENCM's existing Volunteer Profiles sheet. The kiosk never writes
   to it. Volunteers who share a name confirm the last four digits of their phone, and the
   digits decide which of them is signed in or out.
-- **Not built yet**: the nightly close of shifts nobody signed out of, and an Hours tab.
+- **Automatic sign-out**: the sheet-bound `scripts/ScheduleUpdate.gs` job fills missing
+  sign-outs after midnight using the Shifts tab (see below). An Hours tab is not built yet.
 
 Team design pages (private; ask Ethan for access):
 
@@ -79,6 +80,56 @@ apps-script/Sheets.js       Log, Settings and Profiles access; setupSheets, setu
 apps-script/SampleData.js   invented Volunteer Profiles rows for development
 apps-script/Index.html      the page doGet serves; a build output, not committed
 scripts/copy-to-gas.mjs     checks the single-file build and copies it into apps-script/
+scripts/ScheduleUpdate.gs  sheet-bound Apps Script for after-midnight sign-out
 tests/                      logic tests
 sample-data/                invented volunteer profiles with the real column headers
 ```
+
+## After-midnight automatic sign-out
+
+`scripts/ScheduleUpdate.gs` is Google Sheets Apps Script, not browser or Node code.
+It uses the workbook's **Log** layout, not the older **2026-11 Log** tab:
+
+- Log G (7): **Arrived at**, read only.
+- Log H (8): **Signed out at**, filled only when blank, as a full date-time.
+- Shifts A (1): **Shifts**, the weekday of the arrival.
+- Shifts B (2): **Shift Schedule**, a label such as Morning or Afternoon, not a time range.
+- Shifts D (4) / E (5): **Start** / **Finish**.
+
+After midnight in the spreadsheet's timezone, the job processes only the previous
+day's arrivals (`DAY_OFFSET: -1`). It ignores seconds when matching: an exact Start
+match wins; otherwise the arrival must be at or after Start and before Finish.
+When windows overlap, the latest Start wins. Duplicate windows are harmless;
+conflicting Finishes with the same winning Start produce a warning and no update.
+An overnight Finish is dated the next day. If no valid window matches (including
+Any schedules with blank times), sign-out is exactly **Arrived at + 3 elapsed hours**.
+No sign-out is written before its calculated time has passed. Existing sign-outs
+and every other Log column, including Hours and Status, are left unchanged.
+
+The job gets its spreadsheet at runtime with `SpreadsheetApp.getActiveSpreadsheet()`;
+no spreadsheet ID configuration is needed. `showSpreadsheetId` logs the detected ID
+without changing cells. Checkout, diagnostics, and trigger setup all report an error
+when no spreadsheet is active instead of falling back to another workbook.
+Use the sheet-bound editor or its installable trigger, not a standalone project.
+
+To install:
+
+1. Open the target spreadsheet, choose **Extensions > Apps Script**, and add
+   `scripts/ScheduleUpdate.gs` to that bound project. This file is not included in
+   `pnpm push`; for a clasp-managed project, include it in that project's synced root
+   before pushing so a deployment does not remove it.
+2. Set `DRY_RUN: true`, run `testCheckoutDiagnostics`, then `updateDailyCheckOuts`.
+   Check the execution logs for the target date, proposed sign-outs, and warnings.
+3. Set `DRY_RUN: false` and run `createCheckoutTrigger` once, authorizing access.
+   It replaces this job's triggers in that project with an hourly trigger. The old
+   `createMidnightTrigger` installer name also installs these hourly retries.
+
+Hourly retries do not sign out today's volunteers: they retry yesterday's blanks
+after midnight so, for example, an unmatched 11:45 PM arrival is left alone at
+12:30 AM and receives a 2:45 AM sign-out on the first run at or after 2:45 AM.
+Apps Script time-based triggers are approximate, not exact-minute alarms.
+Rows older than yesterday are not backfilled automatically. No email or popup
+alert is sent; results and errors appear in the Apps Script execution logs.
+
+Local regression tests mock Google services; production needs no Node dependencies:
+`node --test tests/schedule-update.test.mjs`.

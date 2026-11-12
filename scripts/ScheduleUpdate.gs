@@ -2,45 +2,41 @@
 /**
  * VOLUNTEER DAILY AUTO CHECK-OUT
  *
- * Spreadsheet:
- * 19n0bCTzql5YiOfZ-XxAf4aFo0MVo8kA_P5-LFmM54lc
+ * Uses the spreadsheet bound to this Apps Script project.
  *
  * Shifts:
- *   A (1) = Day
- *   B (2) = Shift Schedule
+ *   A (1) = Shifts (weekday)
+ *   B (2) = Shift Schedule (Morning/Afternoon/etc.)
+ *   D (4) = Start
  *   E (5) = Finish
  *
- * 2026-11 Log:
- *   E (5) = Check-In Recorded
- *   G (7) = Check-Out Recorded
- *   H (8) = Check-Out Stated
+ * Log:
+ *   G (7) = Arrived at (never overwritten)
+ *   H (8) = Signed out at (full date and time)
  *
- * Schedule: Daily during midnight hour
+ * After midnight, process the previous day's blank sign-outs.
+ * Retry hourly so overnight finishes and three-hour fallbacks are not written early.
  */
 
 const CONFIG = Object.freeze({
-  SPREADSHEET_ID:
-    "19n0bCTzql5YiOfZ-XxAf4aFo0MVo8kA_P5-LFmM54lc",
-
-  LOG_SHEET: "2026-11 Log",
+  LOG_SHEET: "Log",
   SHIFTS_SHEET: "Shifts",
 
   // Numeric column indexes (1-based)
   SHIFT_DAY: 1,
   SHIFT_SCHEDULE: 2,
+  SHIFT_START: 4,
   SHIFT_FINISH: 5,
 
-  LOG_CHECKIN: 5,
-  LOG_CHECKOUT_RECORDED: 7,
-  LOG_CHECKOUT_STATED: 8,
+  LOG_CHECKIN: 7,
+  LOG_CHECKOUT: 8,
 
   HEADER_ROWS: 1,
 
   // -1 = previous day; 0 = current day
   DAY_OFFSET: -1,
 
-  // Allow early check-in up to 2 hours.
-  EARLY_CHECKIN_MINUTES: 120,
+  FALLBACK_HOURS: 3,
 
   // TRUE = Preview only, FALSE = Write changes
   DRY_RUN: false,
@@ -66,14 +62,15 @@ function updateDailyCheckOuts() {
   const counts = {
     shiftsRead: 0,
     shiftsDayMatched: 0,
-    completedShifts: 0,
+    usableShifts: 0,
     logRowsRead: 0,
     existingCheckout: 0,
     missingCheckIn: 0,
     differentDate: 0,
     invalidCheckInTime: 0,
-    noShiftMatch: 0,
+    fallbacks: 0,
     ambiguous: 0,
+    notDue: 0,
     eligible: 0,
     updated: 0,
     previews: 0,
@@ -108,21 +105,20 @@ function updateDailyCheckOuts() {
   log("INFO", "START", {
     functionName: "updateDailyCheckOuts",
     startedAt: startedAt.toISOString(),
-    spreadsheetId: CONFIG.SPREADSHEET_ID,
     logSheet: CONFIG.LOG_SHEET,
     shiftsSheet: CONFIG.SHIFTS_SHEET,
     dayOffset: CONFIG.DAY_OFFSET,
-    earlyCheckinMinutes: CONFIG.EARLY_CHECKIN_MINUTES,
+    fallbackHours: CONFIG.FALLBACK_HOURS,
     dryRun: CONFIG.DRY_RUN,
     debugRows: CONFIG.DEBUG_ROWS,
     verifyWrites: CONFIG.VERIFY_WRITES,
     columnIndexes: {
       shiftDay: CONFIG.SHIFT_DAY,
       shiftSchedule: CONFIG.SHIFT_SCHEDULE,
+      shiftStart: CONFIG.SHIFT_START,
       shiftFinish: CONFIG.SHIFT_FINISH,
       logCheckIn: CONFIG.LOG_CHECKIN,
-      logCheckOutRecorded: CONFIG.LOG_CHECKOUT_RECORDED,
-      logCheckOutStated: CONFIG.LOG_CHECKOUT_STATED
+      logCheckOut: CONFIG.LOG_CHECKOUT
     }
   });
 
@@ -137,7 +133,7 @@ function updateDailyCheckOuts() {
     log("INFO", "LOCK_ACQUIRED");
 
     currentPhase = "OPEN_SHEETS";
-    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+    const ss = getCheckoutSpreadsheet_();
     const logSheet = ss.getSheetByName(CONFIG.LOG_SHEET);
     const shiftSheet = ss.getSheetByName(CONFIG.SHIFTS_SHEET);
     if (!logSheet || !shiftSheet) {
@@ -160,6 +156,7 @@ function updateDailyCheckOuts() {
     ];
     const currentLocal = Utilities.formatDate(now, timezone, "yyyy-MM-dd HH:mm");
     log("INFO", "SHEETS_OPENED", {
+      spreadsheetId: ss.getId(),
       spreadsheetName: ss.getName(),
       timezone: timezone,
       shiftsLastRow: shiftSheet.getLastRow(),
@@ -189,39 +186,62 @@ function updateDailyCheckOuts() {
       logColumns: logs[0] ? logs[0].length : 0
     });
 
-    if (shifts.length <= CONFIG.HEADER_ROWS || logs.length <= CONFIG.HEADER_ROWS) {
+    if (logs.length <= CONFIG.HEADER_ROWS) {
       log("WARN", "NO_DATA", {
-        reason: "At least one sheet has no data rows after the header."
+        reason: "Log has no data rows after the header."
       });
       return;
     }
     const shiftDayIdx = CONFIG.SHIFT_DAY - 1;
     const scheduleIdx = CONFIG.SHIFT_SCHEDULE - 1;
+    const startIdx = CONFIG.SHIFT_START - 1;
     const finishIdx = CONFIG.SHIFT_FINISH - 1;
     const checkinIdx = CONFIG.LOG_CHECKIN - 1;
-    const recordedIdx = CONFIG.LOG_CHECKOUT_RECORDED - 1;
-    const statedIdx = CONFIG.LOG_CHECKOUT_STATED - 1;
+    const checkoutIdx = CONFIG.LOG_CHECKOUT - 1;
     if (
       shiftText[0].length < Math.max(
-        CONFIG.SHIFT_DAY, CONFIG.SHIFT_SCHEDULE, CONFIG.SHIFT_FINISH
+        CONFIG.SHIFT_DAY, CONFIG.SHIFT_SCHEDULE, CONFIG.SHIFT_START,
+        CONFIG.SHIFT_FINISH
       ) ||
       logs[0].length < Math.max(
-        CONFIG.LOG_CHECKIN, CONFIG.LOG_CHECKOUT_RECORDED,
-        CONFIG.LOG_CHECKOUT_STATED
+        CONFIG.LOG_CHECKIN, CONFIG.LOG_CHECKOUT
       )
     ) {
       throw new Error("One or more configured columns do not exist.");
     }
+    [
+      [CONFIG.SHIFTS_SHEET, shiftText[0], [
+        [CONFIG.SHIFT_DAY, "Shifts"],
+        [CONFIG.SHIFT_SCHEDULE, "Shift Schedule"],
+        [CONFIG.SHIFT_START, "Start"],
+        [CONFIG.SHIFT_FINISH, "Finish"]
+      ]],
+      [CONFIG.LOG_SHEET, logs[0], [
+        [CONFIG.LOG_CHECKIN, "Arrived at"],
+        [CONFIG.LOG_CHECKOUT, "Signed out at"]
+      ]]
+    ].forEach(([sheetName, headers, columns]) => {
+      columns.forEach(([column, expected]) => {
+        const actual = String(headers[column - 1]).trim().replace(/\s+/g, " ");
+        if (actual.toLowerCase() !== expected.toLowerCase()) {
+          throw new Error(
+            sheetName + " column " + column + ' must be "' + expected +
+            '", not "' + actual + '".'
+          );
+        }
+      });
+    });
     log("INFO", "COLUMN_VALIDATION_PASSED");
 
-    currentPhase = "COLLECT_COMPLETED_SHIFTS";
-    const completedShifts = [];
+    currentPhase = "COLLECT_DAY_SHIFTS";
+    const dayShifts = [];
     for (let i = CONFIG.HEADER_ROWS; i < shifts.length; i++) {
       const shiftRow = i + 1;
       counts.shiftsRead++;
       const dayValue = shifts[i][shiftDayIdx];
       const dayText = String(shiftText[i][shiftDayIdx]).trim().toLowerCase();
       const scheduleText = shiftText[i][scheduleIdx];
+      const startText = shiftText[i][startIdx];
       const finishText = shiftText[i][finishIdx];
       let isTargetDay =
         dayText === targetDay.toLowerCase() ||
@@ -233,7 +253,8 @@ function updateDailyCheckOuts() {
       }
       debug("SHIFT_ROW_READ", {
         shiftRow: shiftRow, dayRaw: describe(dayValue), dayDisplayed: dayText,
-        scheduleDisplayed: scheduleText, finishDisplayed: finishText,
+        scheduleDisplayed: scheduleText, startDisplayed: startText,
+        finishDisplayed: finishText,
         targetDay: targetDay, isTargetDay: isTargetDay
       });
       if (!isTargetDay) {
@@ -241,10 +262,10 @@ function updateDailyCheckOuts() {
         continue;
       }
       counts.shiftsDayMatched++;
-      const schedule = parseSchedule(scheduleText);
-      if (!schedule) {
+      const startMinutes = parseTime(startText);
+      if (startMinutes === null) {
         log("WARN", "SHIFT_SKIPPED", {
-          shiftRow: shiftRow, reason: "INVALID_SCHEDULE", scheduleDisplayed: scheduleText
+          shiftRow: shiftRow, reason: "INVALID_START_TIME", startDisplayed: startText
         });
         continue;
       }
@@ -255,43 +276,38 @@ function updateDailyCheckOuts() {
         });
         continue;
       }
-      const overnight = finishMinutes <= schedule.start;
+      const overnight = finishMinutes <= startMinutes;
       const endMinutes = finishMinutes + (overnight ? 1440 : 0);
       const finishDate = overnight ? addDays(targetDate, 1) : targetDate;
       const scheduledFinish = finishDate + " " + formatMinutes(finishMinutes);
+      const checkout = Utilities.parseDate(
+        scheduledFinish, timezone, "yyyy-MM-dd HH:mm"
+      );
       debug("SHIFT_MATCHED_DAY", {
         shiftRow: shiftRow,
-        startMinutes: schedule.start,
-        scheduleEndMinutes: schedule.end,
+        startMinutes: startMinutes,
         finishMinutes: finishMinutes,
         overnight: overnight,
         scheduledFinish: scheduledFinish,
         currentLocal: currentLocal,
-        isCompleted: scheduledFinish <= currentLocal
+        isCompleted: checkout.getTime() <= now.getTime()
       });
-      if (scheduledFinish > currentLocal) {
-        debug("SHIFT_SKIPPED", {
-          shiftRow: shiftRow, reason: "SHIFT_NOT_FINISHED",
-          scheduledFinish: scheduledFinish, currentLocal: currentLocal
-        });
-        continue;
-      }
-      completedShifts.push({
-        start: schedule.start,
+      dayShifts.push({
+        start: startMinutes,
         end: endMinutes,
-        finishMinutes: finishMinutes,
+        checkout: checkout,
         shiftRow: shiftRow
       });
-      counts.completedShifts++;
-      log("INFO", "COMPLETED_SHIFT_ADDED", {
+      counts.usableShifts++;
+      log("INFO", "DAY_SHIFT_ADDED", {
         shiftRow: shiftRow, scheduledFinish: scheduledFinish,
-        startMinutes: schedule.start, endMinutes: endMinutes
+        startMinutes: startMinutes, endMinutes: endMinutes
       });
     }
     log("INFO", "SHIFT_COLLECTION_SUMMARY", {
       shiftsRead: counts.shiftsRead,
       shiftsDayMatched: counts.shiftsDayMatched,
-      completedShifts: completedShifts.length
+      usableShifts: dayShifts.length
     });
 
     currentPhase = "PROCESS_LOG_ROWS";
@@ -301,22 +317,18 @@ function updateDailyCheckOuts() {
       currentRow = logRow;
       counts.logRowsRead++;
       const checkin = row[checkinIdx];
-      const existingRecorded = row[recordedIdx];
-      const existingStated = row[statedIdx];
+      const existingCheckout = row[checkoutIdx];
       debug("LOG_ROW_READ", {
         logRow: logRow, checkInColumn: CONFIG.LOG_CHECKIN,
         checkInRaw: describe(checkin),
-        recordedColumn: CONFIG.LOG_CHECKOUT_RECORDED,
-        recordedRaw: describe(existingRecorded),
-        statedColumn: CONFIG.LOG_CHECKOUT_STATED,
-        statedRaw: describe(existingStated)
+        checkoutColumn: CONFIG.LOG_CHECKOUT,
+        checkoutRaw: describe(existingCheckout)
       });
-      // Preserve any existing checkout; same behavior as original.
-      if (!isBlank(existingStated) || !isBlank(existingRecorded)) {
+      if (!isBlank(existingCheckout)) {
         counts.existingCheckout++;
         debug("LOG_ROW_SKIPPED", {
           logRow: logRow, reason: "CHECKOUT_ALREADY_PRESENT",
-          recorded: describe(existingRecorded), stated: describe(existingStated)
+          checkout: describe(existingCheckout)
         });
         continue;
       }
@@ -347,30 +359,26 @@ function updateDailyCheckOuts() {
         });
         continue;
       }
-      const candidates = completedShifts.filter(shift => {
-        const earliest = shift.start - CONFIG.EARLY_CHECKIN_MINUTES;
-        const inWindow = checkinMinutes >= earliest && checkinMinutes <= shift.end;
+      const candidates = dayShifts.filter(shift => {
+        const inWindow = checkinMinutes >= shift.start && checkinMinutes < shift.end;
         debug("SHIFT_CANDIDATE_COMPARISON", {
           logRow: logRow, shiftRow: shift.shiftRow,
           checkInTime: checkinTime, checkInMinutes: checkinMinutes,
-          earliestMinutes: earliest, shiftEndMinutes: shift.end,
+          shiftStartMinutes: shift.start, shiftEndMinutes: shift.end,
           inWindow: inWindow
         });
         return inWindow;
       });
+      const exactStarts = candidates.filter(shift => shift.start === checkinMinutes);
+      const preferred = exactStarts.length ? exactStarts : candidates;
+      const latestStart = preferred.length
+        ? Math.max(...preferred.map(shift => shift.start))
+        : null;
       const uniqueShifts = new Map();
-      candidates.forEach(shift => {
-        const key = shift.start + "|" + shift.end + "|" + shift.finishMinutes;
+      preferred.filter(shift => shift.start === latestStart).forEach(shift => {
+        const key = shift.start + "|" + shift.end;
         if (!uniqueShifts.has(key)) uniqueShifts.set(key, shift);
       });
-      if (uniqueShifts.size === 0) {
-        counts.noShiftMatch++;
-        debug("LOG_ROW_SKIPPED", {
-          logRow: logRow, reason: "NO_MATCHING_COMPLETED_SHIFT",
-          checkInTime: checkinTime, completedShifts: completedShifts.length
-        });
-        continue;
-      }
       if (uniqueShifts.size > 1) {
         counts.ambiguous++;
         log("WARN", "LOG_ROW_SKIPPED", {
@@ -379,20 +387,33 @@ function updateDailyCheckOuts() {
         });
         continue;
       }
-      const matchedShift = [...uniqueShifts.values()][0];
-      const checkoutTimeValue = matchedShift.finishMinutes / 1440;
-      const timestamp = new Date();
+      const matchedShift = uniqueShifts.size ? [...uniqueShifts.values()][0] : null;
+      const checkout = matchedShift
+        ? matchedShift.checkout
+        : new Date(checkin.getTime() + CONFIG.FALLBACK_HOURS * 60 * 60 * 1000);
+      if (!matchedShift) {
+        counts.fallbacks++;
+        log("INFO", "FALLBACK_CHECKOUT_SELECTED", {
+          logRow: logRow, reason: "NO_MATCHING_SHIFT",
+          checkInTime: checkinTime, fallbackHours: CONFIG.FALLBACK_HOURS,
+          proposedCheckout: checkout.toISOString()
+        });
+      }
+      if (checkout.getTime() > now.getTime()) {
+        counts.notDue++;
+        log("INFO", "LOG_ROW_SKIPPED", {
+          logRow: logRow, reason: "CHECKOUT_NOT_DUE",
+          proposedCheckout: checkout.toISOString(), currentTime: now.toISOString()
+        });
+        continue;
+      }
       counts.eligible++;
       log("INFO", "BEFORE_UPDATE", {
-        logRow: logRow, matchedShiftRow: matchedShift.shiftRow,
-        currentRecordedColumn: CONFIG.LOG_CHECKOUT_RECORDED,
-        currentRecorded: describe(existingRecorded),
-        currentStatedColumn: CONFIG.LOG_CHECKOUT_STATED,
-        currentStated: describe(existingStated),
-        proposedStatedTime: formatMinutes(matchedShift.finishMinutes),
-        proposedStatedNumericValue: checkoutTimeValue,
-        proposedRecordedTimestamp: Utilities.formatDate(
-          timestamp, timezone, "yyyy-MM-dd HH:mm:ss"
+        logRow: logRow, matchedShiftRow: matchedShift ? matchedShift.shiftRow : null,
+        checkoutColumn: CONFIG.LOG_CHECKOUT,
+        currentCheckout: describe(existingCheckout),
+        proposedCheckout: Utilities.formatDate(
+          checkout, timezone, "yyyy-MM-dd HH:mm:ss"
         ),
         mode: CONFIG.DRY_RUN ? "DRY_RUN" : "LIVE"
       });
@@ -404,44 +425,27 @@ function updateDailyCheckOuts() {
         continue;
       }
       currentPhase = "WRITE_CHECKOUT";
-      // Original write order retained: H first, then G.
-      logSheet.getRange(logRow, CONFIG.LOG_CHECKOUT_STATED)
-        .setValue(checkoutTimeValue)
-        .setNumberFormat("h:mm AM/PM");
-      logSheet.getRange(logRow, CONFIG.LOG_CHECKOUT_RECORDED)
-        .setValue(timestamp)
-        .setNumberFormat("yyyy-mm-dd hh:mm:ss");
+      logSheet.getRange(logRow, CONFIG.LOG_CHECKOUT)
+        .setValue(checkout)
+        .setNumberFormat("yyyy-mm-dd h:mm am/pm");
       log("INFO", "WRITE_SUBMITTED", {
-        logRow: logRow, statedColumn: CONFIG.LOG_CHECKOUT_STATED,
-        recordedColumn: CONFIG.LOG_CHECKOUT_RECORDED
+        logRow: logRow, checkoutColumn: CONFIG.LOG_CHECKOUT
       });
       if (CONFIG.VERIFY_WRITES) {
         currentPhase = "VERIFY_CHECKOUT";
         SpreadsheetApp.flush();
-        const actualStated = logSheet.getRange(logRow, CONFIG.LOG_CHECKOUT_STATED);
-        const actualRecorded = logSheet.getRange(logRow, CONFIG.LOG_CHECKOUT_RECORDED);
-        const statedRaw = actualStated.getValue();
-        const recordedRaw = actualRecorded.getValue();
-        // Time-formatted Sheets cells can read back as Date objects or numbers.
-        // Compare their displayed clock time to the intended finish time.
-        const statedDisplayed = actualStated.getDisplayValue();
-        const statedDisplayMinutes = parseTime(statedDisplayed);
-        const statedMatches = statedDisplayMinutes === matchedShift.finishMinutes ||
-          (typeof statedRaw === "number" &&
-            Math.abs(statedRaw - checkoutTimeValue) < 1e-9);
-        const recordedMatches = recordedRaw instanceof Date &&
-          !isNaN(recordedRaw.getTime()) &&
-          Math.abs(recordedRaw.getTime() - timestamp.getTime()) <= 1000;
+        const actualCheckout = logSheet.getRange(logRow, CONFIG.LOG_CHECKOUT);
+        const checkoutRaw = actualCheckout.getValue();
+        const checkoutMatches = checkoutRaw instanceof Date &&
+          !isNaN(checkoutRaw.getTime()) &&
+          Math.abs(checkoutRaw.getTime() - checkout.getTime()) <= 1000;
         log("INFO", "AFTER_UPDATE", {
           logRow: logRow,
-          statedRaw: describe(statedRaw),
-          statedDisplayed: statedDisplayed,
-          recordedRaw: describe(recordedRaw),
-          recordedDisplayed: actualRecorded.getDisplayValue(),
-          statedMatches: statedMatches,
-          recordedMatches: recordedMatches
+          checkoutRaw: describe(checkoutRaw),
+          checkoutDisplayed: actualCheckout.getDisplayValue(),
+          checkoutMatches: checkoutMatches
         });
-        if (!statedMatches || !recordedMatches) {
+        if (!checkoutMatches) {
           throw new Error(
             "Checkout write verification failed at log row " + logRow +
             ". Review AFTER_UPDATE log for actual cell values."
@@ -454,7 +458,7 @@ function updateDailyCheckOuts() {
       }
       counts.updated++;
       log("INFO", "ROW_UPDATE_SUCCESS", {
-        logRow: logRow, matchedShiftRow: matchedShift.shiftRow
+        logRow: logRow, matchedShiftRow: matchedShift ? matchedShift.shiftRow : null
       });
       currentPhase = "PROCESS_LOG_ROWS";
     }
@@ -463,8 +467,8 @@ function updateDailyCheckOuts() {
       mode: CONFIG.DRY_RUN ? "DRY_RUN" : "LIVE",
       ...counts,
       skipped: counts.existingCheckout + counts.missingCheckIn +
-        counts.differentDate + counts.invalidCheckInTime + counts.noShiftMatch +
-        counts.ambiguous,
+        counts.differentDate + counts.invalidCheckInTime + counts.ambiguous +
+        counts.notDue,
       durationMs: Date.now() - startedAt.getTime()
     });
   } catch (error) {
@@ -488,12 +492,30 @@ function updateDailyCheckOuts() {
   }
 }
 
+function getCheckoutSpreadsheet_() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  if (!spreadsheet) {
+    throw new Error(
+      "No active spreadsheet. Open the sheet, choose Extensions > Apps Script, " +
+      "and run this script from that sheet-bound project."
+    );
+  }
+  return spreadsheet;
+}
+
+/** Run from a sheet-bound project to log its spreadsheet ID without changing cells. */
+function showSpreadsheetId() {
+  const spreadsheet = getCheckoutSpreadsheet_();
+  console.log("[SCHEDULE_CHECKOUT] SPREADSHEET_ID " +
+    JSON.stringify({ spreadsheetId: spreadsheet.getId() }));
+}
+
 /**
  * Diagnostic-only preflight. Does not update the sheet.
  */
 function testCheckoutDiagnostics() {
   console.log("[SCHEDULE_CHECKOUT] DIAGNOSTIC_PREFLIGHT_START");
-  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const ss = getCheckoutSpreadsheet_();
   [CONFIG.SHIFTS_SHEET, CONFIG.LOG_SHEET].forEach(name => {
     const sheet = ss.getSheetByName(name);
     if (!sheet) throw new Error("Missing worksheet: " + name);
@@ -502,7 +524,7 @@ function testCheckoutDiagnostics() {
         columns: sheet.getLastColumn() }));
   });
   console.log("[SCHEDULE_CHECKOUT] DIAGNOSTIC_PREFLIGHT_END " +
-    JSON.stringify({ timezone: ss.getSpreadsheetTimeZone(),
+    JSON.stringify({ spreadsheetId: ss.getId(), timezone: ss.getSpreadsheetTimeZone(),
       dayOffset: CONFIG.DAY_OFFSET, dryRun: CONFIG.DRY_RUN }));
 }
 
@@ -562,42 +584,6 @@ function parseTime(value) {
 
 
 /**
- * Parse Shift Schedule column B.
- *
- * Supported:
- * 9:00 AM - 1:00 PM
- * 09:00 - 13:00
- * 2 PM to 6 PM
- */
-function parseSchedule(value) {
-
-  const timePattern =
-    String.raw`\d{1,2}(?::\d{2})?\s*(?:AM|PM)?`;
-
-  const regex = new RegExp(
-    "^\\s*(" + timePattern + ")" +
-    "\\s*(?:-|–|—|to)\\s*" +
-    "(" + timePattern + ")\\s*$",
-    "i"
-  );
-
-  const match = String(value).trim()
-    .match(regex);
-
-  if (!match) return null;
-
-  const start = parseTime(match[1]);
-  const end = parseTime(match[2]);
-
-  if (start === null || end === null) {
-    return null;
-  }
-
-  return { start, end };
-}
-
-
-/**
  * Add calendar days safely using UTC date math.
  */
 function addDays(dateString, days) {
@@ -638,9 +624,10 @@ function formatMinutes(totalMinutes) {
 // ============================================
 
 /**
- * Run ONCE to install daily midnight trigger.
+ * Run ONCE to replace this job's triggers with hourly previous-day retries.
  */
-function createMidnightTrigger() {
+function createCheckoutTrigger() {
+  const spreadsheet = getCheckoutSpreadsheet_();
 
   const functionName = "updateDailyCheckOuts";
 
@@ -658,12 +645,18 @@ function createMidnightTrigger() {
 
   ScriptApp.newTrigger(functionName)
     .timeBased()
-    .atHour(0)
-    .everyDays(1)
+    .everyHours(1)
     .create();
 
   console.log("[SCHEDULE_CHECKOUT] TRIGGER_CREATED " + JSON.stringify({
-    functionName: functionName, schedule: "daily during midnight hour",
+    functionName: functionName,
+    spreadsheetId: spreadsheet.getId(),
+    schedule: "hourly; previous-day arrivals only; wait until checkout is due",
     timestamp: new Date().toISOString()
   }));
+}
+
+/** Legacy installer name; hourly retries also cover finishes after midnight. */
+function createMidnightTrigger() {
+  createCheckoutTrigger();
 }
