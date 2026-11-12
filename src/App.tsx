@@ -129,8 +129,19 @@ function BackButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+/**
+ * Checked in today. A known arrival must be dated today. With none, the server's flag
+ * decides: it is set for an open row dated today whose check-in time can't be read, so
+ * that volunteer still reaches check-out.
+ */
+function isCheckedIn(volunteer: Volunteer) {
+  return volunteer.currentCheckIn
+    ? isToday(volunteer.currentCheckIn)
+    : Boolean(volunteer.checkedIn);
+}
+
 function VolunteerCard({ volunteer, onClick }: { volunteer: Volunteer; onClick: () => void }) {
-  const checkedIn = Boolean(volunteer.currentCheckIn && isToday(volunteer.currentCheckIn));
+  const checkedIn = isCheckedIn(volunteer);
   return (
     <button
       className={`volunteer-card${checkedIn ? " is-checked-in" : ""}`}
@@ -520,10 +531,12 @@ function Confirmation({
                 {phoneStep === "entry" &&
                   " Please enter the last four digits of your phone number."}
               </>
-            ) : checkout ? (
+            ) : checkout && volunteer.currentCheckIn ? (
               <>
-                You checked in today at <strong>{formatTime(volunteer.currentCheckIn!)}</strong>.
+                You checked in today at <strong>{formatTime(volunteer.currentCheckIn)}</strong>.
               </>
+            ) : checkout ? (
+              "You're checked in today."
             ) : (
               "Just making sure we have the right neighbor."
             )}
@@ -861,17 +874,17 @@ const nameKey = (v: Volunteer) =>
  * The earliest check-out time the server could accept for this entry, in milliseconds: the
  * stated arrival of its open shift today. For an entry in a same-name group the digits may
  * pick any member, so it is the earliest arrival among the group's checked-in members; the
- * server checks the real one. null when no member is checked in today.
+ * server checks the real one. null when no member is checked in today, and null when a
+ * checked-in member's check-in time can't be read: the server then checks no lower bound,
+ * so the page offers no picker and the server's clock gives the check-out time.
  */
 function checkOutLowerBound(volunteer: Volunteer, volunteers: Volunteer[]) {
   const group = volunteer.needsPhoneCheck
     ? volunteers.filter((v) => v.id === volunteer.id || nameKey(v) === nameKey(volunteer))
     : [volunteer];
-  const arrivals = group
-    .map((v) =>
-      v.currentCheckIn && isToday(v.currentCheckIn) ? Date.parse(v.currentCheckIn) : NaN,
-    )
-    .filter(Number.isFinite);
+  const checkedIn = group.filter(isCheckedIn);
+  if (checkedIn.some((v) => !v.currentCheckIn)) return null;
+  const arrivals = checkedIn.map((v) => Date.parse(v.currentCheckIn!));
   return arrivals.length ? Math.min(...arrivals) : null;
 }
 
@@ -1016,9 +1029,7 @@ export default function App() {
     setCheckOutPicker(false);
     setPhoneStep(volunteer.needsPhoneCheck ? "entry" : null);
     setPhoneDigits("");
-    setScreen(
-      volunteer.currentCheckIn && isToday(volunteer.currentCheckIn) ? "checkout" : "confirm",
-    );
+    setScreen(isCheckedIn(volunteer) ? "checkout" : "confirm");
   };
 
   const applyCode = (next: string | null) => {

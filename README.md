@@ -100,9 +100,9 @@ The kiosk writes these alerts here and nothing else:
 - `check-out differs by N min`, at check-out, when the stated check-out is more than
   "Check-out flag minutes" (Settings) from the tap.
 - `check-in time unreadable, stated hours left blank`, at check-out, when someone has
-  edited the row's check-in times into something the kiosk can't read. The row still
-  closes, with blank hours, and counts as a shift of 0 hours until staff fix the times
-  and hours by hand.
+  edited the row's check-in times into something the kiosk can't read. The tablet still
+  shows the volunteer as checked in, and the row still closes at check-out, with blank
+  hours, and counts as a shift of 0 hours until staff fix the times and hours by hand.
 
 Check-out adds its alert after whatever the cell holds, joined with `; `. Text staff typed
 there is kept.
@@ -141,7 +141,10 @@ After the phone step (for volunteers who share a name), the check-out screen sho
 to check out earlier? Change your check-out time". It opens the same hour, minute and
 AM/PM buttons as the arrival picker, in 15-minute steps, and disables times later than now
 or earlier than the volunteer's stated arrival. The link shows only when at least one
-quarter-hour (:00, :15, :30, :45) falls between the stated arrival and now.
+quarter-hour (:00, :15, :30, :45) falls between the stated arrival and now. It doesn't
+show when the open row's check-in time can't be read (or, for volunteers who share a name,
+any of their open rows'): there is no arrival to start from, so Check Out uses the
+server's clock.
 
 The server refuses a check-out time that is:
 

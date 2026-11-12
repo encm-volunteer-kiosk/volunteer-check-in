@@ -24,9 +24,11 @@ function apiCheckAccess(code) {
 }
 
 /**
- * {ok: true, volunteers: [{id, firstName, lastName, openShiftArrival, needsPhoneCheck}]}.
- * openShiftArrival is the ISO stated arrival of the volunteer's open row dated today,
- * else null. id is the hashed Volunteer ID; the raw User Token never leaves the server.
+ * {ok: true, volunteers: [{id, firstName, lastName, checkedIn, openShiftArrival,
+ * needsPhoneCheck}]}. checkedIn is true when the volunteer has an open row dated today.
+ * openShiftArrival is the ISO stated arrival of that row, else null; it is also null when
+ * the row's check-in time can't be read, and the volunteer is still checked in. id is
+ * the hashed Volunteer ID; the raw User Token never leaves the server.
  */
 function apiListVolunteers(code) {
   const denied = accessRefusal_(code);

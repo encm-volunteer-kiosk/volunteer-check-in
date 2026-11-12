@@ -21,6 +21,9 @@ export type VolunteerSummary = {
   id: string;
   firstName: string;
   lastName: string;
+  // An open row dated today: the server's own test, true even when that row's check-in
+  // time can't be read and openShiftArrival is null.
+  checkedIn: boolean;
   openShiftArrival: string | null;
   needsPhoneCheck: boolean;
 };
@@ -70,6 +73,7 @@ export function toVolunteer(summary: VolunteerSummary): Volunteer {
     firstName: summary.firstName,
     lastName: summary.lastName,
     currentCheckIn: summary.openShiftArrival,
+    checkedIn: summary.checkedIn,
     active: true,
     expectedToday: false,
     completedShiftCount: 0,
@@ -243,6 +247,7 @@ export const localApi: KioskApi & { reset(): void } = {
         id: v.id,
         firstName: v.firstName,
         lastName: v.lastName,
+        checkedIn: Boolean(v.currentCheckIn && isToday(v.currentCheckIn)),
         openShiftArrival: v.currentCheckIn && isToday(v.currentCheckIn) ? v.currentCheckIn : null,
         needsPhoneCheck: sharesName(data, v),
       }));

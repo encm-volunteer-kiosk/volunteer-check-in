@@ -937,7 +937,12 @@ function closedTotals(entries, token) {
   return { shifts, minutes };
 }
 
-/** The list the page gets: the hashed ID only, and no phone, start date, token or row. */
+/**
+ * The list the page gets: the hashed ID only, and no phone, start date, token or row.
+ * checkedIn is the test check-in and check-out use, an open row dated today, so it holds
+ * even when that row's start can't be read. openShiftArrival is that row's start, or null
+ * when there is no such row or its start can't be read.
+ */
 function volunteerSummaries(volunteers, entries, todayDate) {
   return volunteers.map((v) => {
     const open = findOpenShiftToday(entries, v.token, todayDate);
@@ -946,6 +951,7 @@ function volunteerSummaries(volunteers, entries, todayDate) {
       id: v.id,
       firstName: v.firstName,
       lastName: v.lastName,
+      checkedIn: Boolean(open),
       openShiftArrival: isFinite(startMs) ? new Date(startMs).toISOString() : null,
       needsPhoneCheck: v.needsPhoneCheck,
     };

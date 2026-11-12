@@ -1036,6 +1036,7 @@ test("volunteerSummaries gives only today's open arrival and no private fields",
       id: ID,
       firstName: "Sam",
       lastName: "Lee",
+      checkedIn: true,
       openShiftArrival: new Date(NOW - HOUR).toISOString(),
       needsPhoneCheck: true,
     },
@@ -1043,6 +1044,7 @@ test("volunteerSummaries gives only today's open arrival and no private fields",
       id: "bbbbbbbbbbbbbbbb",
       firstName: "Ruth",
       lastName: "Okafor",
+      checkedIn: false,
       openShiftArrival: null,
       needsPhoneCheck: false,
     },
@@ -1311,6 +1313,40 @@ test("decideCheckOut on a row with no readable start closes it with blank hours 
   assert.equal(out.cells[H.status], "closed");
   assert.equal(out.cells[H.alerts], "check-out differs by 240 min; " + L.unreadableStartAlert());
   assert.equal(out.minutes, 0);
+});
+
+test("an open row today with both check-in times unreadable still shows as checked in and closes at check-out", () => {
+  // Staff typed a bare time into both check-in cells, which stores it on 1899-12-30.
+  const timeOnly = new Date("1899-12-30T15:00:00Z");
+  const cells = closedRow(LOG_HEADERS, {
+    "Check-In Recorded (timestamp)": timeOnly,
+    "Check-In Stated (user)": timeOnly,
+    "Check-Out Recorded (timestamp)": "",
+    "Check-Out Stated (user)": "",
+    "Hours Served (timestamps)": "",
+    "Hours Served (stated)": "",
+    "Admin Alerts?": "",
+    "User Token": TOKEN,
+    Status: "open",
+    "Check-Out Entered By": "",
+  });
+  const open = L.logEntry(cells, 9, L.logColumns(LOG_HEADERS), READ);
+  assert.equal(L.hasReadableStart(open), false);
+  // The list says checked in, by the same test check-in uses, with no arrival to show.
+  const [summary] = plain(L.volunteerSummaries([VOL], [open], TODAY));
+  assert.equal(summary.checkedIn, true);
+  assert.equal(summary.openShiftArrival, null);
+  assert.deepEqual(checkIn({ entries: [open], arrivedMs: null, arrivedDate: "" }), {
+    refusal: "ALREADY_IN",
+  });
+  // The tablet sends no check-out time, so the server's clock is used and the row closes.
+  const out = checkOut({ entries: [open] });
+  assert.equal(out.refusal, undefined);
+  assert.equal(out.row, 9);
+  assert.equal(out.cells[H.status], "closed");
+  assert.equal(out.cells[H.statedOut], NOW);
+  assert.equal(out.cells[H.statedHours], "");
+  assert.equal(out.cells[H.alerts], L.unreadableStartAlert());
 });
 
 test("decideCheckOut refuses in order", () => {

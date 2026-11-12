@@ -7,6 +7,9 @@ export type Volunteer = {
   active: boolean;
   expectedToday: boolean;
   currentCheckIn: string | null;
+  // From the server's list: checked in today, even when the open row's check-in time can't
+  // be read (currentCheckIn is then null).
+  checkedIn?: boolean;
   completedShiftCount: number;
   totalVolunteerMinutes: number;
   // Shares a first and last name with another volunteer, so the kiosk asks for the last
