@@ -718,6 +718,43 @@ function missingLogHeaders(headerRow) {
   return requiredLogHeaders().filter((h) => logHeaderIndexes(headerRow, h).length === 0);
 }
 
+/**
+ * The header cells setupSheets writes in row 1 of the Log, as [{col (1-based), header}].
+ * An empty row gets the full logHeaders() from column A. Otherwise each required header
+ * the row lacks, and Notes when it has no Notes column, goes into the empty cells to the
+ * right of the last header, in logHeaders() order. Notes is added because an admin note
+ * can't be written without it, and the error for that says to run setupSheets. Only empty
+ * cells are named, so a row that has every header gets nothing. An old-layout row is not
+ * handled here: setupSheets moves that tab aside and starts a new one.
+ */
+function logHeaderWrites(headerRow) {
+  let last = -1;
+  headerRow.forEach((cell, i) => {
+    if (cellString(cell) !== "") last = i;
+  });
+  if (last < 0) return logHeaders().map((header, i) => ({ col: i + 1, header }));
+  const notes = logHeaderNames().notes;
+  const missing = missingLogHeaders(headerRow);
+  const wanted = logHeaders().filter(
+    (h) => missing.indexOf(h) >= 0 || (h === notes && logHeaderIndexes(headerRow, h).length === 0),
+  );
+  return wanted.map((header, i) => ({ col: last + 2 + i, header }));
+}
+
+/**
+ * The number format each kiosk column of a Log header row gets, as [{col (1-based),
+ * kind}] in column order, with kind as in logColumnKinds(). Every column headed with a
+ * kiosk header gets one; columns with other headers are staff's and left alone.
+ */
+function logColumnFormats(headerRow) {
+  const kinds = logColumnKinds();
+  const formats = [];
+  logHeaders().forEach((h) =>
+    logHeaderIndexes(headerRow, h).forEach((i) => formats.push({ col: i + 1, kind: kinds[h] })),
+  );
+  return formats.sort((a, b) => a.col - b.col);
+}
+
 function missingLogColumnError(header) {
   return new Error('The Log has no "' + normalizeHeader(header) + '" column. Run setupSheets().');
 }
