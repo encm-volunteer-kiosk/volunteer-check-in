@@ -43,13 +43,14 @@ to fix it quietly.
    https://script.google.com/home/usersettings
 4. Sign in: `clasp login`
 5. Ask in Slack to be added as an editor on the shared development script. Its
-   `.clasp.json` (script ID, `rootDir: apps-script`) is committed at the repo root once
-   the script exists.
+   `.clasp.json` (script ID, `rootDir: apps-script`) is committed at the repo root.
 6. `pnpm push` builds the page and pushes everything in `apps-script/`. A push replaces
    the whole remote project, so change code here, never in the Apps Script editor.
 7. Once, in the Apps Script editor, run `setupSheets` (creates the Log and Settings tabs),
    then `setupSampleProfiles` (builds an invented Volunteer Profiles file and points
    Settings at it). Then put a kiosk access code of at least 16 letters in Settings.
+   Both run only from the editor: called through the web app by anyone but the account
+   it runs as, they refuse.
 
 The development script points at a copy of Volunteer Profiles built from invented
 sample data, never at ENCM's real file.
