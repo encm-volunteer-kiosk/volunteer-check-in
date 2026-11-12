@@ -323,7 +323,7 @@ test("on a new spreadsheet Settings gets every default, the check-out flag at 15
   const settings = ss.getSheetByName("Settings");
   assert.deepEqual(settings.row(1), ["Setting", "Value"]);
   const rows = settings.getDataRange().getValues().slice(1);
-  assert.equal(rows.length, 14);
+  assert.equal(rows.length, 15);
   const names = rows.map((r) => r[0]);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
   assert.deepEqual(
@@ -442,7 +442,7 @@ test("existing Settings values are kept and missing rows appended", () => {
   const rows = settings.getDataRange().getValues().slice(1);
   assert.deepEqual(rows[0], ["Kiosk access code", "lettersonlylettersonly"]);
   assert.deepEqual(rows[1], ["Arrival flag minutes", "20"]);
-  assert.equal(rows.length, 14);
+  assert.equal(rows.length, 15);
   assert.deepEqual(
     rows.find((r) => r[0] === "Check-out flag minutes"),
     ["Check-out flag minutes", "15"],

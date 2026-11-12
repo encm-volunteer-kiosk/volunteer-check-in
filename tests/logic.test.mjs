@@ -211,10 +211,11 @@ test("settingsDefaults", () => {
   assert.equal(defaults["Kiosk launch date"], TODAY);
   assert.equal(defaults["Arrival flag minutes"], "15");
   assert.equal(defaults["Check-out flag minutes"], "15");
+  assert.equal(defaults["Volunteer hour value"], "");
   assert.equal(defaults["Profiles problems"], "");
   assert.equal(defaults["Closing time Monday"], "17:00");
   assert.equal(defaults["Closing time Sunday"], "17:00");
-  assert.equal(rows.length, 14);
+  assert.equal(rows.length, 15);
   const names = rows.map((r) => r[0]);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
 });
@@ -1923,6 +1924,7 @@ test("refusal gives each code its exact message", () => {
       "More than one open row in the Log has this Shift ID. Fix the extra row in the sheet first.",
     ADMIN_BAD_ROW:
       "That row's date or check-in time can't be read, so its hours can't be worked out. Fix the row in the sheet first.",
+    ADMIN_BAD_MONTH: "Please choose a month.",
   };
   for (const [code, message] of Object.entries(expected)) {
     assert.deepEqual(plain(L.refusal(code)), { ok: false, refusal: code, message });
