@@ -24,13 +24,58 @@ const centralDate = (ms) =>
     day: "2-digit",
   }).format(new Date(ms));
 
-// read.text and read.time as Sheets.js gives them: times here are ISO texts.
+/** A Central wall-clock time as milliseconds read as UTC, to compare wall clocks. */
+const centralWall = (ms) => {
+  const p = {};
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+    .formatToParts(new Date(ms))
+    .forEach((x) => (p[x.type] = x.value));
+  return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute);
+};
+
+/**
+ * Sheets.js's timeOnDate_: a Central "HH:mm" on a yyyy-MM-dd as {ms, date}. Daylight time
+ * is tried before standard time; a time skipped when daylight time starts takes standard
+ * time, the next valid time, as Utilities.parseDate does.
+ */
+const timeOnDate = (dateText, clock) => {
+  const text = L.adminDateTimeText(dateText, clock);
+  if (!text) return { ms: NaN, date: "" };
+  const wall = Date.parse(text.replace(" ", "T") + ":00Z");
+  const found = [5, 6].map((o) => wall + o * 3600000).find((t) => centralWall(t) === wall);
+  const ms = found === undefined ? wall + 6 * 3600000 : found;
+  return { ms, date: centralDate(ms) };
+};
+
+// read.text, read.time and read.at as Sheets.js gives them: times here are ISO texts, a
+// typed time of day, or Dates.
 const READ = {
   text: (v) => L.cellString(v),
   time: (v) => {
-    const ms = Date.parse(String(v));
-    return isFinite(ms) ? { ms, date: centralDate(ms) } : { ms: NaN, date: "" };
+    const none = { ms: NaN, date: "", clock: "" };
+    if (Object.prototype.toString.call(v) === "[object Date]") {
+      const ms = v.getTime();
+      if (!isFinite(ms)) return none;
+      return {
+        ms,
+        date: centralDate(ms),
+        clock: new Date(centralWall(ms)).toISOString().slice(11, 16),
+      };
+    }
+    const clock = L.clockText(v);
+    if (clock) return { ms: NaN, date: "", clock };
+    const ms = L.cellString(v) ? Date.parse(String(v)) : NaN;
+    return isFinite(ms) ? { ms, date: centralDate(ms), clock: "" } : none;
   },
+  at: timeOnDate,
 };
 
 /** A Central time on a date, as the ISO text READ.time reads (Central is UTC-6 in Nov, -5 in Oct). */
@@ -241,6 +286,34 @@ test("adjusted means the gap rounds to a minute or more, the arrival flag's rule
   const base = Date.parse(at("2026-11-02", "10:00"));
   assert.equal(L.arrivalFlag(base + 30000, base, 0), "arrival differs by 1 min");
   assert.equal(L.arrivalFlag(base + 29000, base, 0), "");
+});
+
+test("a counted kiosk row whose Check-In Stated was typed as a time alone is compared", () => {
+  // Sheets keeps "9:15 AM" typed into the cell as 9:15 on 1899-12-30.
+  const typed = new Date(timeOnDate("1899-12-30", "09:15").ms);
+  const row = kioskShift("2026-11-16", "Ana Ruiz", "tA", "09:00", "12:00", {
+    statedIn: typed,
+    recordedHours: 3,
+    statedHours: 2.75,
+  });
+  const [e] = entriesFor([row]);
+  assert.equal(e.statedInMs, Date.parse(at("2026-11-16", "09:15")));
+  const adjustments = (entries) => plain(L.monthReport(entries, "2026-11", null)).adjustments;
+  assert.deepEqual(adjustments([e]), {
+    compared: 1,
+    adjusted: 1,
+    statedMinusRecordedHundredths: -25,
+  });
+  // Typed as text in a plain-text cell, it reads the same.
+  assert.deepEqual(adjustments(entriesFor([{ ...row, statedIn: "9:15 AM" }])), adjustments([e]));
+  // A read that can't put a time on the row's Date leaves the row out, as before.
+  const noAt = { text: READ.text, time: READ.time };
+  const old = L.reportEntry(cellsFor(row), 2, L.reportColumns(HEADER), noAt);
+  assert.deepEqual(adjustments([old]), {
+    compared: 0,
+    adjusted: 0,
+    statedMinusRecordedHundredths: 0,
+  });
 });
 
 test("rows to review, open rows first, and the open-shift line", () => {
