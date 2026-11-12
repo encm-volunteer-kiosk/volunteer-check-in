@@ -2370,7 +2370,7 @@ function monthlyHoursFormulas(cols, logTab) {
     recordedIn +
     ", 1E+9)))";
   const spill =
-    "=IFERROR(LET(" +
+    "=IFNA(LET(" +
     "months, ARRAYFORMULA(" +
     monthFormula(date) +
     "), " +
@@ -2408,7 +2408,7 @@ function monthlyHoursFormulas(cols, logTab) {
     rows +
     "))))";
   const perVolunteer =
-    "=IFERROR(LET(" +
+    "=IFNA(LET(" +
     "isCounted, ARRAYFORMULA(" +
     counted +
     " = 1), " +
@@ -2449,7 +2449,7 @@ function monthlyHoursFormulas(cols, logTab) {
     { a1: "B4", value: "=ARRAYFORMULA(SUM(" + counted + "))" },
     {
       a1: "C4",
-      value: '=IFERROR(COUNTUNIQUE(FILTER(H2:H, LOWER(TRIM(J2:J)) = "closed", H2:H <> "")), 0)',
+      value: '=IFNA(COUNTUNIQUE(FILTER(H2:H, LOWER(TRIM(J2:J)) = "closed", H2:H <> "")), 0)',
     },
     { a1: "D4", value: '=IF(B4 = 0, "", ROUND(' + sumHundredths + " / B4) / 100)" },
     { a1: "E4", value: '=ARRAYFORMULA(SUM((LOWER(TRIM(J2:J)) = "open") * 1))' },

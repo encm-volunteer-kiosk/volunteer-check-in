@@ -911,6 +911,17 @@ test("monthlyHoursFormulas quote the tab name and refuse a missing column", () =
   assert.throws(() => L.monthlyHoursFormulas(cols, "Log"), /no "check-in stated \(user\)" column/);
 });
 
+test("monthlyHoursFormulas blank only FILTER's no-match result, so other errors show", () => {
+  const f = plain(L.monthlyHoursFormulas(L.reportColumns(HEADER), "Log"));
+  const cell = (a1) => f.cells.find((c) => c.a1 === a1).value;
+  // FILTER with no rows gives #N/A; a deleted column (#REF!) or a bad name (#NAME?) must
+  // still reach staff, as the note in cell C1 tells them.
+  for (const a1 of ["H2", "A7", "C4"]) {
+    assert.ok(cell(a1).startsWith("=IFNA("), a1 + " starts with IFNA");
+    assert.ok(!cell(a1).startsWith("=IFERROR("), a1 + " has no outer IFERROR");
+  }
+});
+
 test("filterViewSpecs use the map's letters on a reordered header", () => {
   const specs = plain(L.filterViewSpecs(L.reportColumns(REORDERED), 77));
   assert.deepEqual(
