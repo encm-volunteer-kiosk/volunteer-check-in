@@ -348,6 +348,41 @@
   letter-spacing: 1.25px;
   text-transform: uppercase;
 }
+.app-shell {
+  --drawer-width: min(380px, 85vw); /* shared by the drawer and the tab that follows it */
+}
+.checkin-drawer {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: var(--drawer-width);
+  z-index: 5;                       /* above content (2–3), below keyboard (10) */
+  transform: translateX(100%);      /* hidden off the right edge */
+  transition: transform 250ms ease;
+  overflow-y: auto;                 /* the drawer scrolls itself */
+  background: rgba(255, 253, 250, 0.97);
+  border-left: 1px solid var(--border);
+  box-shadow: -12px 0 40px rgba(8, 47, 88, 0.14);
+  padding: 20px 16px;
+  display: grid;
+  align-content: start;             /* stack cards at the top instead of stretching */
+  gap: 10px;                        /* space between cards */
+}
+.checkin-drawer.is-open { transform: translateX(0); }
+
+.drawer-tab {
+  position: fixed;
+  font-weight: 900;
+letter-spacing: 1.25px;
+  right: 0; top: 60%;
+  z-index: 6;
+  background: var(--yellow);
+  padding: 10px;
+  border-radius: 12px 0 0 12px;
+  transition: transform 250ms ease; /* same timing as the drawer so they move together */
+}
+.drawer-tab.is-open {
+  transform: translateX(calc(-1 * var(--drawer-width)));
+}
 .hero h1,
 .panel h1,
 .lookup-content h1,

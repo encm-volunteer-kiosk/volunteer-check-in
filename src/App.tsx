@@ -396,6 +396,34 @@ function Welcome({
   );
 }
 
+function CheckedInDrawer({ volunteers, onSelect }: {
+  volunteers: Volunteer[];
+  onSelect: (v: Volunteer) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const checkedIn = volunteers.filter(v => Boolean(v.currentCheckIn && isToday(v.currentCheckIn)));
+
+  return (
+    <>
+      <button className={`drawer-tab${open ? " is-open" : ""}`} onClick={() => setOpen(!open)}>
+        {"Checked in: " + checkedIn.length}
+      </button>
+      <aside className={`checkin-drawer${open ? " is-open" : ""}`}>
+        {checkedIn.map((volunteer) => (
+          <VolunteerCard
+            key={volunteer.id}
+            volunteer={volunteer}
+            onClick={() => {
+              onSelect(volunteer);
+              setOpen(false);
+            }}
+          />
+        ))}
+      </aside>
+    </>
+  )
+}
+
 function PhoneDigits({
   digits,
   onChange,
@@ -1158,6 +1186,7 @@ export default function App() {
         <>
           <Header />
           <Welcome volunteers={volunteers} listState={listState} onSelect={select} />
+          <CheckedInDrawer volunteers={volunteers} onSelect={select} />
         </>
       )}
       {code && screen === "confirm" && selected && (
