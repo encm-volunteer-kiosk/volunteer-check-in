@@ -1446,8 +1446,410 @@ test("check-in and check-out act on the member the digits pick", () => {
 // ---------------------------------------------------------------------------
 // Kiosk admin menu
 //
-// Tests for the admin menu's logic go here, after the kiosk's: initials, roster labels,
-// open-shift choices, and the add-a-shift and fix-a-sign-out decisions.
+// The menu's rules: the server checks every limit the dialog shows; a menu row's
+// Recorded times and Hours Served (timestamps) are never written; and nothing the menu
+// writes overlaps another shift of the same volunteer on the same date. The guard on the
+// public admin functions is tested in admin.test.mjs.
+
+/** A Central clock time like Admin.js's adminClock_, "9:00 AM". */
+const CLOCK = (ms) =>
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hour: "numeric",
+    minute: "2-digit",
+  })
+    .format(new Date(ms))
+    .replace(/\s/g, " ");
+// A time on 2026-11-12 Central in milliseconds; NOW is 10:00.
+const at = (hhmm) => T(hhmm).getTime();
+
+test("normalizeInitials keeps 1 to 5 letters, upper-cased", () => {
+  assert.equal(L.normalizeInitials("jp"), "JP");
+  assert.equal(L.normalizeInitials("J.P."), "JP");
+  assert.equal(L.normalizeInitials(" J P "), "JP");
+  assert.equal(L.normalizeInitials("abcde"), "ABCDE");
+  assert.equal(L.normalizeInitials(""), "");
+  assert.equal(L.normalizeInitials(null), "");
+  assert.equal(L.normalizeInitials("J2"), "");
+  assert.equal(L.normalizeInitials("ABCDEF"), "");
+  assert.equal(L.normalizeInitials("=A"), "");
+  assert.equal(L.normalizeInitials("J-P"), "");
+});
+
+test("adminRosterLabels sorts by last then first name and tells same-name members apart", () => {
+  const vols = [
+    { ...VOL, id: "1", firstName: "Sam", lastName: "Lee", row: 9, needsPhoneCheck: true },
+    { ...VOL, id: "2", firstName: "ruth", lastName: "Okafor", row: 3 },
+    {
+      ...VOL,
+      id: "3",
+      firstName: "Sam",
+      lastName: "Lee",
+      row: 4,
+      needsPhoneCheck: true,
+      phoneLast4: "",
+    },
+    { ...VOL, id: "4", firstName: "Ana", lastName: "lee", row: 12 },
+  ];
+  assert.deepEqual(plain(L.adminRosterLabels(vols)), [
+    { id: "4", label: "Ana lee" },
+    { id: "3", label: "Sam Lee (Profiles row 4, no usable phone)" },
+    { id: "1", label: "Sam Lee (Profiles row 9, phone ending 0131)" },
+    { id: "2", label: "ruth Okafor" },
+  ]);
+});
+
+test("openShiftChoices lists open rows with a Shift ID, newest first", () => {
+  const entries = [
+    entry(2, { dateText: "2026-11-10", name: "Ruth Okafor" }),
+    entry(3, { statedInMs: at("09:15"), name: "Jordan Rivera" }),
+    entry(4, { status: "closed", statedHours: 1 }),
+    entry(5, { shiftId: "" }),
+    entry(6, { statedInMs: at("09:45"), name: "" }),
+    entry(7, { dateText: "2026-11-11", statedInMs: NaN, recordedInMs: NaN }),
+  ];
+  assert.deepEqual(plain(L.openShiftChoices(entries, CLOCK)), [
+    { shiftId: "shift-6", label: "Thu 2026-11-12 · no name · in 9:45 AM" },
+    { shiftId: "shift-3", label: "Thu 2026-11-12 · Jordan Rivera · in 9:15 AM" },
+    { shiftId: "shift-7", label: "Wed 2026-11-11 · Sam Lee · check-in time unreadable" },
+    { shiftId: "shift-2", label: "Tue 2026-11-10 · Ruth Okafor · in 8:00 AM" },
+  ]);
+});
+
+test("adminDateTimeText accepts a real date and a 24-hour time only", () => {
+  assert.equal(L.adminDateTimeText("2026-11-12", "09:05"), "2026-11-12 09:05");
+  assert.equal(L.adminDateTimeText("2026-11-12", "9:05"), "2026-11-12 09:05");
+  assert.equal(L.adminDateTimeText("2026-11-12", "17:30:00"), "2026-11-12 17:30");
+  assert.equal(L.adminDateTimeText("2026-11-12", "24:00"), "");
+  assert.equal(L.adminDateTimeText("2026-11-12", "12:60"), "");
+  assert.equal(L.adminDateTimeText("2026-11-12", "9am"), "");
+  assert.equal(L.adminDateTimeText("2026-02-30", "09:00"), "");
+  assert.equal(L.adminDateTimeText("11/12/2026", "09:00"), "");
+  assert.equal(L.adminDateTimeText("", ""), "");
+});
+
+/** An Add a shift on TODAY, 8:00 to 9:30, for VOL. */
+const addShift = (fields) =>
+  plain(
+    L.decideAddShift({
+      volunteers: [VOL],
+      id: ID,
+      entries: [],
+      todayDate: TODAY,
+      nowMs: NOW,
+      date: TODAY,
+      inMs: at("08:00"),
+      inDate: TODAY,
+      outMs: at("09:30"),
+      outDate: TODAY,
+      initials: "j.p.",
+      note: "",
+      shiftId: "shift-new",
+      ...fields,
+    }),
+  );
+
+test("decideAddShift writes a closed row with stated times only and the initials", () => {
+  const d = addShift({ note: " emailed Andrea " });
+  assert.equal(d.hours, 1.5);
+  assert.deepEqual(d.cells, {
+    [H.date]: TODAY,
+    [H.day]: "Thursday",
+    [H.name]: "Sam Lee",
+    [H.statedIn]: at("08:00"),
+    [H.statedOut]: at("09:30"),
+    [H.statedHours]: 1.5,
+    [H.notes]: "emailed Andrea",
+    [H.token]: TOKEN,
+    [H.status]: "closed",
+    [H.inBy]: "JP",
+    [H.outBy]: "JP",
+    [H.shiftId]: "shift-new",
+  });
+  // No note, no Notes cell; the Recorded times, their hours and Admin Alerts? are never
+  // written.
+  const bare = addShift({}).cells;
+  for (const h of [H.notes, H.recordedIn, H.recordedOut, H.recordedHours, H.alerts]) {
+    assert.ok(!(h in bare), h);
+  }
+  // Equal times are a zero-hour shift, as at the kiosk.
+  assert.equal(addShift({ outMs: at("08:00") }).hours, 0);
+  // A time up to 5 minutes ahead is taken as now.
+  assert.equal(addShift({ inMs: at("09:00"), outMs: NOW + 3 * MIN }).cells[H.statedOut], NOW);
+  // A past date.
+  const past = addShift({
+    date: "2026-11-01",
+    inMs: Date.parse("2026-11-01T09:00:00-05:00"),
+    inDate: "2026-11-01",
+    outMs: Date.parse("2026-11-01T12:15:00-05:00"),
+    outDate: "2026-11-01",
+  });
+  assert.equal(past.cells[H.day], "Sunday");
+  assert.equal(past.hours, 3.25);
+});
+
+test("decideAddShift refuses in order", () => {
+  const order = [
+    [{ initials: "J2" }, "ADMIN_INITIALS"],
+    [{ note: "x".repeat(501) }, "ADMIN_NOTE_TOO_LONG"],
+    [{ id: "nobody" }, "ADMIN_NOT_FOUND"],
+    [{ date: "2026-13-01" }, "ADMIN_BAD_TIME"],
+    [{ date: "2026-11-13" }, "ADMIN_FUTURE"],
+    [{ inMs: NaN, inDate: "" }, "ADMIN_BAD_TIME"],
+    [{ inMs: NOW + 6 * MIN }, "ADMIN_FUTURE"],
+    [{ outMs: NaN, outDate: "" }, "ADMIN_BAD_TIME"],
+    [{ outMs: NOW + 6 * MIN }, "ADMIN_FUTURE"],
+    [{ outDate: "2026-11-11" }, "ADMIN_BAD_TIME"],
+    [{ outMs: at("07:59") }, "ADMIN_OUT_BEFORE_IN"],
+  ];
+  for (const [fields, code] of order) assert.equal(addShift(fields).refusal, code, code);
+  // Each refusal wins over the ones after it.
+  assert.equal(addShift({ initials: "", id: "nobody", date: "x" }).refusal, "ADMIN_INITIALS");
+  assert.equal(addShift({ id: "nobody", date: "x" }).refusal, "ADMIN_NOT_FOUND");
+  assert.equal(addShift({ date: "2026-11-13", inMs: NaN }).refusal, "ADMIN_FUTURE");
+  // 500 characters is allowed.
+  assert.equal(addShift({ note: "x".repeat(500) }).refusal, undefined);
+});
+
+test("decideAddShift: never beside an open row on that date", () => {
+  const openToday = entry(5, { statedInMs: at("11:00") });
+  assert.equal(addShift({ entries: [openToday] }).refusal, "ADMIN_OPEN_SHIFT");
+  // Another volunteer's open row, or this volunteer's open row on another date, doesn't block.
+  assert.equal(addShift({ entries: [{ ...openToday, token: OTHER_TOKEN }] }).refusal, undefined);
+  const otherDay = addShift({
+    entries: [openToday],
+    date: "2026-11-11",
+    inMs: Date.parse("2026-11-11T08:00:00-06:00"),
+    inDate: "2026-11-11",
+    outMs: Date.parse("2026-11-11T09:00:00-06:00"),
+    outDate: "2026-11-11",
+  });
+  assert.equal(otherDay.refusal, undefined);
+  assert.equal(otherDay.hours, 1);
+});
+
+test("decideAddShift: overlap uses the other row's stated check-out time", () => {
+  // A kiosk row: stated 9:00 to 9:30, tapped out at 10:00.
+  const kiosk = entry(6, {
+    status: "closed",
+    statedInMs: at("09:00"),
+    recordedInMs: at("09:00"),
+    statedOutMs: at("09:30"),
+    recordedOutMs: at("10:00"),
+    statedHours: 0.5,
+  });
+  const overlap = addShift({ entries: [kiosk], inMs: at("09:15"), outMs: at("09:45") });
+  assert.equal(overlap.refusal, "ADMIN_OVERLAP");
+  assert.equal(overlap.conflict.row, 6);
+  // After the stated check-out is fine, though the tap was later.
+  assert.equal(
+    addShift({ entries: [kiosk], inMs: at("09:45"), outMs: at("09:55") }).refusal,
+    undefined,
+  );
+  // Touching at either end is fine.
+  assert.equal(
+    addShift({ entries: [kiosk], inMs: at("08:00"), outMs: at("09:00") }).refusal,
+    undefined,
+  );
+  assert.equal(
+    addShift({ entries: [kiosk], inMs: at("09:30"), outMs: at("09:50") }).refusal,
+    undefined,
+  );
+  // Covering the other shift whole overlaps.
+  assert.equal(
+    addShift({ entries: [kiosk], inMs: at("08:00"), outMs: at("09:50") }).refusal,
+    "ADMIN_OVERLAP",
+  );
+  // A closed row with no readable stated out falls back to the recorded out.
+  const noStatedOut = { ...kiosk, statedOutMs: NaN };
+  assert.equal(
+    addShift({ entries: [noStatedOut], inMs: at("09:45"), outMs: at("09:50") }).refusal,
+    "ADMIN_OVERLAP",
+  );
+  // Rows with no readable end, other volunteers' rows and other dates are skipped.
+  const skipped = [
+    { ...kiosk, statedOutMs: NaN, recordedOutMs: NaN },
+    { ...kiosk, token: OTHER_TOKEN },
+    { ...kiosk, dateText: "2026-11-11" },
+  ];
+  assert.equal(
+    addShift({ entries: skipped, inMs: at("09:15"), outMs: at("09:45") }).refusal,
+    undefined,
+  );
+  // With two overlaps, the earlier-starting one is named.
+  const early = { ...kiosk, row: 3, statedInMs: at("08:30"), statedOutMs: at("09:05") };
+  assert.equal(
+    addShift({ entries: [kiosk, early], inMs: at("08:00"), outMs: at("09:50") }).conflict.row,
+    3,
+  );
+});
+
+test("handShiftCells throws on an empty token or Shift ID", () => {
+  assert.throws(
+    () => L.handShiftCells({ ...VOL, token: "" }, TODAY, at("08:00"), at("09:00"), "", "JP", "s"),
+    /without a User Token/,
+  );
+  assert.throws(
+    () => L.handShiftCells(VOL, TODAY, at("08:00"), at("09:00"), "", "JP", " "),
+    /without a Shift ID/,
+  );
+});
+
+/** A Fix a sign-out of row 9 (open, kiosk check-in at 8:00) at 9:30. */
+const fixRow = () =>
+  entry(9, { shiftId: "shift-open", recordedInMs: at("08:05"), statedInMs: at("08:00") });
+const fixSignOut = (fields) =>
+  plain(
+    L.decideFixSignOut({
+      entries: [fixRow()],
+      shiftId: "shift-open",
+      nowMs: NOW,
+      outMs: at("09:30"),
+      outDate: TODAY,
+      initials: "ab",
+      note: "",
+      ...fields,
+    }),
+  );
+
+test("decideFixSignOut closes a kiosk row with the stated check-out and the initials", () => {
+  const d = fixSignOut({});
+  assert.equal(d.open.row, 9);
+  assert.equal(d.hours, 1.5);
+  // Check-In Entered By stays kiosk: it isn't written. Nor are the Recorded times, their
+  // hours, Admin Alerts? or Notes when no note is given.
+  assert.deepEqual(d.cells, {
+    [H.statedOut]: at("09:30"),
+    [H.statedHours]: 1.5,
+    [H.status]: "closed",
+    [H.outBy]: "AB",
+  });
+  // A note is added after what the row's Notes hold.
+  const noted = fixSignOut({
+    entries: [{ ...fixRow(), notes: "staff note" }],
+    note: "emailed at 5",
+  });
+  assert.equal(noted.cells[H.notes], "staff note; emailed at 5");
+  assert.equal(fixSignOut({ note: "=SUM(A1)" }).cells[H.notes], "'=SUM(A1)");
+  // A row on an earlier date, fixed today.
+  const yesterday = entry(4, {
+    shiftId: "shift-old",
+    dateText: "2026-11-11",
+    statedInMs: Date.parse("2026-11-11T13:00:00-06:00"),
+  });
+  const old = fixSignOut({
+    entries: [yesterday],
+    shiftId: "shift-old",
+    outMs: Date.parse("2026-11-11T17:45:00-06:00"),
+    outDate: "2026-11-11",
+  });
+  assert.equal(old.hours, 4.75);
+  // Equal to the start is a zero-hour shift; a time up to 5 minutes ahead is now.
+  assert.equal(fixSignOut({ outMs: at("08:00") }).hours, 0);
+  assert.equal(fixSignOut({ outMs: NOW + 4 * MIN }).cells[H.statedOut], NOW);
+});
+
+test("decideFixSignOut refuses in order", () => {
+  const order = [
+    [{ initials: "" }, "ADMIN_INITIALS"],
+    [{ note: "x".repeat(501) }, "ADMIN_NOTE_TOO_LONG"],
+    [{ shiftId: "" }, "ADMIN_NOT_OPEN"],
+    [{ shiftId: "shift-gone" }, "ADMIN_NOT_OPEN"],
+    [{ entries: [{ ...fixRow(), status: "closed" }] }, "ADMIN_NOT_OPEN"],
+    [{ entries: [fixRow(), { ...fixRow(), row: 10 }] }, "ADMIN_DUPLICATE_SHIFT"],
+    [{ entries: [{ ...fixRow(), statedInMs: NaN, recordedInMs: NaN }] }, "ADMIN_BAD_ROW"],
+    [{ outMs: NaN, outDate: "" }, "ADMIN_BAD_TIME"],
+    [{ outMs: NOW + 6 * MIN }, "ADMIN_FUTURE"],
+    [{ outDate: "2026-11-11" }, "ADMIN_BAD_TIME"],
+    [{ outMs: at("07:59") }, "ADMIN_OUT_BEFORE_IN"],
+  ];
+  for (const [fields, code] of order) assert.equal(fixSignOut(fields).refusal, code, code);
+  // A start that falls back to the recorded check-in is readable.
+  const recordedOnly = { ...fixRow(), statedInMs: NaN };
+  assert.equal(fixSignOut({ entries: [recordedOnly] }).hours, 1.42);
+  // A closed row with the same Shift ID beside the open one doesn't count as a duplicate.
+  assert.equal(
+    fixSignOut({ entries: [fixRow(), { ...fixRow(), row: 2, status: "closed" }] }).open.row,
+    9,
+  );
+});
+
+test("decideFixSignOut: the closed shift may not overlap the volunteer's other shifts that date", () => {
+  const later = entry(12, {
+    status: "closed",
+    statedInMs: at("09:00"),
+    statedOutMs: at("09:45"),
+    statedHours: 0.75,
+  });
+  const d = fixSignOut({ entries: [fixRow(), later] });
+  assert.equal(d.refusal, "ADMIN_OVERLAP");
+  assert.equal(d.conflict.row, 12);
+  assert.ok(!("openStartMs" in d));
+  // Closing before the other shift starts is fine.
+  assert.equal(fixSignOut({ entries: [fixRow(), later], outMs: at("09:00") }).hours, 1);
+});
+
+test("decideFixSignOut: an open row that starts inside a menu shift names it", () => {
+  // A menu shift 7:00 to 9:00 was added for today; the volunteer then checked in at the
+  // kiosk at 8:00 and never checked out. Every check-out time overlaps the menu shift.
+  const menu = entry(3, {
+    status: "closed",
+    recordedInMs: NaN,
+    statedInMs: at("07:00"),
+    statedOutMs: at("09:00"),
+    statedHours: 2,
+  });
+  const d = fixSignOut({ entries: [menu, fixRow()], outMs: at("08:30") });
+  assert.equal(d.refusal, "ADMIN_OVERLAP");
+  assert.equal(d.conflict.row, 3);
+  assert.equal(d.openStartMs, at("08:00"));
+  assert.deepEqual(plain(L.overlapRefusal(d.conflict, CLOCK, d.openStartMs)), {
+    ok: false,
+    refusal: "ADMIN_OVERLAP",
+    message:
+      "This shift overlaps another shift for this volunteer on that date. The other shift" +
+      " is 7:00 AM to 9:00 AM, on Log row 3. This open shift starts at 8:00 AM, inside" +
+      " that one, so any check-out time would overlap it. Correct or remove one of the two" +
+      " rows in the sheet first, then close this one.",
+  });
+  // Once staff correct the menu row to end at 8:00, the open row can be closed.
+  const corrected = { ...menu, statedOutMs: at("08:00"), statedHours: 1 };
+  assert.equal(fixSignOut({ entries: [corrected, fixRow()] }).hours, 1.5);
+});
+
+test("overlapRefusal names the other shift", () => {
+  const other = entry(14, { status: "closed", statedInMs: at("09:00"), statedOutMs: at("11:15") });
+  assert.deepEqual(plain(L.overlapRefusal(other, CLOCK)), {
+    ok: false,
+    refusal: "ADMIN_OVERLAP",
+    message:
+      "This shift overlaps another shift for this volunteer on that date. The other shift" +
+      " is 9:00 AM to 11:15 AM, on Log row 14.",
+  });
+});
+
+test("admin cell maps use Log headers only, and a menu row counts toward milestones", () => {
+  const added = L.handShiftCells(VOL, TODAY, at("08:00"), at("09:30"), "note", "JP", "s-1");
+  const fixed = L.fixSignOutCells(fixRow(), at("09:30"), "note", "JP");
+  const cols = L.logColumns(LOG_HEADERS);
+  for (const cells of [added, fixed]) {
+    for (const key of Object.keys(cells)) assert.ok(LOG_HEADERS.includes(key), key);
+    assert.doesNotThrow(() => L.cellWrites(cells, cols));
+  }
+  // A note needs the Notes column; without one the write throws before any cell is set.
+  const noNotes = L.logColumns(LOG_HEADERS.filter((h) => h !== "Notes"));
+  assert.throws(() => L.cellWrites(added, noNotes), /no "notes" column/);
+  // The added row read back: closed, by token, 1.5 stated hours, no recorded times.
+  const cells = LOG_HEADERS.map(() => "");
+  for (const w of plain(L.cellWrites(added, cols))) {
+    cells[w.col - 1] = w.kind === "time" && w.value !== "" ? new Date(w.value) : w.value;
+  }
+  const back = plain(L.logEntry(cells, 20, cols, READ));
+  assert.equal(back.status, "closed");
+  assert.equal(back.recordedInMs, null);
+  assert.equal(back.statedOutMs, at("09:30"));
+  assert.deepEqual(plain(L.closedTotals([back], TOKEN)), { shifts: 1, minutes: 90 });
+});
 
 // ---------------------------------------------------------------------------
 // Refusals
@@ -1468,6 +1870,23 @@ test("refusal gives each code its exact message", () => {
     CHECKOUT_BEFORE_ARRIVAL:
       "Your check-out time can't be before your arrival time. Please choose a later time.",
     BUSY: "The kiosk is busy. Please try again.",
+    ADMIN_EXPIRED: "This window has expired. Close it and open the Kiosk admin menu again.",
+    ADMIN_INITIALS: "Please enter your initials, letters only.",
+    ADMIN_NOTE_TOO_LONG: "Please keep the note to 500 characters or fewer.",
+    ADMIN_NOT_FOUND:
+      "That volunteer is no longer in Volunteer Profiles. Close this window and open it again.",
+    ADMIN_BAD_TIME: "Please enter a valid date and time.",
+    ADMIN_FUTURE: "That date or time is in the future.",
+    ADMIN_OUT_BEFORE_IN: "The check-out time can't be before the check-in time.",
+    ADMIN_OPEN_SHIFT:
+      "This volunteer has an open shift on that date. Use Fix a sign-out to close it.",
+    ADMIN_OVERLAP: "This shift overlaps another shift for this volunteer on that date.",
+    ADMIN_NOT_OPEN:
+      "That shift is no longer open. Close this window and open Fix a sign-out again.",
+    ADMIN_DUPLICATE_SHIFT:
+      "More than one open row in the Log has this Shift ID. Fix the extra row in the sheet first.",
+    ADMIN_BAD_ROW:
+      "That row's date or check-in time can't be read, so its hours can't be worked out. Fix the row in the sheet first.",
   };
   for (const [code, message] of Object.entries(expected)) {
     assert.deepEqual(plain(L.refusal(code)), { ok: false, refusal: code, message });

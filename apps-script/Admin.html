@@ -1,0 +1,297 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top" />
+    <meta charset="utf-8" />
+    <!--
+      The Kiosk admin dialogs, served by openAdminDialog_ (Admin.js) as a template. The
+      server puts the dialog key and the mode ("add" or "fix") into the body's data
+      attributes; nothing else on the page is filled in by the server. Plain HTML and
+      JavaScript, no build step. Every limit shown here is checked again on the server.
+    -->
+    <style>
+      body {
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 14px;
+        color: #202124;
+        margin: 0;
+        padding: 4px 8px 12px;
+      }
+      label {
+        display: block;
+        font-weight: bold;
+        margin: 12px 0 4px;
+      }
+      .hint {
+        font-weight: normal;
+        color: #5f6368;
+      }
+      input,
+      select,
+      textarea {
+        font: inherit;
+        box-sizing: border-box;
+        width: 100%;
+        padding: 6px;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+      }
+      select[size] {
+        padding: 0;
+      }
+      textarea {
+        resize: vertical;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+      }
+      .row > div {
+        flex: 1;
+      }
+      .initials {
+        width: 8em;
+        text-transform: uppercase;
+      }
+      .buttons {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 16px;
+      }
+      button {
+        font: inherit;
+        padding: 8px 16px;
+        border-radius: 4px;
+        border: 1px solid #dadce0;
+        background: #fff;
+        cursor: pointer;
+      }
+      button.primary {
+        background: #1a73e8;
+        border-color: #1a73e8;
+        color: #fff;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .message {
+        margin-top: 12px;
+        padding: 8px;
+        border-radius: 4px;
+        display: none;
+      }
+      .message.error {
+        display: block;
+        background: #fce8e6;
+        color: #a50e0e;
+      }
+      .message.ok {
+        display: block;
+        background: #e6f4ea;
+        color: #0d652d;
+      }
+      .message.info {
+        display: block;
+        background: #f1f3f4;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body data-key="<?= key ?>" data-mode="<?= mode ?>">
+    <form id="add" hidden>
+      <label for="add-search">Volunteer <span class="hint">(type to search)</span></label>
+      <input id="add-search" type="search" autocomplete="off" />
+      <select id="add-volunteer" size="6" aria-label="Volunteer"></select>
+
+      <div class="row">
+        <div>
+          <label for="add-date">Date</label>
+          <input id="add-date" type="date" required />
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="add-in">Check-in time</label>
+          <input id="add-in" type="time" required />
+        </div>
+        <div>
+          <label for="add-out">Check-out time</label>
+          <input id="add-out" type="time" required />
+        </div>
+      </div>
+    </form>
+
+    <form id="fix" hidden>
+      <label for="fix-search">Open shift <span class="hint">(type to search)</span></label>
+      <input id="fix-search" type="search" autocomplete="off" />
+      <select id="fix-shift" size="6" aria-label="Open shift"></select>
+
+      <label for="fix-out">Check-out time <span class="hint">(on the shift's date)</span></label>
+      <input id="fix-out" type="time" required />
+    </form>
+
+    <div id="common" hidden>
+      <label for="note">Note <span class="hint">(optional, goes in the Notes column)</span></label>
+      <textarea id="note" rows="3" maxlength="500"></textarea>
+      <div class="hint" id="note-count">0 / 500</div>
+
+      <label for="initials">Your initials</label>
+      <input id="initials" class="initials" type="text" maxlength="10" autocomplete="off" />
+    </div>
+
+    <div id="message" class="message" role="status"></div>
+
+    <div class="buttons">
+      <button type="button" id="close">Close</button>
+      <button type="button" id="save" class="primary" disabled>Save</button>
+    </div>
+
+    <script>
+      const KEY = document.body.dataset.key;
+      const MODE = document.body.dataset.mode === "fix" ? "fix" : "add";
+      const $ = (id) => document.getElementById(id);
+      let choices = [];
+      let busy = false;
+
+      function show(text, kind) {
+        const box = $("message");
+        box.textContent = text;
+        box.className = "message " + (text ? kind : "");
+      }
+
+      function fillList(select, search, items, valueKey) {
+        const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+        const kept = select.value;
+        select.textContent = "";
+        items
+          .filter((item) => words.every((w) => item.label.toLowerCase().includes(w)))
+          .forEach((item) => select.add(new Option(item.label, item[valueKey])));
+        if (kept) select.value = kept;
+        if (!select.value && select.options.length === 1) select.selectedIndex = 0;
+      }
+
+      function refill() {
+        if (MODE === "add") fillList($("add-volunteer"), $("add-search"), choices, "id");
+        else fillList($("fix-shift"), $("fix-search"), choices, "shiftId");
+      }
+
+      function call(name, args, onOk) {
+        busy = true;
+        $("save").disabled = true;
+        google.script.run
+          .withSuccessHandler((reply) => {
+            busy = false;
+            $("save").disabled = false;
+            if (reply && reply.ok) onOk(reply);
+            else
+              show((reply && reply.message) || "Something went wrong. Please try again.", "error");
+          })
+          .withFailureHandler((error) => {
+            busy = false;
+            $("save").disabled = false;
+            show((error && error.message) || String(error), "error");
+          })
+          [name](KEY, ...args);
+      }
+
+      function load() {
+        show("Loading…", "info");
+        if (MODE === "add") {
+          call("adminRoster", [], (reply) => {
+            choices = reply.volunteers;
+            $("add-date").value = reply.today;
+            $("add-date").max = reply.today;
+            refill();
+            show("", "");
+          });
+        } else {
+          call("adminOpenShifts", [], (reply) => {
+            choices = reply.shifts;
+            refill();
+            show(choices.length ? "" : "There are no open shifts to fix.", "info");
+          });
+        }
+      }
+
+      function hoursText(hours) {
+        return typeof hours === "number" ? hours.toFixed(2) + " hours" : "hours left blank";
+      }
+
+      function save() {
+        if (busy) return;
+        const common = { note: $("note").value, initials: $("initials").value };
+        if (MODE === "add") {
+          const form = {
+            id: $("add-volunteer").value,
+            date: $("add-date").value,
+            inTime: $("add-in").value,
+            outTime: $("add-out").value,
+            ...common,
+          };
+          if (!form.id) return show("Please choose a volunteer.", "error");
+          if (!form.date || !form.inTime || !form.outTime) {
+            return show("Please enter the date and both times.", "error");
+          }
+          call("adminAddShift", [form], (reply) => {
+            show(
+              "Saved on Log row " +
+                reply.row +
+                ": " +
+                reply.name +
+                ", " +
+                hoursText(reply.hours) +
+                ".",
+              "ok",
+            );
+            $("add-in").value = "";
+            $("add-out").value = "";
+            $("note").value = "";
+            updateCount();
+          });
+        } else {
+          const form = { shiftId: $("fix-shift").value, outTime: $("fix-out").value, ...common };
+          if (!form.shiftId) return show("Please choose an open shift.", "error");
+          if (!form.outTime) return show("Please enter the check-out time.", "error");
+          call("adminFixSignOut", [form], (reply) => {
+            const done =
+              "Closed Log row " +
+              reply.row +
+              ": " +
+              (reply.name || "no name") +
+              ", " +
+              hoursText(reply.hours) +
+              ".";
+            $("fix-out").value = "";
+            $("note").value = "";
+            updateCount();
+            call("adminOpenShifts", [], (list) => {
+              choices = list.shifts;
+              refill();
+              show(done, "ok");
+            });
+          });
+        }
+      }
+
+      function updateCount() {
+        $("note-count").textContent = $("note").value.length + " / 500";
+      }
+
+      $(MODE).hidden = false;
+      $("common").hidden = false;
+      $("add-search").addEventListener("input", refill);
+      $("fix-search").addEventListener("input", refill);
+      $("note").addEventListener("input", updateCount);
+      $("save").addEventListener("click", save);
+      $("close").addEventListener("click", () => google.script.host.close());
+      document
+        .querySelectorAll("form")
+        .forEach((f) => f.addEventListener("submit", (event) => event.preventDefault()));
+      load();
+    </script>
+  </body>
+</html>

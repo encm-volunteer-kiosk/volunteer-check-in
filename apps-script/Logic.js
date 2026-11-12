@@ -107,6 +107,23 @@ function refusalMessages() {
     CHECKOUT_BEFORE_ARRIVAL:
       "Your check-out time can't be before your arrival time. Please choose a later time.",
     BUSY: "The kiosk is busy. Please try again.",
+    ADMIN_EXPIRED: "This window has expired. Close it and open the Kiosk admin menu again.",
+    ADMIN_INITIALS: "Please enter your initials, letters only.",
+    ADMIN_NOTE_TOO_LONG: "Please keep the note to 500 characters or fewer.",
+    ADMIN_NOT_FOUND:
+      "That volunteer is no longer in Volunteer Profiles. Close this window and open it again.",
+    ADMIN_BAD_TIME: "Please enter a valid date and time.",
+    ADMIN_FUTURE: "That date or time is in the future.",
+    ADMIN_OUT_BEFORE_IN: "The check-out time can't be before the check-in time.",
+    ADMIN_OPEN_SHIFT:
+      "This volunteer has an open shift on that date. Use Fix a sign-out to close it.",
+    ADMIN_OVERLAP: "This shift overlaps another shift for this volunteer on that date.",
+    ADMIN_NOT_OPEN:
+      "That shift is no longer open. Close this window and open Fix a sign-out again.",
+    ADMIN_DUPLICATE_SHIFT:
+      "More than one open row in the Log has this Shift ID. Fix the extra row in the sheet first.",
+    ADMIN_BAD_ROW:
+      "That row's date or check-in time can't be read, so its hours can't be worked out. Fix the row in the sheet first.",
   };
 }
 
@@ -1082,6 +1099,271 @@ function decideCheckOut(input) {
 // cell maps. It builds on checkStatedTime, logEntry, cellWrites, pairHours, shiftStartMs,
 // hasReadableStart, appendText and requireRowKeys above, and its refusal codes join
 // refusalMessages().
+//
+// The menu's rules: the server checks every limit the dialog shows; a menu row's
+// Recorded times and Hours Served (timestamps) are never written; and nothing the menu
+// writes overlaps another shift of the same volunteer on the same date.
+
+/** How long a dialog key stays valid, in seconds. */
+function adminKeySeconds() {
+  return 1800;
+}
+
+/** The script cache key that marks a dialog key as issued by the spreadsheet's menu. */
+function adminKeyCacheKey(key) {
+  return "admin-key:" + key;
+}
+
+/** The longest note the menu writes, in characters. */
+function adminNoteMaxLength() {
+  return 500;
+}
+
+/**
+ * An admin's initials, upper-case, or '' when they aren't 1 to 5 letters. Spaces and
+ * dots are dropped first, so "j.p." and "J P" are "JP".
+ */
+function normalizeInitials(text) {
+  const letters = cellString(text).replace(/[\s.]/g, "");
+  return /^[A-Za-z]{1,5}$/.test(letters) ? letters.toUpperCase() : "";
+}
+
+/**
+ * The volunteer picker's list, [{id, label}], sorted by last name, then first name, then
+ * Profiles row. The label is "First Last"; a member of a same-name group also gets their
+ * Profiles row and phone, so staff can tell members apart and check Profiles.
+ */
+function adminRosterLabels(volunteers) {
+  const sorted = volunteers.slice().sort((a, b) => {
+    const byLast = normalizeName(a.lastName).localeCompare(normalizeName(b.lastName));
+    if (byLast) return byLast;
+    const byFirst = normalizeName(a.firstName).localeCompare(normalizeName(b.firstName));
+    return byFirst || a.row - b.row;
+  });
+  return sorted.map((v) => {
+    let label = volunteerFullName(v);
+    if (v.needsPhoneCheck) {
+      const phone = v.phoneLast4 ? "phone ending " + v.phoneLast4 : "no usable phone";
+      label += " (Profiles row " + v.row + ", " + phone + ")";
+    }
+    return { id: v.id, label };
+  });
+}
+
+/**
+ * Fix a sign-out's list, [{shiftId, label}]: every open row with a Shift ID, any date,
+ * newest first. formatTime(ms) gives a Central clock time such as "9:00 AM". A label
+ * reads "Thu 2026-11-12 · Jordan Rivera · in 9:00 AM".
+ */
+function openShiftChoices(entries, formatTime) {
+  const open = entries.filter((e) => isStatus(e, "open") && cellString(e.shiftId));
+  const startOf = (e) => (hasReadableStart(e) ? shiftStartMs(e) : -Infinity);
+  open.sort((a, b) => {
+    const da = rowDate(a.dateText);
+    const db = rowDate(b.dateText);
+    if (da !== db) return da < db ? 1 : -1;
+    if (startOf(a) !== startOf(b)) return startOf(b) - startOf(a);
+    return b.row - a.row;
+  });
+  return open.map((e) => {
+    const date = rowDate(e.dateText);
+    const day = date ? weekdayName(date).slice(0, 3) + " " + date : cellString(e.dateText);
+    const start = hasReadableStart(e)
+      ? "in " + formatTime(shiftStartMs(e))
+      : "check-in time unreadable";
+    return {
+      shiftId: e.shiftId,
+      label: [day || "no date", cellString(e.name) || "no name", start].join(" · "),
+    };
+  });
+}
+
+/**
+ * The dialog's date and time as "yyyy-MM-dd HH:mm" for Utilities.parseDate, or '' when
+ * either isn't a real date or a 24-hour time. Seconds, if a browser sends them, are
+ * dropped.
+ */
+function adminDateTimeText(dateText, timeText) {
+  const date = cellString(dateText);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || parseStartDate(date) !== date) return "";
+  const m = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(cellString(timeText));
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return "";
+  return date + " " + m[1].padStart(2, "0") + ":" + m[2];
+}
+
+/** When the shift ended: Check-Out Stated, or Check-Out Recorded when the stated time is unreadable. */
+function shiftEndMs(entry) {
+  return isFinite(entry.statedOutMs) ? entry.statedOutMs : entry.recordedOutMs;
+}
+
+/**
+ * The first closed row (earliest start) of this token on date whose times overlap
+ * startMs to endMs, or null. Overlap means newIn < oldOut and oldIn < newOut, so shifts
+ * that only touch don't overlap. Rows whose start or end can't be read are skipped.
+ */
+function findOverlap(entries, token, date, startMs, endMs) {
+  let found = null;
+  entries.forEach((e) => {
+    if (!isTokenRow(e, token) || !isStatus(e, "closed") || rowDate(e.dateText) !== date) return;
+    const oldIn = shiftStartMs(e);
+    const oldOut = shiftEndMs(e);
+    if (!isFinite(oldIn) || !isFinite(oldOut)) return;
+    if (startMs < oldOut && oldIn < endMs && (!found || oldIn < shiftStartMs(found))) found = e;
+  });
+  return found;
+}
+
+/**
+ * The ADMIN_OVERLAP refusal, naming the shift it conflicts with so staff can find it.
+ * When openStartMs is a number, the refusal is for closing an open row that starts
+ * inside the other shift: every check-out time would overlap it, so staff must correct
+ * or remove one of the two rows in the sheet first.
+ */
+function overlapRefusal(conflict, formatTime, openStartMs) {
+  const r = refusal("ADMIN_OVERLAP");
+  const span = formatTime(shiftStartMs(conflict)) + " to " + formatTime(shiftEndMs(conflict));
+  let message = r.message + " The other shift is " + span + ", on Log row " + conflict.row + ".";
+  if (typeof openStartMs === "number") {
+    message +=
+      " This open shift starts at " +
+      formatTime(openStartMs) +
+      ", inside that one, so any check-out time would overlap it. Correct or remove one" +
+      " of the two rows in the sheet first, then close this one.";
+  }
+  return { ok: false, refusal: r.refusal, message };
+}
+
+/** The cells Add a shift writes on a new row. The Recorded times and their hours stay blank. */
+function handShiftCells(volunteer, date, inMs, outMs, note, initials, shiftId) {
+  requireRowKeys(volunteer.token, shiftId);
+  const H = logHeaderNames();
+  const cells = {
+    [H.date]: date,
+    [H.day]: weekdayName(date),
+    [H.name]: sheetText(volunteerFullName(volunteer)),
+    [H.statedIn]: inMs,
+    [H.statedOut]: outMs,
+    [H.statedHours]: pairHours(inMs, outMs),
+    [H.token]: sheetText(volunteer.token),
+    [H.status]: "closed",
+    [H.inBy]: sheetText(initials),
+    [H.outBy]: sheetText(initials),
+    [H.shiftId]: sheetText(shiftId),
+  };
+  if (cellString(note)) cells[H.notes] = sheetText(note);
+  return cells;
+}
+
+/**
+ * The cells Fix a sign-out writes on the open row. Check-In Entered By and the Recorded
+ * times and their hours are left as they are; a note is added after the row's Notes.
+ */
+function fixSignOutCells(open, outMs, note, initials) {
+  const H = logHeaderNames();
+  const cells = {
+    [H.statedOut]: outMs,
+    [H.statedHours]: pairHours(shiftStartMs(open), outMs),
+    [H.status]: "closed",
+    [H.outBy]: sheetText(initials),
+  };
+  if (cellString(note)) cells[H.notes] = sheetText(appendText(open.notes, note));
+  return cells;
+}
+
+/** The refusal code for a stated time checkStatedTime refused. */
+function adminTimeRefusal(checked) {
+  return checked.refused === "FUTURE" ? "ADMIN_FUTURE" : "ADMIN_BAD_TIME";
+}
+
+/**
+ * Checks an Add a shift in order: ADMIN_INITIALS, ADMIN_NOTE_TOO_LONG, ADMIN_NOT_FOUND,
+ * ADMIN_BAD_TIME (date), ADMIN_FUTURE (date after today), each time through
+ * checkStatedTime (ADMIN_FUTURE or ADMIN_BAD_TIME), ADMIN_OUT_BEFORE_IN, ADMIN_OPEN_SHIFT,
+ * ADMIN_OVERLAP.
+ *
+ * Input: {volunteers, id, entries (the whole Log), todayDate, nowMs, date, inMs, inDate,
+ * outMs, outDate, initials, note, shiftId}. inMs and outMs are the dialog's times on
+ * date, NaN when unreadable; inDate and outDate their Central dates.
+ *
+ * Returns {refusal}, {refusal: "ADMIN_OVERLAP", conflict} with the overlapping row, or
+ * {volunteer, cells, hours}.
+ */
+function decideAddShift(input) {
+  const initials = normalizeInitials(input.initials);
+  if (!initials) return { refusal: "ADMIN_INITIALS" };
+  const note = cellString(input.note);
+  if (note.length > adminNoteMaxLength()) return { refusal: "ADMIN_NOTE_TOO_LONG" };
+  const volunteer = findVolunteer(input.volunteers, input.id);
+  if (!volunteer) return { refusal: "ADMIN_NOT_FOUND" };
+  const date = cellString(input.date);
+  if (!date || parseStartDate(date) !== date) return { refusal: "ADMIN_BAD_TIME" };
+  if (date > input.todayDate) return { refusal: "ADMIN_FUTURE" };
+  const checkedIn = checkStatedTime(input.nowMs, input.inMs, input.inDate, date);
+  if (checkedIn.refused) return { refusal: adminTimeRefusal(checkedIn) };
+  const checkedOut = checkStatedTime(input.nowMs, input.outMs, input.outDate, date);
+  if (checkedOut.refused) return { refusal: adminTimeRefusal(checkedOut) };
+  const inMs = checkedIn.ms;
+  const outMs = checkedOut.ms;
+  if (outMs < inMs) return { refusal: "ADMIN_OUT_BEFORE_IN" };
+  const open = input.entries.some(
+    (e) => isTokenRow(e, volunteer.token) && isStatus(e, "open") && rowDate(e.dateText) === date,
+  );
+  if (open) return { refusal: "ADMIN_OPEN_SHIFT" };
+  const conflict = findOverlap(input.entries, volunteer.token, date, inMs, outMs);
+  if (conflict) return { refusal: "ADMIN_OVERLAP", conflict };
+  const cells = handShiftCells(volunteer, date, inMs, outMs, note, initials, input.shiftId);
+  return { volunteer, cells, hours: cells[logHeaderNames().statedHours] };
+}
+
+/**
+ * The open rows with this Shift ID. Fix a sign-out acts only when there is exactly one; a
+ * blank Shift ID matches nothing.
+ */
+function openRowsById(entries, shiftId) {
+  const wanted = cellString(shiftId);
+  if (!wanted) return [];
+  return entries.filter((e) => isStatus(e, "open") && cellString(e.shiftId) === wanted);
+}
+
+/**
+ * Checks a Fix a sign-out in order: ADMIN_INITIALS, ADMIN_NOTE_TOO_LONG, ADMIN_NOT_OPEN
+ * (no open row has the Shift ID), ADMIN_DUPLICATE_SHIFT (more than one does),
+ * ADMIN_BAD_ROW (the row's start can't be read, so its hours can't be), the time through
+ * checkStatedTime on the row's Date (ADMIN_FUTURE or ADMIN_BAD_TIME), ADMIN_OUT_BEFORE_IN,
+ * ADMIN_OVERLAP.
+ *
+ * Input: {entries (the whole Log), shiftId, nowMs, outMs, outDate, initials, note}.
+ * outMs is the dialog's time on the row's Date, NaN when unreadable.
+ *
+ * Returns {refusal}, {refusal: "ADMIN_OVERLAP", conflict} with the overlapping row (and
+ * openStartMs, the open row's start, when that start is inside the other shift, so no
+ * check-out time could pass), or {open, cells, hours}.
+ */
+function decideFixSignOut(input) {
+  const initials = normalizeInitials(input.initials);
+  if (!initials) return { refusal: "ADMIN_INITIALS" };
+  const note = cellString(input.note);
+  if (note.length > adminNoteMaxLength()) return { refusal: "ADMIN_NOTE_TOO_LONG" };
+  const rows = openRowsById(input.entries, input.shiftId);
+  if (!rows.length) return { refusal: "ADMIN_NOT_OPEN" };
+  if (rows.length > 1) return { refusal: "ADMIN_DUPLICATE_SHIFT" };
+  const open = rows[0];
+  if (!hasReadableStart(open)) return { refusal: "ADMIN_BAD_ROW" };
+  const date = rowDate(open.dateText);
+  const checked = checkStatedTime(input.nowMs, input.outMs, input.outDate, date);
+  if (checked.refused) return { refusal: adminTimeRefusal(checked) };
+  const startMs = shiftStartMs(open);
+  if (checked.ms < startMs) return { refusal: "ADMIN_OUT_BEFORE_IN" };
+  const conflict = findOverlap(input.entries, open.token, date, startMs, checked.ms);
+  if (conflict) {
+    const startInside = shiftStartMs(conflict) <= startMs && startMs < shiftEndMs(conflict);
+    return startInside
+      ? { refusal: "ADMIN_OVERLAP", conflict, openStartMs: startMs }
+      : { refusal: "ADMIN_OVERLAP", conflict };
+  }
+  const cells = fixSignOutCells(open, checked.ms, note, initials);
+  return { open, cells, hours: cells[logHeaderNames().statedHours] };
+}
 
 // ---------------------------------------------------------------------------
 // Refusals
