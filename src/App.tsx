@@ -396,6 +396,36 @@ function Welcome({
   );
 }
 
+function CheckedInSidebar({ volunteers, onSelect }: {
+  volunteers: Volunteer[];
+  onSelect: (v: Volunteer) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const checkedIn = volunteers.filter(v => Boolean(v.currentCheckIn && isToday(v.currentCheckIn)));
+
+  return (
+    <>
+      <aside className={`checkin-sidebar`}>
+        <h2 className="checkin-sidebar-title">Checked In</h2>
+        {checkedIn.length === 0 ? (
+          <p className="checkin-sidebar-empty">No one checked in yet.</p>
+        ) : (
+          checkedIn.map((volunteer) => (
+          <VolunteerCard
+            key={volunteer.id}
+            volunteer={volunteer}
+            onClick={() => {
+              onSelect(volunteer);
+              setOpen(false);
+            }}
+          />
+        ))
+        )}
+      </aside>
+    </>
+  );
+}
+
 function PhoneDigits({
   digits,
   onChange,
@@ -1158,6 +1188,7 @@ export default function App() {
         <>
           <Header />
           <Welcome volunteers={volunteers} listState={listState} onSelect={select} />
+          <CheckedInSidebar volunteers={volunteers} onSelect={select} />
         </>
       )}
       {code && screen === "confirm" && selected && (
