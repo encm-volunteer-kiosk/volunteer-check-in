@@ -38,10 +38,12 @@ export type CheckOutResult = {
 export interface KioskApi {
   checkAccess(code: string): Promise<true | Refusal>;
   listVolunteers(code: string): Promise<VolunteerSummary[] | Refusal>;
+  // arrivalIso is the time chosen in the arrival picker, or null for now: the server then
+  // uses its own clock, so the tablet's clock never reaches the Log.
   checkIn(
     code: string,
     id: string,
-    arrivalIso: string,
+    arrivalIso: string | null,
     phoneLast4: string | null,
   ): Promise<CheckInResult | Refusal>;
   checkOut(code: string, id: string, phoneLast4: string | null): Promise<CheckOutResult | Refusal>;
@@ -223,7 +225,7 @@ export const localApi: KioskApi & { reset(): void } = {
     const { data, volunteer } = found;
     if (volunteer.currentCheckIn && isToday(volunteer.currentCheckIn)) return refuse("ALREADY_IN");
     const now = Date.now();
-    const asked = Date.parse(arrivalIso);
+    const asked = arrivalIso === null ? now : Date.parse(arrivalIso);
     if (!Number.isFinite(asked)) return refuse("ARRIVAL_OTHER_DAY");
     if (asked > now + localArrivalGraceMs) return refuse("ARRIVAL_FUTURE");
     const arrivedAt = new Date(Math.min(asked, now)).toISOString();

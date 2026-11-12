@@ -917,7 +917,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [result, setResult] = useState<Result | null>(null);
   const [arrivalTime, setArrivalTime] = useState(() => centralTimeValue());
-  // Check-in sends the current time unless the volunteer opens the arrival-time picker.
+  // Check-in sends no time, so the server uses its own clock, unless the volunteer opens
+  // the arrival-time picker.
   const [arrivalPicker, setArrivalPicker] = useState(false);
   const [phoneStep, setPhoneStep] = useState<PhoneStep>(null);
   const [phoneDigits, setPhoneDigits] = useState("");
@@ -1075,8 +1076,8 @@ export default function App() {
       return;
     }
     setError("");
-    const timestamp = arrivalPicker ? centralTimeToIso(arrivalTime) : new Date().toISOString();
-    if (new Date(timestamp).getTime() > Date.now() + 60_000) {
+    const timestamp = arrivalPicker ? centralTimeToIso(arrivalTime) : null;
+    if (timestamp && new Date(timestamp).getTime() > Date.now() + 60_000) {
       setError("Your arrival time cannot be in the future. Please choose an earlier time.");
       return;
     }

@@ -38,7 +38,9 @@ function apiListVolunteers(code) {
 }
 
 /**
- * Checks a volunteer in. id is the list entry the volunteer tapped; digits is the
+ * Checks a volunteer in. id is the list entry the volunteer tapped. arrivalIso is the
+ * arrival time the volunteer chose, or null when they didn't choose one; then the
+ * arrival is the server's time of the call, the same as Tapped in at. digits is the
  * phone's last four as a string, or null. In a same-name group the digits pick the
  * member, so the volunteer checked in can be another member than the one tapped.
  * {ok: true, id, shiftId, arrivedAt, tappedAt} or a refusal; id is the volunteer
@@ -51,7 +53,7 @@ function apiCheckIn(code, id, arrivalIso, digits) {
     const now = new Date();
     const today = centralDate_(now);
     const settings = readSettings_();
-    const arrivedMs = Date.parse(arrivalIso);
+    const arrivedMs = arrivalMsFromIso(arrivalIso);
     const decision = decideCheckIn({
       volunteers: getProfiles_(settings),
       id,
@@ -60,7 +62,7 @@ function apiCheckIn(code, id, arrivalIso, digits) {
       todayDate: today,
       nowMs: now.getTime(),
       arrivedMs,
-      arrivedDate: isFinite(arrivedMs) ? centralDate_(new Date(arrivedMs)) : '',
+      arrivedDate: Number.isFinite(arrivedMs) ? centralDate_(new Date(arrivedMs)) : '',
       flagMinutes: parseFlagMinutes(settings['Arrival flag minutes']),
     });
     if (decision.refusal) return refusal(decision.refusal);

@@ -453,6 +453,20 @@ test('validateArrival clamps up to 5 minutes ahead and refuses more', () => {
   assert.equal(L.arrivalGraceMinutes(), 5);
 });
 
+test('validateArrival takes no arrival as server time', () => {
+  assert.deepEqual(plain(L.validateArrival(NOW, null, '', TODAY)), { arrivedMs: NOW });
+  // Undefined is not "no arrival": only null is.
+  assert.equal(L.validateArrival(NOW, undefined, '', TODAY), 'ARRIVAL_OTHER_DAY');
+});
+
+test('arrivalMsFromIso: null or missing is null, anything else is parsed', () => {
+  assert.equal(L.arrivalMsFromIso(null), null);
+  assert.equal(L.arrivalMsFromIso(undefined), null);
+  assert.equal(L.arrivalMsFromIso('2026-11-12T16:00:00.000Z'), NOW);
+  assert.ok(Number.isNaN(L.arrivalMsFromIso('')));
+  assert.ok(Number.isNaN(L.arrivalMsFromIso('garbage')));
+});
+
 test('validateArrival refuses another day', () => {
   assert.equal(L.validateArrival(NOW, NOW - 12 * HOUR, '2026-11-11', TODAY), 'ARRIVAL_OTHER_DAY');
   assert.equal(L.validateArrival(NOW, NaN, '', TODAY), 'ARRIVAL_OTHER_DAY');
@@ -660,6 +674,12 @@ test('decideCheckIn accepts and flags', () => {
     flag: '',
   });
   assert.deepEqual(checkIn({ arrivedMs: NOW + 3 * MIN }), { volunteer: VOL, arrivedMs: NOW, flag: '' });
+  // No chosen time: arrived is server time and nothing is flagged.
+  assert.deepEqual(checkIn({ arrivedMs: null, arrivedDate: '' }), {
+    volunteer: VOL,
+    arrivedMs: NOW,
+    flag: '',
+  });
   assert.deepEqual(checkIn({ volunteers: [TWIN], digits: '0131' }).flag, 'arrival differs by 20 min');
   // Yesterday's open row is left for the auto-close and doesn't block today.
   assert.deepEqual(checkIn({ entries: [entry(2, { dateText: '2026-11-11' })] }).flag, 'arrival differs by 20 min');

@@ -428,11 +428,21 @@ function checkPhone(volunteer, digits) {
 }
 
 /**
- * {arrivedMs} for an acceptable arrival, else a refusal code. An arrival up to
- * arrivalGraceMinutes() ahead of server time is taken as server time. arrivedDate is the
- * arrival's Central date.
+ * The arrival the page sent, in milliseconds: null when it sent none (the volunteer
+ * didn't choose a time, so the arrival is server time), NaN when it isn't a readable time.
+ */
+function arrivalMsFromIso(arrivalIso) {
+  if (arrivalIso === null || arrivalIso === undefined) return null;
+  return Date.parse(String(arrivalIso));
+}
+
+/**
+ * {arrivedMs} for an acceptable arrival, else a refusal code. A null arrival is server
+ * time. An arrival up to arrivalGraceMinutes() ahead of server time is taken as server
+ * time. arrivedDate is the arrival's Central date.
  */
 function validateArrival(nowMs, arrivedMs, arrivedDate, todayDate) {
+  if (arrivedMs === null) return { arrivedMs: nowMs };
   if (typeof arrivedMs !== 'number' || !isFinite(arrivedMs)) return 'ARRIVAL_OTHER_DAY';
   if (arrivedMs - nowMs > arrivalGraceMinutes() * 60000) return 'ARRIVAL_FUTURE';
   if (arrivedMs > nowMs) return { arrivedMs: nowMs };
@@ -544,7 +554,7 @@ function volunteerSummaries(volunteers, entries, todayDate) {
 /**
  * Checks a check-in in order: NOT_FOUND, phone, ALREADY_IN, ARRIVAL_FUTURE,
  * ARRIVAL_OTHER_DAY. Input: {volunteers, id (the tapped entry), digits, entries,
- * todayDate, nowMs, arrivedMs, arrivedDate, flagMinutes}. Returns {refusal} or
+ * todayDate, nowMs, arrivedMs (null for server time), arrivedDate, flagMinutes}. Returns {refusal} or
  * {volunteer, arrivedMs, flag}; volunteer is the one resolveVolunteer found.
  */
 function decideCheckIn(input) {
