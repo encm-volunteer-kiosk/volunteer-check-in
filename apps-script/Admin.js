@@ -2,7 +2,8 @@
  * The Kiosk admin menu in the Check-In Log spreadsheet: Add a shift for a volunteer who
  * forgot to check in and out, and Fix a sign-out for an open row whose volunteer forgot
  * to check out. Each item opens a dialog from Admin.html, which calls the admin*
- * functions below through google.script.run.
+ * functions below through google.script.run. The menu's third item, Monthly report, is in
+ * Reports.js and follows the same rule.
  *
  * The menu and google.script.run can only call public names (no trailing _), so the
  * kiosk page could name these functions too. Every public function here therefore checks
@@ -29,6 +30,7 @@ function onOpen() {
     .createMenu("Kiosk admin")
     .addItem("Add a shift…", "openAddShiftDialog")
     .addItem("Fix a sign-out…", "openFixSignOutDialog")
+    .addItem("Monthly report…", "openMonthlyReportDialog")
     .addToUi();
 }
 

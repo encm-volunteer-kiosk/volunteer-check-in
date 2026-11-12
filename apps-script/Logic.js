@@ -2579,3 +2579,98 @@ function filterViewRequests(specs, existing) {
     };
   });
 }
+
+/** The tab setupReports builds for the live month table. */
+function monthlyHoursTabName() {
+  return "Monthly Hours";
+}
+
+/**
+ * The first words of the description of each kind of protection the reports make.
+ * setupReports finds its own protections by these and touches no other. No prefix starts
+ * another, so one kind is never taken for another.
+ * - kioskColumn: the soft warnings on the Log's kiosk columns. setupReports keeps them in
+ *   line with the header map.
+ * - monthlyHours: the Monthly Hours tab's warning. setupReports keeps one.
+ * - reportTab: each report tab's warning, made once with the tab. setupReports never reads,
+ *   edits or removes it.
+ */
+function reportProtectionPrefixes() {
+  return {
+    kioskColumn: "Kiosk column:",
+    monthlyHours: "Monthly Hours tab:",
+    reportTab: "Report tab:",
+  };
+}
+
+/** The description of the Monthly Hours tab's warning-only protection. */
+function monthlyHoursDescription() {
+  return (
+    reportProtectionPrefixes().monthlyHours +
+    " setupReports writes this tab. Pick a month in B1; anything else typed here is replaced when setupReports runs again."
+  );
+}
+
+/** The description of a report tab's warning-only protection. */
+function reportTabDescription() {
+  return (
+    reportProtectionPrefixes().reportTab +
+    " written once by the Kiosk admin menu's Monthly report, and never changed by the script. To correct it, fix the Log and make the report again."
+  );
+}
+
+/**
+ * Which of one tab's protections setupReports keeps, removes and adds. wanted lists the
+ * range keys it wants protected; existing is the tab's protections in order, [{key,
+ * description}]. Only a protection whose description starts with prefix is setupReports'
+ * own. For each wanted key, the first own protection with that key is kept; every other own
+ * protection is removed (a duplicate, or a column the header map no longer names); a wanted
+ * key with none kept is added. A protection that isn't its own is never named, so a rerun
+ * neither adds a second copy nor removes what staff, or the report menu, made.
+ * Returns {keep: [index into existing], remove: [index], add: [key]}.
+ */
+function ownedProtectionPlan(wanted, existing, prefix) {
+  const keep = [];
+  const remove = [];
+  const claimed = new Set();
+  (existing || []).forEach((p, i) => {
+    if (!cellString(p.description).startsWith(prefix)) return;
+    const key = cellString(p.key);
+    if (wanted.indexOf(key) >= 0 && !claimed.has(key)) {
+      claimed.add(key);
+      keep.push(i);
+    } else {
+      remove.push(i);
+    }
+  });
+  const add = wanted.filter((key, i) => !claimed.has(key) && wanted.indexOf(key) === i);
+  return { keep, remove, add };
+}
+
+/**
+ * The month the Monthly Hours picker shows after setupReports: what the cell holds when it
+ * is a "yyyy-MM" month as text, else todayDate's month. A date value in the cell (typed
+ * before the cell was plain text) reads as yyyy-MM-dd and is replaced.
+ */
+function pickerMonth(cellText, todayDate) {
+  const s = cellString(cellText);
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(s) ? s : monthKey(todayDate);
+}
+
+/**
+ * What setupReports logs when it finishes. counts is {views: {added, updated}, warnings:
+ * {kept, added, removed}}. It ends with the one thing staff must do by hand: the filter
+ * views name Log columns by letter, so after a Log column is inserted, deleted or moved they
+ * look at the wrong column until setupReports runs again.
+ */
+function setupReportsMessage(counts) {
+  const v = counts.views;
+  const w = counts.warnings;
+  return [
+    "setupReports finished.",
+    "The " + monthlyHoursTabName() + " tab is written.",
+    "Filter views: " + v.updated + " updated, " + v.added + " added.",
+    "Kiosk column warnings: " + w.kept + " kept, " + w.added + " added, " + w.removed + " removed.",
+    "The filter views name Log columns by letter. After a Log column is inserted, deleted or moved, they look at the wrong column until setupReports runs again, so run it again then.",
+  ].join("\n");
+}
