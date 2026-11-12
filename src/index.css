@@ -59,7 +59,8 @@
   min-height: 100dvh;
   height: 100dvh;
   position: relative;
-  overflow: hidden;
+  overflow: none;
+  overscroll-behavior: none;
   isolation: isolate;
   background: #fcf4e5;
 }
@@ -68,7 +69,7 @@
   position: fixed;
   z-index: -2;
   inset: 0;
-  background: url("./assets/encm-neighborhood-wide.webp") center center / cover no-repeat;
+  background: url("./assets/east-nashville-graphic.webp") center center / cover no-repeat;
 }
 .app-shell::after {
   content: "";
@@ -150,9 +151,6 @@
 .name-entry {
   max-width: 840px;
   padding-bottom: 112px;
-}
-.name-entry.is-typing {
-  padding-bottom: 75svh;
 }
 .name-entry > .tagline {
   display: none;

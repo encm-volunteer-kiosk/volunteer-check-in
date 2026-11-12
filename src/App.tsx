@@ -300,15 +300,7 @@ function Welcome({
 
   const updateQuery = (next: string) => {
     setQuery(next);
-    window.requestAnimationFrame(() => searchRef.current?.focus());
-  };
-  // Once the tablet keyboard has opened, bring the box and its results into view above it.
-  const keepResultsVisible = () => {
-    setTyping(true);
-    window.setTimeout(
-      () => cardRef.current?.scrollIntoView({ block: "start", behavior: "smooth" }),
-      350,
-    );
+    window.requestAnimationFrame(() => searchRef.current?.focus({ preventScroll: true }));
   };
 
   return (
@@ -335,7 +327,7 @@ function Welcome({
             autoFocus
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            onFocus={keepResultsVisible}
+            onFocus={() => setTyping(true)}
             placeholder="Enter your name"
             maxLength={60}
             autoComplete="off"
