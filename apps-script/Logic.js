@@ -2437,7 +2437,7 @@ function monthlyHoursFormulas(cols, logTab) {
     monthFormula(date) +
     "), " +
     'current, TEXT(TODAY(), "yyyy-mm"), ' +
-    'SORT(UNIQUE({current; IFERROR(FILTER(months, months <> "", months <= current), current)}), 1, FALSE))';
+    'SORT(UNIQUE({current; IFNA(FILTER(months, months <> "", months <= current), current)}), 1, FALSE))';
 
   const cells = [
     { a1: "A1", value: "Month" },
