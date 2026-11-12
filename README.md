@@ -7,10 +7,11 @@ so hours can be credited to each volunteer and reported to grantmakers.
 
 ## How it works
 
-- **Kiosk page**: a Google Apps Script web app (`src/Index.html`) with one search box
-  that autocompletes names. There is no name grid and no sign-up path, because every
+- **Kiosk page**: a React app (`src/`, from Josh's Figma Make design) with one search
+  box and an on-screen keyboard. It is built into a single HTML file that the Apps
+  Script web app serves. There is no name grid and no sign-up path, because every
   volunteer is registered before they volunteer.
-- **Server**: Apps Script functions (`src/Code.gs`) bound to a new Check-In Log
+- **Server**: Apps Script functions (`apps-script/Code.gs`) bound to a new Check-In Log
   spreadsheet with Log, Settings and Hours tabs.
 - **Names**: read from ENCM's existing Volunteer Profiles sheet. The kiosk never writes
   to it.
@@ -40,7 +41,7 @@ to fix it quietly.
    https://script.google.com/home/usersettings
 3. Sign in: `clasp login`
 4. Ask in Slack to be added as an editor on the shared development script. Its
-   `.clasp.json` (script ID, `rootDir: src`) gets committed once the script exists.
+   `.clasp.json` (script ID, `rootDir: apps-script`) gets committed once the script exists.
 5. Push your changes: `clasp push`. Open the editor: `clasp open`.
 
 The development script points at a copy of Volunteer Profiles built from the sample CSV,
@@ -49,8 +50,13 @@ never at ENCM's real file.
 ## Layout
 
 ```
-src/appsscript.json   manifest: America/Chicago time zone, V8, web app settings
-src/Code.gs           server functions: doGet, getNames, getStatus, signIn, signOut, autoClose
-src/Index.html        kiosk page (placeholder)
-sample-data/          invented volunteer profiles with the real column headers
+src/, public/, index.html   kiosk front end (React 19, Vite, Tailwind 4) from Figma Make
+.figma/, AGENTS.md          Figma Make's project files; keep them so Figma Make can re-import
+apps-script/appsscript.json manifest: America/Chicago time zone, V8, web app settings
+apps-script/Code.gs         server functions: doGet, getNames, getStatus, signIn, signOut, autoClose
+apps-script/Index.html      the page doGet serves (placeholder until the build writes it)
+sample-data/                invented volunteer profiles with the real column headers
 ```
+
+Front end on its own: `pnpm install`, then `pnpm dev`. Until it is wired to Apps Script it
+keeps data in the browser, with 24 invented volunteers. Shift+D opens its test tools.

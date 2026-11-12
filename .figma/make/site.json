@@ -1,0 +1,10 @@
+{
+  "description": "A welcoming tablet kiosk for East Nashville Care Market volunteers to quickly check in and out, track service hours, and feel appreciated.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
