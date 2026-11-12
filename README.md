@@ -208,10 +208,22 @@ asks for:
 - an optional note, up to 500 characters.
 - your initials.
 
-It refuses a date or time in the future (up to 5 minutes ahead is taken as now), a
-check-out before the check-in, a date on which the volunteer has an open shift (close it
-with Fix a sign-out first), and a shift that overlaps another of the volunteer's shifts
-that date. Shifts that only touch, one ending as the other starts, are accepted.
+It refuses, and says why, when:
+
+- the initials are missing or aren't 1 to 5 letters. Type them again.
+- the note is over 500 characters. Shorten it.
+- the volunteer is no longer in Volunteer Profiles. Close the window and open it again
+  to get the current roster.
+- the date or a time can't be read. Enter it again.
+- the date or a time is in the future. Up to 5 minutes ahead is taken as now.
+- the check-out is before the check-in. Correct one of the times.
+- the volunteer has an open shift on that date. Close it with Fix a sign-out first, then
+  add the shift.
+- the shift overlaps another of the volunteer's shifts that date. The message gives the
+  other shift's times and its Log row. Correct the times, or fix that row in the sheet if
+  it is the wrong one. Shifts that only touch, one ending as the other starts, are
+  accepted.
+- the window has been open more than 30 minutes. Close it and open the menu again.
 
 The new row gets Date, Day, Volunteer Name, both stated times, Hours Served (stated), the
 note in Notes, User Token, Status `closed`, a new Shift ID, and your initials in both
@@ -224,9 +236,25 @@ For a volunteer who left without checking out. The window lists every `open` row
 a Shift ID, from any date, newest first, and asks for the check-out time (to the minute),
 an optional note and your initials. The time is on the row's own date.
 
-It refuses a time in the future, a time before the row's check-in, a shift that would
-overlap another of the volunteer's shifts that date, and a row that has been closed since
-the window opened.
+It refuses, and says why, when:
+
+- the initials are missing or aren't 1 to 5 letters, or the note is over 500 characters,
+  as for Add a shift.
+- the row is no longer open: it was closed, deleted or had its Shift ID changed since the
+  window opened. Close the window and open Fix a sign-out again.
+- more than one open row has that Shift ID, as when a row was copied in the sheet. Fix or
+  delete the extra row in the sheet, then try again.
+- the row's Date or check-in time can't be read, so its hours can't be worked out. The
+  list shows such a row as "check-in time unreadable". Fix the Date or check-in time in
+  the sheet, then try again.
+- the time can't be read, or is in the future. Up to 5 minutes ahead is taken as now.
+- the time is before the row's check-in. Correct the time; if the check-in time itself
+  is wrong, fix it in the sheet first.
+- the shift would overlap another of the volunteer's shifts that date. The message gives
+  the other shift's times and its Log row. If the open row's check-in falls inside that
+  other shift, every check-out time would overlap it, and the message says so: correct or
+  delete one of the two rows in the sheet first.
+- the window has been open more than 30 minutes. Close it and open the menu again.
 
 The row gets Check-Out Stated, Hours Served (stated), Status `closed` and your initials in
 Check-Out Entered By. A note is added after whatever Notes holds. Check-Out Recorded and
@@ -237,6 +265,12 @@ tablet shows the volunteer as not checked in at its next refresh.
 
 It doesn't edit a closed row, change a check-in time, or delete a row. Staff change those
 cells by hand in the sheet.
+
+It can't close an open row whose Date or check-in time can't be read. Fix that cell by
+hand first, then use Fix a sign-out. If the row is dated today, the volunteer can still
+check out on the tablet instead: the row closes with blank hours and the
+`check-in time unreadable, stated hours left blank` alert, and staff then fix the times
+and hours by hand.
 
 A note needs a Notes column. If the Log has none, the save stops with an error that says
 to run `setupSheets`, which adds it.
