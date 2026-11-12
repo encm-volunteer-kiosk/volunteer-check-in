@@ -8,6 +8,8 @@
  */
 
 const LOG_TAB = "Log";
+/** Where setupSheets moves a Log tab still in the kiosk's old column layout. */
+const OLD_LOG_TAB = "Log (old layout)";
 const SETTINGS_TAB = "Settings";
 const DATE_TIME_FORMAT = "yyyy-mm-dd h:mm am/pm";
 
@@ -29,9 +31,10 @@ function requireEditorRun_() {
 }
 
 /**
- * Creates the Log and Settings tabs, the Log header, formats and any missing Settings
- * row. Never overwrites a non-empty cell or deletes a row, so running it twice changes
- * nothing. Runs only from the Apps Script editor.
+ * Creates or updates the Log and Settings tabs: the Log header, formats and any missing
+ * Settings row (setupLog_ for the Log). Writes only empty cells and creates or renames
+ * tabs; never changes a cell with text in it or deletes a row, so running it twice
+ * changes nothing. Runs only from the Apps Script editor.
  */
 function setupSheets() {
   requireEditorRun_();
@@ -40,16 +43,7 @@ function setupSheets() {
     ss.setSpreadsheetTimeZone(kioskTimeZone());
   }
 
-  const log = ss.getSheetByName(LOG_TAB) || ss.insertSheet(LOG_TAB);
-  const headers = logHeaders();
-  const header = log.getRange(1, 1, 1, headers.length);
-  ["A:E", "J:L"].forEach((a1) => log.getRange(a1).setNumberFormat("@"));
-  log.getRange("F:H").setNumberFormat(DATE_TIME_FORMAT);
-  log.getRange("I:I").setNumberFormat("0.00");
-  if (header.getValues()[0].every((v) => cellText_(v) === "")) {
-    header.setValues([headers]);
-  }
-  log.setFrozenRows(1);
+  setupLog_(ss);
 
   const settings = ss.getSheetByName(SETTINGS_TAB) || ss.insertSheet(SETTINGS_TAB);
   settings.getRange("A:B").setNumberFormat("@");
@@ -65,6 +59,56 @@ function setupSheets() {
   if (missing.length) {
     settings.getRange(settings.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
   }
+}
+
+/**
+ * The Log part of setupSheets.
+ * - No Log tab: create one with the full header.
+ * - A Log in the kiosk's old layout (isOldLogLayout): rename it OLD_LOG_TAB and create a
+ *   new Log with the full header. Its rows are not converted and count for nothing. If
+ *   OLD_LOG_TAB already exists, stop and name it.
+ * - Otherwise write the headers logHeaderWrites (Logic.js) names into empty cells of row 1.
+ * Then set each kiosk column's format by its header and freeze row 1.
+ */
+function setupLog_(ss) {
+  let log = ss.getSheetByName(LOG_TAB);
+  if (log && isOldLogLayout(logHeaderRow_(log))) {
+    if (ss.getSheetByName(OLD_LOG_TAB)) {
+      throw new Error(
+        'The Log tab is in the old layout and a "' +
+          OLD_LOG_TAB +
+          '" tab already exists. Rename or remove "' +
+          OLD_LOG_TAB +
+          '", then run setupSheets() again.',
+      );
+    }
+    log.setName(OLD_LOG_TAB);
+    log = null;
+  }
+  if (!log) log = ss.insertSheet(LOG_TAB);
+
+  const writes = logHeaderWrites(logHeaderRow_(log));
+  if (writes.length) {
+    const first = writes[0].col;
+    const last = writes[writes.length - 1].col;
+    if (last > log.getMaxColumns()) {
+      log.insertColumnsAfter(log.getMaxColumns(), last - log.getMaxColumns());
+    }
+    log
+      .getRange(1, first, 1, writes.length)
+      .setNumberFormat("@")
+      .setValues([writes.map((w) => w.header)]);
+  }
+  logColumnFormats(logHeaderRow_(log)).forEach((f) =>
+    log.getRange(1, f.col, log.getMaxRows(), 1).setNumberFormat(logFormat_(f.kind)),
+  );
+  log.setFrozenRows(1);
+}
+
+/** Row 1 of a tab as text, at least one cell wide. */
+function logHeaderRow_(sheet) {
+  const width = Math.max(sheet.getLastColumn(), 1);
+  return sheet.getRange(1, 1, 1, width).getValues()[0].map(cellText_);
 }
 
 /**
