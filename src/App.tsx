@@ -429,24 +429,30 @@ function Welcome({
   );
 }
 
-function CheckedInSidebar({ volunteers, onSelect }: {
+function CheckedInSidebar({
+  volunteers,
+  onSelect,
+}: {
   volunteers: Volunteer[];
   onSelect: (v: Volunteer) => void;
 }) {
-  const checkedIn = volunteers
-    .filter(v => Boolean(v.currentCheckIn && isToday(v.currentCheckIn)))
-    // Earliest check-in first. currentCheckIn is an ISO time string, so turn it into
-    // milliseconds to compare: a negative result puts a before b.
-    .sort((a, b) => Date.parse(a.currentCheckIn!) - Date.parse(b.currentCheckIn!));
+  // Earliest check-in first. A volunteer whose check-in time can't be read is still
+  // checked in, and goes last.
+  const arrival = (v: Volunteer) =>
+    v.currentCheckIn ? Date.parse(v.currentCheckIn) : Number.POSITIVE_INFINITY;
+  const checkedIn = volunteers.filter(isCheckedIn).sort((a, b) => {
+    const ta = arrival(a);
+    const tb = arrival(b);
+    return ta === tb ? 0 : ta < tb ? -1 : 1;
+  });
 
   return (
-
-      <aside className={`checkin-sidebar`}>
-        <h2 className="checkin-sidebar-title">Checked In</h2>
-        {checkedIn.length === 0 ? (
-          <p className="sidebar-empty">No one checked in yet.</p>
-        ) : (
-          checkedIn.map((volunteer) => (
+    <aside className={`checkin-sidebar`}>
+      <h2 className="checkin-sidebar-title">Checked In</h2>
+      {checkedIn.length === 0 ? (
+        <p className="sidebar-empty">No one checked in yet.</p>
+      ) : (
+        checkedIn.map((volunteer) => (
           <VolunteerCard
             key={volunteer.id}
             volunteer={volunteer}
@@ -455,8 +461,8 @@ function CheckedInSidebar({ volunteers, onSelect }: {
             }}
           />
         ))
-        )}
-      </aside>
+      )}
+    </aside>
   );
 }
 
