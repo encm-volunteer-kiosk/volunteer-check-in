@@ -8,6 +8,8 @@
  */
 
 const LOG_TAB = "Log";
+/** Where setupSheets moves a Log tab still in the kiosk's old column layout. */
+const OLD_LOG_TAB = "Log (old layout)";
 const SETTINGS_TAB = "Settings";
 const DATE_TIME_FORMAT = "yyyy-mm-dd h:mm am/pm";
 
@@ -15,23 +17,26 @@ const DATE_TIME_FORMAT = "yyyy-mm-dd h:mm am/pm";
 // Run by hand from the editor
 
 /**
- * Refuses a call that doesn't come from the script owner in the Apps Script editor.
- * setupSheets and setupSampleProfiles have no trailing _ so the editor's Run menu lists
- * them, which also lets the page call them through google.script.run without the access
- * code. A web-app caller's active user is empty (anonymous) or not the account the script
- * runs as; in the editor both are the owner.
+ * Refuses a call unless the active user is known and is the account the script runs as
+ * (the effective user). That holds in the Apps Script editor, where both are the owner,
+ * and in the Kiosk admin menu and its dialogs, which run as the editor at the sheet. A
+ * web-app caller's active user is empty (anonymous) or not the account the script runs
+ * as, so it is refused. setupSheets and setupSampleProfiles have no trailing _ so the
+ * editor's Run menu lists them, which also lets the page call them through
+ * google.script.run without the access code; this check is what stops that.
  */
 function requireEditorRun_() {
   const active = Session.getActiveUser().getEmail();
   if (!active || active !== Session.getEffectiveUser().getEmail()) {
-    throw new Error("Run this from the Apps Script editor.");
+    throw new Error("Run this from the Apps Script editor or the Kiosk admin menu.");
   }
 }
 
 /**
- * Creates the Log and Settings tabs, the Log header, formats and any missing Settings
- * row. Never overwrites a non-empty cell or deletes a row, so running it twice changes
- * nothing. Runs only from the Apps Script editor.
+ * Creates or updates the Log and Settings tabs: the Log header, formats and any missing
+ * Settings row (setupLog_ for the Log). Writes only empty cells and creates or renames
+ * tabs; never changes a cell with text in it or deletes a row, so running it twice
+ * changes nothing. Runs only from the Apps Script editor.
  */
 function setupSheets() {
   requireEditorRun_();
@@ -40,16 +45,7 @@ function setupSheets() {
     ss.setSpreadsheetTimeZone(kioskTimeZone());
   }
 
-  const log = ss.getSheetByName(LOG_TAB) || ss.insertSheet(LOG_TAB);
-  const headers = logHeaders();
-  const header = log.getRange(1, 1, 1, headers.length);
-  ["A:E", "J:L"].forEach((a1) => log.getRange(a1).setNumberFormat("@"));
-  log.getRange("F:H").setNumberFormat(DATE_TIME_FORMAT);
-  log.getRange("I:I").setNumberFormat("0.00");
-  if (header.getValues()[0].every((v) => cellText_(v) === "")) {
-    header.setValues([headers]);
-  }
-  log.setFrozenRows(1);
+  setupLog_(ss);
 
   const settings = ss.getSheetByName(SETTINGS_TAB) || ss.insertSheet(SETTINGS_TAB);
   settings.getRange("A:B").setNumberFormat("@");
@@ -65,6 +61,56 @@ function setupSheets() {
   if (missing.length) {
     settings.getRange(settings.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
   }
+}
+
+/**
+ * The Log part of setupSheets.
+ * - No Log tab: create one with the full header.
+ * - A Log in the kiosk's old layout (isOldLogLayout): rename it OLD_LOG_TAB and create a
+ *   new Log with the full header. Its rows are not converted and count for nothing. If
+ *   OLD_LOG_TAB already exists, stop and name it.
+ * - Otherwise write the headers logHeaderWrites (Logic.js) names into empty cells of row 1.
+ * Then set each kiosk column's format by its header and freeze row 1.
+ */
+function setupLog_(ss) {
+  let log = ss.getSheetByName(LOG_TAB);
+  if (log && isOldLogLayout(logHeaderRow_(log))) {
+    if (ss.getSheetByName(OLD_LOG_TAB)) {
+      throw new Error(
+        'The Log tab is in the old layout and a "' +
+          OLD_LOG_TAB +
+          '" tab already exists. Rename or remove "' +
+          OLD_LOG_TAB +
+          '", then run setupSheets() again.',
+      );
+    }
+    log.setName(OLD_LOG_TAB);
+    log = null;
+  }
+  if (!log) log = ss.insertSheet(LOG_TAB);
+
+  const writes = logHeaderWrites(logHeaderRow_(log));
+  if (writes.length) {
+    const first = writes[0].col;
+    const last = writes[writes.length - 1].col;
+    if (last > log.getMaxColumns()) {
+      log.insertColumnsAfter(log.getMaxColumns(), last - log.getMaxColumns());
+    }
+    log
+      .getRange(1, first, 1, writes.length)
+      .setNumberFormat("@")
+      .setValues([writes.map((w) => w.header)]);
+  }
+  logColumnFormats(logHeaderRow_(log)).forEach((f) =>
+    log.getRange(1, f.col, log.getMaxRows(), 1).setNumberFormat(logFormat_(f.kind)),
+  );
+  log.setFrozenRows(1);
+}
+
+/** Row 1 of a tab as text, at least one cell wide. */
+function logHeaderRow_(sheet) {
+  const width = Math.max(sheet.getLastColumn(), 1);
+  return sheet.getRange(1, 1, 1, width).getValues()[0].map(cellText_);
 }
 
 /**
@@ -101,11 +147,15 @@ function cellText_(value) {
   return cellString(value);
 }
 
-/** A date-time cell as milliseconds, NaN when it isn't a readable time. */
-function cellMs_(value) {
-  if (isDate_(value)) return value.getTime();
-  const s = cellString(value);
-  return s ? Date.parse(s) : NaN;
+/**
+ * A date-time cell as {ms, date}: its milliseconds and its Central yyyy-MM-dd. ms is NaN
+ * and date empty when the cell isn't a readable time.
+ */
+function cellTime_(value) {
+  let ms = NaN;
+  if (isDate_(value)) ms = value.getTime();
+  else if (cellString(value)) ms = Date.parse(cellString(value));
+  return isFinite(ms) ? { ms, date: centralDate_(new Date(ms)) } : { ms: NaN, date: "" };
 }
 
 function centralDate_(date) {
@@ -162,9 +212,11 @@ function setSetting_(name, value) {
 // Volunteer Profiles
 
 /**
- * The kiosk list [{id, firstName, lastName, phoneLast4, startDate, needsPhoneCheck}],
- * from the cache when it holds one. On a cache miss it reads Profiles in one call and
- * rewrites the Settings "Profiles problems" value. Never writes to Profiles.
+ * The kiosk list [{id, firstName, lastName, phoneLast4, startDate, needsPhoneCheck,
+ * token, row}], from the cache when it holds one. On a cache miss it reads Profiles in one
+ * call and rewrites the Settings "Profiles problems" value. Never writes to Profiles. The
+ * cache key carries profilesCacheVersion(), so a list cached in an older shape is never
+ * read.
  */
 function getProfiles_(settings) {
   const fileId = settings["Volunteer Profiles file ID"];
@@ -172,7 +224,7 @@ function getProfiles_(settings) {
   if (!fileId) throw new Error('The Settings value "Volunteer Profiles file ID" is empty.');
 
   const cache = CacheService.getScriptCache();
-  const key = "profiles:" + fileId + ":" + tabName;
+  const key = profilesCacheKey(fileId, tabName);
   const hit = cache.get(key);
   if (hit) return JSON.parse(hit);
 
@@ -199,36 +251,48 @@ function getProfiles_(settings) {
 // ---------------------------------------------------------------------------
 // Log
 
-function logEntry_(cells, row) {
-  return {
-    row,
-    id: cellText_(cells[1]),
-    dateText: cellText_(cells[4]),
-    tappedMs: cellMs_(cells[5]),
-    arrivedMs: cellMs_(cells[6]),
-    hours: cells[8] === "" ? NaN : Number(cells[8]),
-    status: cellText_(cells[9]),
-  };
+/** The read functions logEntry (Logic.js) uses to turn cells into text and times. */
+function logRead_() {
+  return { text: cellText_, time: cellTime_ };
 }
 
-/** Every Log row as a log entry (Logic.js). */
-function readLog_() {
-  const sheet = sheet_(LOG_TAB);
-  const last = sheet.getLastRow();
-  if (last < 2) return [];
-  const values = sheet.getRange(2, 1, last - 1, logHeaders().length).getValues();
-  return values.map((cells, i) => logEntry_(cells, i + 2));
+/** The number format a Log column of this kind (logColumnKinds) gets. */
+function logFormat_(kind) {
+  if (kind === "time") return DATE_TIME_FORMAT;
+  if (kind === "hours") return "0.00";
+  return "@";
 }
 
 /**
- * Log rows dated today, in any row order. Reads the Date column, then only the block
- * of rows from the first to the last of today's.
+ * The Log's header map (logColumns, Logic.js), from row 1 read once. Throws when a
+ * column the kiosk needs is missing or repeated.
  */
-function readTodayLog_(todayDate) {
+function readLogColumns_() {
+  const sheet = sheet_(LOG_TAB);
+  const width = Math.max(sheet.getLastColumn(), 1);
+  return logColumns(sheet.getRange(1, 1, 1, width).getValues()[0].map(cellText_));
+}
+
+/** Every Log row as a log entry (Logic.js), read across the Log's full width. */
+function readLog_(cols) {
   const sheet = sheet_(LOG_TAB);
   const last = sheet.getLastRow();
   if (last < 2) return [];
-  const dates = sheet.getRange(2, 5, last - 1, 1).getValues();
+  const values = sheet.getRange(2, 1, last - 1, sheet.getLastColumn()).getValues();
+  const read = logRead_();
+  return values.map((cells, i) => logEntry(cells, i + 2, cols, read));
+}
+
+/**
+ * Log rows dated today, in any row order. Reads the Date column found by the header
+ * map, then only the block of rows from the first to the last of today's, across the
+ * full width.
+ */
+function readTodayLog_(todayDate, cols) {
+  const sheet = sheet_(LOG_TAB);
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  const dates = sheet.getRange(2, cols[logHeaderNames().date] + 1, last - 1, 1).getValues();
   const today = [];
   dates.forEach((cells, i) => {
     if (isRowToday(cellText_(cells[0]), todayDate)) today.push(i + 2);
@@ -236,43 +300,34 @@ function readTodayLog_(todayDate) {
   if (!today.length) return [];
   const first = today[0];
   const values = sheet
-    .getRange(first, 1, today[today.length - 1] - first + 1, logHeaders().length)
+    .getRange(first, 1, today[today.length - 1] - first + 1, sheet.getLastColumn())
     .getValues();
-  return today.map((row) => logEntry_(values[row - first], row));
+  const read = logRead_();
+  return today.map((row) => logEntry(values[row - first], row, cols, read));
 }
 
-/** Writes an open shift on the next empty Log row. Returns the shift ID. */
-function writeCheckIn_(volunteer, todayDate, tapped, arrived, flag) {
+/**
+ * Writes a cell map (Logic.js) on one row. Each cell gets its column's format before its
+ * value, in case staff reformatted the column; times go in as Dates. Columns the map
+ * doesn't name are left alone.
+ */
+function writeLogCells_(sheet, row, cells, cols) {
+  cellWrites(cells, cols).forEach((w) => {
+    const value = w.kind === "time" && w.value !== "" ? new Date(w.value) : w.value;
+    sheet.getRange(row, w.col).setNumberFormat(logFormat_(w.kind)).setValue(value);
+  });
+}
+
+/** Writes a new row (a cell map) on the next empty Log row. Returns the row number. */
+function appendLogRow_(cells, cols) {
   const sheet = sheet_(LOG_TAB);
   const row = sheet.getLastRow() + 1;
   if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 50);
-  const shiftId = Utilities.getUuid();
-  sheet.getRangeList(["A" + row + ":E" + row, "J" + row + ":K" + row]).setNumberFormat("@");
-  sheet.getRange(row, 6, 1, 2).setNumberFormat(DATE_TIME_FORMAT);
-  sheet
-    .getRange(row, 1, 1, 11)
-    .setValues([
-      [
-        shiftId,
-        volunteer.id,
-        sheetText(volunteer.firstName),
-        sheetText(volunteer.lastName),
-        todayDate,
-        tapped,
-        arrived,
-        "",
-        "",
-        "open",
-        flag,
-      ],
-    ]);
-  return shiftId;
+  writeLogCells_(sheet, row, cells, cols);
+  return row;
 }
 
-/** Closes a shift: Signed out at, Hours, Status closed. */
-function writeCheckOut_(row, signedOut, hours) {
-  const sheet = sheet_(LOG_TAB);
-  sheet.getRange(row, 8).setNumberFormat(DATE_TIME_FORMAT);
-  sheet.getRange(row, 10).setNumberFormat("@");
-  sheet.getRange(row, 8, 1, 3).setValues([[signedOut, hours, "closed"]]);
+/** Writes a cell map onto an existing Log row. */
+function updateLogRow_(row, cells, cols) {
+  writeLogCells_(sheet_(LOG_TAB), row, cells, cols);
 }

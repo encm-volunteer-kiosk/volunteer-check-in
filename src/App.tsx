@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, isRefusal, localApi, toVolunteer, usingLocalApi, type Refusal } from "./api";
+import {
+  api,
+  isRefusal,
+  localApi,
+  refusalMessage,
+  toVolunteer,
+  usingLocalApi,
+  type Refusal,
+} from "./api";
 import logo from "./assets/encm-logo.png";
 import { appreciationMessages, isToday, type Milestone, type Volunteer } from "./data";
 
@@ -121,8 +129,19 @@ function BackButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+/**
+ * Checked in today. A known arrival must be dated today. With none, the server's flag
+ * decides: it is set for an open row dated today whose check-in time can't be read, so
+ * that volunteer still reaches check-out.
+ */
+function isCheckedIn(volunteer: Volunteer) {
+  return volunteer.currentCheckIn
+    ? isToday(volunteer.currentCheckIn)
+    : Boolean(volunteer.checkedIn);
+}
+
 function VolunteerCard({ volunteer, onClick }: { volunteer: Volunteer; onClick: () => void }) {
-  const checkedIn = Boolean(volunteer.currentCheckIn && isToday(volunteer.currentCheckIn));
+  const checkedIn = isCheckedIn(volunteer);
   return (
     <button
       className={`volunteer-card${checkedIn ? " is-checked-in" : ""}`}
@@ -155,12 +174,20 @@ const minuteOptions = [0, 15, 30, 45];
 
 function TimeKeyboard({
   value,
+  minMinutes = 0,
+  label,
+  confirmText,
   saving,
   onChange,
   onConfirm,
   onBack,
 }: {
   value: string;
+  // The earliest time that can be chosen, in Central minutes since midnight (fractions
+  // allowed): 0 for arrival, the stated arrival for check-out.
+  minMinutes?: number;
+  label: string;
+  confirmText: string;
   saving: boolean;
   onChange: (time: string) => void;
   onConfirm: () => void;
@@ -170,25 +197,31 @@ function TimeKeyboard({
   const hour12 = hourValue % 12 || 12;
   const period = hourValue >= 12 ? "PM" : "AM";
 
-  // Minutes since midnight, Central. Nothing later than now can be chosen.
-  const nowMinutes = minutesOfDay(centralTimeValue());
+  // Minutes since midnight, Central. The choices are the quarter hours from the lower
+  // bound up to now; nothing later than now can be chosen.
+  const latest = floorQuarter(minutesOfDay(centralTimeValue()));
+  const earliest = Math.ceil(minMinutes / 15) * 15;
   const toMinutes = (hour: number, minute: number, nextPeriod: "AM" | "PM") =>
     ((hour % 12) + (nextPeriod === "PM" ? 12 : 0)) * 60 + minute;
-  const isLater = (hour: number, minute: number, nextPeriod: "AM" | "PM") =>
-    toMinutes(hour, minute, nextPeriod) > nowMinutes;
+  const inRange = (total: number) => total >= earliest && total <= latest;
+  const hourInRange = (hour: number, nextPeriod: "AM" | "PM") =>
+    minuteOptions.some((minute) => inRange(toMinutes(hour, minute, nextPeriod)));
+  const periodInRange = (nextPeriod: "AM" | "PM") => {
+    const first = nextPeriod === "PM" ? 12 * 60 : 0;
+    return Math.max(earliest, first) <= Math.min(latest, first + 11 * 60 + 45);
+  };
 
   const updateTime = (hour: number, minute: number, nextPeriod: "AM" | "PM") => {
-    // A new hour or period keeps the chosen minutes unless that is later than now; then it
-    // takes the latest quarter hour that isn't.
-    const start = toMinutes(hour, 0, nextPeriod);
-    const total = Math.min(start + minute, Math.max(start, nowMinutes - (nowMinutes % 15)));
+    // A new hour or period keeps the chosen minutes when they are in range; otherwise it
+    // takes the nearest quarter hour that is.
+    const total = Math.min(Math.max(toMinutes(hour, minute, nextPeriod), earliest), latest);
     onChange(
       `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`,
     );
   };
 
   return (
-    <div className="app-keyboard time-keyboard" aria-label="Arrival time keyboard">
+    <div className="app-keyboard time-keyboard" aria-label={label}>
       <div className="keyboard-row" aria-label="Choose an hour">
         {Array.from({ length: 12 }, (_, index) => index + 1).map((hour) => (
           <button
@@ -196,7 +229,7 @@ function TimeKeyboard({
             className={`time-key${hour === hour12 ? " is-selected" : ""}`}
             key={hour}
             onClick={() => updateTime(hour, minuteValue, period)}
-            disabled={isLater(hour, 0, period)}
+            disabled={!hourInRange(hour, period)}
             aria-label={`${hour} o'clock`}
             aria-pressed={hour === hour12}
           >
@@ -211,7 +244,7 @@ function TimeKeyboard({
             className={`time-key${minute === minuteValue ? " is-selected" : ""}`}
             key={minute}
             onClick={() => updateTime(hour12, minute, period)}
-            disabled={isLater(hour12, minute, period)}
+            disabled={!inRange(toMinutes(hour12, minute, period))}
             aria-label={`${minute} minutes past the hour`}
             aria-pressed={minute === minuteValue}
           >
@@ -226,7 +259,7 @@ function TimeKeyboard({
             className={`keyboard-action period-key${option === period ? " is-selected" : ""}`}
             key={option}
             onClick={() => updateTime(hour12, minuteValue, option)}
-            disabled={isLater(hour12, 0, option)}
+            disabled={!periodInRange(option)}
             aria-pressed={option === period}
           >
             {option}
@@ -242,7 +275,7 @@ function TimeKeyboard({
                 <span className="spinner" /> Saving…
               </>
             ) : (
-              "Check In"
+              confirmText
             )}
           </Button>
         </div>
@@ -439,12 +472,13 @@ function Confirmation({
   checkout,
   phoneStep = null,
   phoneDigits = "",
-  arrivalTime,
-  arrivalPicker = false,
+  time,
+  picker = false,
+  minMinutes = 0,
   saving,
   error,
-  onArrivalTimeChange,
-  onOpenArrivalPicker,
+  onTimeChange,
+  onOpenPicker,
   onPhoneDigitsChange,
   onPhoneContinue,
   onConfirm,
@@ -454,20 +488,21 @@ function Confirmation({
   checkout: boolean;
   phoneStep?: PhoneStep;
   phoneDigits?: string;
-  arrivalTime?: string;
-  arrivalPicker?: boolean;
+  // The time picker: arrival on the check-in screen, check-out on the check-out screen.
+  time?: string;
+  picker?: boolean;
+  minMinutes?: number;
   saving: boolean;
   error: string;
-  onArrivalTimeChange?: (time: string) => void;
-  onOpenArrivalPicker?: () => void;
+  onTimeChange?: (time: string) => void;
+  // Given only when the picker may be offered; its link shows after the phone step.
+  onOpenPicker?: () => void;
   onPhoneDigitsChange: (digits: string) => void;
   onPhoneContinue: () => void;
   onConfirm: () => void;
   onBack: () => void;
 }) {
-  const showTimeKeyboard = Boolean(
-    !checkout && !phoneStep && arrivalPicker && arrivalTime && onArrivalTimeChange,
-  );
+  const showTimeKeyboard = Boolean(!phoneStep && picker && time && onTimeChange);
   const hasKeyboard = showTimeKeyboard;
   const digitsMissing = Boolean(volunteer.needsPhoneCheck) && phoneDigits.length !== 4;
 
@@ -496,10 +531,12 @@ function Confirmation({
                 {phoneStep === "entry" &&
                   " Please enter the last four digits of your phone number."}
               </>
-            ) : checkout ? (
+            ) : checkout && volunteer.currentCheckIn ? (
               <>
-                You checked in today at <strong>{formatTime(volunteer.currentCheckIn!)}</strong>.
+                You checked in today at <strong>{formatTime(volunteer.currentCheckIn)}</strong>.
               </>
+            ) : checkout ? (
+              "You're checked in today."
             ) : (
               "Just making sure we have the right neighbor."
             )}
@@ -511,7 +548,7 @@ function Confirmation({
               onSubmit={onPhoneContinue}
             />
           )}
-          {!phoneStep && checkout && volunteer.currentCheckIn && (
+          {!phoneStep && checkout && !showTimeKeyboard && volunteer.currentCheckIn && (
             <ShiftThanks checkedInAt={volunteer.currentCheckIn} />
           )}
           {!checkout && !phoneStep && !showTimeKeyboard && (
@@ -527,10 +564,14 @@ function Confirmation({
               <div className="arrival-time">
                 <span>
                   <Icon name="clock" size={21} />
-                  What time did you arrive?
+                  {checkout ? "What time did you leave?" : "What time did you arrive?"}
                 </span>
-                <output aria-live="polite">{formatTimeValue(arrivalTime!)}</output>
-                <small>Tap to adjust your arrival time.</small>
+                <output aria-live="polite">{formatTimeValue(time!)}</output>
+                <small>
+                  {checkout
+                    ? "Tap to adjust your check-out time."
+                    : "Tap to adjust your arrival time."}
+                </small>
               </div>
             </div>
           )}
@@ -560,23 +601,23 @@ function Confirmation({
               </Button>
             </div>
           )}
-          {!checkout && !phoneStep && !showTimeKeyboard && onOpenArrivalPicker && (
-            <button
-              type="button"
-              className="text-button"
-              onClick={onOpenArrivalPicker}
-              disabled={saving}
-            >
-              Forgot to check in earlier? Change your arrival time
+          {!phoneStep && !showTimeKeyboard && onOpenPicker && (
+            <button type="button" className="text-button" onClick={onOpenPicker} disabled={saving}>
+              {checkout
+                ? "Forgot to check out earlier? Change your check-out time"
+                : "Forgot to check in earlier? Change your arrival time"}
             </button>
           )}
         </section>
       </main>
       {showTimeKeyboard && (
         <TimeKeyboard
-          value={arrivalTime!}
+          value={time!}
+          minMinutes={minMinutes}
+          label={checkout ? "Check-out time keyboard" : "Arrival time keyboard"}
+          confirmText={checkout ? "Check Out" : "Check In"}
           saving={saving}
-          onChange={onArrivalTimeChange!}
+          onChange={onTimeChange!}
           onConfirm={onConfirm}
           onBack={onBack}
         />
@@ -801,11 +842,50 @@ function minutesOfDay(value: string) {
   return hour * 60 + minute;
 }
 
+function floorQuarter(minutes: number) {
+  return minutes - (minutes % 15);
+}
+
 /** The latest quarter hour at or before now, Central, as HH:MM. */
 function latestQuarterHour() {
-  const now = minutesOfDay(centralTimeValue());
-  const quarter = now - (now % 15);
+  const quarter = floorQuarter(minutesOfDay(centralTimeValue()));
   return `${String(Math.floor(quarter / 60)).padStart(2, "0")}:${String(quarter % 60).padStart(2, "0")}`;
+}
+
+/** Central minutes since midnight of an instant, seconds and milliseconds as a fraction. */
+function centralMinutesOf(ms: number) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(ms));
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((item) => item.type === type)?.value ?? 0);
+  return part("hour") * 60 + part("minute") + (part("second") + (ms % 1000) / 1000) / 60;
+}
+
+// The server's same-name group key: first and last name, trimmed, spaces collapsed, any case.
+const nameKey = (v: Volunteer) =>
+  [v.firstName, v.lastName].map((name) => name.trim().replace(/\s+/g, " ").toLowerCase()).join("|");
+
+/**
+ * The earliest check-out time the server could accept for this entry, in milliseconds: the
+ * stated arrival of its open shift today. For an entry in a same-name group the digits may
+ * pick any member, so it is the earliest arrival among the group's checked-in members; the
+ * server checks the real one. null when no member is checked in today, and null when a
+ * checked-in member's check-in time can't be read: the server then checks no lower bound,
+ * so the page offers no picker and the server's clock gives the check-out time.
+ */
+function checkOutLowerBound(volunteer: Volunteer, volunteers: Volunteer[]) {
+  const group = volunteer.needsPhoneCheck
+    ? volunteers.filter((v) => v.id === volunteer.id || nameKey(v) === nameKey(volunteer))
+    : [volunteer];
+  const checkedIn = group.filter(isCheckedIn);
+  if (checkedIn.some((v) => !v.currentCheckIn)) return null;
+  const arrivals = checkedIn.map((v) => Date.parse(v.currentCheckIn!));
+  return arrivals.length ? Math.min(...arrivals) : null;
 }
 
 function formatTimeValue(value: string) {
@@ -912,10 +992,20 @@ export default function App() {
   // Check-in sends no time, so the server uses its own clock, unless the volunteer opens
   // the arrival-time picker.
   const [arrivalPicker, setArrivalPicker] = useState(false);
+  // Check-out likewise sends no time unless the volunteer opens the check-out picker.
+  const [checkOutTime, setCheckOutTime] = useState(() => centralTimeValue());
+  const [checkOutPicker, setCheckOutPicker] = useState(false);
   const [phoneStep, setPhoneStep] = useState<PhoneStep>(null);
   const [phoneDigits, setPhoneDigits] = useState("");
   const inactivityRef = useRef<number | null>(null);
   const selected = volunteers.find((v) => v.id === selectedId) ?? null;
+  const checkOutFloorMs = selected ? checkOutLowerBound(selected, volunteers) : null;
+  const checkOutMinMinutes = checkOutFloorMs === null ? null : centralMinutesOf(checkOutFloorMs);
+  // The check-out picker is offered only when at least one quarter hour lies between the
+  // lower bound and now.
+  const checkOutPickable =
+    checkOutMinMinutes !== null &&
+    Math.ceil(checkOutMinMinutes / 15) * 15 <= floorQuarter(minutesOfDay(centralTimeValue()));
 
   const goHome = () => {
     setScreen("welcome");
@@ -924,6 +1014,8 @@ export default function App() {
     setResult(null);
     setArrivalTime(centralTimeValue());
     setArrivalPicker(false);
+    setCheckOutTime(centralTimeValue());
+    setCheckOutPicker(false);
     setPhoneStep(null);
     setPhoneDigits("");
   };
@@ -933,11 +1025,11 @@ export default function App() {
     setError("");
     setArrivalTime(centralTimeValue());
     setArrivalPicker(false);
+    setCheckOutTime(centralTimeValue());
+    setCheckOutPicker(false);
     setPhoneStep(volunteer.needsPhoneCheck ? "entry" : null);
     setPhoneDigits("");
-    setScreen(
-      volunteer.currentCheckIn && isToday(volunteer.currentCheckIn) ? "checkout" : "confirm",
-    );
+    setScreen(isCheckedIn(volunteer) ? "checkout" : "confirm");
   };
 
   const applyCode = (next: string | null) => {
@@ -1104,13 +1196,28 @@ export default function App() {
       setPhoneStep("entry");
       return;
     }
-    setSaving(true);
     setError("");
+    // The page's own checks use the server's messages. The server checks again against its
+    // clock and the shift it acts on.
+    const timestamp = checkOutPicker ? centralTimeToIso(checkOutTime) : null;
+    if (timestamp) {
+      const chosen = Date.parse(timestamp);
+      if (chosen > Date.now() + 60_000) {
+        setError(refusalMessage("CHECKOUT_FUTURE"));
+        return;
+      }
+      if (checkOutFloorMs !== null && chosen < checkOutFloorMs) {
+        setError(refusalMessage("CHECKOUT_BEFORE_ARRIVAL"));
+        return;
+      }
+    }
+    setSaving(true);
     try {
       const reply = await api.checkOut(
         code,
         selected.id,
         selected.needsPhoneCheck ? phoneDigits : null,
+        timestamp,
       );
       if (isRefusal(reply)) {
         showRefusal(reply);
@@ -1164,9 +1271,9 @@ export default function App() {
         <Confirmation
           volunteer={selected}
           checkout={false}
-          arrivalTime={arrivalTime}
-          arrivalPicker={arrivalPicker}
-          onOpenArrivalPicker={() => {
+          time={arrivalTime}
+          picker={arrivalPicker}
+          onOpenPicker={() => {
             setError("");
             setArrivalTime(latestQuarterHour());
             setArrivalPicker(true);
@@ -1174,7 +1281,7 @@ export default function App() {
           {...phoneProps}
           saving={saving}
           error={error}
-          onArrivalTimeChange={setArrivalTime}
+          onTimeChange={setArrivalTime}
           onConfirm={handleConfirm}
           onBack={goHome}
         />
@@ -1183,9 +1290,22 @@ export default function App() {
         <Confirmation
           volunteer={selected}
           checkout
+          time={checkOutTime}
+          picker={checkOutPicker}
+          minMinutes={checkOutMinMinutes ?? 0}
+          onOpenPicker={
+            checkOutPickable
+              ? () => {
+                  setError("");
+                  setCheckOutTime(latestQuarterHour());
+                  setCheckOutPicker(true);
+                }
+              : undefined
+          }
           {...phoneProps}
           saving={saving}
           error={error}
+          onTimeChange={setCheckOutTime}
           onConfirm={handleCheckout}
           onBack={goHome}
         />

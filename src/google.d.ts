@@ -7,7 +7,12 @@ interface GoogleScriptRunner {
   apiCheckAccess(code: string): void;
   apiListVolunteers(code: string): void;
   apiCheckIn(code: string, id: string, arrivalIso: string | null, phoneLast4: string | null): void;
-  apiCheckOut(code: string, id: string, phoneLast4: string | null): void;
+  apiCheckOut(
+    code: string,
+    id: string,
+    phoneLast4: string | null,
+    checkOutIso: string | null,
+  ): void;
 }
 
 declare const google: { script?: { run: GoogleScriptRunner } } | undefined;

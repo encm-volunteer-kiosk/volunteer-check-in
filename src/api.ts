@@ -21,6 +21,9 @@ export type VolunteerSummary = {
   id: string;
   firstName: string;
   lastName: string;
+  // An open row dated today: the server's own test, true even when that row's check-in
+  // time can't be read and openShiftArrival is null.
+  checkedIn: boolean;
   openShiftArrival: string | null;
   needsPhoneCheck: boolean;
 };
@@ -28,9 +31,12 @@ export type VolunteerSummary = {
 // id is the volunteer the server acted on. In a same-name group the phone digits pick the
 // member, so it can differ from the entry the volunteer tapped.
 export type CheckInResult = { id: string; shiftId: string; arrivedAt: string; tappedAt: string };
+// signedOutAt is the stated check-out (the chosen time, or the tap when none was chosen);
+// tappedAt is the server's clock at the tap.
 export type CheckOutResult = {
   id: string;
   signedOutAt: string;
+  tappedAt: string;
   minutes: number;
   milestone: Milestone | null;
 };
@@ -46,7 +52,14 @@ export interface KioskApi {
     arrivalIso: string | null,
     phoneLast4: string | null,
   ): Promise<CheckInResult | Refusal>;
-  checkOut(code: string, id: string, phoneLast4: string | null): Promise<CheckOutResult | Refusal>;
+  // checkOutIso is the time chosen in the check-out picker, or null for now, as for arrival.
+  // It is the last argument, so the server still takes a call from an older page without it.
+  checkOut(
+    code: string,
+    id: string,
+    phoneLast4: string | null,
+    checkOutIso: string | null,
+  ): Promise<CheckOutResult | Refusal>;
 }
 
 export function isRefusal(value: unknown): value is Refusal {
@@ -60,6 +73,7 @@ export function toVolunteer(summary: VolunteerSummary): Volunteer {
     firstName: summary.firstName,
     lastName: summary.lastName,
     currentCheckIn: summary.openShiftArrival,
+    checkedIn: summary.checkedIn,
     active: true,
     expectedToday: false,
     completedShiftCount: 0,
@@ -108,11 +122,11 @@ export const gasApi: KioskApi = {
     const { id: actedOn, shiftId, arrivedAt, tappedAt } = reply;
     return { id: actedOn, shiftId, arrivedAt, tappedAt } as CheckInResult;
   },
-  async checkOut(code, id, phoneLast4) {
-    const reply = await run((r) => r.apiCheckOut(code, id, phoneLast4));
+  async checkOut(code, id, phoneLast4, checkOutIso) {
+    const reply = await run((r) => r.apiCheckOut(code, id, phoneLast4, checkOutIso));
     if (!reply.ok) return refusalOf(reply);
-    const { id: actedOn, signedOutAt, minutes, milestone } = reply;
-    return { id: actedOn, signedOutAt, minutes, milestone } as CheckOutResult;
+    const { id: actedOn, signedOutAt, tappedAt, minutes, milestone } = reply;
+    return { id: actedOn, signedOutAt, tappedAt, minutes, milestone } as CheckOutResult;
   },
 };
 
@@ -126,12 +140,19 @@ const refusalMessages: Record<string, string> = {
   NOT_IN: "You're not checked in today.",
   ARRIVAL_FUTURE: "Your arrival time can't be in the future. Please choose an earlier time.",
   ARRIVAL_OTHER_DAY: "Please choose a time from today.",
+  CHECKOUT_FUTURE: "Your check-out time can't be in the future. Please choose an earlier time.",
+  CHECKOUT_OTHER_DAY: "Please choose a time from today.",
+  CHECKOUT_BEFORE_ARRIVAL:
+    "Your check-out time can't be before your arrival time. Please choose a later time.",
   PHONE_NEEDED: "Please enter the last four digits of your phone number.",
   PHONE_WRONG: "Those digits don't match our records. Please try again or see a board member.",
   PHONE_MISSING: "We need to confirm who you are. Please see a board member.",
 };
 
 const refuse = (code: string): Refusal => ({ refusal: code, message: refusalMessages[code] });
+
+/** The server's message for a refusal code, for the page's own checks before a call. */
+export const refusalMessage = (code: string) => refusalMessages[code];
 
 // An invented second Jordan Rivera, so the phone step can be tried locally. The two
 // Jordans' invented last four digits are below.
@@ -168,6 +189,17 @@ function sharesName(data: KioskData, volunteer: Volunteer) {
   return data.volunteers.some(
     (v) => v.active && v.id !== volunteer.id && nameKey(v) === nameKey(volunteer),
   );
+}
+
+// As the server's rule for a stated time: none chosen is now; up to the grace ahead of now
+// is taken as now; later is the future; unreadable or not today is another day.
+function localStatedTime(iso: string | null, now: number): number | "FUTURE" | "OTHER_DAY" {
+  if (iso === null) return now;
+  const asked = Date.parse(iso);
+  if (!Number.isFinite(asked)) return "OTHER_DAY";
+  if (asked > now + localArrivalGraceMs) return "FUTURE";
+  const ms = Math.min(asked, now);
+  return isToday(new Date(ms).toISOString()) ? ms : "OTHER_DAY";
 }
 
 function localCodeOk(code: string) {
@@ -215,6 +247,7 @@ export const localApi: KioskApi & { reset(): void } = {
         id: v.id,
         firstName: v.firstName,
         lastName: v.lastName,
+        checkedIn: Boolean(v.currentCheckIn && isToday(v.currentCheckIn)),
         openShiftArrival: v.currentCheckIn && isToday(v.currentCheckIn) ? v.currentCheckIn : null,
         needsPhoneCheck: sharesName(data, v),
       }));
@@ -225,11 +258,9 @@ export const localApi: KioskApi & { reset(): void } = {
     const { data, volunteer } = found;
     if (volunteer.currentCheckIn && isToday(volunteer.currentCheckIn)) return refuse("ALREADY_IN");
     const now = Date.now();
-    const asked = arrivalIso === null ? now : Date.parse(arrivalIso);
-    if (!Number.isFinite(asked)) return refuse("ARRIVAL_OTHER_DAY");
-    if (asked > now + localArrivalGraceMs) return refuse("ARRIVAL_FUTURE");
-    const arrivedAt = new Date(Math.min(asked, now)).toISOString();
-    if (!isToday(arrivedAt)) return refuse("ARRIVAL_OTHER_DAY");
+    const arrived = localStatedTime(arrivalIso, now);
+    if (typeof arrived === "string") return refuse(`ARRIVAL_${arrived}`);
+    const arrivedAt = new Date(arrived).toISOString();
     const next = checkIn(data, volunteer.id, arrivedAt);
     await kioskStore.save(next);
     localData = next;
@@ -240,18 +271,24 @@ export const localApi: KioskApi & { reset(): void } = {
       tappedAt: new Date(now).toISOString(),
     };
   },
-  async checkOut(code, id, phoneLast4) {
+  async checkOut(code, id, phoneLast4, checkOutIso) {
     const found = localLookup(code, id, phoneLast4);
     if (found.refusal) return found.refusal;
     const { data, volunteer } = found;
     if (!volunteer.currentCheckIn || !isToday(volunteer.currentCheckIn)) return refuse("NOT_IN");
-    const signedOutAt = new Date().toISOString();
+    const now = Date.now();
+    const out = localStatedTime(checkOutIso, now);
+    if (typeof out === "string") return refuse(`CHECKOUT_${out}`);
+    // Equal to the arrival is accepted.
+    if (out < Date.parse(volunteer.currentCheckIn)) return refuse("CHECKOUT_BEFORE_ARRIVAL");
+    const signedOutAt = new Date(out).toISOString();
     const completed = checkOut(data, volunteer.id, signedOutAt);
     await kioskStore.save(completed.data);
     localData = completed.data;
     return {
       id: volunteer.id,
       signedOutAt,
+      tappedAt: new Date(now).toISOString(),
       minutes: completed.duration,
       milestone: completed.earned,
     };
