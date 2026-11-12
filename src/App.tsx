@@ -429,6 +429,43 @@ function Welcome({
   );
 }
 
+function CheckedInSidebar({
+  volunteers,
+  onSelect,
+}: {
+  volunteers: Volunteer[];
+  onSelect: (v: Volunteer) => void;
+}) {
+  // Earliest check-in first. A volunteer whose check-in time can't be read is still
+  // checked in, and goes last.
+  const arrival = (v: Volunteer) =>
+    v.currentCheckIn ? Date.parse(v.currentCheckIn) : Number.POSITIVE_INFINITY;
+  const checkedIn = volunteers.filter(isCheckedIn).sort((a, b) => {
+    const ta = arrival(a);
+    const tb = arrival(b);
+    return ta === tb ? 0 : ta < tb ? -1 : 1;
+  });
+
+  return (
+    <aside className={`checkin-sidebar`}>
+      <h2 className="checkin-sidebar-title">Checked In</h2>
+      {checkedIn.length === 0 ? (
+        <p className="sidebar-empty">No one checked in yet.</p>
+      ) : (
+        checkedIn.map((volunteer) => (
+          <VolunteerCard
+            key={volunteer.id}
+            volunteer={volunteer}
+            onClick={() => {
+              onSelect(volunteer);
+            }}
+          />
+        ))
+      )}
+    </aside>
+  );
+}
+
 function PhoneDigits({
   digits,
   onChange,
@@ -1265,6 +1302,7 @@ export default function App() {
         <>
           <Header />
           <Welcome volunteers={volunteers} listState={listState} onSelect={select} />
+          <CheckedInSidebar volunteers={volunteers} onSelect={select} />
         </>
       )}
       {code && screen === "confirm" && selected && (

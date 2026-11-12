@@ -580,7 +580,7 @@ src/api.ts                  the page's calls: Apps Script when served by it, els
 .figma/, AGENTS.md          Figma Make's project files; keep them so Figma Make can re-import
 apps-script/Api.js          doGet and the api* functions the page calls
 apps-script/Admin.js        the Kiosk admin menu and its dialogs' server functions
-apps-script/Admin.html      the admin dialogs (plain HTML and JavaScript, committed source)
+apps-script/AdminDialog.html the admin dialogs (plain HTML and JavaScript, committed source)
 apps-script/Reports.js      setupReports and the Monthly report menu item's server functions
 apps-script/Report.html     the Monthly report window (plain HTML and JavaScript, committed source)
 apps-script/Logic.js        the rules, as plain functions the Node tests load

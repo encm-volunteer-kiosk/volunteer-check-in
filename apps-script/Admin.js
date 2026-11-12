@@ -1,7 +1,7 @@
 /**
  * The Kiosk admin menu in the Check-In Log spreadsheet: Add a shift for a volunteer who
  * forgot to check in and out, and Fix a sign-out for an open row whose volunteer forgot
- * to check out. Each item opens a dialog from Admin.html, which calls the admin*
+ * to check out. Each item opens a dialog from AdminDialog.html, which calls the admin*
  * functions below through google.script.run. The menu's third item, Monthly report, is in
  * Reports.js and follows the same rule.
  *
@@ -148,13 +148,13 @@ function adminGuard_(key) {
   return null;
 }
 
-/** Opens a dialog from Admin.html with a new key in it. mode is "add" or "fix". */
+/** Opens a dialog from AdminDialog.html with a new key in it. mode is "add" or "fix". */
 function openAdminDialog_(mode, title) {
   requireEditorRun_();
   const ui = SpreadsheetApp.getUi();
   const key = Utilities.getUuid();
   CacheService.getScriptCache().put(adminKeyCacheKey(key), "1", adminKeySeconds());
-  const page = HtmlService.createTemplateFromFile("Admin");
+  const page = HtmlService.createTemplateFromFile("AdminDialog");
   page.key = key;
   page.mode = mode;
   ui.showModalDialog(page.evaluate().setWidth(480).setHeight(600), title);
