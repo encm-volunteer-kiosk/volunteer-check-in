@@ -1171,22 +1171,26 @@ test("decideCheckIn accepts and flags", () => {
     volunteer: VOL,
     arrivedMs: NOW - 20 * MIN,
     flag: "arrival differs by 20 min",
+    flags: ["arrival differs by 20 min"],
   });
   assert.deepEqual(checkIn({ arrivedMs: NOW - 5 * MIN }), {
     volunteer: VOL,
     arrivedMs: NOW - 5 * MIN,
     flag: "",
+    flags: [],
   });
   assert.deepEqual(checkIn({ arrivedMs: NOW + 3 * MIN }), {
     volunteer: VOL,
     arrivedMs: NOW,
     flag: "",
+    flags: [],
   });
   // No chosen time: arrived is server time and nothing is flagged.
   assert.deepEqual(checkIn({ arrivedMs: null, arrivedDate: "" }), {
     volunteer: VOL,
     arrivedMs: NOW,
     flag: "",
+    flags: [],
   });
   assert.deepEqual(
     checkIn({ volunteers: [TWIN], digits: "0131" }).flag,
@@ -1260,6 +1264,8 @@ test("decideCheckOut closes today's open row at server time and picks the milest
       message: "Your first day making a difference. Welcome to the neighborhood!",
     },
     statedOutMs: NOW,
+    flags: [],
+    open: plain(entry(9, {})),
   });
   const history = Array.from({ length: 9 }, (_, i) =>
     entry(20 + i, { status: "closed", statedHours: 3, dateText: "2026-10-0" + (i + 1) }),
@@ -1977,4 +1983,259 @@ test("constants", () => {
   assert.equal(L.kioskTimeZone(), "America/Chicago");
   assert.equal(L.profilesCacheSeconds(), 300);
   assert.equal(L.defaultFlagMinutes(), 15);
+});
+
+// ---------------------------------------------------------------------------
+// The Flags tab
+
+const FLAG_HEADERS = [
+  "Date",
+  "Volunteer Name",
+  "Shift ID",
+  "Reason",
+  "Raised At",
+  "Reviewed",
+  "Reviewed By",
+  "Notes",
+  "Source",
+  "Log Row",
+];
+const F = plain(L.flagHeaderNames());
+
+test("flagHeaders are the eight review columns, then Source and Log Row", () => {
+  assert.deepEqual(plain(L.flagHeaders()), FLAG_HEADERS);
+  assert.deepEqual(plain(L.flagColumnKinds()), {
+    Date: "text",
+    "Volunteer Name": "text",
+    "Shift ID": "text",
+    Reason: "text",
+    "Raised At": "time",
+    Reviewed: "checkbox",
+    "Reviewed By": "text",
+    Notes: "text",
+    Source: "text",
+    "Log Row": "number",
+  });
+});
+
+test("flagColumns finds headers in any order, with staff columns between", () => {
+  const header = [
+    "log row",
+    "Staff column",
+    "REVIEWED",
+    "Source",
+    " raised  at ",
+    "Reason",
+    "Notes",
+    "Shift\nID",
+    "Volunteer Name",
+    "Date",
+    "Reviewed By",
+  ];
+  assert.deepEqual(plain(L.flagColumns(header)), {
+    Date: 9,
+    "Volunteer Name": 8,
+    "Shift ID": 7,
+    Reason: 5,
+    "Raised At": 4,
+    Reviewed: 2,
+    "Reviewed By": 10,
+    Notes: 6,
+    Source: 3,
+    "Log Row": 0,
+  });
+});
+
+test("flagColumns needs only the columns the script writes", () => {
+  const header = FLAG_HEADERS.filter((h) => h !== "Reviewed By" && h !== "Notes");
+  const cols = plain(L.flagColumns(header));
+  assert.equal(cols["Reviewed By"], -1);
+  assert.equal(cols.Notes, -1);
+  // Staff's columns may be repeated.
+  assert.doesNotThrow(() => L.flagColumns([...FLAG_HEADERS, "Notes", "Reviewed By"]));
+  assert.throws(
+    () => L.flagColumns(FLAG_HEADERS.filter((h) => h !== "Shift ID")),
+    /^Error: The Flags tab has no "shift id" column\. Run setupSheets\(\)\.$/,
+  );
+  assert.throws(
+    () => L.flagColumns([...FLAG_HEADERS, "reason"]),
+    /^Error: The Flags tab has more than one "reason" column\. Rename or remove the extra one\.$/,
+  );
+});
+
+test("flagHeaderWrites: an empty row gets every header; a short one gets what it lacks", () => {
+  const full = FLAG_HEADERS.map((header, i) => ({ col: i + 1, header }));
+  assert.deepEqual(plain(L.flagHeaderWrites([])), full);
+  assert.deepEqual(plain(L.flagHeaderWrites(["", " "])), full);
+  assert.deepEqual(plain(L.flagHeaderWrites(FLAG_HEADERS)), []);
+  const short = FLAG_HEADERS.slice(0, 8);
+  assert.deepEqual(plain(L.flagHeaderWrites([...short, "", "Staff"])), [
+    { col: 11, header: "Source" },
+    { col: 12, header: "Log Row" },
+  ]);
+  // Reviewed By and Notes are staff's and never added.
+  const noStaff = FLAG_HEADERS.filter((h) => h !== "Reviewed By" && h !== "Notes");
+  assert.deepEqual(plain(L.flagHeaderWrites(noStaff)), []);
+});
+
+const FLAG_BASE = {
+  date: TODAY,
+  name: "Sam Lee",
+  shiftId: "shift-9",
+  raisedAtMs: NOW,
+  source: "kiosk check-out",
+  logRow: 9,
+};
+
+test("flagRows: one row per reason, the same base on each, Reviewed false, no token", () => {
+  const rows = plain(
+    L.flagRows(FLAG_BASE, ["check-out differs by 30 min", L.unreadableStartAlert()]),
+  );
+  assert.equal(rows.length, 2);
+  const want = (reason) => ({
+    Date: TODAY,
+    "Volunteer Name": "Sam Lee",
+    "Shift ID": "shift-9",
+    Reason: reason,
+    "Raised At": NOW,
+    Reviewed: false,
+    Source: "kiosk check-out",
+    "Log Row": 9,
+  });
+  assert.deepEqual(rows, [want("check-out differs by 30 min"), want(L.unreadableStartAlert())]);
+  for (const row of rows) {
+    for (const value of Object.values(row)) assert.notEqual(value, TOKEN);
+    assert.ok(!Object.keys(row).some((k) => /token/i.test(k)));
+  }
+  assert.deepEqual(plain(L.flagRows(FLAG_BASE, [])), []);
+  assert.equal(L.flagRows({ ...FLAG_BASE, name: "=Sam" }, ["x"])[0]["Volunteer Name"], "'=Sam");
+});
+
+test("flagRows throws on an empty Shift ID", () => {
+  for (const shiftId of ["", "  ", undefined]) {
+    assert.throws(
+      () => L.flagRows({ ...FLAG_BASE, shiftId }, ["arrival differs by 24 min"]),
+      /without a Shift ID/,
+    );
+  }
+});
+
+test("flagRowValues puts each value under its header and blanks elsewhere", () => {
+  const header = [
+    "Staff",
+    "Log Row",
+    "Reason",
+    "Shift ID",
+    "Date",
+    "Notes",
+    "Volunteer Name",
+    "Raised At",
+    "Reviewed",
+    "Source",
+  ];
+  const cols = L.flagColumns(header);
+  const [cells] = L.flagRows(FLAG_BASE, ["check-out differs by 30 min"]);
+  assert.deepEqual(plain(L.flagRowValues(cells, cols, header.length + 1)), [
+    "",
+    9,
+    "check-out differs by 30 min",
+    "shift-9",
+    TODAY,
+    "",
+    "Sam Lee",
+    NOW,
+    false,
+    "kiosk check-out",
+    "",
+  ]);
+  assert.throws(() => L.flagRowValues({ Token: "x" }, cols, 10), /not a Flags header/);
+});
+
+test("checkOutFlags lists the check-out flag, then the unreadable start", () => {
+  const readable = entry(9, {});
+  const unreadable = entry(9, { recordedInMs: NaN, statedInMs: NaN });
+  assert.deepEqual(plain(L.checkOutFlags(readable, "")), []);
+  assert.deepEqual(plain(L.checkOutFlags(readable, "check-out differs by 30 min")), [
+    "check-out differs by 30 min",
+  ]);
+  assert.deepEqual(plain(L.checkOutFlags(unreadable, "")), [L.unreadableStartAlert()]);
+  assert.deepEqual(plain(L.checkOutFlags(unreadable, "check-out differs by 30 min")), [
+    "check-out differs by 30 min",
+    L.unreadableStartAlert(),
+  ]);
+  // checkOutCells writes Admin Alerts? as the same list added to what the cell held.
+  for (const [open, flag] of [
+    [readable, ""],
+    [readable, "check-out differs by 30 min"],
+    [{ ...unreadable, alerts: "staff text" }, ""],
+    [{ ...unreadable, alerts: "staff text" }, "check-out differs by 30 min"],
+  ]) {
+    const flags = L.checkOutFlags(open, flag);
+    const cells = plain(L.checkOutCells(open, NOW, NOW, flag));
+    const want = flags.length ? flags.reduce((t, f) => L.appendText(t, f), open.alerts) : undefined;
+    assert.equal(cells[H.alerts], want);
+  }
+});
+
+test("decideCheckIn's flags are the arrival flag Admin Alerts? gets", () => {
+  assert.deepEqual(checkIn({ arrivedMs: NOW - 5 * MIN }).flags, []);
+  assert.deepEqual(checkIn({ arrivedMs: NOW - 24 * MIN }).flags, ["arrival differs by 24 min"]);
+});
+
+test("decideCheckOut returns both flags and the open row for a picked time on an unreadable start", () => {
+  const open = entry(9, { recordedInMs: NaN, statedInMs: NaN });
+  const out = checkOut({ entries: [open], outMs: NOW - 30 * MIN, outDate: TODAY });
+  assert.deepEqual(out.flags, ["check-out differs by 30 min", L.unreadableStartAlert()]);
+  assert.equal(out.cells[H.alerts], out.flags.join("; "));
+  assert.deepEqual(out.open, plain(open));
+  assert.equal(out.open.shiftId, "shift-9");
+});
+
+test("the admin menu raises no flags", () => {
+  assert.equal(addShift({}).flags, undefined);
+  assert.equal(fixSignOut({}).flags, undefined);
+});
+
+test("flagFilterViewRequests uses the map's letters, and updates by id or adds", () => {
+  const header = [
+    "Staff",
+    "Log Row",
+    "Reason",
+    "Shift ID",
+    "Date",
+    "Volunteer Name",
+    "Raised At",
+    "Source",
+    "Reviewed",
+  ];
+  const cols = L.flagColumns(header);
+  const view = {
+    title: "Flags: Unreviewed",
+    range: { sheetId: 77 },
+    filterSpecs: [
+      {
+        columnIndex: 8,
+        filterCriteria: {
+          condition: {
+            type: "CUSTOM_FORMULA",
+            values: [{ userEnteredValue: '=AND(TRIM($D2) <> "", $I2 <> TRUE)' }],
+          },
+        },
+      },
+    ],
+    sortSpecs: [{ dimensionIndex: 6, sortOrder: "DESCENDING" }],
+  };
+  assert.deepEqual(plain(L.flagFilterViewRequests(cols, 77, null)), [
+    { addFilterView: { filter: view } },
+  ]);
+  assert.deepEqual(plain(L.flagFilterViewRequests(cols, 77, 1234)), [
+    {
+      updateFilterView: {
+        filter: { filterViewId: 1234, ...view },
+        fields: "title,range,filterSpecs,sortSpecs",
+      },
+    },
+  ]);
+  // The title doesn't start "Kiosk: ", so setupReports never takes it for its own.
+  assert.ok(!L.flagsViewTitle().startsWith(L.filterViewTitlePrefix()));
 });
