@@ -263,6 +263,8 @@ function rowList(rowNumbers) {
  *
  * Every row with a first and last name either is listed with an ID of its own, or gets
  * a problem line saying why it can't check in. Rows without both names are skipped.
+ * A same-name member whose phone can't confirm them (none, or the same last four as
+ * another member) is listed with phoneLast4 '' so checkPhone returns PHONE_MISSING.
  * Returns {volunteers: [{id, firstName, lastName, phoneLast4, startDate, needsPhoneCheck}],
  * problems: [{row, text}]} with problems in row order.
  */
@@ -329,13 +331,41 @@ function parseProfiles(headerRow, rows, hashFn) {
     const key = nameKey(c.volunteer);
     nameCounts.set(key, (nameCounts.get(key) || 0) + 1);
   });
-  listed.forEach((c) => {
-    if (nameCounts.get(nameKey(c.volunteer)) < 2) return;
+  // Within a same-name group the last four must tell members apart. A member whose last
+  // four matches another member's can't be confirmed by phone, so they are treated like
+  // a member with no usable phone: listed, refused with PHONE_MISSING, and reported.
+  const twins = listed.filter((c) => nameCounts.get(nameKey(c.volunteer)) > 1);
+  const clashes = new Map();
+  twins.forEach((c) => {
+    const rows = twins
+      .filter(
+        (o) =>
+          o !== c &&
+          c.volunteer.phoneLast4 &&
+          o.volunteer.phoneLast4 === c.volunteer.phoneLast4 &&
+          nameKey(o.volunteer) === nameKey(c.volunteer),
+      )
+      .map((o) => o.row);
+    if (rows.length) clashes.set(c, rows);
+  });
+  twins.forEach((c) => {
     c.volunteer.needsPhoneCheck = true;
     if (!c.volunteer.phoneLast4) {
       problems.push({
         row: c.row,
         text: 'row ' + c.row + ': ' + c.name + ' shares a name and has no usable phone number',
+      });
+    } else if (clashes.has(c)) {
+      c.volunteer.phoneLast4 = '';
+      problems.push({
+        row: c.row,
+        text:
+          'row ' +
+          c.row +
+          ': ' +
+          c.name +
+          ' shares a name and the last four phone digits with ' +
+          rowList(clashes.get(c)),
       });
     }
   });

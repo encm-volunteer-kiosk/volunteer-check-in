@@ -332,6 +332,56 @@ test('a same-name member with no usable phone is listed and gets a problem line'
   ]);
 });
 
+test('a same-name pair with the same last four are both refused and reported', () => {
+  const { volunteers, problems } = parse([
+    person('Sam', 'Lee', 'tok-1', '615-555-0131'),
+    person('Ruth', 'Okafor', 'tok-2', '615-555-0131'),
+    person('Sam', 'Lee', 'tok-3', '(615) 555-0131 x9'),
+  ]);
+  assert.equal(volunteers.length, 3);
+  const sams = volunteers.filter((v) => v.firstName === 'Sam');
+  for (const sam of sams) {
+    assert.equal(sam.needsPhoneCheck, true);
+    assert.equal(L.checkPhone(sam, '0131'), 'PHONE_MISSING');
+    assert.equal(L.checkPhone(sam, null), 'PHONE_MISSING');
+  }
+  // Ruth shares the digits but not the name, so she is unaffected.
+  assert.equal(volunteers[1].phoneLast4, '0131');
+  assert.deepEqual(problems, [
+    { row: 2, text: 'row 2: Sam Lee shares a name and the last four phone digits with row 4' },
+    { row: 4, text: 'row 4: Sam Lee shares a name and the last four phone digits with row 2' },
+  ]);
+});
+
+test('in a same-name trio where two share a last four, the third still passes', () => {
+  const { volunteers, problems } = parse([
+    person('Sam', 'Lee', 'tok-1', '615-555-0131'),
+    person('Sam', 'Lee', 'tok-2', '615-555-0132'),
+    person('sam', 'lee', 'tok-3', '615-555-0131'),
+  ]);
+  assert.equal(volunteers.length, 3);
+  assert.equal(L.checkPhone(volunteers[0], '0131'), 'PHONE_MISSING');
+  assert.equal(L.checkPhone(volunteers[2], '0131'), 'PHONE_MISSING');
+  assert.equal(L.checkPhone(volunteers[1], '0132'), null);
+  assert.equal(L.checkPhone(volunteers[1], '0131'), 'PHONE_WRONG');
+  assert.deepEqual(
+    problems.map((p) => p.text),
+    [
+      'row 2: Sam Lee shares a name and the last four phone digits with row 4',
+      'row 4: sam lee shares a name and the last four phone digits with row 2',
+    ],
+  );
+  const four = parse([
+    person('Sam', 'Lee', 'tok-1', '615-555-0131'),
+    person('Sam', 'Lee', 'tok-2', '615-555-0131'),
+    person('Sam', 'Lee', 'tok-3', '615-555-0131'),
+  ]);
+  assert.equal(
+    four.problems[0].text,
+    'row 2: Sam Lee shares a name and the last four phone digits with rows 3, 4',
+  );
+});
+
 test('a duplicate token does not count toward a same-name group', () => {
   const { volunteers } = parse([
     person('Sam', 'Lee', 'tok-1'),
