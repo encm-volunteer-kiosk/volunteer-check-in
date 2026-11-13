@@ -187,6 +187,10 @@ class FakeSheet {
     this.validations = new Map();
     this.hidden = new Set();
     this.protections = [];
+    // Styles set through range lists, as [a1, what, value] in call order; widths by column.
+    this.styles = [];
+    this.widths = new Map();
+    this.tabColor = null;
     rows.forEach((r, i) => r.forEach((v, j) => this.set(i + 1, j + 1, v)));
   }
   get(r, c) {
@@ -238,6 +242,32 @@ class FakeSheet {
   hideColumn(range) {
     this.hidden.add(colLetters(range.getColumn()));
   }
+  getRangeList(a1s) {
+    a1s.forEach((a1) => this.getRange(a1));
+    const record =
+      (what) =>
+      (...args) => {
+        a1s.forEach((a1) => this.styles.push([a1, what, args.length === 1 ? args[0] : args]));
+        return list;
+      };
+    const list = {
+      setBackground: record("background"),
+      setFontColor: record("fontColor"),
+      setFontSize: record("fontSize"),
+      setFontWeight: record("fontWeight"),
+      setBorder: record("border"),
+    };
+    return list;
+  }
+  setColumnWidth(col, px) {
+    assert.ok(col >= 1 && col <= this.maxCols, "column outside the sheet: " + col);
+    this.widths.set(col, px);
+    return this;
+  }
+  setTabColor(color) {
+    this.tabColor = color;
+    return this;
+  }
   getProtections(type) {
     return this.protections.filter((p) => p.type === type);
   }
@@ -259,6 +289,9 @@ class FakeSheet {
       validations: [...this.validations],
       hidden: [...this.hidden],
       protections: this.protections.map((p) => p.state()),
+      styles: this.styles,
+      widths: [...this.widths],
+      tabColor: this.tabColor,
     });
   }
 }
@@ -333,6 +366,7 @@ function server(logRows, opts = {}) {
         throw new Error("Cannot call SpreadsheetApp.getUi() from this context.");
       },
       ProtectionType: { RANGE: "RANGE", SHEET: "SHEET" },
+      BorderStyle: { SOLID: "SOLID" },
       newDataValidation: validation,
       flush: () => {},
     },
@@ -743,6 +777,48 @@ test("adminMonthlyReport writes a new protected tab from the Log, read under the
   );
   assert.deepEqual(s.lockCalls, ["tryLock", "release"]);
   assert.deepEqual(s.sheet("Log").state(), logBefore);
+});
+
+test("a new report tab is styled by row kind: title, section headings, table headers, widths, tab colour", () => {
+  const s = server(LOG);
+  s.ctx.adminMonthlyReport("k", { month: "2026-11", initials: "JP" });
+  const tab = s.sheet("Report 2026-11");
+  const values = tab.getRange(1, 1, tab.getLastRow(), 5).getValues();
+  const rowOf = (a1) => +/\d+$/.exec(a1)[0];
+  const styled = (what, value) =>
+    tab.styles.filter((x) => x[1] === what && JSON.stringify(x[2]) === JSON.stringify(value));
+  // The title: A1, navy, 14 pt, bold.
+  assert.deepEqual(
+    styled("fontSize", 14).map((x) => x[0]),
+    ["A1"],
+  );
+  assert.ok(styled("fontColor", "#062f5a").some((x) => x[0] === "A1"));
+  // Section headings: the light-blue fill across A:E, on each section's title row.
+  const sections = styled("background", "#dff3fb").map((x) => x[0]);
+  for (const title of [
+    "Summary",
+    "Month over month",
+    "Year to date",
+    "Hours per volunteer",
+    "Rows to review",
+  ]) {
+    const row = values.findIndex((r) => r[0] === title) + 1;
+    assert.ok(sections.includes("A" + row + ":E" + row), title);
+  }
+  assert.ok(sections.every((a1) => /^A(\d+):E\1$/.test(a1)));
+  assert.ok(!sections.some((a1) => values[rowOf(a1) - 1][0] === "Stated hours"));
+  // Table headers: bold with a navy bottom border, from A to the last header cell.
+  const borders = styled("border", [null, null, true, null, null, null, "#062f5a", "SOLID"]).map(
+    (x) => x[0],
+  );
+  const volunteerHeader = values.findIndex((r) => r[0] === "Volunteer" && r[1] === "Shifts") + 1;
+  assert.ok(borders.includes("A" + volunteerHeader + ":C" + volunteerHeader));
+  assert.ok(borders.every((a1) => styled("fontWeight", "bold").some((x) => x[0] === a1)));
+  assert.deepEqual(tab.widths.size, 5);
+  assert.equal(tab.tabColor, "#0669a9");
+  // Styling changes no value or number format.
+  assert.equal(tab.cellFormats.size, values.length * 5);
+  assert.match(values[0][0], /^Monthly report for November 2026/);
 });
 
 test("a second report for a month makes a new tab and leaves the first as it was", () => {

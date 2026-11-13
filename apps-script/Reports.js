@@ -242,8 +242,9 @@ function readReportLog_() {
 }
 
 /**
- * A new tab at the end holding rows ({values, formats}, reportRows), formats first, then
- * values, one call each; protected warning-only and made the active tab.
+ * A new tab at the end holding rows ({values, formats, kinds}, reportRows), formats
+ * first, then values, one call each; styled once by reportTabLook (Logic.js); protected
+ * warning-only and made the active tab. A report tab is never styled again.
  */
 function writeReportTab_(month, rows) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -263,8 +264,34 @@ function writeReportTab_(month, rows) {
   const range = sheet.getRange(1, 1, height, width);
   range.setNumberFormats(rows.formats);
   range.setValues(rows.values);
+  styleReportTab_(sheet, reportTabLook(rows));
   sheet.protect().setDescription(reportTabDescription()).setWarningOnly(true);
   ss.setActiveSheet(sheet);
   SpreadsheetApp.flush();
   return sheet;
+}
+
+/** Applies a reportTabLook to a new report tab: one range list per style, then widths and the tab colour. */
+function styleReportTab_(sheet, look) {
+  look.styles.forEach((style) => {
+    const list = sheet.getRangeList(style.ranges);
+    if (style.background) list.setBackground(style.background);
+    if (style.fontColor) list.setFontColor(style.fontColor);
+    if (style.fontSize) list.setFontSize(style.fontSize);
+    if (style.bold) list.setFontWeight("bold");
+    if (style.bottomBorder) {
+      list.setBorder(
+        null,
+        null,
+        true,
+        null,
+        null,
+        null,
+        style.bottomBorder,
+        SpreadsheetApp.BorderStyle.SOLID,
+      );
+    }
+  });
+  look.widths.forEach((w) => sheet.setColumnWidth(w.col, w.px));
+  sheet.setTabColor(look.tabColour);
 }

@@ -818,6 +818,87 @@ test("reportRows: a blank rate prints the message; text that looks like a formul
   assert.ok(!values.flat().some((v) => typeof v === "string" && v.startsWith("=")));
 });
 
+test("reportRows: each row's kind, for the report tab's look", () => {
+  const { values, kinds } = plain(
+    L.reportRows(sampleReport(), "2026-11", "JP", "2026-12-01 9:14 AM"),
+  );
+  assert.equal(kinds.length, values.length);
+  assert.ok(kinds.every((k) => ["title", "section", "header", "blank", "body"].includes(k)));
+  assert.equal(kinds[0], "title");
+  assert.equal(kinds.filter((k) => k === "title").length, 1);
+  values.forEach((r, i) => {
+    const blankRow = r.every((v) => v === "");
+    assert.equal(kinds[i] === "blank", blankRow, "row " + (i + 1));
+  });
+  const kindOf = (first, second) =>
+    kinds[values.findIndex((r) => r[0] === first && (second === undefined || r[1] === second))];
+  for (const title of [
+    "Summary",
+    "Month over month",
+    "Year to date",
+    "Hours per volunteer",
+    "Hours by weekday",
+    "Hours by Role/Type",
+    "Hours by Activity",
+    "Milestones crossed this month",
+    "Rows to review",
+    "Open shifts, not counted: 1",
+  ]) {
+    assert.equal(kindOf(title), "section", title);
+  }
+  assert.equal(kindOf("Volunteer", "Shifts"), "header");
+  assert.equal(kindOf("Day", "Shifts"), "header");
+  assert.equal(kindOf("Volunteer", "Milestone"), "header");
+  assert.equal(kindOf("Date", "Volunteer"), "header");
+  assert.equal(kindOf("Stated hours", 11.5), "body");
+  assert.equal(kindOf("Total"), "body");
+  // The line under the title says what the report counts; it is plain text.
+  assert.equal(kinds[1], "body");
+});
+
+test("reportTabLook: title, section and header ranges, widths and the tab colour", () => {
+  const rows = {
+    values: [
+      ["Monthly report", "", "", "", ""],
+      ["Counts closed shifts", "", "", "", ""],
+      ["", "", "", "", ""],
+      ["Hours per volunteer", "", "", "", ""],
+      ["Volunteer", "Shifts", "Stated hours", "", ""],
+      ["Ann Lee", 2, 3.5, "", ""],
+      ["Month over month", "November 2026", "October 2026", "Change", "% change"],
+    ],
+    kinds: ["title", "body", "blank", "section", "header", "body", "section"],
+  };
+  assert.deepEqual(plain(L.reportTabLook(rows)), {
+    styles: [
+      { kind: "title", ranges: ["A1"], fontColor: "#062f5a", fontSize: 14, bold: true },
+      {
+        kind: "section",
+        ranges: ["A4:E4", "A7:E7"],
+        background: "#dff3fb",
+        fontColor: "#062f5a",
+        bold: true,
+      },
+      { kind: "header", ranges: ["A5:C5"], bold: true, bottomBorder: "#062f5a" },
+    ],
+    widths: [
+      { col: 1, px: 230 },
+      { col: 2, px: 170 },
+      { col: 3, px: 140 },
+      { col: 4, px: 110 },
+      { col: 5, px: 300 },
+    ],
+    tabColour: "#0669a9",
+  });
+  // A kind with no rows gets no style.
+  const bare = plain(L.reportTabLook({ values: [["x", ""]], kinds: ["body"] }));
+  assert.deepEqual(bare.styles, []);
+  assert.deepEqual(
+    bare.widths.map((w) => w.col),
+    [1, 2],
+  );
+});
+
 test("hoursText and moneyText", () => {
   assert.equal(L.hoursText(1150), "11.50");
   assert.equal(L.hoursText(40, true), "+0.40");

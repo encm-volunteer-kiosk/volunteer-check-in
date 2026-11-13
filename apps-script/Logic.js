@@ -2217,8 +2217,11 @@ function openShiftsLine(count) {
 }
 
 /**
- * The frozen report tab's cells, as {values, formats}: two rectangular arrays of the same
- * shape, to be written with setNumberFormats and then setValues. report is monthReport's
+ * The frozen report tab's cells, as {values, formats, kinds}: values and formats are two
+ * rectangular arrays of the same shape, to be written with setNumberFormats and then
+ * setValues; kinds says what each row is, for its look (reportTabLook): "title" (the
+ * first line), "section" (a section's or table's title), "header" (a table's column
+ * headers), "blank" or "body". report is monthReport's
  * result, month its "yyyy-MM", initials the admin's (already normalized), madeAtText when
  * the report was made, such as "2026-12-01 9:14 AM".
  *
@@ -2230,23 +2233,30 @@ function openShiftsLine(count) {
 function reportRows(report, month, initials, madeAtText) {
   const values = [];
   const formats = [];
+  const kinds = [];
   const T = (text) => [sheetText(text), "@"];
   const N = (n) => [n, "0"];
   const Hh = (hundredths) => [hundredths / 100, "0.00"];
   const add = (...cells) => {
     values.push(cells.map((c) => (Array.isArray(c) ? c[0] : sheetText(c))));
     formats.push(cells.map((c) => (Array.isArray(c) ? c[1] : "@")));
+    kinds.push(cells.length === 1 && cells[0] === "" ? "blank" : "body");
   };
+  // Marks the row just added as a kind other than body.
+  const as = (kind) => (kinds[kinds.length - 1] = kind);
   const blank = () => add("");
   const table = (title, header, rows, empty) => {
     blank();
     add(title);
+    as("section");
     add(...header);
+    as("header");
     if (!rows.length) add(empty || "(none)");
     rows.forEach((r) => add(...r));
   };
 
   add("Monthly report for " + monthName(month) + " (" + month + ")");
+  as("title");
   add(
     "Counts closed shifts with a User Token, using stated hours. Made " +
       cellString(madeAtText) +
@@ -2258,6 +2268,7 @@ function reportRows(report, month, initials, madeAtText) {
 
   blank();
   add("Summary");
+  as("section");
   add("Stated hours", Hh(report.hundredths));
   add("Shifts", N(report.shifts));
   add("Volunteers", N(report.headcount));
@@ -2281,6 +2292,7 @@ function reportRows(report, month, initials, madeAtText) {
 
   blank();
   add("Month over month", monthName(month), monthName(report.previousMonth), "Change", "% change");
+  as("section");
   report.monthOverMonth.forEach((r) => {
     const amount = (n) => (r.unit === "hours" ? Hh(n) : N(n));
     const change =
@@ -2290,6 +2302,7 @@ function reportRows(report, month, initials, madeAtText) {
 
   blank();
   add("Year to date", monthName(report.yearStart) + " to " + monthName(month));
+  as("section");
   add("Stated hours", Hh(report.yearToDate.hundredths));
   add("Shifts", N(report.yearToDate.shifts));
   add("Volunteers", N(report.yearToDate.headcount));
@@ -2318,10 +2331,13 @@ function reportRows(report, month, initials, madeAtText) {
 
   blank();
   add("Rows to review", "Log row numbers are as of when this report was made.");
+  as("section");
   report.review.forEach((g) => {
     add(g.title + ": " + g.rows.length);
+    as("section");
     if (!g.rows.length) return;
     add("Date", "Volunteer", "Status", "Log row", "Detail");
+    as("header");
     g.rows.forEach((r) => add(r.date, r.name, r.status || "(blank)", N(r.row), r.detail));
   });
 
@@ -2332,7 +2348,7 @@ function reportRows(report, month, initials, madeAtText) {
       formats[i].push("@");
     }
   });
-  return { values, formats };
+  return { values, formats, kinds };
 }
 
 /**
@@ -3455,6 +3471,62 @@ function lookRequests(plan, sheetId, existing) {
     },
   });
   return requests;
+}
+
+/** A report tab's column widths in pixels, A to E: labels and names, then figures and details. */
+function reportColumnWidths() {
+  return [230, 170, 140, 110, 300];
+}
+
+/**
+ * How a new report tab is styled, from reportRows' {values, kinds}, as plain data that
+ * writeReportTab_ applies once:
+ * - styles: [{kind, ranges (A1), fontColor?, fontSize?, background?, bold, bottomBorder?}]
+ *   for the kinds with rows: the title row's first cell navy, 14 pt, bold; each section
+ *   row across the tab's width with the section fill and navy bold text; each table
+ *   header row bold with a navy bottom border, from A to its last cell with text.
+ * - widths: [{col (1-based), px}] for the tab's columns.
+ * - tabColour.
+ */
+function reportTabLook(rows) {
+  const P = lookPalette();
+  const values = rows.values;
+  const kinds = rows.kinds;
+  const width = values.length ? values[0].length : 0;
+  const ranges = { title: [], section: [], header: [] };
+  kinds.forEach((kind, i) => {
+    const r = i + 1;
+    if (kind === "title") ranges.title.push("A" + r);
+    if (kind === "section") ranges.section.push("A" + r + ":" + columnLetter(width - 1) + r);
+    if (kind === "header") {
+      let last = 0;
+      values[i].forEach((v, j) => {
+        if (cellString(v) !== "") last = j;
+      });
+      ranges.header.push("A" + r + ":" + columnLetter(last) + r);
+    }
+  });
+  const styles = [
+    {
+      kind: "title",
+      ranges: ranges.title,
+      fontColor: P.navy,
+      fontSize: lookTitleFontSize(),
+      bold: true,
+    },
+    {
+      kind: "section",
+      ranges: ranges.section,
+      background: P.section,
+      fontColor: P.navy,
+      bold: true,
+    },
+    { kind: "header", ranges: ranges.header, bold: true, bottomBorder: P.navy },
+  ].filter((s) => s.ranges.length);
+  const widths = reportColumnWidths()
+    .slice(0, width)
+    .map((px, i) => ({ col: i + 1, px }));
+  return { styles, widths, tabColour: lookTabColours().report };
 }
 
 // ---------------------------------------------------------------------------
