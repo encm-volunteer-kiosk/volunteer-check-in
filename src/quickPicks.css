@@ -48,7 +48,9 @@
   font-size: 13px;
   font-weight: 800;
 }
-.quick-pick:hover:not(:disabled),
+/* Not on the chosen answer: iPad Safari keeps :hover on the last button tapped, and the
+   light hover background would hide the chosen answer's white text. */
+.quick-pick:hover:not(:disabled, .is-selected),
 .quick-picks-nudge:hover:not(:disabled) {
   border-color: #6ba8c2;
   background: var(--light-blue);
