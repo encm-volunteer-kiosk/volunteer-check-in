@@ -3089,6 +3089,375 @@ function flagFilterViewRequests(cols, sheetId, existingViewId) {
 }
 
 // ---------------------------------------------------------------------------
+// The look of the kiosk's tabs
+//
+// One palette for every tab the kiosk keeps: the kiosk page's colours (src/index.css) and
+// light tints of them, so the sheet and the tablet look like one thing. setupSheets puts
+// the look on the Log, Flags and Settings on every run (lookPlan, lookRequests, then
+// applyLook_ in Sheets.js); a report tab gets its look once, when it is written
+// (reportTabLook). Every conditional format rule the kiosk makes carries lookMarker() in
+// its formula, so a later run finds its own rules and replaces them, keeps every rule
+// staff made, and keeps staff's rules first in the tab's list (lookRuleRequests).
+
+/**
+ * The palette, as "#rrggbb", by use:
+ * - navy: header of a column the script writes (white bold text); title and section text.
+ * - teal: header of a column staff fill (white bold text).
+ * - white and band: the two row bands; band is a tint of the page's light blue.
+ * - open: an open shift's row on the Log (a tint of yellow).
+ * - alert: an Admin Alerts? cell with text on the Log (a tint of the error red).
+ * - reviewed: the text of a reviewed flag on Flags (lighter than the page's muted grey).
+ * - section: a section heading's fill (the page's light blue).
+ * - yellow, grey, blue: tab colours (lookTabColours).
+ */
+function lookPalette() {
+  return {
+    navy: "#062f5a",
+    teal: "#168c86",
+    white: "#ffffff",
+    band: "#eef7fc",
+    open: "#fff4d6",
+    alert: "#fbe3e2",
+    reviewed: "#8a9aa8",
+    section: "#dff3fb",
+    yellow: "#f9bd2f",
+    grey: "#52687b",
+    blue: "#0669a9",
+  };
+}
+
+/** Each tab's colour, from lookPalette. hoursData is for when that tab is shown. */
+function lookTabColours() {
+  const P = lookPalette();
+  return {
+    log: P.navy,
+    flags: P.yellow,
+    settings: P.grey,
+    hours: P.teal,
+    hoursData: P.grey,
+    report: P.blue,
+  };
+}
+
+/** A title's font size in points (Hours and report tabs); titles are navy and bold. */
+function lookTitleFontSize() {
+  return 14;
+}
+
+/** The height of a header row the look styles, in pixels. */
+function lookHeaderHeight() {
+  return 40;
+}
+
+/**
+ * The marker in every conditional format rule the kiosk makes. N of a text is 0, so
+ * lookFormula's "N(...) = 0" is always true and changes nothing; it is there to be found.
+ */
+function lookMarker() {
+  return 'N("kiosk look")';
+}
+
+/** A conditional format formula carrying the marker: =AND(N("kiosk look") = 0, condition). */
+function lookFormula(condition) {
+  return "=AND(" + lookMarker() + " = 0, " + condition + ")";
+}
+
+/**
+ * True when a conditional format rule, as the Sheets API gives it, is one the kiosk made:
+ * one of its condition's values holds the marker's text. Gradient rules and every other
+ * rule are staff's.
+ */
+function isLookRule(rule) {
+  const values =
+    (rule && rule.booleanRule && rule.booleanRule.condition && rule.booleanRule.condition.values) ||
+    [];
+  return values.some((v) => cellString(v && v.userEnteredValue).indexOf('"kiosk look"') >= 0);
+}
+
+/** A "#rrggbb" colour as the Sheets API's {red, green, blue}, each 0 to 1. */
+function lookRgb(hex) {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(cellString(hex));
+  if (!m) throw new Error("Not a #rrggbb colour: " + hex);
+  return {
+    red: parseInt(m[1], 16) / 255,
+    green: parseInt(m[2], 16) / 255,
+    blue: parseInt(m[3], 16) / 255,
+  };
+}
+
+/** A colour as the Sheets API's ColorStyle. */
+function lookColorStyle(hex) {
+  return { rgbColor: lookRgb(hex) };
+}
+
+/**
+ * The batchUpdate requests that replace the kiosk's conditional format rules on a tab and
+ * keep staff's. existing is the tab's conditionalFormats as the Sheets API lists them, in
+ * order; rules are the new rules as the API's ConditionalFormatRule objects whose ranges
+ * leave out sheetId, which each range gets here. Every kiosk rule
+ * (isLookRule) is deleted, from the last up so the indexes hold; staff's rules keep their
+ * order and stay first; the new rules follow them in the order given, where Sheets
+ * applies the first rule in the list that matches a cell. Shared by every tab the kiosk
+ * styles with rules.
+ */
+function lookRuleRequests(sheetId, existing, rules) {
+  const list = existing || [];
+  const requests = [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (isLookRule(list[i])) requests.push({ deleteConditionalFormatRule: { sheetId, index: i } });
+  }
+  const staff = list.length - requests.length;
+  (rules || []).forEach((rule, i) => {
+    const placed = Object.assign({}, rule, {
+      ranges: rule.ranges.map((r) => Object.assign({ sheetId }, r)),
+    });
+    requests.push({ addConditionalFormatRule: { index: staff + i, rule: placed } });
+  });
+  return requests;
+}
+
+/**
+ * The look's columns for a tab, as [{header, colour, width}] with colour "navy" (the
+ * script writes the column) or "teal" (staff fill it) and width in pixels. tab is "log",
+ * "flags" or "settings".
+ */
+function lookColumns(tab) {
+  const col = (header, colour, width) => ({ header, colour, width });
+  if (tab === "log") {
+    const H = logHeaderNames();
+    return [
+      col(H.date, "navy", 95),
+      col(H.day, "navy", 90),
+      col(H.name, "navy", 170),
+      col(H.role, "teal", 130),
+      col(H.recordedIn, "navy", 150),
+      col(H.statedIn, "navy", 150),
+      col(H.recordedOut, "navy", 150),
+      col(H.statedOut, "navy", 150),
+      col(H.recordedHours, "navy", 95),
+      col(H.statedHours, "navy", 95),
+      col(H.alerts, "navy", 220),
+      col(H.activity, "teal", 130),
+      col(H.notes, "teal", 260),
+      col(H.token, "navy", 120),
+      col(H.status, "navy", 75),
+      col(H.inBy, "navy", 95),
+      col(H.outBy, "navy", 95),
+      col(H.shiftId, "navy", 120),
+    ];
+  }
+  if (tab === "flags") {
+    const F = flagHeaderNames();
+    return [
+      col(F.date, "navy", 95),
+      col(F.name, "navy", 170),
+      col(F.shiftId, "navy", 120),
+      col(F.reason, "navy", 260),
+      col(F.raisedAt, "navy", 150),
+      col(F.reviewed, "teal", 80),
+      col(F.reviewedBy, "teal", 95),
+      col(F.notes, "teal", 260),
+      col(F.source, "navy", 90),
+      col(F.logRow, "navy", 75),
+    ];
+  }
+  if (tab === "settings") {
+    return [col("Setting", "navy", 230), col("Value", "teal", 380)];
+  }
+  throw new Error("No look for a tab called " + tab + ".");
+}
+
+/**
+ * The look of the Log, Flags or Settings tab (tab "log", "flags" or "settings") for its
+ * header row, as plain data that lookRequests turns into Sheets API requests:
+ * - width: the header's columns, from A to the last header with text.
+ * - headerColours: one "#rrggbb" per header cell, navy or teal by lookColumns; a header
+ *   the look doesn't know, or a blank cell between headers, is staff's: teal.
+ * - widths: [{col (0-based), px}] for the headers the look knows; a staff column's width
+ *   is left alone. A header found twice gets its width in both places.
+ * - wrapColumns: 0-based columns wrapped from top to bottom (Settings' Value).
+ * - banding: one row banding from row 2 over the header's columns, white then band, with
+ *   no end row: Sheets keeps it to the tab's last row, and rows the kiosk appends at the
+ *   end extend it. null when the header is empty.
+ * - rules: the conditional formats, each from row 2 down with no end row and the marker in
+ *   its formula, columns named by letter. Log: an Admin Alerts? cell with text, then an
+ *   open row (Status "open", any case), so an alert's colour shows on an open row. Flags:
+ *   a ticked Reviewed greys the row's text. A rule whose column the header lacks is left
+ *   out.
+ * - tabColour.
+ */
+function lookPlan(headerRow, tab) {
+  const columns = lookColumns(tab);
+  const P = lookPalette();
+  const header = headerRow || [];
+  let width = 0;
+  header.forEach((cell, i) => {
+    if (cellString(cell) !== "") width = i + 1;
+  });
+  const headerColours = [];
+  const widths = [];
+  for (let i = 0; i < width; i++) {
+    const known = columns.find((c) => normalizeHeader(c.header) === normalizeHeader(header[i]));
+    headerColours.push(known ? P[known.colour] : P.teal);
+    if (known) widths.push({ col: i, px: known.width });
+  }
+  const first = (h) => {
+    const found = logHeaderIndexes(header.slice(0, width), h);
+    return found.length ? found[0] : -1;
+  };
+  const rule = (startCol, endCol, condition, format) => ({
+    ranges: [{ startRowIndex: 1, startColumnIndex: startCol, endColumnIndex: endCol }],
+    booleanRule: {
+      condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: lookFormula(condition) }] },
+      format,
+    },
+  });
+  const fill = (hex) => ({ backgroundColorStyle: lookColorStyle(hex) });
+  const rules = [];
+  const wrapColumns = [];
+  if (tab === "log") {
+    const H = logHeaderNames();
+    const alerts = first(H.alerts);
+    const status = first(H.status);
+    if (alerts >= 0) {
+      const a = columnLetter(alerts);
+      rules.push(rule(alerts, alerts + 1, "TRIM($" + a + '2) <> ""', fill(P.alert)));
+    }
+    if (status >= 0) {
+      const s = columnLetter(status);
+      rules.push(rule(0, width, "LOWER(TRIM($" + s + '2)) = "open"', fill(P.open)));
+    }
+  } else if (tab === "flags") {
+    const reviewed = first(flagHeaderNames().reviewed);
+    if (reviewed >= 0) {
+      rules.push(
+        rule(0, width, "$" + columnLetter(reviewed) + "2 = TRUE", {
+          textFormat: { foregroundColorStyle: lookColorStyle(P.reviewed) },
+        }),
+      );
+    }
+  } else {
+    const value = first("Value");
+    if (value >= 0) wrapColumns.push(value);
+  }
+  return {
+    tab,
+    width,
+    headerColours,
+    headerHeight: lookHeaderHeight(),
+    widths,
+    wrapColumns,
+    banding: width ? { startRow: 1, endCol: width, first: P.white, second: P.band } : null,
+    rules,
+    tabColour: lookTabColours()[tab],
+  };
+}
+
+/**
+ * The one batchUpdate's requests that put a lookPlan on the tab sheetId. existing is what
+ * the tab has now: {bandings: [bandedRangeId], rules: its conditionalFormats in order}. In
+ * order: delete every banding on the tab (two bandings can't overlap, so staff's banding
+ * on these tabs is replaced); delete the kiosk's own rules (lookRuleRequests); style the
+ * header row, one request per run of one colour, and set its height; set the known
+ * widths; wrap the wrap columns; add the banding; add the rules after staff's; set the tab
+ * colour. Only the formats named in each request's fields change, so a header's number
+ * format and every value stay as they are.
+ */
+function lookRequests(plan, sheetId, existing) {
+  const have = existing || {};
+  const requests = [];
+  (have.bandings || []).forEach((id) => requests.push({ deleteBanding: { bandedRangeId: id } }));
+  const rules = lookRuleRequests(sheetId, have.rules, plan.rules);
+  rules.filter((r) => r.deleteConditionalFormatRule).forEach((r) => requests.push(r));
+
+  const colours = plan.headerColours;
+  for (let start = 0; start < colours.length;) {
+    let end = start + 1;
+    while (end < colours.length && colours[end] === colours[start]) end++;
+    requests.push({
+      repeatCell: {
+        range: {
+          sheetId,
+          startRowIndex: 0,
+          endRowIndex: 1,
+          startColumnIndex: start,
+          endColumnIndex: end,
+        },
+        cell: {
+          userEnteredFormat: {
+            backgroundColorStyle: lookColorStyle(colours[start]),
+            textFormat: { foregroundColorStyle: lookColorStyle(lookPalette().white), bold: true },
+            wrapStrategy: "WRAP",
+            verticalAlignment: "MIDDLE",
+          },
+        },
+        fields: [
+          "userEnteredFormat.backgroundColorStyle",
+          "userEnteredFormat.textFormat.foregroundColorStyle",
+          "userEnteredFormat.textFormat.bold",
+          "userEnteredFormat.wrapStrategy",
+          "userEnteredFormat.verticalAlignment",
+        ].join(","),
+      },
+    });
+    start = end;
+  }
+  if (colours.length) {
+    requests.push({
+      updateDimensionProperties: {
+        range: { sheetId, dimension: "ROWS", startIndex: 0, endIndex: 1 },
+        properties: { pixelSize: plan.headerHeight },
+        fields: "pixelSize",
+      },
+    });
+  }
+  plan.widths.forEach((w) =>
+    requests.push({
+      updateDimensionProperties: {
+        range: { sheetId, dimension: "COLUMNS", startIndex: w.col, endIndex: w.col + 1 },
+        properties: { pixelSize: w.px },
+        fields: "pixelSize",
+      },
+    }),
+  );
+  plan.wrapColumns.forEach((col) =>
+    requests.push({
+      repeatCell: {
+        range: { sheetId, startColumnIndex: col, endColumnIndex: col + 1 },
+        cell: { userEnteredFormat: { wrapStrategy: "WRAP" } },
+        fields: "userEnteredFormat.wrapStrategy",
+      },
+    }),
+  );
+  if (plan.banding) {
+    requests.push({
+      addBanding: {
+        bandedRange: {
+          range: {
+            sheetId,
+            startRowIndex: plan.banding.startRow,
+            startColumnIndex: 0,
+            endColumnIndex: plan.banding.endCol,
+          },
+          rowProperties: {
+            firstBandColorStyle: lookColorStyle(plan.banding.first),
+            secondBandColorStyle: lookColorStyle(plan.banding.second),
+          },
+        },
+      },
+    });
+  }
+  rules.filter((r) => r.addConditionalFormatRule).forEach((r) => requests.push(r));
+  requests.push({
+    updateSheetProperties: {
+      properties: { sheetId, tabColorStyle: lookColorStyle(plan.tabColour) },
+      fields: "tabColorStyle",
+    },
+  });
+  return requests;
+}
+
+// ---------------------------------------------------------------------------
 // Daily jobs
 //
 // Jobs.js runs these on installable triggers owned by one account, which installs them

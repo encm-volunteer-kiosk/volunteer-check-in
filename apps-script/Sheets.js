@@ -35,11 +35,12 @@ function requireEditorRun_() {
 
 /**
  * Creates or updates the Log, Settings and Flags tabs: the Log header, formats and any
- * missing Settings row (setupLog_ for the Log), then the Flags tab (setupFlags_), last so
- * a failure there leaves the Log and Settings set up. Writes only empty cells, creates or
- * renames tabs, sets formats, the Flags tab's Reviewed checkbox and its "Flags:
- * Unreviewed" view; never changes a cell with text in it or deletes a row, so running it
- * twice changes nothing. Runs only from the Apps Script editor.
+ * missing Settings row (setupLog_ for the Log), then the Flags tab (setupFlags_), so a
+ * failure there leaves the Log and Settings set up, then the look of all three
+ * (applyLooks_), last. Writes only empty cells, creates or renames tabs, sets formats, the
+ * Flags tab's Reviewed checkbox and its "Flags: Unreviewed" view, and the look; never
+ * changes a cell with text in it or deletes a row, so running it twice changes nothing.
+ * Runs only from the Apps Script editor.
  */
 function setupSheets() {
   requireEditorRun_();
@@ -66,6 +67,53 @@ function setupSheets() {
   }
 
   setupFlags_(ss);
+  applyLooks_(ss);
+}
+
+/**
+ * The look (lookPlan, Logic.js) on the Log, Flags and Settings, from each tab's header as
+ * it is now, on every run: header colours, row height and widths, one banding, the
+ * kiosk's own conditional formats and the tab colour. Staff's conditional formats are
+ * kept, first; any other banding on these tabs is replaced. When it fails, the tabs are
+ * set up and the error says what to check.
+ */
+function applyLooks_(ss) {
+  try {
+    [
+      [LOG_TAB, "log"],
+      [FLAGS_TAB, "flags"],
+      [SETTINGS_TAB, "settings"],
+    ].forEach(([name, tab]) => {
+      const sheet = sheet_(name);
+      applyLook_(sheet, lookPlan(logHeaderRow_(sheet), tab));
+    });
+  } catch (e) {
+    const message = cellString(e && e.message ? e.message : e).replace(/\.$/, "");
+    throw new Error(
+      "The tabs are set up, but their look could not be applied: " +
+        message +
+        ". Check that the Sheets API advanced service is on (it is in appsscript.json), then run setupSheets() again.",
+    );
+  }
+}
+
+/**
+ * Puts a lookPlan on a tab through the advanced Sheets service: reads the tab's bandings
+ * and conditional formats, then sends lookRequests (Logic.js) in one batchUpdate, so the
+ * tab's look changes all at once or not at all.
+ */
+function applyLook_(sheet, plan) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetId = sheet.getSheetId();
+  const got = Sheets.Spreadsheets.get(ss.getId(), {
+    fields: "sheets(properties(sheetId),bandedRanges(bandedRangeId),conditionalFormats)",
+  });
+  const tab = (got.sheets || []).find((s) => s.properties && s.properties.sheetId === sheetId);
+  const existing = {
+    bandings: ((tab && tab.bandedRanges) || []).map((b) => b.bandedRangeId),
+    rules: (tab && tab.conditionalFormats) || [],
+  };
+  Sheets.Spreadsheets.batchUpdate({ requests: lookRequests(plan, sheetId, existing) }, ss.getId());
 }
 
 /**
