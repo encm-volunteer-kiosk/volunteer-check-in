@@ -252,10 +252,13 @@ A flag is an alert the kiosk writes to Admin Alerts? on the Log: a stated arriva
 check-out far from the tap, a long shift, a check-in time it couldn't read, a time the
 auto clock-out guessed, or an imported name it couldn't match. Each one is also copied
 to a tab named `Flags`, one row per flag, so staff can tick it off once someone has looked
-at it. The Log row is still the record: Admin Alerts? keeps every flag.
+at it. The Log row is still the record: Admin Alerts? keeps every flag. The Log check
+(see below) adds a second kind: a problem it found on a Log row. Those are on the Flags
+tab only, never in Admin Alerts?.
 
 Only the kiosk adds Flags rows, at check-in and at check-out, the auto clock-out, one per
-row it closes or skips, and Import past hours, for names it couldn't match. Add a shift and Fix a sign-out add none: shifts added or closed
+row it closes or skips, Import past hours, for names it couldn't match, and the Log check.
+Add a shift and Fix a sign-out add none: shifts added or closed
 with them carry the admin's initials in the Entered By columns and show in the `Kiosk:
 Admin-entered` filter view (see Reports). Editing the Log by hand adds no Flags row.
 
@@ -265,29 +268,39 @@ rows in this import)`), and Date, Shift ID and Log Row are those of the name's f
 row. The other rows of that name carry the alert in Admin Alerts? and show in the `Kiosk:
 Flagged` view.
 
-| Column | Header         | What it holds                                                     |
-| ------ | -------------- | ----------------------------------------------------------------- |
-| A      | Date           | The Log row's Date.                                               |
-| B      | Volunteer Name | The Log row's Volunteer Name.                                     |
-| C      | Shift ID       | The Log row's Shift ID: the sure way to find the row on the Log.  |
-| D      | Reason         | The alert, word for word as in Admin Alerts?.                     |
-| E      | Raised At      | The server's clock when the kiosk raised it.                      |
-| F      | Reviewed       | A tickbox. Tick it once you've looked at the flag.                |
-| G      | Reviewed By    | Your initials.                                                    |
-| H      | Notes          | What you found or did.                                            |
-| I      | Source         | `kiosk check-in`, `kiosk check-out`, `auto-close` or `import`.    |
-| J      | Log Row        | The Log row number then. A hint only: sorting the Log moves rows. |
+| Column | Header         | What it holds                                                               |
+| ------ | -------------- | --------------------------------------------------------------------------- |
+| A      | Date           | The Log row's Date.                                                         |
+| B      | Volunteer Name | The Log row's Volunteer Name.                                               |
+| C      | Shift ID       | The Log row's Shift ID: the sure way to find the row on the Log.            |
+| D      | Reason         | The alert, word for word as in Admin Alerts?.                               |
+| E      | Raised At      | The server's clock when the kiosk raised it.                                |
+| F      | Reviewed       | A tickbox. Tick it once you've looked at the flag.                          |
+| G      | Reviewed By    | Your initials.                                                              |
+| H      | Notes          | What you found or did.                                                      |
+| I      | Source         | `kiosk check-in`, `kiosk check-out`, `auto-close`, `import` or `log check`. |
+| J      | Log Row        | The Log row number then. A hint only: sorting the Log moves rows.           |
 
 To review: open Data > Filter views > `Flags: Unreviewed`. It shows the flags not yet
 ticked, newest first. Tick Reviewed, type your initials in Reviewed By, and add a note if
 there's something to say. A ticked flag leaves the view. The sheet's edit history (right
 click a cell > Show edit history) shows who ticked it and when.
 
-The kiosk only adds rows to this tab. It finds its columns by header, as on the Log. Only
-the weekly flags email (see Daily jobs) reads Flags rows, and only to count and list them,
-so sorting, filtering or deleting Flags rows is safe, and so are columns of your own.
-Reviewed By and Notes are yours; the kiosk never writes them. There is no User Token on
-this tab; find it on the Log row by Shift ID if you need it.
+The kiosk only adds rows to this tab. It finds its columns by header, as on the Log.
+Three things read Flags rows back: the weekly flags email (see Daily jobs) and row 3 of the
+Hours tab, to count and list them, and the Log check, to skip what it has already
+flagged. So sorting, filtering or deleting Flags rows is safe, and so are columns of your
+own; a deleted Log check row is raised again on the next check. Reviewed By and Notes are
+yours; the kiosk never writes them, except that Remove a shift and Restore a shift add a
+note (below). There is no User Token on this tab; find it on the Log row by Shift ID if you
+need it.
+
+**Where new rows go.** A new flag goes on the row right under the last row that holds
+anything other than an unticked Reviewed box. `setupSheets` puts a box on every row of the
+tab, so the tab's last row is far below the last flag; new flags don't go there. A row
+counts as used when any cell holds something, a column of your own included, or when its
+Reviewed box is ticked. If you clear a row in the middle, it stays empty: new flags go
+under the last used row, not into gaps.
 
 A flag can be missing from this tab only when the tab was broken at the time (renamed,
 deleted or missing a header), or when a row typed by hand with no Shift ID is closed at
@@ -295,6 +308,35 @@ the tablet. The check-in or check-out still goes through, the
 flag is still in Admin Alerts? and in the `Kiosk: Flagged` view, and the Apps Script
 executions log has a line `Flags: not copied for Shift ID ...`. Run `setupSheets` to repair
 the tab. Flags raised before the Flags tab was added are only in Admin Alerts?.
+
+### Log check flags
+
+The Log check (see Daily jobs) gives each problem it finds one Flags row, Source `log
+check`. The Reason is the problem's label, a colon and the detail, for example `Check-out
+before check-in: recorded in 10:00 AM, out 9:06 AM`. Date, Volunteer Name, Shift ID and Log
+Row are the Log row's. A row with no Shift ID gets `(no Shift ID)` in that column.
+
+A problem is flagged once, ever. A problem already on the tab, Reviewed or not, isn't
+raised again, so ticking Reviewed is how you say "seen, leave it". The check knows a
+problem by the Shift ID and the label (for a row with no Shift ID, by its Date, Volunteer
+Name and label). If you delete its Flags row and the problem is still on the Log, the next
+check raises it again. Two rows that share a Shift ID get one flag per label between them.
+
+One run adds at most 100 rows. When it finds more, the rest wait for the next run, which
+adds up to 100 more, and so on: on a Log with 150 problems, the first run flags 100 and
+the next 50, and a third adds none. Fixing the Log row doesn't remove or tick its flag:
+tick it yourself.
+
+**Remove a shift and Restore a shift.** Removing a Log row (Kiosk admin > Remove a shift…)
+ticks Reviewed on that row's Flags rows, puts the initials in Reviewed By when it is blank,
+and adds a note saying who removed it, why and when to Notes. When the Shift ID is on no
+other Log row, that is every Flags row with the Shift ID. When another row still has the
+same Shift ID, only the flags whose Log Row, Date and Volunteer Name all match the removed
+row are ticked, plus the `Shift ID on more than one row` flag when one copy is left; the
+other copy's flags are left alone, and a flag whose Log Row went stale (the Log was sorted)
+is left for you to tick. Restoring the row adds a note to its Flags rows and leaves
+Reviewed as it is. Their rows stay on the tab, so the Log check doesn't raise them again;
+untick one if you want it looked at again.
 
 ### Two counts of flagged
 
@@ -539,7 +581,8 @@ called from the open spreadsheet, through a window the menu opened.
 
 Jobs the script runs on its own, on Google's timed triggers: the weekly flags email,
 checked every hour, the auto clock-out, once a day at about 4 AM Central, and the Hours
-refresh, once a day at about 5 AM Central. They live in `apps-script/Jobs.js`.
+refresh, once a day at about 5 AM Central, followed by the Log check. They live in
+`apps-script/Jobs.js`.
 
 On a sheet whose jobs were installed before the Hours refresh was added, the account that
 owns them must run `setupDailyJobs` once more to add it (see Who runs them). Until then
@@ -682,6 +725,41 @@ the owner gets Google's failure email, when it still can't start after that, whe
 isn't set up (run `setupReports`), or when the refresh itself fails. When it got as far
 as writing, B1 on the Hours tab says what happened. Use Refresh Hours, or let the next
 night's run catch up.
+
+### Nightly Log check
+
+Right after the nightly Hours refresh, the same run checks every Log row for problems
+that hand edits leave, and flags each one once on the Flags tab (see Log check flags). It
+reports; it never changes the Log. Kiosk admin > Check the Log now runs the same check at
+once and shows what it found.
+
+| Label                          | When                                                                                                       |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| No Shift ID                    | The Shift ID is blank.                                                                                     |
+| Shift ID on more than one row  | Two or more rows have the same Shift ID. One flag, at the first row, naming the rows.                      |
+| Date isn't a full date         | The Date holds only a time, can't be read as a date, or is before 2000.                                    |
+| Recorded time has no date      | A Recorded (timestamp) cell holds a time with no date. The kiosk always writes a full date and time there. |
+| Status isn't open or closed    | Status is anything else, blank included. Such rows count nowhere.                                          |
+| Check-in missing or unreadable | No check-in time reads on the row's Date, and Admin Alerts? doesn't already say so.                        |
+| Check-out before check-in      | The recorded or stated check-out is before its check-in.                                                   |
+| Closed with no check-out       | Status is closed and both check-out cells are blank.                                                       |
+| Hours don't match the times    | A closed row's hours cell is blank or more than 0.01 off the hours between its times.                      |
+| Impossible shift length        | An hours cell is below 0 or above 16, or the times are more than 16 hours apart.                           |
+
+Rows from Import past hours have no times, so the time checks skip them. Notes and other
+staff columns aren't checked.
+
+It uses the Log the Hours refresh read, so the Log is read once; when the refresh didn't
+read it (Hours isn't set up, or the read failed), the check reads it itself. It asks for
+the kiosk's lock only after the refresh has let go of its own, waits up to 30 seconds,
+and holds it only while it reads the Flags tab and adds the rows, so a tap waits a few
+seconds at most. The run logs one line, `Log check (nightly): done; checked ... rows,
+found ..., already flagged ..., flagged ... new, ... left for the next run`.
+
+The refresh's failure, if any, is what the run throws, as before. When the refresh went
+well but the check couldn't take the lock or failed (for example, no Flags tab), the run
+throws `Log check (nightly): ...`, so the owner gets Google's failure email. The next
+night's run, or Check the Log now, catches up.
 
 ## Reports
 

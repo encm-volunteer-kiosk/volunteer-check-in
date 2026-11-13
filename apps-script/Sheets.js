@@ -766,7 +766,7 @@ function appendLogRows_(cellMaps, cols) {
 // Flags
 
 /**
- * Appends Flags rows (flagRows, Logic.js) below the tab's last row: planFlagRows_ for the
+ * Appends Flags rows (flagRows, Logic.js) below the last row in use: planFlagRows_ for the
  * reads, then writeFlagRows_. Jobs.js and Import.js call this. Throws when the tab or a
  * header it needs is missing.
  */
@@ -776,20 +776,37 @@ function appendFlagRows_(rows) {
 }
 
 /**
+ * The last Flags row in use (flagRowUsed, Logic.js), or 1 when no row below the header
+ * is. One read of rows 2 to the last row across width. setupSheets puts an unticked box on
+ * every row, so the tab's last row is often far below the last flag; a new flag goes
+ * right under the last one instead.
+ */
+function lastFlagRow_(sheet, cols, width) {
+  const last = sheet.getLastRow();
+  if (last < 2) return 1;
+  const values = sheet.getRange(2, 1, last - 1, width).getValues();
+  for (let i = values.length - 1; i >= 0; i--) {
+    if (flagRowUsed(values[i], cols)) return i + 2;
+  }
+  return 1;
+}
+
+/**
  * Every Flags read an append of count rows needs, so the write that follows reads
  * nothing: the tab, its header (placed by flagColumns, so columns may be in any order),
- * its last row and last grid row. Grows the tab first when the rows would pass its last
- * grid row, then reads the new range's number formats. Returns {sheet, cols, width,
- * first, formats}: first is the first new row, formats one line per row. A check-in or
- * check-out plans before its Log write, so it reads nothing after that write. Throws when
- * the tab or a header it needs is missing.
+ * its rows (lastFlagRow_) and last grid row. The new rows start right under the last row
+ * in use. Grows the tab first when the rows would pass its last grid row, then reads the
+ * new range's number formats. Returns {sheet, cols, width, first, formats}: first is the
+ * first new row, formats one line per row. A check-in or check-out plans before its Log
+ * write, so it reads nothing after that write. Throws when the tab or a header it needs
+ * is missing.
  */
 function planFlagRows_(count) {
   const sheet = sheet_(FLAGS_TAB);
   const header = logHeaderRow_(sheet);
   const cols = flagColumns(header);
   const width = header.length;
-  const first = sheet.getLastRow() + 1;
+  const first = lastFlagRow_(sheet, cols, width) + 1;
   const last = first + count - 1;
   if (last > sheet.getMaxRows()) {
     sheet.insertRowsAfter(sheet.getMaxRows(), Math.max(50, last - sheet.getMaxRows()));

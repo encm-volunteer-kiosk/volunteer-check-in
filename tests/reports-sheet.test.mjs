@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { createHash } from "node:crypto";
 import { formatInZone } from "./zoneFormat.mjs";
+import { useLogCheckStandIn } from "./logCheckStandIn.mjs";
 
 const root = new URL("../", import.meta.url);
 const SERVER_FILES = ["Logic.js", "Sheets.js", "Api.js", "Admin.js", "Reports.js", "Jobs.js"].map(
@@ -150,6 +151,11 @@ class FakeRange {
   }
   getValue() {
     return this.sheet.get(this.row, this.col);
+  }
+  getNumberFormats() {
+    const out = Array.from({ length: this.rows }, () => Array(this.cols).fill(""));
+    this.each((r, c, i, j) => (out[i][j] = this.sheet.cellFormats.get(r + ":" + c) ?? ""));
+    return out;
   }
   setValue(v) {
     rec({ sheet: this.sheet.name, op: "setValue", a1: this.getA1Notation(), value: v });
@@ -397,11 +403,26 @@ class FakeSheet {
   }
 }
 
+// The Flags tab as setupSheets makes it.
+const FLAG_HEADER = [
+  "Date",
+  "Volunteer Name",
+  "Shift ID",
+  "Reason",
+  "Raised At",
+  "Reviewed",
+  "Reviewed By",
+  "Notes",
+  "Source",
+  "Log Row",
+];
+
 /**
- * A fresh server scope over a spreadsheet holding the given Log and Settings rows.
- * opts.busy makes the script lock unavailable, opts.docBusy the document lock; opts.now
- * fixes the server's clock (ms); opts.ui gives a spreadsheet UI whose alerts land in
- * alerts; opts.onFlush runs at each SpreadsheetApp.flush.
+ * A fresh server scope over a spreadsheet holding the given Log and Settings rows and a
+ * Flags tab with its header alone (opts.flags: false for none). opts.busy makes the
+ * script lock unavailable, opts.docBusy the document lock; opts.now fixes the server's
+ * clock (ms); opts.ui gives a spreadsheet UI whose alerts land in alerts; opts.onFlush
+ * runs at each SpreadsheetApp.flush.
  */
 function server(logRows, opts = {}) {
   const logs = [];
@@ -418,11 +439,13 @@ function server(logRows, opts = {}) {
         ["Setting", "Value"],
         ["Volunteer hour value", opts.rate ?? "34.79"],
       ]),
+      ...(opts.flags === false ? [] : [new FakeSheet("Flags", 2, [FLAG_HEADER])]),
     ],
     active: null,
     views: new Map(), // sheetId -> [FilterView]
     batches: 0,
     getId: () => "file-1",
+    getUrl: () => "https://docs.google.com/spreadsheets/d/file-1/edit",
     getSheets: () => ss.sheets.slice(),
     getNumSheets: () => ss.sheets.length,
     getSheetByName: (name) =>
@@ -469,6 +492,7 @@ function server(logRows, opts = {}) {
         b
       ),
       setAllowInvalid: (allow) => ((rule.allowInvalid = allow), b),
+      requireCheckbox: () => ((rule.checkbox = true), b),
       build: () => rule,
     };
     return b;
@@ -612,6 +636,7 @@ function server(logRows, opts = {}) {
     };
   }
   for (const [file, source] of SERVER_FILES) vm.runInContext(source, ctx, { filename: file });
+  useLogCheckStandIn(ctx);
   // Who releases the Hours lock: the function that called releaseHoursLock_.
   const release = ctx.releaseHoursLock_;
   ctx.releaseHoursLock_ = (hold) => {
@@ -982,7 +1007,8 @@ test("adminMonthlyReport refusals write nothing", () => {
     plain(busy.ctx.adminMonthlyReport("k", { month: "2026-11", initials: "JP" })),
     plain(busy.ctx.refusal("BUSY")),
   );
-  assert.equal(busy.ss.sheets.length, 2);
+  // Log, Settings and Flags: no report tab.
+  assert.equal(busy.ss.sheets.length, 3);
 });
 
 test("a blank hour value prints the Settings message instead of a dollar figure", () => {
@@ -1052,10 +1078,14 @@ const ENTRY = {
   },
 };
 
-/** The recorded calls read back as hoursNextState's step ops, in order. */
+/**
+ * The recorded calls read back as hoursNextState's step ops, in order, up to the document
+ * lock's release: the nightly run's Log check comes after it.
+ */
 function hoursOps(calls) {
   const out = [];
-  for (const c of calls) {
+  const released = calls.findIndex((c) => c.op === "docLock.release");
+  for (const c of released < 0 ? calls : calls.slice(0, released)) {
     const last = out[out.length - 1];
     if (c.op === "flush") out.push({ op: "flush" });
     else if (isHoursWrite(c) && c.op === "insertRowsAfter") {
@@ -1079,7 +1109,8 @@ function hoursOps(calls) {
 
 /**
  * Checks one hold: one document lock request; one release, by an entry point's finally
- * (ENTRY.open stands in for onOpen); every Hours write between.
+ * (ENTRY.open stands in for onOpen); every Hours write between; no script lock while the
+ * document lock is held (the nightly run's Log check takes it after the release).
  */
 function checkOneHold(calls, label) {
   const asks = calls.flatMap((c, i) => (c.op === "docLock.tryLock" ? [i] : []));
@@ -1097,7 +1128,11 @@ function checkOneHold(calls, label) {
       assert.ok(i > asks[0] && i < releases[0], label + ": outside the hold " + JSON.stringify(c));
     }
   });
-  assert.ok(!calls.some((c) => c.op.startsWith("scriptLock")), label + ": the script lock");
+  calls.forEach((c, i) => {
+    if (c.op.startsWith("scriptLock")) {
+      assert.ok(i < asks[0] || i > releases[0], label + ": the script lock inside the hold");
+    }
+  });
 }
 
 test("setupReports builds Hours and Hours data, marked, fills them, and then deletes the kiosk's Monthly Hours tab", () => {
@@ -1298,6 +1333,7 @@ test("nothing makes the Hours tab smaller: a refresh or setupReports with fewer 
   s.calls.length = 0;
   s.ctx.refreshHoursNow();
   s.ctx.runHoursRefresh(TRIGGER);
+  assert.match(s.logs.join("\n"), /Log check \(nightly\): done;/);
   s.ctx.setupReports();
   const rows = s.ctx.readHoursTable_().table.rows.length;
   assert.ok(rows < 10);
@@ -1438,7 +1474,7 @@ test("a tab named Hours or Hours data that isn't the kiosk's stops setupReports 
   }
 });
 
-test("every Hours write falls inside one hold of the document lock, released last, never the script lock", () => {
+test("every Hours write falls inside one hold of the document lock, released last, with no script lock inside it", () => {
   const s = server(LOG, { now: NOW });
   s.ctx.setupReports();
   checkOneHold(s.calls, "setupReports");
@@ -1454,6 +1490,17 @@ test("every Hours write falls inside one hold of the document lock, released las
     checkOneHold(b.calls, name);
     assert.equal(b.calls.find((c) => c.op === "docLock.tryLock").value, waits[name], name);
   }
+  // The nightly run's Log check takes the script lock once, after the release.
+  const nightly = built();
+  nightly.o.at = NOW + 60000;
+  ENTRY.nightly(nightly);
+  const ops = nightly.calls.map((c) => c.op);
+  assert.deepEqual(
+    ops.filter((op) => op.startsWith("scriptLock")),
+    ["scriptLock.tryLock", "scriptLock.release"],
+  );
+  assert.ok(ops.indexOf("scriptLock.tryLock") > ops.indexOf("docLock.release"));
+  assert.match(nightly.logs.join("\n"), /Log check \(nightly\): done;/);
   // A throw in the read (a Log column gone) and one in the table write both end released.
   const read = built();
   read.o.at = NOW + 60000;
@@ -1478,6 +1525,8 @@ test("a busy document lock writes nothing: the menu says so, setupReports and ni
   s.ctx.refreshHoursNow();
   assert.deepEqual(s.alerts, [busy]);
   assert.throws(() => s.ctx.runHoursRefresh(TRIGGER), /writing Hours/);
+  // The Hours read was done before the lock, so the Log check used it and still ran.
+  assert.match(s.logs.join("\n"), /Log check \(nightly\): done;/);
   assert.equal(ENTRY.open(s).kind, "busy");
   assert.match(s.logs.join("\n"), /Hours refresh \(open\): busy/);
   assert.throws(() => s.ctx.setupReports(), /A refresh is writing Hours; run setupReports again/);
@@ -1488,6 +1537,75 @@ test("a busy document lock writes nothing: the menu says so, setupReports and ni
     const one = (snap) => snap.sheets.find((x) => x.name === name);
     assert.deepEqual(one(after), one(before), name);
   }
+});
+
+test("the nightly run checks the Log it read for Hours: one Log read, flags placed, one line each", () => {
+  // A row with no Shift ID: one problem.
+  const log = LOG.concat([
+    row({
+      "User Token": "tN",
+      Status: "closed",
+      Date: "2026-11-11",
+      "Volunteer Name": "Noa Park",
+      "Check-In Recorded (timestamp)": at("2026-11-11", "09:00"),
+      "Check-In Stated (user)": at("2026-11-11", "09:00"),
+      "Check-Out Recorded (timestamp)": at("2026-11-11", "11:00"),
+      "Check-Out Stated (user)": at("2026-11-11", "11:00"),
+      "Hours Served (timestamps)": 2,
+      "Hours Served (stated)": 2,
+      "Check-In Entered By": "kiosk",
+      "Check-Out Entered By": "kiosk",
+    }),
+  ]);
+  const s = built({}, log);
+  s.o.at = NOW + 60000;
+  let reads = 0;
+  const readLog = s.ctx.readReportLog_;
+  s.ctx.readReportLog_ = () => (reads++, readLog());
+  s.ctx.runHoursRefresh(TRIGGER);
+  assert.equal(reads, 1);
+  const flags = s.sheet("Flags");
+  const cell = (r, h) => flags.get(r, FLAG_HEADER.indexOf(h) + 1);
+  assert.equal(flags.getLastRow(), 2);
+  assert.equal(cell(2, "Shift ID"), "(no Shift ID)");
+  assert.equal(cell(2, "Volunteer Name"), "Noa Park");
+  assert.equal(cell(2, "Source"), "log check");
+  assert.equal(cell(2, "Log Row"), log.length);
+  assert.match(cell(2, "Reason"), /^No Shift ID: /);
+  assert.equal(s.logs.length, 2, s.logs.join("\n"));
+  assert.match(s.logs[0], /^Hours refresh \(nightly\): write;/);
+  assert.match(
+    s.logs[1],
+    new RegExp(
+      "^Log check \\(nightly\\): done; checked " +
+        (log.length - 1) +
+        " rows, found 1, already flagged 0, flagged 1 new",
+    ),
+  );
+  // The next night flags it again only if staff deleted it.
+  s.o.at = NOW + 120000;
+  s.ctx.runHoursRefresh(TRIGGER);
+  assert.equal(flags.getLastRow(), 2);
+  assert.match(s.logs[3], /found 1, already flagged 1, flagged 0 new/);
+
+  // A Log column renamed: the Hours read fails and is noted, the Log check reads the Log
+  // again and fails too, and the Hours error is what the run throws.
+  const bad = built();
+  bad.o.at = NOW + 60000;
+  bad.sheet("Log").set(1, HEADER.indexOf("User Token") + 1, "Renamed");
+  assert.throws(() => bad.ctx.runHoursRefresh(TRIGGER), /^Error: Hours refresh \(nightly\): /);
+  assert.match(bad.logs[0], /^Hours refresh \(nightly\): failed-read;/);
+  assert.match(bad.logs[1], /^Log check \(nightly\): failed;.*user token/);
+  assert.match(cellsOf(bad)[2], /^failed-read\|nightly\|/);
+
+  // No Flags tab: the refresh counts no flags, and the Log check fails after it.
+  const none = built({ flags: false });
+  none.o.at = NOW + 60000;
+  assert.throws(
+    () => none.ctx.runHoursRefresh(TRIGGER),
+    /^Error: Log check \(nightly\): The Log check failed: The "Flags" tab is missing\./,
+  );
+  assert.match(none.logs[0], /^Hours refresh \(nightly\): write;/);
 });
 
 test("a refresh writes exactly the steps hoursNextState lists, in order, one call each", () => {

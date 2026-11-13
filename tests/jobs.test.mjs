@@ -9,10 +9,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { formatInZone } from "./zoneFormat.mjs";
+import { useLogCheckStandIn } from "./logCheckStandIn.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
-const SERVER_FILES = ["Logic.js", "Sheets.js", "Jobs.js"].map((f) => [f, read("apps-script/" + f)]);
+// Admin.js and Reports.js for the nightly Hours refresh and the Log check it runs.
+const SERVER_FILES = ["Logic.js", "Sheets.js", "Admin.js", "Reports.js", "Jobs.js"].map((f) => [
+  f,
+  read("apps-script/" + f),
+]);
 
 const L = {};
 vm.runInNewContext(read("apps-script/Logic.js"), L);
@@ -185,12 +190,15 @@ function flagRow({
  * ({account: [{uid, handler}]}), lockFree (false: tryLock fails), sendFails, onSend, log
  * (the Log tab's rows, header first; none when absent), shifts (the Shifts tab's rows;
  * none when absent), onFlush (called on each SpreadsheetApp.flush).
- * calls records "Service.method" in order; logs what the server logs.
+ * calls records "Service.method" in order, the script lock's calls as "lock.*" and the
+ * document lock's as "docLock.*"; logs what the server logs; alerts what the menu shows.
+ * The spreadsheet has no Hours tabs.
  */
 function server(opts = {}) {
   const calls = [];
   const logs = [];
   const mail = [];
+  const alerts = [];
   const created = [];
   const state = { now: opts.now, account: opts.account ?? OWNER, uid: 0 };
   const triggers = {};
@@ -285,12 +293,23 @@ function server(opts = {}) {
           },
           releaseLock: () => undefined,
         }),
+      getDocumentLock: () =>
+        service("docLock", {
+          tryLock: () => true,
+          releaseLock: () => undefined,
+        }),
     }),
     SpreadsheetApp: service("SpreadsheetApp", {
       getActiveSpreadsheet: () => ({
         getSheetByName: (name) => sheets[name] || null,
         getUrl: () => SHEET_URL,
+        // No developer metadata: no Hours tabs.
+        createDeveloperMetadataFinder: () => {
+          const finder = { withKey: () => finder, find: () => [] };
+          return finder;
+        },
       }),
+      getUi: () => ({ alert: (text) => alerts.push(text) }),
       flush: () => (opts.onFlush ? opts.onFlush(state) : undefined),
       newDataValidation: () => {
         const b = { requireCheckbox: () => b, build: () => "checkbox" };
@@ -311,6 +330,10 @@ function server(opts = {}) {
         if (format === "yyyy-MM-dd") return text.slice(0, 10);
         if (format === "HH:mm") return text.slice(11);
         if (format === "yyyy-MM-dd HH:mm") return text;
+        if (format === "h:mm a") {
+          const h = +text.slice(11, 13);
+          return (h % 12 || 12) + ":" + text.slice(14) + " " + (h < 12 ? "AM" : "PM");
+        }
         throw new Error("format " + format);
       },
     }),
@@ -326,6 +349,7 @@ function server(opts = {}) {
     }
   };
   for (const [file, source] of SERVER_FILES) vm.runInContext(source, ctx, { filename: file });
+  useLogCheckStandIn(ctx);
   calls.length = 0;
 
   const setting = (name) => {
@@ -344,7 +368,27 @@ function server(opts = {}) {
     const uid = own().find((t) => t.handler === "runAutoClockOut");
     return ctx.runAutoClockOut({ triggerUid: uid ? uid.uid : "none", authMode: "FULL" });
   };
-  return { ctx, calls, logs, mail, created, sheets, triggers, state, setting, run, runAuto };
+  /** Runs runHoursRefresh at a Central time, as its trigger would. */
+  const runHours = (centralTime) => {
+    if (centralTime) state.now = centralMs(centralTime);
+    const uid = own().find((t) => t.handler === "runHoursRefresh");
+    return ctx.runHoursRefresh({ triggerUid: uid ? uid.uid : "none", authMode: "FULL" });
+  };
+  return {
+    ctx,
+    calls,
+    logs,
+    mail,
+    alerts,
+    created,
+    sheets,
+    triggers,
+    state,
+    setting,
+    run,
+    runAuto,
+    runHours,
+  };
 }
 
 const OWN_TRIGGER = { [OWNER]: [{ uid: "t-email", handler: "runFlagsEmail" }] };
@@ -1313,4 +1357,266 @@ test("setupDailyJobs logs how many open rows a run now would close", () => {
   t.ctx.setupDailyJobs();
   assert.match(t.logs.join("\n"), /couldn't count the open rows: The "Log" tab is missing/);
   assert.equal(t.setting("Daily jobs installed by"), OWNER);
+});
+
+// ---------------------------------------------------------------------------
+// The nightly Log check
+
+const HOURS_OWN = { [OWNER]: [{ uid: "t-hours", handler: "runHoursRefresh" }] };
+const LOG_CHECK = "log check";
+/** A closed kiosk row with nothing wrong: 9:00 to 12:00 on date, 3 hours both ways. */
+const closedLine = (shiftId, token, name, date) =>
+  logLine({
+    [H.date]: date,
+    [H.name]: name,
+    [H.recordedIn]: date + " 09:00",
+    [H.statedIn]: date + " 09:00",
+    [H.recordedOut]: date + " 12:00",
+    [H.statedOut]: date + " 12:00",
+    [H.recordedHours]: 3,
+    [H.statedHours]: 3,
+    [H.token]: token,
+    [H.status]: "closed",
+    [H.inBy]: "kiosk",
+    [H.outBy]: "kiosk",
+    [H.shiftId]: shiftId,
+  });
+// Two problems: row 3 has no Shift ID, and rows 4 and 5 share one.
+const checkLog = () => [
+  LOG_HEADER,
+  closedLine("s-1", "tok-a", "Avery Stone", "2026-11-09"),
+  closedLine("", "tok-b", "Blair Moss", "2026-11-10"),
+  closedLine("s-dup", "tok-c", "Casey Fern", "2026-11-11"),
+  closedLine("s-dup", "tok-d", "Dana Reed", "2026-11-11"),
+];
+
+/**
+ * A server for runHoursRefresh at 5 AM. hours stands in for Reports.js's refreshHours_:
+ * a result kind ("write", "busy", ...) takes the document lock, reads the Log through
+ * readReportLog_ as the real one does and answers that kind; a read that throws answers
+ * failed-read with no Log, as the real one does; a function runs instead; "real" keeps the
+ * real refreshHours_, which finds no Hours tabs here. s.logReads counts the Log reads.
+ */
+function nightly(opts = {}, hours = "write") {
+  const s = server({ triggers: HOURS_OWN, now: centralMs("2026-11-13 05:00"), ...opts });
+  s.logReads = 0;
+  const readLog = s.ctx.readReportLog_;
+  s.ctx.readReportLog_ = () => {
+    s.logReads++;
+    return readLog();
+  };
+  if (hours !== "real") {
+    s.ctx.refreshHours_ = (cause, hold, openedAtMs, out) => {
+      assert.equal(cause, "nightly");
+      if (typeof hours === "function") return hours();
+      s.ctx.withHoursLock_(hold, 120000);
+      let log;
+      try {
+        log = s.ctx.readReportLog_();
+      } catch (err) {
+        return { kind: "failed-read", message: err.message, line: "The refresh failed." };
+      }
+      out.log = log;
+      return { kind: hours, line: "As of 2026-11-13 5:00 AM." };
+    };
+  }
+  return s;
+}
+const flagsOf = (s) =>
+  Array.from({ length: s.sheets.Flags.getLastRow() - 1 }, (_, i) =>
+    s.sheets.Flags.rowByHeader(i + 2),
+  );
+
+test("the nightly run refreshes Hours, then checks the Log it read, with one Log read", () => {
+  const s = nightly({ log: checkLog() });
+  s.runHours();
+  assert.equal(s.logReads, 1);
+  const flags = flagsOf(s);
+  assert.deepEqual(
+    flags.map((f) => [f["Shift ID"], f.Date, f["Volunteer Name"], f.Source, f["Log Row"]]),
+    [
+      ["(no Shift ID)", "2026-11-10", "Blair Moss", LOG_CHECK, 3],
+      ["s-dup", "2026-11-11", "Casey Fern", LOG_CHECK, 4],
+    ],
+  );
+  assert.match(flags[0].Reason, /^No Shift ID: /);
+  assert.match(flags[1].Reason, /^Shift ID on more than one row: /);
+  assert.equal(flags[0]["Raised At"].getTime(), centralMs("2026-11-13 05:00"));
+  assert.equal(flags[0].Reviewed, false);
+  // One line each: the Hours outcome first, then the Log check's.
+  assert.equal(s.logs.length, 2, s.logs.join("\n"));
+  assert.match(s.logs[0], /^Hours refresh \(nightly\): write;/);
+  assert.match(
+    s.logs[1],
+    /^Log check \(nightly\): done; checked 4 rows, found 2, already flagged 0, flagged 2 new, 0 left for the next run; \d+ ms\. No Shift ID 1; Shift ID on more than one row 1\.$/,
+  );
+  // The document lock is released before the script lock is asked for, once.
+  const released = s.calls.indexOf("docLock.releaseLock");
+  assert.ok(s.calls.includes("docLock.tryLock"));
+  assert.ok(released >= 0 && released < s.calls.indexOf("LockService.getScriptLock"));
+  assert.equal(s.calls.filter((c) => c === "LockService.getScriptLock").length, 1);
+  assert.equal(s.calls.filter((c) => c === "lock.releaseLock").length, 1);
+});
+
+test("a second run adds none; one problem gets one flag, Reviewed or not, until staff delete it", () => {
+  const log = checkLog();
+  // Within one run: a second no-ID row on the same date with the same name, and a third
+  // row with the shared Shift ID, add no flag.
+  log.push(closedLine("", "tok-b", "blair  moss", "2026-11-10"));
+  log.push(closedLine("s-dup", "tok-e", "Emery Hale", "2026-11-12"));
+  const s = nightly({ log });
+  s.runHours();
+  assert.equal(s.sheets.Flags.getLastRow(), 3);
+  assert.match(s.logs[1], /checked 6 rows, found 2, already flagged 0, flagged 2 new/);
+
+  // The next night: nothing new.
+  s.logs.length = 0;
+  s.runHours("2026-11-14 05:00");
+  assert.equal(s.sheets.Flags.getLastRow(), 3);
+  assert.match(s.logs[1], /done; checked 6 rows, found 2, already flagged 2, flagged 0 new/);
+
+  // Staff tick one and delete the other: only the deleted one comes back, under the first.
+  const reviewed = FLAG_HEADER.indexOf("Reviewed");
+  s.sheets.Flags.rows[1][reviewed] = true;
+  s.sheets.Flags.rows.splice(2, 1);
+  s.logs.length = 0;
+  s.runHours("2026-11-15 05:00");
+  assert.match(s.logs[1], /found 2, already flagged 1, flagged 1 new/);
+  const flags = flagsOf(s);
+  assert.deepEqual(
+    flags.map((f) => [f["Shift ID"], f.Reviewed]),
+    [
+      ["(no Shift ID)", true],
+      ["s-dup", false],
+    ],
+  );
+  assert.equal(flags[1]["Raised At"].getTime(), centralMs("2026-11-15 05:00"));
+});
+
+test("past 100 problems a run flags 100, the next run the rest, and the one after none", () => {
+  // 150 rows with no Shift ID, each a different volunteer: 150 problems.
+  const log = [LOG_HEADER];
+  for (let i = 0; i < 150; i++) log.push(closedLine("", "tok-" + i, "Vol " + i, "2026-11-10"));
+  const s = nightly({ log });
+  s.runHours();
+  assert.equal(s.sheets.Flags.getLastRow(), 101);
+  assert.match(
+    s.logs[1],
+    /found 150, already flagged 0, flagged 100 new, 50 left for the next run/,
+  );
+  s.logs.length = 0;
+  s.runHours("2026-11-14 05:00");
+  assert.equal(s.sheets.Flags.getLastRow(), 151);
+  assert.match(s.logs[1], /found 150, already flagged 100, flagged 50 new, 0 left/);
+  s.logs.length = 0;
+  s.runHours("2026-11-15 05:00");
+  assert.equal(s.sheets.Flags.getLastRow(), 151);
+  assert.match(s.logs[1], /found 150, already flagged 150, flagged 0 new, 0 left/);
+  // Every problem flagged exactly once.
+  const names = flagsOf(s).map((f) => f["Volunteer Name"]);
+  assert.equal(new Set(names).size, 150);
+});
+
+test("a busy script lock makes the nightly run throw after the Hours step, with nothing flagged", () => {
+  const s = nightly({ log: checkLog(), lockFree: false });
+  assert.throws(
+    () => s.runHours(),
+    /^Error: Log check \(nightly\): The kiosk was busy, so nothing was flagged\./,
+  );
+  assert.equal(s.sheets.Flags.getLastRow(), 1);
+  assert.match(s.logs[0], /^Hours refresh \(nightly\): write;/);
+  assert.match(
+    s.logs[1],
+    /^Log check \(nightly\): busy; checked 4 rows, found 2, already flagged 0, flagged 0 new/,
+  );
+  assert.equal(s.logReads, 1);
+  // A newer table already in is a good Hours step too.
+  const newer = nightly({ log: checkLog(), lockFree: false }, "newer-in");
+  assert.throws(() => newer.runHours(), /^Error: Log check \(nightly\): /);
+});
+
+test("with no Hours tabs the check reads the Log itself, once, and the Hours error is thrown", () => {
+  const s = nightly({ log: checkLog() }, "real");
+  assert.throws(() => s.runHours(), /^Error: Hours refresh \(nightly\): Run setupReports\.$/);
+  assert.equal(s.logReads, 1);
+  assert.equal(s.sheets.Flags.getLastRow(), 3);
+  assert.match(s.logs[0], /^Hours refresh \(nightly\): no-tabs;/);
+  assert.match(s.logs[1], /^Log check \(nightly\): done; checked 4 rows, found 2/);
+  assert.ok(!s.calls.includes("docLock.tryLock"));
+});
+
+test("an Hours read that throws still throws the Hours error first, whatever the Log check does", () => {
+  // A Log column renamed: the Hours read and the Log check's own read both fail.
+  const log = checkLog();
+  log[0] = log[0].map((h) => (h === H.status ? "State" : h));
+  const s = nightly({ log });
+  assert.throws(() => s.runHours(), /^Error: Hours refresh \(nightly\): The refresh failed\.$/);
+  assert.equal(s.logReads, 2, "the Hours read, then the Log check's own");
+  assert.match(s.logs[0], /^Hours refresh \(nightly\): failed-read;/);
+  assert.match(
+    s.logs[1],
+    /^Log check \(nightly\): failed; checked 0 rows, found 0, .* ms\. The Log has no "status" column\./,
+  );
+  assert.equal(s.sheets.Flags.getLastRow(), 1);
+
+  // A refresh that throws outright: the same error, after the Log check ran and logged.
+  const boom = new Error("Hours exploded");
+  const t = nightly({ log: checkLog() }, () => {
+    throw boom;
+  });
+  assert.throws(
+    () => t.runHours(),
+    (err) => err === boom,
+  );
+  assert.equal(t.logReads, 1);
+  assert.equal(t.sheets.Flags.getLastRow(), 3);
+  assert.match(t.logs[0], /^Log check \(nightly\): done;/);
+
+  // A failed Hours step and a busy Log check: the Hours error wins.
+  const both = nightly({ log: checkLog(), lockFree: false }, "busy");
+  assert.throws(() => both.runHours(), /^Error: Hours refresh \(nightly\): Another refresh/);
+  assert.match(both.logs[1], /^Log check \(nightly\): busy;/);
+});
+
+test("a missing Flags tab fails the Log check, and the nightly run throws after a good Hours step", () => {
+  const s = nightly({ log: checkLog(), flags: null });
+  assert.throws(
+    () => s.runHours(),
+    /^Error: Log check \(nightly\): The Log check failed: The "Flags" tab is missing\./,
+  );
+  assert.match(s.logs[0], /^Hours refresh \(nightly\): write;/);
+  assert.match(
+    s.logs[1],
+    /^Log check \(nightly\): failed; checked 4 rows, found 2, .*"Flags" tab is missing/,
+  );
+});
+
+test("Check the Log now reads the Log once, flags under the lock and shows what it found", () => {
+  const s = nightly({ log: checkLog() });
+  s.ctx.checkLogNow();
+  assert.equal(s.logReads, 1);
+  assert.equal(s.sheets.Flags.getLastRow(), 3);
+  assert.equal(s.alerts.length, 1);
+  assert.match(
+    s.alerts[0],
+    /^Checked 4 Log rows: found 2 problems\. 2 flagged now on the Flags tab, 0 already flagged\./,
+  );
+  assert.match(s.logs[0], /^Log check \(menu\): done;/);
+  const lock = s.calls.indexOf("LockService.getScriptLock");
+  assert.ok(lock >= 0 && lock < s.calls.lastIndexOf("lock.releaseLock"));
+  assert.ok(!s.calls.includes("LockService.getDocumentLock"));
+  // Again: nothing new.
+  s.ctx.checkLogNow();
+  assert.equal(s.sheets.Flags.getLastRow(), 3);
+  assert.match(s.alerts[1], /0 flagged now on the Flags tab, 2 already flagged\./);
+  // A clean Log, and a busy lock.
+  const clean = nightly({ log: checkLog().slice(0, 2) });
+  clean.ctx.checkLogNow();
+  assert.deepEqual(clean.alerts, ["Checked 1 Log rows: no problems found."]);
+  const busy = nightly({ log: checkLog(), lockFree: false });
+  busy.ctx.checkLogNow();
+  assert.deepEqual(busy.alerts, [
+    "The kiosk was busy, so nothing was flagged. Try again in a minute.",
+  ]);
+  assert.equal(busy.sheets.Flags.getLastRow(), 1);
 });
