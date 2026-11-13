@@ -940,7 +940,7 @@ the old Monthly Hours tab, so there is no month to pick in B1 any more.
 - **Row 2**: a short note on how to use the tab.
 - **Row 3**: counts for the whole Log that don't follow the slicers (below).
 - **Row 4**: one line on the slicers and the sort boxes: "In a slicer, click Clear, then
-  tick what you want. Reload the page to clear every slicer. A sort box takes up to 30
+  tick what you want. Reload the page to clear every slicer. A sort box takes up to 20
   seconds."
 - **Row 5**: five slicers: Year, Month, Role/Type, Activity and Volunteer.
 - **Row 6**: two more slicers, From date and To date, for a range of days. The note in F6
@@ -981,7 +981,7 @@ months and volunteers added later show in that default until someone clears it.
 `setupReports` clears a saved default.
 
 **Sorting.** Each table has a sort box above it, in row 7. Click the box and pick an order.
-The table sorts itself. The new order can take up to 30 seconds to show. The choices, with
+The table sorts itself. The new order can take up to 20 seconds to show. The choices, with
 the one each table starts with first:
 
 - **Hours by volunteer** (the box in A7): most hours first, fewest hours first, most
@@ -1039,9 +1039,7 @@ How the Shifts choices order the lines:
 **The shifts behind a number.** Double-click a number in a table and Sheets opens a new tab
 listing the Hours data rows behind it, with Hours data's columns (below). Each
 double-click makes another tab, so they pile up; delete them when you're done. They hold no
-User Token. Date and To date there hold the same day. Sheets may show it as a date such as
-2026-11-13 or as a day number such as 46339. To see a day number as a date, select the
-column and choose Format > Number > Date.
+User Token. Date and To date there hold the same day, shown as a date such as 2026-11-13.
 
 **When the tables are from.** The tables aren't live. They show the Log as of the last
 refresh, and B1 says when that was, such as "As of 2026-11-13 9:14 AM, refreshed from the
