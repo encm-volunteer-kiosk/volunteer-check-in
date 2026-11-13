@@ -1657,7 +1657,8 @@ function reportColumns(headerRow) {
  * One Log row as a report reads it: logEntry's fields (outBy among them) plus inBy (the
  * Check-In Entered By text), roleType, activity (blank when the column is missing), and statedHoursCell and
  * recordedHoursCell, the raw Hours Served (stated) and (timestamps) values as the sheet
- * gave them. Arguments as logEntry's.
+ * gave them, and timeKinds, the timeCellKind of the raw Date and four time cells as
+ * {date, recordedIn, statedIn, recordedOut, statedOut}. Arguments as logEntry's.
  */
 function reportEntry(cells, row, cols, read) {
   const H = logHeaderNames();
@@ -1673,6 +1674,13 @@ function reportEntry(cells, row, cols, read) {
   entry.activity = text(H.activity);
   entry.statedHoursCell = raw(H.statedHours);
   entry.recordedHoursCell = raw(H.recordedHours);
+  entry.timeKinds = {
+    date: timeCellKind(raw(H.date)),
+    recordedIn: timeCellKind(raw(H.recordedIn)),
+    statedIn: timeCellKind(raw(H.statedIn)),
+    recordedOut: timeCellKind(raw(H.recordedOut)),
+    statedOut: timeCellKind(raw(H.statedOut)),
+  };
   return entry;
 }
 
@@ -3698,7 +3706,8 @@ function flagColumnKinds() {
 
 /**
  * Where a flag came from, the Source column. auto-close is the daily auto clock-out
- * (runAutoClockOut), import is Import past hours.
+ * (runAutoClockOut), import is Import past hours, log check is the Log check (nightly or
+ * Kiosk admin > Check the Log now).
  */
 function flagSources() {
   return {
@@ -3706,6 +3715,7 @@ function flagSources() {
     checkOut: "kiosk check-out",
     autoClose: "auto-close",
     import: "import",
+    logCheck: "log check",
   };
 }
 
@@ -5450,4 +5460,397 @@ function autoClockOutFlagBase(row, shiftId, nowMs) {
     source: flagSources().autoClose,
     logRow: row.row,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The Log check
+//
+// A check of every Log row that isBlankLogRow doesn't call blank, run with the nightly
+// Hours refresh and from Kiosk admin > Check the Log now. It reads reportEntry rows,
+// reports each problem as a Flags row with Source "log check", and changes nothing on
+// the Log. Each problem has a key (logCheckKey): its Shift ID and code, or, on a row with
+// no Shift ID, its Date, Volunteer Name and code. The key lives only on the Flags tab, in
+// the row's Shift ID, Date, Volunteer Name and the label its Reason starts with. One
+// Flags row per key, ever, until staff delete it: a key already on the tab isn't raised
+// again, Reviewed or not, and within one run only the first problem per key is kept.
+//
+// Import rows (Check-In Entered By "import") have no times by design, so the checks that
+// read times skip them. The checks that read times on the row's Date (no-check-in,
+// out-before-in, hours-mismatch and the time part of impossible-length) are skipped on a
+// row whose Date is bad.
+
+/** Each Log check problem's code and its fixed label, in the order a row is checked. */
+function logCheckReasons() {
+  return {
+    "no-shift-id": "No Shift ID",
+    "duplicate-id": "Shift ID on more than one row",
+    "bad-date": "Date isn't a full date",
+    "recorded-no-date": "Recorded time has no date",
+    "bad-status": "Status isn't open or closed",
+    "no-check-in": "Check-in missing or unreadable",
+    "out-before-in": "Check-out before check-in",
+    "closed-no-out": "Closed with no check-out",
+    "hours-mismatch": "Hours don't match the times",
+    "impossible-length": "Impossible shift length",
+  };
+}
+
+/** Hours above this, in an hours cell or between a pair of times, are an impossible shift. */
+function logCheckMaxHours() {
+  return 16;
+}
+
+/** The most Flags rows one Log check run adds; the rest wait for the next run. */
+function logCheckMaxNewFlags() {
+  return 100;
+}
+
+/** The Shift ID a Log check Flags row gets when its Log row has none (flagRows needs one). */
+function logCheckNoIdText() {
+  return "(no Shift ID)";
+}
+
+/** How far an hours cell may be from its times, in hundredths of an hour, for rounding. */
+function logCheckHoursTolerance() {
+  return 1;
+}
+
+/** The first year a Log Date may be in. */
+function logCheckFirstYear() {
+  return 2000;
+}
+
+/**
+ * What a raw Log cell holds: "blank" (nothing), "time-only" (a time with no date: a Date
+ * before 2 January 1900, which is how Sheets stores a time typed with no date, or text
+ * clockText reads) or "other". A Date is detected the way isDate_ does it, by its
+ * toString tag, so a Date made in another context counts. No zone work.
+ */
+function timeCellKind(value) {
+  if (cellString(value) === "") return "blank";
+  if (Object.prototype.toString.call(value) === "[object Date]") {
+    const ms = value.getTime();
+    return isFinite(ms) && ms < Date.UTC(1900, 0, 2) ? "time-only" : "other";
+  }
+  return clockText(value) ? "time-only" : "other";
+}
+
+/** How many entries the Log check looks at: those that aren't isBlankLogRow. */
+function logCheckRowCount(entries) {
+  return (entries || []).filter((e) => !isBlankLogRow(e)).length;
+}
+
+/**
+ * A problem's key: "id|<Shift ID>|<code>", or with no Shift ID (blank, or the
+ * logCheckNoIdText a Flags row gets for one) "row|<Date>|<normalized name>|<code>".
+ */
+function logCheckKey(shiftId, dateText, name, code) {
+  const id = cellString(shiftId);
+  if (id && id !== logCheckNoIdText()) return "id|" + id + "|" + code;
+  return "row|" + cellString(dateText) + "|" + normalizeName(name) + "|" + code;
+}
+
+/** An hours cell as a number: a number, or text that reads as one; NaN otherwise. */
+function logCheckHoursNumber(cell) {
+  if (typeof cell === "number") return cell;
+  if (typeof cell !== "string" || cell.trim() === "") return NaN;
+  return Number(cell.trim());
+}
+
+/** An hours cell as the Log check's details show it: "3.50 h", "blank" or 'reads "x"'. */
+function logCheckHoursCellText(cell) {
+  if (cellString(cell) === "") return "blank";
+  const n = logCheckHoursNumber(cell);
+  return isFinite(n) ? n.toFixed(2) + " h" : 'reads "' + cellString(cell) + '"';
+}
+
+/**
+ * The bad-date detail for a row, or "" when its Date is good. A Date is good when the
+ * cell isn't a bare time and its text is a real yyyy-MM-dd day (monthKey) from
+ * 1 January logCheckFirstYear() to the end of lastMonth ("yyyy-MM"). Nobody works in a
+ * later month: Add a shift refuses a date after today and the kiosk writes today.
+ */
+function logCheckDateDetail(entry, lastMonth) {
+  const kinds = entry.timeKinds || {};
+  const text = cellString(entry.dateText);
+  if (kinds.date === "time-only") return "Date holds only a time";
+  if (text === "") return "Date is blank";
+  const month = monthKey(text);
+  if (!month || Number(month.slice(0, 4)) < logCheckFirstYear() || month > lastMonth) {
+    return 'Date reads "' + text + '"';
+  }
+  return "";
+}
+
+/**
+ * Every problem on the Log, in Log row order and then logCheckReasons() order, as
+ * [{code, key, label, reason, base}]. entries are reportEntry rows (timeKinds among
+ * them), in Log row order. clock(ms) gives a time as the details show it, such as
+ * "9:06 AM". reason is "<label>: <detail>". base is {date, name, shiftId, logRow}, the
+ * Flags row's Date (the Date cell's text), Volunteer Name, Shift ID (logCheckNoIdText()
+ * when the row has none) and Log Row. A duplicate Shift ID is one problem, at its first
+ * row.
+ *
+ * nowMs (optional, Date.now() when left out) sets the last month a Date may be in: the
+ * month nowMs falls in, read in UTC, which is never behind the kiosk's Central month.
+ */
+function logCheckProblems(entries, clock, nowMs) {
+  const reasons = logCheckReasons();
+  const maxHours = logCheckMaxHours();
+  const show = typeof clock === "function" ? clock : (ms) => new Date(ms).toISOString();
+  const now = typeof nowMs === "number" && isFinite(nowMs) ? nowMs : Date.now();
+  const lastMonth = new Date(now).toISOString().slice(0, 7);
+  const rows = (entries || []).filter((e) => !isBlankLogRow(e));
+
+  const idRows = new Map();
+  rows.forEach((e) => {
+    const id = cellString(e.shiftId);
+    if (!id) return;
+    if (!idRows.has(id)) idRows.set(id, []);
+    idRows.get(id).push(e.row);
+  });
+
+  const problems = [];
+  const duplicatesDone = new Set();
+  rows.forEach((e) => {
+    const id = cellString(e.shiftId);
+    const kinds = e.timeKinds || {};
+    const add = (code, detail) => {
+      const label = reasons[code];
+      problems.push({
+        code,
+        key: logCheckKey(id, e.dateText, e.name, code),
+        label,
+        reason: label + ": " + detail,
+        base: {
+          date: cellString(e.dateText),
+          name: cellString(e.name),
+          shiftId: id || logCheckNoIdText(),
+          logRow: e.row,
+        },
+      });
+    };
+    const isImport = cellString(e.inBy).toLowerCase() === importEnteredBy();
+    const open = isStatus(e, "open");
+    const closed = isStatus(e, "closed");
+    const pairs = [
+      {
+        times: "recorded",
+        cell: "timestamps",
+        inMs: e.recordedInMs,
+        outMs: e.recordedOutMs,
+        hours: e.recordedHoursCell,
+      },
+      {
+        times: "stated",
+        cell: "stated",
+        inMs: shiftStartMs(e),
+        outMs: e.statedOutMs,
+        hours: e.statedHoursCell,
+      },
+    ];
+    const bothRead = (p) => isFinite(p.inMs) && isFinite(p.outMs);
+
+    if (!id) add("no-shift-id", "the Shift ID cell is blank");
+
+    if (id && !duplicatesDone.has(id) && idRows.get(id).length > 1) {
+      duplicatesDone.add(id);
+      add("duplicate-id", rowList(idRows.get(id)));
+    }
+
+    const dateDetail = logCheckDateDetail(e, lastMonth);
+    if (dateDetail) add("bad-date", dateDetail);
+    const timesRead = !dateDetail && !isImport;
+
+    const bare = [];
+    if (kinds.recordedIn === "time-only") bare.push("Check-In Recorded");
+    if (kinds.recordedOut === "time-only") bare.push("Check-Out Recorded");
+    if (bare.length) {
+      add(
+        "recorded-no-date",
+        bare.join(" and ") + (bare.length > 1 ? " hold" : " holds") + " only a time",
+      );
+    }
+
+    if (!open && !closed) {
+      const status = cellString(e.status);
+      add("bad-status", status ? 'Status reads "' + status + '"' : "Status is blank");
+    }
+
+    const alerts = cellString(e.alerts).toLowerCase();
+    const alerted =
+      alerts.indexOf(unreadableStartAlert().toLowerCase()) >= 0 ||
+      alerts.indexOf(autoClockOutSkippedAlert().toLowerCase()) >= 0;
+    if ((open || closed) && timesRead && !hasReadableStart(e) && !alerted) {
+      const noCells = kinds.recordedIn === "blank" && kinds.statedIn === "blank";
+      add(
+        "no-check-in",
+        noCells ? "both check-in cells blank" : "check-in can't be read on the row's Date",
+      );
+    }
+
+    if (timesRead) {
+      const backwards = pairs
+        .filter((p) => bothRead(p) && p.outMs < p.inMs)
+        .map((p) => p.times + " in " + show(p.inMs) + ", out " + show(p.outMs));
+      if (backwards.length) add("out-before-in", backwards.join("; "));
+    }
+
+    if (closed && !isImport && kinds.recordedOut === "blank" && kinds.statedOut === "blank") {
+      add("closed-no-out", "both check-out cells blank");
+    }
+
+    if (closed && timesRead) {
+      const off = pairs
+        .filter((p) => bothRead(p) && p.outMs >= p.inMs)
+        .filter((p) => {
+          const n = logCheckHoursNumber(p.hours);
+          const expected = hoursBetween(p.inMs, p.outMs);
+          return (
+            cellString(p.hours) === "" ||
+            !isFinite(n) ||
+            Math.abs(Math.round(n * 100) - Math.round(expected * 100)) > logCheckHoursTolerance()
+          );
+        })
+        .map(
+          (p) =>
+            p.cell +
+            " " +
+            logCheckHoursCellText(p.hours) +
+            ", times give " +
+            hoursBetween(p.inMs, p.outMs).toFixed(2) +
+            " h",
+        );
+      if (off.length) add("hours-mismatch", off.join("; "));
+    }
+
+    const tooLong = [];
+    pairs.forEach((p) => {
+      const n = logCheckHoursNumber(p.hours);
+      if (isFinite(n) && (n < 0 || n > maxHours)) {
+        tooLong.push(p.cell + " hours " + n.toFixed(2) + " h");
+      }
+    });
+    if (timesRead) {
+      pairs.forEach((p) => {
+        if (bothRead(p) && p.outMs >= p.inMs && p.outMs - p.inMs > maxHours * 3600000) {
+          const apart = Math.round(((p.outMs - p.inMs) / 3600000) * 100) / 100;
+          tooLong.push(p.times + " times " + apart.toFixed(2) + " h apart");
+        }
+      });
+    }
+    if (tooLong.length) add("impossible-length", tooLong.join("; "));
+  });
+  return problems;
+}
+
+/**
+ * The key (logCheckKey) of a Flags row as readFlags_ gives it ({date, name, shiftId,
+ * reason, raisedAtMs, reviewed, source}), or "" when the row isn't a Log check flag: its
+ * Source isn't "log check" (trimmed, any case) or its Reason doesn't start with a Log
+ * check label and a colon. A Shift ID of logCheckNoIdText() keys by Date and Volunteer
+ * Name.
+ */
+function logCheckFlagKey(flag) {
+  const f = flag || {};
+  if (cellString(f.source).toLowerCase() !== flagSources().logCheck) return "";
+  const reason = cellString(f.reason);
+  const reasons = logCheckReasons();
+  const code = Object.keys(reasons).find((c) => reason.indexOf(reasons[c] + ":") === 0);
+  return code ? logCheckKey(f.shiftId, f.date, f.name, code) : "";
+}
+
+/**
+ * What one run flags. problems is logCheckProblems' list, flags the Flags tab's rows
+ * (readFlags_), nowMs the run's time for Raised At and max the most rows to add
+ * (logCheckMaxNewFlags() when left out). Returns {newRows, found, already, flagged, left,
+ * byLabel}: newRows are flagRows maps with Source "log check", in problem order; found
+ * counts distinct keys, already those whose key is on the tab, flagged is newRows.length
+ * and left the rest, waiting for the next run. byLabel counts found keys per label, in
+ * logCheckReasons() order, naming only labels with at least one.
+ */
+function logCheckPlan(problems, flags, nowMs, max) {
+  const limit =
+    max === undefined || max === null
+      ? logCheckMaxNewFlags()
+      : Math.max(0, Math.floor(Number(max)) || 0);
+  const onTab = new Set();
+  (flags || []).forEach((f) => {
+    const key = logCheckFlagKey(f);
+    if (key) onTab.add(key);
+  });
+  const seen = new Set();
+  const counts = {};
+  const newRows = [];
+  let found = 0;
+  let already = 0;
+  (problems || []).forEach((p) => {
+    if (seen.has(p.key)) return;
+    seen.add(p.key);
+    found++;
+    counts[p.label] = (counts[p.label] || 0) + 1;
+    if (onTab.has(p.key)) {
+      already++;
+      return;
+    }
+    if (newRows.length >= limit) return;
+    const base = {
+      date: p.base.date,
+      name: p.base.name,
+      shiftId: p.base.shiftId,
+      raisedAtMs: nowMs,
+      source: flagSources().logCheck,
+      logRow: p.base.logRow,
+    };
+    flagRows(base, [p.reason]).forEach((row) => newRows.push(row));
+  });
+  const reasons = logCheckReasons();
+  const byLabel = {};
+  Object.keys(reasons).forEach((code) => {
+    if (counts[reasons[code]]) byLabel[reasons[code]] = counts[reasons[code]];
+  });
+  return {
+    newRows,
+    found,
+    already,
+    flagged: newRows.length,
+    left: found - already - newRows.length,
+    byLabel,
+  };
+}
+
+/**
+ * The text a Log check result shows staff (Check the Log now's alert). result is
+ * {kind: "done" | "busy" | "failed", checked, found, already, flagged, left, byLabel, ms,
+ * message}; only its fields are read.
+ */
+function logCheckMessage(result) {
+  const r = result || {};
+  if (r.kind === "busy") {
+    return "The kiosk was busy, so nothing was flagged. Try again in a minute.";
+  }
+  if (r.kind !== "done") {
+    const why = cellString(r.message);
+    return why ? "The Log check failed: " + why : "The Log check failed.";
+  }
+  const head = "Checked " + plural(r.checked || 0, "Log row", "Log rows");
+  if (!r.found) return head + ": no problems found.";
+  let text =
+    head +
+    ": found " +
+    plural(r.found, "problem", "problems") +
+    ". " +
+    (r.flagged || 0) +
+    " flagged now on the Flags tab, " +
+    (r.already || 0) +
+    " already flagged";
+  if (r.left > 0) text += ", " + r.left + " more will be flagged next run";
+  text += ".";
+  const reasons = logCheckReasons();
+  const by = r.byLabel || {};
+  Object.keys(reasons).forEach((code) => {
+    const n = by[reasons[code]];
+    if (n > 0) text += "\n  " + reasons[code] + ": " + n;
+  });
+  return text;
 }
