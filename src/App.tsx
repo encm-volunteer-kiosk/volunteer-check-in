@@ -10,6 +10,7 @@ import {
 } from "./api";
 import logo from "./assets/encm-logo.png";
 import { appreciationMessages, isToday, type Milestone, type Volunteer } from "./data";
+import { searchNames } from "./nameSearch";
 
 type Screen = "welcome" | "confirm" | "checkout" | "success-in" | "success-out";
 type Result = { time: string; duration?: number; milestone?: Milestone | null; message: string };
@@ -301,29 +302,10 @@ function Welcome({
     "Your helping hands matter.",
   ];
   const welcomeNote = welcomeNotes[new Date().getDate() % welcomeNotes.length];
+  // The screens below test the typed text itself; the search folds it (src/nameSearch.ts).
+  // A query of only punctuation finds nobody and shows "No matching volunteer found".
   const normalizedQuery = query.trim().toLowerCase();
-  const results = useMemo(() => {
-    if (!normalizedQuery) return [];
-    return volunteers
-      .filter((volunteer) =>
-        `${volunteer.firstName} ${volunteer.lastName}`.toLowerCase().includes(normalizedQuery),
-      )
-      .sort((a, b) => {
-        const aName = `${a.firstName} ${a.lastName}`.toLowerCase();
-        const bName = `${b.firstName} ${b.lastName}`.toLowerCase();
-        const score = (name: string) =>
-          name.startsWith(normalizedQuery)
-            ? 0
-            : name.split(" ").some((part) => part.startsWith(normalizedQuery))
-              ? 1
-              : 2;
-        return (
-          score(aName) - score(bName) ||
-          `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`)
-        );
-      })
-      .slice(0, 3);
-  }, [normalizedQuery, volunteers]);
+  const results = useMemo(() => searchNames(volunteers, query), [query, volunteers]);
 
   const cardRef = useRef<HTMLElement>(null);
   // Set once the name box gets focus: room below the card, so the page can scroll the box
