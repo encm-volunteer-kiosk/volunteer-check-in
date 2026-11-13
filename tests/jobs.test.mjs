@@ -1144,6 +1144,107 @@ test("runAutoClockOut stops starting rows when its time is up and the next run c
   assert.deepEqual(status(), ["closed", "closed", "closed"]);
 });
 
+test("a row that moves during the run is left for the next run, not written by its old number", () => {
+  // A row staff type in by hand, closed, for another volunteer.
+  const handRow = logLine({
+    [H.date]: "2026-11-10",
+    [H.name]: "Finley Park",
+    [H.token]: "tok-f",
+    [H.status]: "closed",
+    [H.inBy]: "EM",
+    [H.outBy]: "EM",
+    [H.statedHours]: 2,
+    [H.shiftId]: "s-hand",
+  });
+  let inserted = false;
+  const s = server({
+    settings: AUTO_SETTINGS,
+    triggers: AUTO_OWN,
+    log: [
+      LOG_HEADER,
+      openLine("s-1", "tok-a", "Avery Stone", "2026-11-10", "09:00"),
+      openLine("s-2", "tok-b", "Blair Moss", "2026-11-10", "10:00"),
+      openLine("s-3", "tok-c", "Casey Fern", "2026-11-10", "11:00"),
+    ],
+    // After the first row is written, staff insert their row above Blair's, moving Blair
+    // and Casey down one.
+    onFlush: () => {
+      if (inserted) return;
+      inserted = true;
+      s.sheets.Log.rows.splice(2, 0, handRow.slice());
+    },
+  });
+  s.runAuto(FRIDAY_4);
+  const row = (n) => s.sheets.Log.rowByHeader(n);
+  assert.equal(row(2).Status, "closed");
+  // The run planned Blair at row 3 and Casey at row 4; both rows changed under it.
+  assert.deepEqual(
+    [3, 4, 5].map((n) => [row(n)["Shift ID"], row(n).Status, row(n)["Admin Alerts?"]]),
+    [
+      ["s-hand", "closed", ""],
+      ["s-2", "open", ""],
+      ["s-3", "open", ""],
+    ],
+  );
+  assert.equal(row(3)["Check-Out Entered By"], "EM");
+  assert.equal(s.sheets.Flags.getLastRow(), 2);
+  assert.equal(s.sheets.Flags.rowByHeader(2)["Shift ID"], "s-1");
+  assert.deepEqual(
+    s.logs.filter((l) => l.includes("changed during the run")),
+    [
+      "Auto clock-out: Log row 3 (Shift ID s-2) changed during the run, so it was left for the next run.",
+      "Auto clock-out: Log row 4 (Shift ID s-3) changed during the run, so it was left for the next run.",
+    ],
+  );
+  assert.equal(s.setting("Auto clock-out last run"), "2026-11-13 04:00, closed 1");
+
+  // The next run finds them at their new rows.
+  s.runAuto("2026-11-14 04:00");
+  assert.deepEqual(
+    [3, 4, 5].map((n) => row(n).Status),
+    ["closed", "closed", "closed"],
+  );
+  assert.equal(row(3)["Check-Out Entered By"], "EM");
+  assert.deepEqual(
+    [3, 4].map((n) => [
+      s.sheets.Flags.rowByHeader(n)["Shift ID"],
+      s.sheets.Flags.rowByHeader(n)["Log Row"],
+    ]),
+    [
+      ["s-2", 4],
+      ["s-3", 5],
+    ],
+  );
+});
+
+test("a row closed or deleted during the run is left alone", () => {
+  let changed = false;
+  const s = server({
+    settings: AUTO_SETTINGS,
+    triggers: AUTO_OWN,
+    log: [
+      LOG_HEADER,
+      openLine("s-1", "tok-a", "Avery Stone", "2026-11-10", "09:00"),
+      openLine("s-2", "tok-b", "Blair Moss", "2026-11-10", "10:00"),
+      openLine("s-3", "tok-c", "Casey Fern", "2026-11-10", "11:00"),
+    ],
+    // Staff close Blair's row by hand and delete Casey's.
+    onFlush: () => {
+      if (changed) return;
+      changed = true;
+      const log = s.sheets.Log;
+      log.rows[2][LOG_HEADER.indexOf(H.status)] = "closed";
+      log.rows.splice(3, 1);
+    },
+  });
+  s.runAuto(FRIDAY_4);
+  assert.equal(s.sheets.Log.getLastRow(), 3);
+  assert.equal(s.sheets.Log.rowByHeader(3)["Admin Alerts?"], "");
+  assert.equal(s.sheets.Log.rowByHeader(3)["Check-Out Entered By"], "");
+  assert.equal(s.sheets.Flags.getLastRow(), 2);
+  assert.equal(s.logs.filter((l) => l.includes("changed during the run")).length, 2);
+});
+
 test("a busy lock makes runAutoClockOut throw before it reads anything", () => {
   const s = server({
     settings: AUTO_SETTINGS,

@@ -650,7 +650,10 @@ Each run takes the kiosk's lock, so a tablet tap at that minute may wait or see 
 is busy". A run that finds the lock busy for 30 seconds fails, and the next day's run
 catches up. A first run at ENCM may close a backlog of old open rows: `setupDailyJobs`
 logs how many a run would close now. A run stops starting new rows after 4.5 minutes,
-inside Google's 6-minute limit, and leaves the rest for the next day.
+inside Google's 6-minute limit, and leaves the rest for the next day. Just before it
+writes a row, it reads that row again; if staff have sorted, inserted, deleted or edited
+Log rows so the row is no longer the open one it read at the start, it leaves it alone,
+logs one line, and the next day's run picks it up where it now is.
 
 ## Reports
 

@@ -3986,6 +3986,24 @@ function autoClockOutRows(entries, nowMs, windowMs, todayDate, launchDate) {
 }
 
 /**
+ * True when a Log row read again just before an auto clock-out write (current, a log
+ * entry, or null when the row is past the Log's end) is still the row the run planned for:
+ * still open, with the same Shift ID, User Token, Date and check-in times. Staff can sort,
+ * insert or delete Log rows while a run goes on, which moves rows under their numbers; a
+ * row that changed is left for the next run rather than written by a stale number.
+ */
+function autoClockOutRowUnchanged(planned, current) {
+  if (!current || !isStatus(current, "open")) return false;
+  return (
+    cellString(current.shiftId) === cellString(planned.shiftId) &&
+    cellString(current.token) === cellString(planned.token) &&
+    cellString(current.dateText) === cellString(planned.dateText) &&
+    Object.is(current.recordedInMs, planned.recordedInMs) &&
+    Object.is(current.statedInMs, planned.statedInMs)
+  );
+}
+
+/**
  * The volunteer's usual length for an open row's weekday, as {minutes, weekday}, or null.
  * The sample is the same token's closed rows dated on the same weekday, before this row's
  * Date and at most 26 weeks before it, with Hours Served (stated) a number above 0 and at

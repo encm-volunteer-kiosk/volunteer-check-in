@@ -276,6 +276,10 @@ function readFlags_() {
  * The auto clock-out's run at now, once the guard has passed and under the script lock.
  * Reads Settings, the whole Log and the Shifts tab once. Closes rows one by one, oldest
  * first, each with its Log write and then its Flags row, then flags the rows it skips.
+ * Before each write it reads that row again and leaves it for the next run, with one log
+ * line, when it is no longer the open row it read at the start (autoClockOutRowUnchanged):
+ * staff may sort, insert or delete Log rows during the run, and a write by the old row
+ * number would land on another row. The lock keeps out the kiosk, not hand edits.
  * Status is read under the lock, so a second run closes nothing twice, and a run that
  * dies part way leaves the rest for the next. It starts no new row after
  * autoClockOutBudgetMs and leaves the rest for the next day. At the end it writes "Auto
@@ -304,11 +308,22 @@ function autoClockOut_(now) {
   let closed = 0;
   let skipped = 0;
   let left = 0;
+  const stillThere = (row) => {
+    if (autoClockOutRowUnchanged(row, readLogRow_(row.row, cols, read))) return true;
+    console.log(
+      "Auto clock-out: Log row " +
+        row.row +
+        (cellString(row.shiftId) ? " (Shift ID " + cellString(row.shiftId) + ")" : "") +
+        " changed during the run, so it was left for the next run.",
+    );
+    return false;
+  };
   plan.close.forEach((row) => {
     if (outOfTime()) {
       left++;
       return;
     }
+    if (!stillThere(row)) return;
     const shiftId = cellString(row.shiftId) || Utilities.getUuid();
     const guess = autoClockOutGuess(entries, row, nowMs, shifts.windows, read);
     const alert = autoClockOutAlert(row, guess, read);
@@ -321,6 +336,7 @@ function autoClockOut_(now) {
       left++;
       return;
     }
+    if (!stillThere(row)) return;
     const shiftId = cellString(row.shiftId) || Utilities.getUuid();
     updateLogRow_(row.row, autoClockOutSkipCells(row, shiftId), cols);
     raiseFlags_(autoClockOutFlagBase(row, shiftId, nowMs), [autoClockOutSkippedAlert()]);

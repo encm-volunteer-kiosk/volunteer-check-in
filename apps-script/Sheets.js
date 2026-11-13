@@ -395,6 +395,17 @@ function readLog_(cols) {
 }
 
 /**
+ * One Log row as a log entry, read across the Log's full width in one range read, or null
+ * when row is past the Log's last row. read is logRead_().
+ */
+function readLogRow_(row, cols, read) {
+  const sheet = sheet_(LOG_TAB);
+  if (row < 2 || row > sheet.getLastRow()) return null;
+  const cells = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+  return logEntry(cells, row, cols, read);
+}
+
+/**
  * Log rows dated on any of dates (yyyy-MM-dd), in any row order. Reads the Date column
  * found by the header map, then only the block of rows from the first to the last of
  * those, across the full width. The kiosk list reads yesterday and today with it
