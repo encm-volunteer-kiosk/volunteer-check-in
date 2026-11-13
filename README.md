@@ -1477,6 +1477,7 @@ apps-script/Admin.js        the Kiosk admin menu and its dialogs' server functio
 apps-script/AdminDialog.html the admin dialogs (plain HTML and JavaScript, committed source)
 apps-script/Reports.js      setupReports, the Hours refresh and the Monthly report menu item's server functions
 apps-script/Jobs.js         the daily jobs: setupDailyJobs, removeDailyJobs, the weekly flags email, the nightly Hours refresh
+apps-script/HoursSort.js    the Hours tab's sort boxes: the on-edit handler that re-sorts a table when a box changes
 apps-script/Report.html     the Monthly report window (plain HTML and JavaScript, committed source)
 apps-script/Import.js       the Import past hours menu item: preview, write, ledger and flags
 apps-script/ImportDialog.html the Import past hours dialog (plain HTML and JavaScript, committed source)

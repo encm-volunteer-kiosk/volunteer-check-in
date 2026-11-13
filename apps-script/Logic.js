@@ -3049,7 +3049,7 @@ function setupReportsMessage(counts) {
 // Hours data is a hidden tab of plain values the script writes: one row per counted shift
 // with a month, worked out here by the monthly report's own counting code, so the Hours
 // tab and the report count the same rows the same way. The Hours tab holds three pivot
-// tables and five slicers over it. Nothing on either tab is a formula over the Log, so a
+// tables and seven slicers over it. Nothing on either tab is a formula over the Log, so a
 // kiosk tap starts no recalculation there; the tables are as of the last refresh.
 //
 // Hours data's row 1 also holds the refresh's state cells, L1 to Q1, outside the pivots'
