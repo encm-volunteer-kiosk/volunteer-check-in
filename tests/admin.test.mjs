@@ -1272,7 +1272,7 @@ test("apiCheckIn reads Settings once and the Log once", () => {
   assert.equal(s.sheets.Log.rowByHeader(3)["Shift ID"], reply.shiftId);
 });
 
-test("apiCheckOut reads Settings once and the Log once", () => {
+test("apiCheckOut reads Settings once, the Log table once and its row once more", () => {
   const log = [
     LOG_HEADER,
     closedBy("s-old", "2026-11-03", "kiosk"),
