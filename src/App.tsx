@@ -1196,15 +1196,18 @@ export default function App() {
   useEffect(() => {
     if (!save) return;
     const { seq, startedAt } = save;
-    const timer = window.setTimeout(() => {
-      const taken = takeWatchdog(saveFlow.current, seq);
-      if (!taken.save) return;
-      setSaveFlow(taken.flow);
-      setError("");
-      setResult(resultOf(taken.save, {}));
-      setScreen("unconfirmed");
-      refreshList();
-    }, msUntil(WATCHDOG_MS, Date.now() - startedAt));
+    const timer = window.setTimeout(
+      () => {
+        const taken = takeWatchdog(saveFlow.current, seq);
+        if (!taken.save) return;
+        setSaveFlow(taken.flow);
+        setError("");
+        setResult(resultOf(taken.save, {}));
+        setScreen("unconfirmed");
+        refreshList();
+      },
+      msUntil(WATCHDOG_MS, Date.now() - startedAt),
+    );
     return () => clearTimeout(timer);
   }, [save?.seq]);
 

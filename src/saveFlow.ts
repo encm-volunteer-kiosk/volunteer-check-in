@@ -64,7 +64,10 @@ export function startSave(
  * clears and the reply's screen uses the returned record. Otherwise the reply is late and
  * nothing is returned; the page only refreshes the list.
  */
-export function takeReply(flow: SaveFlow, seq: number): { flow: SaveFlow; save: SaveRecord | null } {
+export function takeReply(
+  flow: SaveFlow,
+  seq: number,
+): { flow: SaveFlow; save: SaveRecord | null } {
   if (flow.pending?.seq !== seq) return { flow, save: null };
   return { flow: { ...flow, pending: null }, save: flow.pending };
 }
