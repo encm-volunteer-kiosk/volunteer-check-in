@@ -13,15 +13,20 @@
  *     requireEditorRun_ (adminGuard_) before reading anything.
  * Everything else ends in _, so google.script.run can't call it.
  *
- * Writes go in blocks of importBlockSize() rows. Each block takes the kiosk's lock,
- * checks the ledger and the Log's Shift IDs again, appends its Log rows in one write, then
- * its ledger lines, then the Flags rows of the unmatched names first seen in it, and lets
- * the lock go, so a tablet call waits at most one block. A run that stops part way leaves
- * whole blocks, and running it again finishes the rest. The rules are in Logic.js (Past
- * hours import).
+ * Rows from any date up to today come in; "Kiosk launch date" is not read. A matched row
+ * for a day its volunteer also has a kiosk shift on the Log comes in with the same-day
+ * alert and a Flags row.
+ *
+ * Writes go in blocks of importBlockSize() rows. Each block takes the kiosk's lock, reads
+ * the ledger and the Log again (Shift IDs and kiosk days, in one read of four columns),
+ * appends its Log rows in one write, then its ledger lines, then its Flags rows (the
+ * unmatched names first seen in it and its same-day rows), logs one line with its counts
+ * and how long it held the lock, and lets the lock go, so a tablet call waits at most one
+ * block. A run that stops part way leaves whole blocks, and running it again finishes the
+ * rest. The rules are in Logic.js (Past hours import).
  */
 
-/** Opens the Import past hours dialog with a new key, prefilled from Settings. */
+/** Opens the Import past hours dialog with a new key, prefilled from Settings, with the contact line. */
 function openImportDialog() {
   requireEditorRun_();
   const ui = SpreadsheetApp.getUi();
@@ -32,6 +37,7 @@ function openImportDialog() {
   page.key = key;
   page.fileId = settings[importFileSetting()] || "";
   page.tab = settings[importTabSetting()] || importDefaultTab();
+  page.contactNote = kioskContactNote(settings[kioskContactSetting()]);
   ui.showModalDialog(page.evaluate().setWidth(560).setHeight(640), "Import past hours");
 }
 
@@ -50,10 +56,11 @@ function adminImportPreview(key, form) {
 
 /**
  * Imports what the preview listed. form is {file, tab, initials}. Replies {ok: true,
- * fileName, tab, summary, done, imported, matched, unmatched, hours, ledgerAdded, flags,
- * flagsFailed, remaining, message}: summary is the plan the run started from, the rest
- * what it wrote. done is false when it stopped part way (busy kiosk or the time limit);
- * message then says to run it again. Or a refusal, with nothing written.
+ * fileName, tab, summary, done, imported, matched, unmatched, sameDay, hours, ledgerAdded,
+ * flags, flagsFailed, remaining, message}: summary is the plan the run started from, the
+ * rest what it wrote. sameDay counts the written rows each block found a kiosk shift for.
+ * done is false when it stopped part way (busy kiosk or the time limit); message then says
+ * to run it again. Or a refusal, with nothing written.
  */
 function adminImportRun(key, form) {
   const denied = adminGuard_(key);
@@ -74,6 +81,7 @@ function adminImportRun(key, form) {
     imported: 0,
     matched: 0,
     unmatched: 0,
+    sameDay: 0,
     hours: 0,
     ledgerAdded: 0,
     flags: 0,
@@ -106,7 +114,9 @@ function adminImportRun(key, form) {
       stop("The import stopped before the time limit. Run it again to bring in the rest.");
       break;
     }
-    const result = withLock_(() => writeImportBlock_(blocks[i], source, counts, flagged));
+    const result = withLock_(() =>
+      writeImportBlock_(blocks[i], source, counts, flagged, i + 1, blocks.length),
+    );
     if (result.ok === false) {
       stop(result.message + " The import stopped part way. Run it again to bring in the rest.");
       break;
@@ -116,6 +126,7 @@ function adminImportRun(key, form) {
     reply.ledgerAdded += result.ledgerAdded;
     reply.flags += result.flags;
     reply.flagsFailed += result.flagsFailed;
+    reply.sameDay += result.sameDay;
     result.written.forEach(({ item }) => {
       if (item.volunteer) reply.matched++;
       else reply.unmatched++;
@@ -128,15 +139,13 @@ function adminImportRun(key, form) {
 }
 
 /**
- * Reads everything an import needs and works out its plan: Settings, the source tab,
- * Profiles, the Log's Shift IDs and the ledger. Returns {refusal} or {fileId, fileName,
- * tab, plan}. The launch date is checked first, before the source is opened.
+ * Reads everything an import needs and works out its plan: Settings (for Profiles), the
+ * source tab, Profiles, the ledger, and the Log's Shift IDs and kiosk days. Returns
+ * {refusal} or {fileId, fileName, tab, plan}.
  */
 function importJob_(form) {
   const f = form || {};
   const settings = readSettings_();
-  const launch = importLaunchDate(settings["Kiosk launch date"]);
-  if (launch.refusal) return launch;
   const fileId = importFileId(f.file);
   if (!fileId) return { refusal: importRefusal("IMPORT_FILE_ID") };
   const tab = cellString(f.tab) || importDefaultTab();
@@ -151,14 +160,15 @@ function importJob_(form) {
   const values = sheet.getDataRange().getValues();
   const zone = file.getSpreadsheetTimeZone() || kioskTimeZone();
   const ledger = readImportLedger_();
+  const view = readLogDays_(readLogColumns_());
   const plan = importPlan({
     header: (values[0] || []).map(cellText_),
     rows: values.slice(1).map((cells) => cells.map((value) => importCell_(value, zone))),
-    launchDate: launch.launch,
     todayDate: centralDate_(new Date()),
     volunteers: getProfiles_(settings),
     ledgerKeys: ledger.keys,
-    logShiftIds: readLogShiftIds_(readLogColumns_()),
+    logShiftIds: view.shiftIds,
+    kioskDays: view.kioskDays,
     hashFn: sha256Hex_,
   });
   if (plan.refusal) return plan;
@@ -176,16 +186,37 @@ function importCell_(value, zone) {
   return cellText_(value);
 }
 
-/** Every Shift ID on the Log, from the Shift ID column alone. */
-function readLogShiftIds_(cols) {
+/**
+ * What the import needs from the Log, from four single-column reads (Shift ID, Date, User
+ * Token and Status), never the full width: {shiftIds, kioskDays}. shiftIds are the
+ * non-blank Shift IDs, kioskDays the importKioskDays (Logic.js) of every row. Cells are
+ * read as logEntry reads them: a Date cell as its Central yyyy-MM-dd.
+ */
+function readLogDays_(cols) {
   const sheet = sheet_(LOG_TAB);
   const last = sheet.getLastRow();
-  if (last < 2) return [];
-  return sheet
-    .getRange(2, cols[logHeaderNames().shiftId] + 1, last - 1, 1)
-    .getValues()
-    .map((cells) => cellText_(cells[0]))
-    .filter((id) => id !== "");
+  if (last < 2) return { shiftIds: [], kioskDays: new Set() };
+  const H = logHeaderNames();
+  const column = (header) =>
+    sheet
+      .getRange(2, cols[header] + 1, last - 1, 1)
+      .getValues()
+      .map((cells) => cellText_(cells[0]));
+  const shiftIds = column(H.shiftId);
+  const dates = column(H.date);
+  const tokens = column(H.token);
+  const statuses = column(H.status);
+  return {
+    shiftIds: shiftIds.filter((id) => id !== ""),
+    kioskDays: importKioskDays(
+      shiftIds.map((shiftId, i) => ({
+        shiftId,
+        dateText: dates[i],
+        token: tokens[i],
+        status: statuses[i],
+      })),
+    ),
+  };
 }
 
 /**
@@ -261,18 +292,25 @@ function writeLedgerRepairs_(items, source) {
 }
 
 /**
- * Under the lock: writes one block. Reads the ledger and the Log's Shift IDs again and
- * skips what is now in either (a key on the Log only gets its ledger line), so two runs at
- * once write nothing twice. Appends the Log rows, then their ledger lines, flushes, then
- * copies the Flags rows of the unmatched names first seen in this block. Returns {ok:
- * true, written: [{item, row}], ledgerAdded, flags, flagsFailed}.
+ * Under the lock: writes block index of count (from 1). Reads the ledger and the Log again,
+ * once, and skips what is now in either (a key on the Log only gets its ledger line), so
+ * two runs at once write nothing twice. The same Log read gives the kiosk days, so each
+ * row's same-day check sees the Log as it is now; nothing reads the Log per row. Appends
+ * the Log rows with their alerts, then their ledger lines, flushes, then copies the Flags
+ * rows of the unmatched names first seen in this block and of its same-day rows. Logs one
+ * line (importBlockLog). Returns {ok: true, written: [{item, row}], ledgerAdded, flags,
+ * flagsFailed, sameDay}; sameDay counts the written same-day rows, flagged or not.
  */
-function writeImportBlock_(items, source, counts, flagged) {
+function writeImportBlock_(items, source, counts, flagged, index, count) {
+  const start = Date.now();
   const cols = readLogColumns_();
   const inLedger = new Set(readImportLedger_().keys);
-  const onLog = new Set(readLogShiftIds_(cols));
+  const view = readLogDays_(cols);
+  const onLog = new Set(view.shiftIds);
   const fresh = items.filter((item) => !inLedger.has(item.key));
-  const toWrite = fresh.filter((item) => !onLog.has(item.shiftId));
+  const toWrite = fresh
+    .filter((item) => !onLog.has(item.shiftId))
+    .map((item) => ({ ...item, sameDay: importSameDay(item, view.kioskDays) }));
   const repairs = fresh.filter((item) => onLog.has(item.shiftId));
   const withNotes = cols[logHeaderNames().notes] >= 0;
   const now = Date.now();
@@ -303,18 +341,21 @@ function writeImportBlock_(items, source, counts, flagged) {
       console.error(
         "Flags: not copied for " +
           flagsFailed +
-          " imported names: " +
+          " imported rows: " +
           (e && e.message ? e.message : String(e)),
       );
     }
   }
-  return {
+  const result = {
     ok: true,
     written,
     ledgerAdded: repairs.length,
     flags: flagRowsToWrite.length - flagsFailed,
     flagsFailed,
+    sameDay: written.filter(({ item }) => item.sameDay).length,
   };
+  console.log(importBlockLog(index, count, result, Date.now() - start));
+  return result;
 }
 
 /** Saves the file ID and tab a writing run used, so the dialog offers them next time. */

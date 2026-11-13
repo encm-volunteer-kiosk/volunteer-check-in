@@ -376,8 +376,8 @@ function adminGuard_(key) {
 }
 
 /**
- * Opens a dialog from AdminDialog.html with a new key in it. mode is "add", "fix",
- * "remove" or "restore".
+ * Opens a dialog from AdminDialog.html with a new key and the Kiosk contact line
+ * (kioskContactNote) in it. mode is "add", "fix", "remove" or "restore".
  */
 function openAdminDialog_(mode, title) {
   requireEditorRun_();
@@ -387,6 +387,7 @@ function openAdminDialog_(mode, title) {
   const page = HtmlService.createTemplateFromFile("AdminDialog");
   page.key = key;
   page.mode = mode;
+  page.contactNote = kioskContactNote(kioskContact_());
   ui.showModalDialog(page.evaluate().setWidth(480).setHeight(600), title);
 }
 

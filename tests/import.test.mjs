@@ -107,6 +107,7 @@ class FakeSheet {
     this.maxRows = maxRows;
     this.frozen = 0;
     this.valueWrites = 0;
+    this.valueReads = 0;
   }
   getLastRow() {
     let last = this.rows.length;
@@ -139,13 +140,15 @@ class FakeSheet {
   getRange(row, col, rows = 1, cols = 1) {
     const sheet = this;
     const range = {
-      getValues: () =>
-        Array.from({ length: rows }, (_, i) =>
+      getValues: () => {
+        sheet.valueReads++;
+        return Array.from({ length: rows }, (_, i) =>
           Array.from(
             { length: cols },
             (_, j) => (sheet.rows[row - 1 + i] || [])[col - 1 + j] ?? "",
           ),
-        ),
+        );
+      },
       setNumberFormat: (format) => {
         for (let i = 0; i < rows; i++) {
           for (let j = 0; j < cols; j++) sheet.formats[row + i + ":" + (col + j)] = format;
@@ -237,12 +240,14 @@ const settingsRows = (extra = []) => [
  * source (rows of the source tab, header included), ledger (rows of an Import ledger tab;
  * none by default), volunteers, keys (dialog keys issued), lock (a function of the call
  * number giving whether tryLock succeeds), flags (null for no Flags tab), onFlush,
+ * removed (rows of a Removed shifts tab; none by default),
  * sourceZone (the source spreadsheet's time zone, Central by default).
  */
 function server(opts = {}) {
   const calls = [];
   const cache = new Map();
   const errors = [];
+  const logs = [];
   const shown = [];
   const sheets = {
     Log: new FakeSheet(opts.log || [LOG_HEADER]),
@@ -250,6 +255,7 @@ function server(opts = {}) {
   };
   if (opts.flags !== null) sheets.Flags = new FakeSheet(opts.flags || [FLAG_HEADER]);
   if (opts.ledger) sheets["Import ledger"] = new FakeSheet(opts.ledger);
+  if (opts.removed) sheets["Removed shifts"] = new FakeSheet(opts.removed);
   const source = new FakeSheet(opts.source || [SOURCE_HEADER, ...SOURCE_ROWS]);
   let uuid = 0;
   let locks = 0;
@@ -271,7 +277,10 @@ function server(opts = {}) {
     );
   const email = (value) => ({ getEmail: () => value });
   const ctx = {
-    console: { log: () => {}, error: (...args) => errors.push(args.join(" ")) },
+    console: {
+      log: (...args) => logs.push(args.join(" ")),
+      error: (...args) => errors.push(args.join(" ")),
+    },
     Session: service("Session", {
       getActiveUser: () => email("staff@example.org"),
       getEffectiveUser: () => email("staff@example.org"),
@@ -362,7 +371,7 @@ function server(opts = {}) {
   );
   for (const key of opts.keys || ["k"]) cache.set(ctx.adminKeyCacheKey(key), "1");
   calls.length = 0;
-  return { ctx, calls, cache, sheets, source, shown, errors };
+  return { ctx, calls, cache, sheets, source, shown, errors, logs };
 }
 
 const FORM = { file: FILE_LINK, tab: "Historical Hours", initials: "j.p." };
@@ -414,7 +423,6 @@ const plan = (rows, extra = {}) =>
   L.importPlan({
     header: SOURCE_HEADER,
     rows,
-    launchDate: LAUNCH,
     todayDate: TODAY,
     volunteers: VOLUNTEERS,
     ledgerKeys: [],
@@ -428,8 +436,8 @@ test("every left-out reason, by source row, and none is remembered", () => {
     ["2026-13-01", "Avery", "Quinn", 3, "", ""], // 2: not a day
     ["Dec 2", "Avery", "Quinn", 3, "", ""], // 3: not a format it reads
     ["2026-11-13", "Avery", "Quinn", 3, "", ""], // 4: after today
-    ["2026-06-15", "Avery", "Quinn", 3, "", ""], // 5: the launch date itself
-    ["2026-07-01", "Avery", "Quinn", 3, "", ""], // 6: after the launch date
+    ["2026-06-15", "Avery", "Quinn", 3, "", ""], // 5: the launch date itself: in
+    ["2026-07-01", "Avery", "Quinn", 3, "", ""], // 6: after the launch date: in
     ["2026-01-05", "", " ", 3, "", ""], // 7: no name
     ["2026-01-05", "Avery", "Quinn", 0, "", ""], // 8: zero hours
     ["2026-01-05", "Avery", "Quinn", -1, "", ""], // 9: negative
@@ -438,14 +446,12 @@ test("every left-out reason, by source row, and none is remembered", () => {
     ["2026-01-05", "Avery", "Quinn", "", "", ""], // 12: blank
     ["2026-01-05", "Avery", "Quinn", 24, "", ""], // 13: 24 is in
     ["1/6/2026", "Avery", "Quinn", "2.5", "", ""], // 14: m/d/yyyy and hours as text
-    ["2026-06-14", "", "Quinn", 1, "", ""], // 15: last name alone, the day before launch
+    ["2026-06-14", "", "Quinn", 1, "", ""], // 15: last name alone
   ]);
   assert.deepEqual(plain(p.leftOut), [
     { row: 2, reason: "date" },
     { row: 3, reason: "date" },
     { row: 4, reason: "future" },
-    { row: 5, reason: "launch" },
-    { row: 6, reason: "launch" },
     { row: 7, reason: "name" },
     { row: 8, reason: "hours" },
     { row: 9, reason: "hours" },
@@ -454,6 +460,8 @@ test("every left-out reason, by source row, and none is remembered", () => {
     { row: 12, reason: "hours" },
   ]);
   assert.deepEqual(plain(p.toImport.map((i) => [i.sourceRow, i.date, i.hours])), [
+    [5, "2026-06-15", 3],
+    [6, "2026-07-01", 3],
     [13, "2026-01-05", 24],
     [14, "2026-01-06", 2.5],
     [15, "2026-06-14", 1],
@@ -463,19 +471,26 @@ test("every left-out reason, by source row, and none is remembered", () => {
   assert.deepEqual(s.leftOutRows, [
     { reason: "date can't be read", rows: [2, 3] },
     { reason: "date is after today", rows: [4] },
-    { reason: 'date is on or after the "Kiosk launch date"', rows: [5, 6] },
     { reason: "no first or last name", rows: [7] },
     { reason: "hours aren't a number above 0 and at most 24", rows: [8, 9, 10, 11, 12] },
   ]);
+  assert.deepEqual(Object.keys(L.importLeftOutReasons()), ["date", "future", "name", "hours"]);
 });
 
-test("a blank or unreadable launch date refuses the plan, naming the setting", () => {
-  for (const launch of ["", "soon", "2026-02-30", "6/15/26"]) {
-    const p = plan(SOURCE_ROWS, { launchDate: launch });
-    assert.equal(p.refusal.refusal, "IMPORT_LAUNCH_DATE", launch);
-    assert.match(p.refusal.message, /"Kiosk launch date"/);
+test("the plan takes no launch date and doesn't refuse without one", () => {
+  const p = plan(SOURCE_ROWS);
+  assert.equal(p.refusal, undefined);
+  assert.equal(p.toImport.length, 13);
+  // A launch date passed in anyway changes nothing.
+  for (const launchDate of ["", "soon", "2025-12-03"]) {
+    assert.deepEqual(plain(plan(SOURCE_ROWS, { launchDate })), plain(p), launchDate);
   }
-  const missing = L.importPlan({ header: ["Date", "Name"], rows: [], launchDate: LAUNCH });
+  assert.equal(L.importLaunchDate, undefined);
+  assert.throws(() => L.importRefusal("IMPORT_LAUNCH_DATE"), /Unknown import refusal code/);
+});
+
+test("a header row without First name and Last name refuses the plan", () => {
+  const missing = L.importPlan({ header: ["Date", "Name"], rows: [] });
   assert.equal(missing.refusal.refusal, "IMPORT_HEADERS");
   assert.equal(
     missing.refusal.message,
@@ -587,6 +602,8 @@ test("the invented ENCM-layout tab previews as expected", () => {
     alreadyImported: 0,
     onLog: 0,
     leftOut: 1,
+    sameDay: 0,
+    sameDayRows: [],
     unmatchedNames: [
       { name: "Casey Lindqvist", rows: 2, matches: 0 },
       { name: "Jordan Vale", rows: 1, matches: 2 },
@@ -634,25 +651,52 @@ test("the opener prefills the dialog from Settings, and its key works", () => {
   fresh.ctx.openImportDialog();
   assert.equal(fresh.shown[0].output.template.fileId, "");
   assert.equal(fresh.shown[0].output.template.tab, "Historical Hours");
+  // No Kiosk contact row: no contact line.
+  assert.equal(fresh.shown[0].output.template.contactNote, "");
 });
 
-test("a blank or unreadable launch date refuses Preview and Import before the source is opened", () => {
-  for (const launch of ["", "next week"]) {
-    const s = server({
-      settings: [
-        ["Setting", "Value"],
-        ["Volunteer Profiles file ID", "file-1"],
-        ["Kiosk launch date", launch],
-      ],
-    });
-    for (const name of ["adminImportPreview", "adminImportRun"]) {
-      const reply = plain(s.ctx[name]("k", FORM));
-      assert.equal(reply.refusal, "IMPORT_LAUNCH_DATE", name);
-      assert.match(reply.message, /Kiosk launch date/);
-    }
-    assert.ok(!s.calls.includes("SpreadsheetApp.openById"));
-    assert.deepEqual(s.sheets.Log.rows, [LOG_HEADER]);
-    assert.equal(s.sheets["Import ledger"], undefined);
+test("the opener puts the Kiosk contact line into the window", () => {
+  const s = server({
+    keys: [],
+    settings: settingsRows([["Kiosk contact", "Pat Example\n 555-0100 \n"]]),
+  });
+  s.ctx.openImportDialog();
+  assert.equal(
+    s.shown[0].output.template.contactNote,
+    "If this keeps happening, contact: Pat Example, 555-0100",
+  );
+  const blank = server({ keys: [], settings: settingsRows([["Kiosk contact", "\n"]]) });
+  blank.ctx.openImportDialog();
+  assert.equal(blank.shown[0].output.template.contactNote, "");
+});
+
+test("a blank, unreadable or missing launch date changes nothing: Preview and Import work", () => {
+  const withDate = server();
+  const expected = plain(withDate.ctx.adminImportPreview("k", FORM)).summary;
+  withDate.ctx.adminImportRun("k", FORM);
+  const base = [
+    ["Setting", "Value"],
+    ["Volunteer Profiles file ID", "file-1"],
+  ];
+  for (const settings of [
+    [...base, ["Kiosk launch date", ""]],
+    [...base, ["Kiosk launch date", "next week"]],
+    base,
+  ]) {
+    const s = server({ settings });
+    const label = JSON.stringify(settings.slice(2));
+    const preview = plain(s.ctx.adminImportPreview("k", FORM));
+    assert.equal(preview.ok, true, label);
+    assert.deepEqual(preview.summary, expected, label);
+    const reply = plain(s.ctx.adminImportRun("k", FORM));
+    assert.equal(reply.ok, true, label);
+    assert.equal(reply.imported, 13, label);
+    assert.deepEqual(s.sheets.Log.rows, withDate.sheets.Log.rows, label);
+    assert.deepEqual(
+      s.sheets["Import ledger"].rows.map((r) => r.slice(0, 2)),
+      withDate.sheets["Import ledger"].rows.map((r) => r.slice(0, 2)),
+      label,
+    );
   }
 });
 
@@ -922,4 +966,492 @@ test("a ledger tab with a header removed stops the import before it writes", () 
   assert.throws(() => s.ctx.adminImportPreview("k", FORM), /"Shift ID" column/);
   assert.throws(() => s.ctx.adminImportRun("k", FORM), /"Shift ID" column/);
   assert.deepEqual(s.sheets.Log.rows, [LOG_HEADER]);
+});
+
+// ---------------------------------------------------------------------------
+// Same day as a kiosk shift
+
+test("an import row is known by its Shift ID's import- start, in any capitals", () => {
+  for (const id of ["import-abc", "  IMPORT-ABC  ", "Import-1"]) {
+    assert.equal(L.isImportShiftId(id), true, id);
+  }
+  for (const id of ["probe-1", "", "imported-x", "x-import-1", "import", null, undefined]) {
+    assert.equal(L.isImportShiftId(id), false, String(id));
+  }
+});
+
+test("kiosk days: open and closed rows that aren't imports, with a token and a readable date", () => {
+  const row = (fields) => ({
+    dateText: "2026-11-02",
+    token: "tok-avery",
+    status: "closed",
+    shiftId: "kiosk-1",
+    ...fields,
+  });
+  const days = (rows) => [...L.importKioskDays(rows)].sort();
+  assert.deepEqual(days([row({})]), ["2026-11-02|tok-avery"]);
+  assert.deepEqual(days([row({ status: "OPEN", dateText: "2026-11-03" })]), [
+    "2026-11-03|tok-avery",
+  ]);
+  assert.deepEqual(days([row({ status: "Closed" })]), ["2026-11-02|tok-avery"]);
+  // A date-time text counts on its day; a blank Shift ID counts.
+  assert.deepEqual(days([row({ dateText: "2026-11-20 9:00", shiftId: "" })]), [
+    "2026-11-20|tok-avery",
+  ]);
+  // None of these counts.
+  assert.deepEqual(
+    days([
+      row({ shiftId: "import-0123" }),
+      row({ shiftId: " IMPORT-0123" }),
+      row({ token: "" }),
+      row({ token: "  " }),
+      row({ dateText: "" }),
+      row({ dateText: "Nov 2" }),
+      row({ dateText: "2026-02-30" }),
+      row({ status: "" }),
+      row({ status: "void" }),
+    ]),
+    [],
+  );
+  assert.deepEqual(days([]), []);
+  assert.equal(L.importDayKey("2026-11-02", " tok-avery "), "2026-11-02|tok-avery");
+});
+
+test("the plan marks a matched row whose volunteer has a kiosk shift that day", () => {
+  const rows = [
+    ["2025-12-02", "Avery", "Quinn", 3, "", ""], // 2: Avery's kiosk day
+    ["2025-12-03", "Avery", "Quinn", 3, "", ""], // 3: another day
+    ["2025-12-02", "Casey", "Lindqvist", 2, "", ""], // 4: unmatched, on a kiosk day
+    ["2025-12-02", "Jordan", "Vale", 2, "", ""], // 5: a same-name group
+    ["2025-11-30", "Blake", "Morrow", 2, "", ""], // 6: Blake's kiosk day
+  ];
+  const kioskDays = L.importKioskDays([
+    { dateText: "2025-12-02", token: "tok-avery", status: "closed", shiftId: "k-1" },
+    { dateText: "2025-12-02", token: "import:casey lindqvist", status: "closed", shiftId: "k-2" },
+    { dateText: "2025-12-02", token: "tok-jordan-1", status: "closed", shiftId: "k-3" },
+    { dateText: "2025-11-30", token: "tok-blake", status: "open", shiftId: "" },
+  ]);
+  const p = plan(rows, { kioskDays });
+  assert.deepEqual(plain(p.toImport.map((i) => [i.sourceRow, i.sameDay])), [
+    [2, true],
+    [3, false],
+    [4, false],
+    [5, false],
+    [6, true],
+  ]);
+  const s = plain(L.importSummary(p));
+  assert.equal(s.sameDay, 2);
+  assert.equal(s.matched, 3);
+  assert.deepEqual(s.sameDayRows, [
+    { name: "Avery Quinn", date: "2025-12-02", row: 2 },
+    { name: "Blake Morrow", date: "2025-11-30", row: 6 },
+  ]);
+  assert.ok(!JSON.stringify(s).includes("tok-"), "no User Token in the summary");
+  // No kioskDays reads as empty.
+  const none = plan(rows);
+  assert.ok(none.toImport.every((i) => i.sameDay === false));
+  assert.equal(L.importSummary(none).sameDay, 0);
+  assert.deepEqual(plain(L.importSummary(none).sameDayRows), []);
+});
+
+test("a same-day row already imported or already on the Log isn't counted as same day", () => {
+  const rows = [
+    ["2025-12-02", "Avery", "Quinn", 3, "", ""], // 2: same day, in the ledger
+    ["2025-11-30", "Blake", "Morrow", 2, "", ""], // 3: same day, its Shift ID on the Log
+    ["2025-12-02", "Avery", "Quinn", 1, "", ""], // 4: same day, to import
+  ];
+  const kioskDays = L.importKioskDays([
+    { dateText: "2025-12-02", token: "tok-avery", status: "closed", shiftId: "k-1" },
+    { dateText: "2025-11-30", token: "tok-blake", status: "closed", shiftId: "k-2" },
+  ]);
+  const [ledgered, logged] = plan(rows, { kioskDays }).toImport;
+  const p = plan(rows, {
+    kioskDays,
+    ledgerKeys: [ledgered.key],
+    logShiftIds: [logged.shiftId],
+  });
+  assert.deepEqual(plain(p.alreadyImported.map((i) => [i.sourceRow, i.sameDay])), [[2, true]]);
+  assert.deepEqual(plain(p.onLog.map((i) => [i.sourceRow, i.sameDay])), [[3, true]]);
+  const s = plain(L.importSummary(p));
+  assert.equal(s.toImport, 1);
+  assert.equal(s.alreadyImported, 1);
+  assert.equal(s.onLog, 1);
+  assert.equal(s.sameDay, 1);
+  assert.deepEqual(s.sameDayRows, [{ name: "Avery Quinn", date: "2025-12-02", row: 4 }]);
+});
+
+test("the same-day alert is in Admin Alerts? exactly when the row is same-day", () => {
+  const alert = L.importSameDayAlert();
+  assert.equal(
+    alert,
+    "imported: paper and kiosk shift on the same day; if both are the same shift, remove this imported row with Kiosk admin > Remove a shift…",
+  );
+  assert.match(read("apps-script/Admin.js"), /\.addItem\("Remove a shift…"/);
+  const N = L.logHeaderNames();
+  const p = plan(SOURCE_ROWS);
+  const byRow = (row) => p.toImport.find((i) => i.sourceRow === row);
+  const matched = byRow(2);
+  assert.equal(plain(L.importCells({ ...matched, sameDay: true }, ""))[N.alerts], alert);
+  assert.equal(N.alerts in plain(L.importCells({ ...matched, sameDay: false }, "")), false);
+  assert.equal(
+    plain(L.importCells(byRow(6), ""))[N.alerts],
+    "imported: no Volunteer Profiles match for this name; correct this row on the Log, not in the old sheet",
+  );
+  assert.equal(
+    plain(L.importCells(byRow(4), ""))[N.alerts],
+    "imported: name matches 2 Volunteer Profiles rows; correct this row on the Log, not in the old sheet",
+  );
+});
+
+test("Flags rows: one per same-day row, beside the unmatched names, in Log row order", () => {
+  const p = plan([
+    ["2025-12-02", "Casey", "Lindqvist", 2, "", ""], // unmatched, first row
+    ["2025-12-02", "Avery", "Quinn", 3, "", ""], // same day
+    ["2025-12-03", "Casey", "Lindqvist", 2, "", ""], // unmatched, second row
+    ["2025-12-03", "Blake", "Morrow", 1, "", ""], // matched, not same day
+    ["2025-12-04", "Blake", "Morrow", 4, "", ""], // same day
+  ]);
+  const items = p.toImport.map((item, i) => ({ ...item, sameDay: [1, 4].includes(i) }));
+  const written = items.map((item, i) => ({ item, row: 40 + i }));
+  const flagged = new Set();
+  const counts = L.importUnmatchedCounts(items);
+  const rows = plain(L.importFlagRows(written, counts, flagged, NOW));
+  const F = L.flagHeaderNames();
+  assert.deepEqual(
+    rows.map((r) => [r[F.name], r[F.logRow]]),
+    [
+      ["Casey Lindqvist", 40],
+      ["Avery Quinn", 41],
+      ["Blake Morrow", 44],
+    ],
+  );
+  assert.deepEqual(rows[1], {
+    [F.date]: "2025-12-02",
+    [F.name]: "Avery Quinn",
+    [F.shiftId]: items[1].shiftId,
+    [F.reason]: L.importSameDayAlert(),
+    [F.raisedAt]: NOW,
+    [F.reviewed]: false,
+    [F.source]: "import",
+    [F.logRow]: 41,
+  });
+  assert.equal(rows[1][F.source], L.flagSources().import);
+  // flagged holds the unmatched name keys only.
+  assert.deepEqual([...flagged], ["casey|lindqvist"]);
+});
+
+test("the block's log line", () => {
+  const result = { written: new Array(250), sameDay: 4, ledgerAdded: 2 };
+  assert.equal(
+    L.importBlockLog(3, 8, result, 2840),
+    "Import block 3 of 8: 250 rows written, 4 same day, 2 ledger repairs, 2840 ms under the lock",
+  );
+});
+
+// Flags with one used row, then rows that hold only an unticked Reviewed box, as setup
+// leaves them.
+const FLAGS_IN_USE = [
+  FLAG_HEADER,
+  [
+    "2026-11-01",
+    "Someone",
+    "kiosk-0",
+    "arrival differs by 20 min",
+    "",
+    false,
+    "",
+    "",
+    "kiosk check-in",
+    2,
+  ],
+  ...Array.from({ length: 3 }, () => ["", "", "", "", "", false, "", "", "", ""]),
+];
+const kioskRow = (shiftId, token, status, date) => [shiftId, token, status, date];
+
+test("Import brings in a same-day row with its alert and a Flags row under the last used one", () => {
+  const s = server({
+    log: [
+      LOG_HEADER,
+      kioskRow("kiosk-1", "tok-avery", "closed", "2025-12-02"),
+      kioskRow("", "tok-blake", "Open", "2026-02-10 9:00"),
+    ],
+    flags: FLAGS_IN_USE,
+  });
+  const preview = plain(s.ctx.adminImportPreview("k", FORM)).summary;
+  assert.equal(preview.sameDay, 2);
+  assert.deepEqual(preview.sameDayRows, [
+    { name: "Avery Quinn", date: "2025-12-02", row: 2 },
+    { name: "Blake Morrow", date: "2026-02-10", row: 10 },
+  ]);
+  const reply = plain(s.ctx.adminImportRun("k", FORM));
+  assert.equal(reply.imported, 13);
+  assert.equal(reply.sameDay, 2);
+  assert.equal(reply.flags, 7);
+  assert.equal(reply.flagsFailed, 0);
+
+  const log = s.sheets.Log.records();
+  const alert = L.importSameDayAlert();
+  const avery = log[2];
+  assert.equal(avery["Volunteer Name"], "Avery Quinn");
+  assert.equal(avery.Date, "2025-12-02");
+  assert.equal(avery["Admin Alerts?"], alert);
+  const blake = log.find((r) => r.Date === "2026-02-10" && r["Shift ID"].startsWith("import-"));
+  assert.equal(blake["Admin Alerts?"], alert);
+  // Blake on 2025-12-02 has no kiosk shift that day.
+  const otherBlake = log.find(
+    (r) => r.Date === "2025-12-02" && r["Volunteer Name"] === "Blake Morrow",
+  );
+  assert.equal(otherBlake["Admin Alerts?"], "");
+  assert.equal(log.filter((r) => r["Admin Alerts?"] === alert).length, 2);
+
+  // The new rows start right under the last used Flags row, over the unticked boxes.
+  const flags = s.sheets.Flags.records();
+  assert.equal(flags[0]["Shift ID"], "kiosk-0");
+  assert.deepEqual(
+    flags.slice(1).map((f) => [f["Volunteer Name"], f["Log Row"]]),
+    [
+      ["Avery Quinn", 4],
+      ["Jordan Vale", 6],
+      ["Kit", 8],
+      ["Casey Lindqvist", 9],
+      ["Lee / Max Fenn", 11],
+      ["Blake Morrow", 12],
+      ["R. Tamsin", 16],
+    ],
+  );
+  assert.equal(s.sheets.Flags.getLastRow(), 9);
+  const same = flags[1];
+  assert.equal(same.Reason, alert);
+  assert.equal(same.Date, "2025-12-02");
+  assert.equal(same["Shift ID"], avery["Shift ID"]);
+  assert.equal(same.Source, "import");
+  assert.equal(same.Reviewed, false);
+  assert.equal(same["Raised At"].getTime(), NOW);
+  assert.equal(s.sheets.Log.rows[same["Log Row"] - 1][0], avery["Shift ID"]);
+
+  // Again: nothing written, and no second flag.
+  const ledger = s.sheets["Import ledger"];
+  const before = JSON.stringify([s.sheets.Log.rows, ledger.rows, s.sheets.Flags.rows]);
+  const again = plain(s.ctx.adminImportRun("k", FORM));
+  assert.equal(again.imported, 0);
+  assert.equal(again.flags, 0);
+  assert.equal(again.sameDay, 0);
+  assert.equal(JSON.stringify([s.sheets.Log.rows, ledger.rows, s.sheets.Flags.rows]), before);
+});
+
+test("the ledger repair path writes no Flags row", () => {
+  const s = server({ log: [LOG_HEADER, kioskRow("kiosk-1", "tok-avery", "closed", "2025-12-02")] });
+  assert.equal(plain(s.ctx.adminImportRun("k", FORM)).sameDay, 1);
+  const ledger = s.sheets["Import ledger"];
+  // Avery's same-day line, and the next three, are lost.
+  ledger.rows.splice(1, 4);
+  const flagsBefore = JSON.stringify(s.sheets.Flags.rows);
+  const reply = plain(s.ctx.adminImportRun("k", FORM));
+  assert.equal(reply.imported, 0);
+  assert.equal(reply.ledgerAdded, 4);
+  assert.equal(reply.flags, 0);
+  assert.equal(reply.sameDay, 0);
+  assert.equal(JSON.stringify(s.sheets.Flags.rows), flagsBefore);
+});
+
+/** Source rows for Avery Quinn on n days from 2025-01-01, one row a day. */
+const averyDays = (n) =>
+  Array.from({ length: n }, (_, i) => {
+    const date = new Date(Date.UTC(2025, 0, 1 + i)).toISOString().slice(0, 10);
+    return [date, "Avery", "Quinn", 2, "", ""];
+  });
+
+test("each block looks at the Log again: a kiosk shift added between blocks is seen by the next", () => {
+  const rows = averyDays(251);
+  const first = rows[0][0];
+  const last = rows[250][0];
+  let s;
+  s = server({
+    source: [SOURCE_HEADER, ...rows],
+    lock: (n) => {
+      // Before the second block: kiosk shifts on the first item's day and the last item's.
+      if (n === 2) {
+        s.sheets.Log.rows.push(kioskRow("kiosk-a", "tok-avery", "closed", first));
+        s.sheets.Log.rows.push(kioskRow("kiosk-b", "tok-avery", "closed", last));
+      }
+      return true;
+    },
+  });
+  assert.equal(s.ctx.importBlockSize(), 250);
+  const reply = plain(s.ctx.adminImportRun("k", FORM));
+  assert.equal(reply.done, true);
+  assert.equal(reply.imported, 251);
+  assert.equal(reply.summary.sameDay, 0);
+  assert.equal(reply.sameDay, 1);
+  assert.equal(reply.flags, 1);
+  const flags = s.sheets.Flags.records();
+  assert.equal(flags.length, 1);
+  assert.equal(flags[0].Date, last);
+  const log = s.sheets.Log.records();
+  const imported = (date) =>
+    log.find((r) => r.Date === date && r["Shift ID"].startsWith("import-"));
+  assert.equal(imported(first)["Admin Alerts?"], "");
+  assert.equal(imported(last)["Admin Alerts?"], L.importSameDayAlert());
+  // One log line per block.
+  assert.deepEqual(s.logs, [
+    "Import block 1 of 2: 250 rows written, 0 same day, 0 ledger repairs, 0 ms under the lock",
+    "Import block 2 of 2: 1 rows written, 1 same day, 0 ledger repairs, 0 ms under the lock",
+  ]);
+});
+
+test("a block reads the Log the same number of times for 1 row as for 3", () => {
+  const reads = (n) => {
+    const s = server({
+      source: [SOURCE_HEADER, ...averyDays(n)],
+      log: [LOG_HEADER, kioskRow("kiosk-1", "tok-avery", "closed", "2025-01-02")],
+    });
+    const reply = plain(s.ctx.adminImportRun("k", FORM));
+    assert.equal(reply.imported, n);
+    assert.equal(reply.sameDay, n >= 2 ? 1 : 0);
+    assert.equal(s.logs.length, 1);
+    return s.sheets.Log.valueReads;
+  };
+  assert.equal(reads(1), reads(3));
+});
+
+test("a shift on Removed shifts gives no flag", () => {
+  const s = server({
+    removed: [
+      ["Removed At", "Removed By", "Shift ID", "User Token", "Status", "Date"],
+      ["", "JP", "kiosk-1", "tok-avery", "closed", "2025-12-02"],
+    ],
+  });
+  const reply = plain(s.ctx.adminImportRun("k", FORM));
+  assert.equal(reply.sameDay, 0);
+  assert.equal(reply.flags, 5);
+  assert.ok(!s.sheets.Log.records().some((r) => r["Admin Alerts?"] === L.importSameDayAlert()));
+});
+
+test("a Flags tab that can't be written still leaves the same-day alert on the Log", () => {
+  const s = server({
+    flags: null,
+    log: [LOG_HEADER, kioskRow("kiosk-1", "tok-avery", "closed", "2025-12-02")],
+  });
+  const reply = plain(s.ctx.adminImportRun("k", FORM));
+  assert.equal(reply.imported, 13);
+  assert.equal(reply.sameDay, 1);
+  assert.equal(reply.flags, 0);
+  assert.equal(reply.flagsFailed, 6);
+  assert.equal(s.sheets["Import ledger"].getLastRow(), 14);
+  assert.equal(s.sheets.Log.records()[1]["Admin Alerts?"], L.importSameDayAlert());
+  assert.match(s.errors.join("\n"), /Flags: not copied/);
+});
+
+test("a same-day row spelt differently in the old sheet is named as on Profiles", () => {
+  const s = server({
+    source: [SOURCE_HEADER, ["2025-12-02", "avery ", " QUINN", 3, "2025.12", "C3"]],
+    log: [LOG_HEADER, kioskRow("kiosk-1", "tok-avery", "closed", "2025-12-02")],
+  });
+  const preview = plain(s.ctx.adminImportPreview("k", FORM)).summary;
+  assert.equal(preview.matched, 1);
+  assert.deepEqual(preview.sameDayRows, [{ name: "Avery Quinn", date: "2025-12-02", row: 2 }]);
+  const reply = plain(s.ctx.adminImportRun("k", FORM));
+  assert.equal(reply.imported, 1);
+  assert.equal(reply.sameDay, 1);
+  assert.equal(reply.flags, 1);
+  const row = s.sheets.Log.records()[1];
+  assert.equal(row["Volunteer Name"], "Avery Quinn");
+  assert.equal(row["Admin Alerts?"], L.importSameDayAlert());
+  const flags = s.sheets.Flags.records();
+  assert.equal(flags.length, 1);
+  assert.equal(flags[0]["Volunteer Name"], "Avery Quinn");
+  assert.equal(flags[0].Reason, L.importSameDayAlert());
+  assert.equal(flags[0]["Shift ID"], row["Shift ID"]);
+});
+
+test("a Log Date cell holding a date value counts on its Central day", () => {
+  // 21:00 Central on 2025-12-02, which is already 2025-12-03 in UTC.
+  const evening = new Date("2025-12-03T03:00:00Z");
+  const s = server({ log: [LOG_HEADER, kioskRow("kiosk-1", "tok-avery", "closed", evening)] });
+  const preview = plain(s.ctx.adminImportPreview("k", FORM)).summary;
+  assert.equal(preview.sameDay, 1);
+  assert.deepEqual(preview.sameDayRows, [{ name: "Avery Quinn", date: "2025-12-02", row: 2 }]);
+  const reply = plain(s.ctx.adminImportRun("k", FORM));
+  assert.equal(reply.sameDay, 1);
+  const flags = s.sheets.Flags.records().filter((f) => f.Reason === L.importSameDayAlert());
+  assert.deepEqual(
+    flags.map((f) => [f.Date, f["Volunteer Name"]]),
+    [["2025-12-02", "Avery Quinn"]],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The missed check-out notice skips imported rows
+
+test("the missed check-out notice never counts an imported row", () => {
+  const HOUR = 3600000;
+  const day = (date, hour) =>
+    Date.parse(date + "T" + String(hour + 6).padStart(2, "0") + ":00:00Z");
+  const kiosk = (row, date, outBy) => ({
+    row,
+    shiftId: "kiosk-" + row,
+    token: "tok-avery",
+    dateText: date,
+    recordedInMs: day(date, 9),
+    statedInMs: day(date, 9),
+    status: "closed",
+    outBy,
+  });
+  const paper = (row, date, shiftId = "import-0123456789abcdef") => ({
+    row,
+    shiftId,
+    token: "tok-avery",
+    dateText: date,
+    recordedInMs: NaN,
+    statedInMs: NaN,
+    status: "closed",
+    outBy: "import",
+  });
+  // Every row is dated on or after the launch date and not after today, so the date filter
+  // keeps them all and only the import mark can leave a row out.
+  const dates = ["2026-11-09", "2026-11-10"];
+  dates.forEach((d) => assert.ok(LAUNCH <= d && d <= TODAY, d));
+  const missed = (entries) => L.missedSignOut(entries, "tok-avery", LAUNCH);
+  const asKiosk = (e) => ({ ...e, shiftId: "kiosk-" + e.row });
+
+  // The only row on or after launch is an imported one.
+  const only = [paper(5, "2026-11-10")];
+  assert.equal(missed(only), false);
+  assert.equal(missed(only.map(asKiosk)), true, "the same row without the import mark");
+  // Any capitals.
+  assert.equal(missed([paper(5, "2026-11-10", " IMPORT-ABC")]), false);
+
+  // A missed kiosk row, then a later imported row: the notice shows.
+  assert.equal(missed([kiosk(2, "2026-11-09", "auto-close"), paper(5, "2026-11-10")]), true);
+
+  // A kiosk row checked out at the tablet, then a later imported row: no notice.
+  const later = [kiosk(2, "2026-11-09", "kiosk"), paper(5, "2026-11-10")];
+  assert.equal(missed(later), false);
+  assert.equal(missed(later.map(asKiosk)), true, "the same rows without the import mark");
+
+  // Both on the same day: the imported row has no times, so it sorts last that day.
+  const sameDay = [kiosk(2, "2026-11-10", "kiosk"), paper(5, "2026-11-10")];
+  assert.equal(sameDay.slice().sort(L.reportRowOrder).at(-1).row, 5);
+  assert.equal(missed(sameDay), false);
+  assert.equal(missed(sameDay.map(asKiosk)), true, "the same rows without the import mark");
+
+  // Through decideCheckIn, as the tablet calls it.
+  const checkIn = (entries) =>
+    L.decideCheckIn({
+      volunteers: [VOLUNTEERS[0]],
+      id: "a1",
+      digits: null,
+      entries,
+      todayDate: TODAY,
+      nowMs: NOW,
+      windowMs: 12 * HOUR,
+      arrivedMs: null,
+      arrivedDate: "",
+      flagMinutes: 15,
+      launchDate: LAUNCH,
+    }).missedSignOut;
+  assert.equal(checkIn(sameDay), false);
+  assert.equal(checkIn(only), false);
+  assert.equal(checkIn([kiosk(2, "2026-11-09", "auto-close"), paper(5, "2026-11-10")]), true);
+  assert.equal(checkIn(sameDay.map(asKiosk)), true);
 });

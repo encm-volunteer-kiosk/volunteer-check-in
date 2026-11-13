@@ -1,6 +1,6 @@
 // Tests for the staff help in apps-script/Logic.js: the Settings tab's What it does
 // sentences, the Log and Flags header notes and the rule that decides when the kiosk may
-// write one, and the How to tab's text. Logic.js is loaded as it is; Admin.js and the
+// write one, the How to tab's text, and the Kiosk contact line. Logic.js is loaded as it is; Admin.js and the
 // other server files are read as text, so the menu names and the settings the code writes
 // are checked against the code itself.
 //
@@ -11,7 +11,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import vm from "node:vm";
 
 const root = new URL("../", import.meta.url);
@@ -36,10 +36,18 @@ const logNotes = () => plain(L.logHeaderNotes());
 const flagNotes = () => plain(L.flagHeaderNotes());
 const currentNoteTexts = () => [...values(L.logHeaderNotes()), ...values(L.flagHeaderNotes())];
 
-/** Every text staff read: How to rows, Settings sentences and lines, header notes, warnings. */
+/**
+ * Every text staff read: How to rows, Settings sentences and lines, header notes, warnings.
+ * The contact cell's text is "" (it is a formula), so its two texts stand in for it, the
+ * prefix with an example contact after it.
+ */
 function staffTexts() {
+  const contact = plain(L.howToContactTexts());
   return [
     ...plain(L.howToRows()).map((r) => r.text),
+    contact.blank,
+    contact.prefix + "Pat Example",
+    L.kioskContactNote("Pat Example"),
     ...values(L.settingsDescriptions()),
     L.settingsDescriptionHeader(),
     ...plain(L.settingsDescriptionColumn(["Kiosk access code", "Kiosk access code", "nope"])),
@@ -382,4 +390,157 @@ test("staff are sent to Data > Change view for the saved Flags view, the menu Sh
   const rows = plain(L.howToRows()).map((r) => r.text);
   assert.ok(rows.some((t) => t.includes("Data > Change view > Flags: Unreviewed")));
   assert.ok(!rows.some((t) => /Data > Filter views/.test(t)));
+});
+
+// ---------------------------------------------------------------------------
+// The Kiosk contact
+
+const CONTACT_SENTENCE =
+  "Who to ask when the kiosk or this sheet isn't working, such as a name and an email or phone: the How to tab shows it, and so does the Kiosk admin menu when something goes wrong; while it's blank, the How to tab says to ask whoever looks after the kiosk.";
+const BLANK_TEXT =
+  "If the kiosk or this sheet isn't working and this tab doesn't help, ask whoever looks after the kiosk. To name them here, type their name and an email or phone in Kiosk contact on the Settings tab.";
+const PREFIX = "If the kiosk or this sheet isn't working and this tab doesn't help, contact: ";
+
+test("Kiosk contact is the last Settings row, blank by default, with its sentence", () => {
+  const rows = plain(L.settingsDefaults("2026-11-13"));
+  assert.equal(L.kioskContactSetting(), "Kiosk contact");
+  assert.deepEqual(rows[rows.length - 1], ["Kiosk contact", ""]);
+  assert.equal(rows.filter((r) => r[0] === "Kiosk contact").length, 1);
+  assert.equal(plain(L.settingsDescriptions())["Kiosk contact"], CONTACT_SENTENCE);
+});
+
+test("How to opens with Problems with the kiosk: one contact line, styled like text", () => {
+  const sections = plain(L.howToSections());
+  assert.equal(sections[0].title, "Problems with the kiosk");
+  assert.deepEqual(sections[0].lines, [
+    { kind: "contact", text: "", formula: L.kioskContactFormula() },
+  ]);
+  assert.equal(sections[1].title, "Before you start");
+  const styles = plain(L.howToStyles());
+  assert.deepEqual(styles.contact, styles.text);
+  // Only the contact row carries a formula; every row has a kind and a text.
+  const rows = plain(L.howToRows());
+  assert.deepEqual(
+    rows.filter((r) => "formula" in r).map((r) => r.kind),
+    ["contact"],
+  );
+  rows.forEach((r) => {
+    const keys = Object.keys(r).sort();
+    assert.deepEqual(keys, r.kind === "contact" ? ["formula", "kind", "text"] : ["kind", "text"]);
+  });
+  assert.deepEqual(rows.slice(3, 6), [
+    { kind: "blank", text: "" },
+    { kind: "heading", text: "Problems with the kiosk" },
+    { kind: "contact", text: "", formula: L.kioskContactFormula() },
+  ]);
+});
+
+const TRIM = "^[\\t\\n\\x{0B}\\f\\r\\p{Z}\\x{FEFF}]+|[\\t\\n\\x{0B}\\f\\r\\p{Z}\\x{FEFF}]+$";
+
+test("the How to contact formula reads the Settings row live, by name, and falls back to the blank text", () => {
+  assert.deepEqual(plain(L.howToContactTexts()), { blank: BLANK_TEXT, prefix: PREFIX });
+  assert.equal(L.kioskContactTrimPattern(), TRIM);
+  const t = (x) => "REGEXREPLACE(" + x + '&"", "' + TRIM + '", "")';
+  const want =
+    "=LET(contact, IFERROR(" +
+    t(
+      "INDEX(Settings!B:B, MATCH(1, ARRAYFORMULA(EXACT(" +
+        t("Settings!A:A") +
+        ', "Kiosk contact")*(ROW(Settings!A:A)>1)), 0))',
+    ) +
+    ', ""), IF(contact = "", "' +
+    BLANK_TEXT +
+    '", "' +
+    PREFIX +
+    '" & contact))';
+  assert.equal(L.kioskContactFormula(), want);
+  const f = L.kioskContactFormula();
+  ["Settings!A:A", "Settings!B:B", '"Kiosk contact"', "EXACT(", "IFERROR("].forEach((part) =>
+    assert.ok(f.includes(part), part),
+  );
+  // The formula's tab is the tab the server reads Settings from.
+  const sheets = read("apps-script/Sheets.js");
+  assert.equal(/const SETTINGS_TAB = "([^"]+)"/.exec(sheets)[1], "Settings");
+  // Neither text needs a doubled quote, so the formula holds them as they are.
+  assert.ok(!BLANK_TEXT.includes('"') && !PREFIX.includes('"'));
+});
+
+/**
+ * The trim pattern as JavaScript runs it. The pattern is written for Sheets (RE2); it uses
+ * only escapes both engines read the same way, except \x{...}, which is \u{...} here.
+ */
+function sheetsTrim(text) {
+  const pattern = L.kioskContactTrimPattern();
+  // Every piece is one both engines know: anchors, a class, +, |, and these escapes.
+  assert.match(pattern, /^(?:[\^$+|[\]]|\\[tnfr]|\\x\{[0-9A-F]+\}|\\p\{Z\})+$/);
+  const js = new RegExp(pattern.replace(/\\x\{([0-9A-F]+)\}/g, "\\u{$1}"), "gu");
+  return String(text).replace(js, "");
+}
+
+test("How to and the server agree on a blank contact: the formula trims what cellString trims", () => {
+  // Every character in the Basic Multilingual Plane, alone and around a name.
+  for (let code = 0; code <= 0xffff; code++) {
+    if (code >= 0xd800 && code <= 0xdfff) continue;
+    const ch = String.fromCharCode(code);
+    assert.equal(sheetsTrim(ch), L.cellString(ch), "U+" + code.toString(16));
+    const around = ch + "Pat Example" + ch;
+    assert.equal(sheetsTrim(around), L.cellString(around), "U+" + code.toString(16));
+  }
+  const values = [
+    "",
+    " ",
+    "\n",
+    " \n ",
+    "\n\n",
+    "\r\n",
+    "\t",
+    "\u00a0",
+    "\u2028",
+    "\ufeff",
+    "Pat Example\n",
+    " Pat Example, pat@example.org ",
+    "Pat Example\n 555-0100 \n",
+    "Pat  Example",
+    "Kiosk contact\u00a0",
+  ];
+  values.forEach((v) => {
+    assert.equal(sheetsTrim(v), L.cellString(v), JSON.stringify(v));
+    // Blank on the How to tab exactly when the windows add no contact line.
+    assert.equal(sheetsTrim(v) === "", L.kioskContactNote(v) === "", JSON.stringify(v));
+  });
+  // A value of only line breaks and spaces is blank on both.
+  assert.equal(sheetsTrim(" \n \n"), "");
+  assert.equal(L.kioskContactNote(" \n \n"), "");
+  // Inner spaces are kept as typed, as readSettings_ keeps them.
+  assert.equal(sheetsTrim(" Pat  Example "), "Pat  Example");
+});
+
+test("kioskContactNote: the value's lines trimmed and joined, after the contact words", () => {
+  assert.equal(L.kioskContactNote(""), "");
+  assert.equal(L.kioskContactNote(undefined), "");
+  assert.equal(L.kioskContactNote("  \n "), "");
+  assert.equal(
+    L.kioskContactNote("Pat Example, pat@example.org"),
+    "If this keeps happening, contact: Pat Example, pat@example.org",
+  );
+  assert.ok(L.kioskContactNote("Pat Example\n 555-0100 \n").endsWith("Pat Example, 555-0100"));
+  assert.equal(
+    L.kioskContactNote("\nPat Example\r\n\n555-0100"),
+    "If this keeps happening, contact: Pat Example, 555-0100",
+  );
+  assert.equal(L.withKioskContact("Boom.", ""), "Boom.");
+  assert.equal(
+    L.withKioskContact("Boom.", L.kioskContactNote("Pat Example")),
+    "Boom. If this keeps happening, contact: Pat Example",
+  );
+});
+
+test("the tablet never gets the contact: the web app and the page don't name it", () => {
+  const tablet = [
+    read("apps-script/Api.js"),
+    ...readdirSync(new URL("src/", root))
+      .filter((f) => /\.(ts|tsx)$/.test(f))
+      .map((f) => read("src/" + f)),
+  ];
+  tablet.forEach((src) => assert.ok(!/kioskContact|Kiosk contact/.test(src)));
 });

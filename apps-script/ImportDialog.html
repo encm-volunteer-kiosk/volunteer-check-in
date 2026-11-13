@@ -5,10 +5,11 @@
     <meta charset="utf-8" />
     <!--
       The Import past hours dialog, served by openImportDialog (Import.js) as a template.
-      The server puts the dialog key and the Settings prefill into the body's data
-      attributes; nothing else on the page is filled in by the server. Plain HTML and
-      JavaScript, no build step. Preview writes nothing; Import works the list out again on
-      the server and checks the initials there.
+      The server puts the dialog key, the Settings prefill and the Kiosk contact line into
+      the body's data attributes, through the escaping print scriptlet; nothing else on the
+      page is filled in by the server. Plain HTML and JavaScript, no build step. Preview
+      writes nothing; Import works the list out again on the server and checks the initials
+      there.
     -->
     <style>
       body {
@@ -115,7 +116,12 @@
       }
     </style>
   </head>
-  <body data-key="<?= key ?>" data-file="<?= fileId ?>" data-tab="<?= tab ?>">
+  <body
+    data-key="<?= key ?>"
+    data-file="<?= fileId ?>"
+    data-tab="<?= tab ?>"
+    data-contact="<?= contactNote ?>"
+  >
     <form id="form">
       <label for="file">Spreadsheet</label>
       <input id="file" type="text" autocomplete="off" />
@@ -132,7 +138,10 @@
       <input id="initials" class="initials" type="text" maxlength="10" autocomplete="off" />
       <div class="hint">
         Preview first: it writes nothing. Import adds the rows to the Log and can be run again; it
-        never brings in the same shift twice. Fix an imported row on the Log, not in the old sheet.
+        brings in only new rows, as long as rows already imported are left as they are in the old
+        sheet and new rows go at the bottom. Rows from any date come in. A row for a day the
+        volunteer also has a kiosk shift comes in flagged, so you can check it isn't counted twice.
+        Fix an imported row on the Log, not in the old sheet.
       </div>
     </form>
 
@@ -147,6 +156,9 @@
 
     <script>
       const KEY = document.body.dataset.key;
+      // Who to ask, added to an error: whatever reaches the failure handler and a reply
+      // with no message. A refusal's own message is shown as it is.
+      const CONTACT = document.body.dataset.contact || "";
       const $ = (id) => document.getElementById(id);
       let busy = false;
       // The file and tab the last preview read; Import is offered only for those.
@@ -159,6 +171,10 @@
         const box = $("message");
         box.textContent = text;
         box.className = "message " + (text ? kind : "");
+      }
+
+      function failed(text) {
+        show(CONTACT ? text + " " + CONTACT : text, "error");
       }
 
       function sameAsPreviewed() {
@@ -181,12 +197,12 @@
           .withSuccessHandler((reply) => {
             setBusy(false);
             if (reply && reply.ok) onOk(reply);
-            else
-              show((reply && reply.message) || "Something went wrong. Please try again.", "error");
+            else if (reply && reply.message) show(reply.message, "error");
+            else failed("Something went wrong. Please try again.");
           })
           .withFailureHandler((error) => {
             setBusy(false);
-            show((error && error.message) || String(error), "error");
+            failed((error && error.message) || String(error));
           })
           [name](KEY, ...args);
       }
@@ -230,6 +246,7 @@
             ["Rows read", s.rowsRead],
             ["To import", s.toImport],
             ["  matched to Volunteer Profiles", s.matched],
+            ["    of these, same day as a kiosk shift (imported and flagged)", s.sameDay],
             ["  not matched (imported and flagged)", s.unmatched],
             ["Hours to add", hoursText(s.hours)],
             ["Already imported (in the Import ledger)", s.alreadyImported],
@@ -243,6 +260,14 @@
           s.unmatchedNames.forEach((n) => {
             const why = n.matches > 1 ? ", matches " + n.matches + " Profiles rows" : "";
             list.append(el("li", n.name + " (" + plural(n.rows, "row", "rows") + why + ")"));
+          });
+          box.append(list);
+        }
+        if (s.sameDayRows.length) {
+          box.append(el("h3", "Same day as a kiosk shift (imported and flagged)"));
+          const list = el("ul");
+          s.sameDayRows.forEach((r) => {
+            list.append(el("li", r.name + ", " + r.date + " (source row " + r.row + ")"));
           });
           box.append(list);
         }
@@ -307,6 +332,11 @@
             " not matched), " +
             hoursText(reply.hours) +
             " hours.";
+          if (reply.sameDay > 0)
+            text +=
+              " " +
+              plural(reply.sameDay, "row is", "rows are") +
+              " on the same day as a kiosk shift and flagged.";
           if (reply.ledgerAdded)
             text +=
               " Added " +

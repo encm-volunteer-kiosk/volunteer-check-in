@@ -192,14 +192,17 @@ function runHoursRefresh(e) {
 
 /**
  * Kiosk admin > Check the Log now: runs the Log check (logCheck_) on a fresh read of the
- * Log and shows what it found in an alert. Opens no dialog.
+ * Log and shows what it found in an alert; a failed run's alert ends with the Kiosk
+ * contact line. Opens no dialog.
  */
 function checkLogNow() {
   requireEditorRun_();
   const ui = SpreadsheetApp.getUi();
   const result = logCheck_(null, new Date());
   console.log(logCheckRunLog_("menu", result));
-  ui.alert(logCheckMessage(result));
+  // Only a failed run is an error (withKioskContact, Logic.js, has the rule).
+  const note = result.kind === "failed" ? kioskContactNote(kioskContact_()) : "";
+  ui.alert(withKioskContact(logCheckMessage(result), note));
 }
 
 /**
