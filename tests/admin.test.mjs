@@ -23,10 +23,16 @@ import vm from "node:vm";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
-const SERVER_FILES = ["Logic.js", "Sheets.js", "Api.js", "Admin.js", "Reports.js", "Jobs.js"].map(
-  (f) => [f, read("apps-script/" + f)],
-);
-const GUARDED_FILES = ["Admin.js", "Reports.js", "Jobs.js"].map((f) => [
+const SERVER_FILES = [
+  "Logic.js",
+  "Sheets.js",
+  "Api.js",
+  "Admin.js",
+  "Reports.js",
+  "Jobs.js",
+  "Import.js",
+].map((f) => [f, read("apps-script/" + f)]);
+const GUARDED_FILES = ["Admin.js", "Reports.js", "Jobs.js", "Import.js"].map((f) => [
   f,
   read("apps-script/" + f),
 ]);
@@ -414,6 +420,25 @@ test("every function the report dialog or menu names is public; every writer is 
   ]);
 });
 
+test("ImportDialog.html calls only keyed functions; Import.js's other public name is its opener", () => {
+  const html = read("apps-script/ImportDialog.html");
+  const called = [...html.matchAll(/call\("(\w+)"/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(called)].sort(), ["adminImportPreview", "adminImportRun"]);
+  for (const name of called) assert.ok(KEYED.includes(name), name);
+  // Every server call goes through call(), which passes the key first.
+  assert.equal(html.match(/google\.script\.run/g).length, 1);
+  assert.match(html, /\[name\]\(KEY, \.\.\.args\)/);
+  const source = GUARDED_FILES.find(([f]) => f === "Import.js")[1];
+  const importPublic = [...source.matchAll(/^function\s+([\w$]+)\s*\(/gm)]
+    .map((m) => m[1])
+    .filter((n) => !n.endsWith("_"));
+  assert.deepEqual(importPublic.sort(), [
+    "adminImportPreview",
+    "adminImportRun",
+    "openImportDialog",
+  ]);
+});
+
 test("every public admin function refuses a caller who isn't the person at the sheet, before anything else", () => {
   const callers = [
     { active: "" },
@@ -513,6 +538,7 @@ test("onOpen only adds the menu, and its items name the openers", () => {
     ["Add a shift…", "openAddShiftDialog"],
     ["Fix a sign-out…", "openFixSignOutDialog"],
     ["Monthly report…", "openMonthlyReportDialog"],
+    ["Import past hours…", "openImportDialog"],
   ]);
   for (const [, fn] of menu.slice(1)) assert.ok(PUBLIC.filter(isOpener).includes(fn), fn);
   // From the web app it throws at getUi and does nothing else.
