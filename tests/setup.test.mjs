@@ -95,6 +95,86 @@ class FakeRange {
     );
     return this;
   }
+  each(fn) {
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) fn(this.row + r, this.col + c, r, c);
+    }
+  }
+  clearContent() {
+    this.each((r, c) => this.sheet.set(r, c, ""));
+    return this;
+  }
+  getNotes() {
+    const out = [];
+    for (let r = 0; r < this.rows; r++) {
+      const line = [];
+      for (let c = 0; c < this.cols; c++) line.push(this.sheet.note(this.row + r, this.col + c));
+      out.push(line);
+    }
+    return out;
+  }
+  setNote(note) {
+    assert.equal(this.rows * this.cols, 1, "setNote on one cell");
+    this.sheet.noteWrites.push([this.row, this.col, note]);
+    const key = this.row + "," + this.col;
+    if (note === "" || note === null) this.sheet.notes.delete(key);
+    else this.sheet.notes.set(key, String(note));
+    return this;
+  }
+  setNotes() {
+    assert.fail("the kiosk writes header notes one changed cell at a time");
+  }
+  // The per-cell format arrays the How to tab sets, kept by format name.
+  setStyles(name, values) {
+    assert.equal(values.length, this.rows, name + " row count");
+    this.each((r, c, i, j) => this.sheet.styles.set(name + " " + r + "," + c, values[i][j]));
+    return this;
+  }
+  setFontWeights(v) {
+    return this.setStyles("weight", v);
+  }
+  setFontSizes(v) {
+    return this.setStyles("size", v);
+  }
+  setFontColors(v) {
+    return this.setStyles("colour", v);
+  }
+  setBackgrounds(v) {
+    return this.setStyles("background", v);
+  }
+  setFontStyles(v) {
+    return this.setStyles("style", v);
+  }
+  setWrap(on) {
+    this.sheet.wraps.set(this.a1(), on);
+    return this;
+  }
+  a1() {
+    return this.row + "," + this.col + "," + this.rows + "," + this.cols;
+  }
+  protect() {
+    return this.sheet.addProtection("RANGE", this.a1());
+  }
+}
+
+class FakeProtection {
+  constructor(sheet, type, where) {
+    Object.assign(this, { sheet, type, where, description: "", warningOnly: false });
+  }
+  setDescription(d) {
+    this.description = d;
+    return this;
+  }
+  getDescription() {
+    return this.description;
+  }
+  setWarningOnly(w) {
+    this.warningOnly = w;
+    return this;
+  }
+  isWarningOnly() {
+    return this.warningOnly;
+  }
 }
 
 class FakeSheet {
@@ -112,6 +192,48 @@ class FakeSheet {
     this.cellLook = new Map();
     this.dims = new Map();
     this.tabColor = null;
+    // Header notes by "row,col", and every setNote call in order.
+    this.notes = new Map();
+    this.noteWrites = [];
+    this.protections = [];
+    this.styles = new Map();
+    this.wraps = new Map();
+    this.colWidths = new Map();
+    this.tabColorHex = null;
+  }
+  note(r, c) {
+    return this.notes.has(r + "," + c) ? this.notes.get(r + "," + c) : "";
+  }
+  addProtection(type, where) {
+    const p = new FakeProtection(this, type, where);
+    this.protections.push(p);
+    return p;
+  }
+  protect() {
+    return this.addProtection("SHEET", "sheet");
+  }
+  getProtections(type) {
+    assert.ok(type === "RANGE" || type === "SHEET", "a protection type: " + type);
+    return this.protections.filter((p) => p.type === type);
+  }
+  clear() {
+    this.values.clear();
+    this.formats.clear();
+    this.styles.clear();
+    this.wraps.clear();
+  }
+  insertRowsAfter(after, count) {
+    assert.equal(after, this.maxRows, "rows are only added at the end");
+    this.maxRows += count;
+  }
+  setColumnWidth(col, px) {
+    this.colWidths.set(col, px);
+  }
+  setTabColor(hex) {
+    this.tabColorHex = hex;
+  }
+  addDeveloperMetadata(key, value) {
+    this.ss.metadata.push({ key, value, sheet: this });
   }
   get(r, c) {
     return this.values.has(r + "," + c) ? this.values.get(r + "," + c) : "";
@@ -156,9 +278,13 @@ class FakeSheet {
   }
   getRange(row, col, rows = 1, cols = 1) {
     if (typeof row === "string") {
-      // Only whole-column A1 ranges such as "A:B" are used, for formats.
-      const [a, b] = row.split(":").map((s) => s.charCodeAt(0) - 64);
-      return new FakeRange(this, 1, a, this.maxRows, b - a + 1);
+      // Only column A1 ranges such as "A:B" or "C2:C" are used.
+      const m = /^([A-Z])(\d*):([A-Z])$/.exec(row);
+      assert.ok(m, "an A1 range the stand-in knows: " + row);
+      const a = m[1].charCodeAt(0) - 64;
+      const b = m[3].charCodeAt(0) - 64;
+      const top = m[2] ? Number(m[2]) : 1;
+      return new FakeRange(this, top, a, this.maxRows - top + 1, b - a + 1);
     }
     assert.ok(rows >= 1 && cols >= 1, "a range needs at least one row and column");
     return new FakeRange(this, row, col, rows, cols);
@@ -183,6 +309,12 @@ class FakeSheet {
       cellLook: [...this.cellLook.entries()].sort(),
       dims: [...this.dims.entries()].sort(),
       tabColor: this.tabColor,
+      notes: [...this.notes.entries()].sort(),
+      protections: this.protections.map((p) => [p.type, p.where, p.description, p.warningOnly]),
+      styles: [...this.styles.entries()].sort(),
+      wraps: [...this.wraps.entries()].sort(),
+      colWidths: [...this.colWidths.entries()].sort(),
+      tabColorHex: this.tabColorHex,
     };
   }
 }
@@ -199,6 +331,8 @@ class FakeSpreadsheet {
     this.nextSheetId = 100;
     this.nextViewId = 1;
     this.nextBandingId = 1;
+    // Developer metadata on sheets, as {key, value, sheet}.
+    this.metadata = [];
   }
   getId() {
     return "file-1";
@@ -206,11 +340,44 @@ class FakeSpreadsheet {
   getSheetByName(name) {
     return this.sheets.find((s) => s.name === name) || null;
   }
-  insertSheet(name) {
-    assert.equal(this.getSheetByName(name), null, "a tab named " + name + " already exists");
+  insertSheet(name, index) {
+    // Sheets refuses a name that differs from a tab's only in capitals.
+    assert.ok(
+      !this.sheets.some((s) => s.name.toLowerCase() === name.toLowerCase()),
+      "a tab named " + name + " already exists",
+    );
     const sheet = new FakeSheet(name, 1000, 26, this.nextSheetId++);
-    this.sheets.push(sheet);
+    sheet.ss = this;
+    if (index === undefined) this.sheets.push(sheet);
+    else this.sheets.splice(index, 0, sheet);
     return sheet;
+  }
+  getSheets() {
+    return [...this.sheets];
+  }
+  deleteSheet(sheet) {
+    this.sheets = this.sheets.filter((s) => s !== sheet);
+    this.metadata = this.metadata.filter((m) => m.sheet !== sheet);
+  }
+  moveSheet(sheet, index) {
+    this.sheets = this.sheets.filter((s) => s !== sheet);
+    this.sheets.splice(index, 0, sheet);
+  }
+  createDeveloperMetadataFinder() {
+    const ss = this;
+    let key = null;
+    const finder = {
+      withKey: (k) => ((key = k), finder),
+      find: () =>
+        ss.metadata
+          .filter((m) => m.key === key)
+          .map((m) => ({
+            getKey: () => m.key,
+            getValue: () => m.value,
+            getLocation: () => ({ getSheet: () => m.sheet }),
+          })),
+    };
+    return finder;
   }
   getSpreadsheetTimeZone() {
     return this.timeZone;
@@ -231,6 +398,7 @@ class FakeSpreadsheet {
         .sort()
         .map(([id, list]) => [id, list.map(({ bandedRangeId, ...b }) => b)]),
       rules: [...this.rules.entries()].sort(),
+      metadata: this.metadata.map((m) => [m.key, m.value, m.sheet.sheetId]),
     };
   }
 }
@@ -367,7 +535,11 @@ function server(ss, opts = {}) {
     return b;
   };
   const ctx = {
-    SpreadsheetApp: { getActiveSpreadsheet: () => ss, newDataValidation: checkbox },
+    SpreadsheetApp: {
+      getActiveSpreadsheet: () => ss,
+      newDataValidation: checkbox,
+      ProtectionType: { RANGE: "RANGE", SHEET: "SHEET" },
+    },
     Session: {
       getActiveUser: () => ({ getEmail: () => OWNER }),
       getEffectiveUser: () => ({ getEmail: () => OWNER }),
@@ -389,6 +561,7 @@ function server(ss, opts = {}) {
 
 function sheetWith(ss, name, rows, maxCols = 26) {
   const sheet = new FakeSheet(name, 1000, maxCols, ss.nextSheetId++);
+  sheet.ss = ss;
   rows.forEach((line, r) => line.forEach((v, c) => sheet.set(r + 1, c + 1, v)));
   ss.sheets.push(sheet);
   return sheet;
@@ -495,15 +668,15 @@ test("on a new spreadsheet Settings gets every default, the check-out flag at 15
   const S = server(ss);
   S.setupSheets();
   const settings = ss.getSheetByName("Settings");
-  assert.deepEqual(settings.row(1), ["Setting", "Value"]);
+  assert.deepEqual(settings.row(1), ["Setting", "Value", "What it does"]);
   const rows = settings.getDataRange().getValues().slice(1);
   assert.equal(rows.length, 19);
   const names = rows.map((r) => r[0]);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
-  assert.deepEqual(
-    rows.find((r) => r[0] === "Check-out flag minutes"),
-    ["Check-out flag minutes", "15"],
-  );
+  assert.deepEqual(rows.find((r) => r[0] === "Check-out flag minutes").slice(0, 2), [
+    "Check-out flag minutes",
+    "15",
+  ]);
 });
 
 test("running setupSheets twice changes nothing", () => {
@@ -523,7 +696,7 @@ test("an old-layout Log is renamed and a new Log started; old rows are left as t
   const before = JSON.stringify(old.values ? [...old.values.entries()].sort() : null);
   const S = server(ss);
   S.setupSheets();
-  assert.deepEqual(ss.tabNames(), ["Log (old layout)", "Settings", "Log", "Flags"]);
+  assert.deepEqual(ss.tabNames(), ["How to", "Log (old layout)", "Settings", "Log", "Flags"]);
   assert.equal(ss.getSheetByName("Log (old layout)"), old);
   assert.equal(JSON.stringify([...old.values.entries()].sort()), before);
   const log = ss.getSheetByName("Log");
@@ -613,7 +786,11 @@ test("existing Settings values are kept and missing rows appended", () => {
   ]);
   const S = server(ss);
   S.setupSheets();
-  const rows = settings.getDataRange().getValues().slice(1);
+  const rows = settings
+    .getDataRange()
+    .getValues()
+    .slice(1)
+    .map((r) => r.slice(0, 2));
   assert.deepEqual(rows[0], ["Kiosk access code", "lettersonlylettersonly"]);
   assert.deepEqual(rows[1], ["Arrival flag minutes", "20"]);
   assert.equal(rows.length, 19);
@@ -652,7 +829,7 @@ test("setupSheets makes the Flags tab: header, formats, checkbox, frozen row and
   const ss = new FakeSpreadsheet();
   const S = server(ss);
   S.setupSheets();
-  assert.deepEqual(ss.tabNames(), ["Log", "Settings", "Flags"]);
+  assert.deepEqual(ss.tabNames(), ["How to", "Log", "Settings", "Flags"]);
   const flags = ss.getSheetByName("Flags");
   assert.deepEqual(flags.row(1), FLAG_HEADERS);
   assert.equal(flags.getLastRow(), 1);
@@ -834,6 +1011,7 @@ test("the palette is the kiosk page's colours, and the tints are light", () => {
     hours: P.teal,
     hoursData: P.grey,
     report: P.blue,
+    howTo: P.blue,
   });
 });
 
@@ -944,6 +1122,17 @@ test("lookPlan for Flags and Settings", () => {
   assert.deepEqual(settings.rules, []);
   assert.equal(settings.tabColour, "#52687b");
   assert.equal(settings.banding.endCol, 2);
+
+  // The What it does column is navy (the kiosk writes it), wide and wrapped.
+  const described = plain(L.lookPlan(["Setting", "Value", "What it does"], "settings"));
+  assert.deepEqual(described.headerColours, [NAVY, TEAL, NAVY]);
+  assert.deepEqual(described.widths, [
+    { col: 0, px: 230 },
+    { col: 1, px: 380 },
+    { col: 2, px: 420 },
+  ]);
+  assert.deepEqual(described.wrapColumns, [1, 2]);
+  assert.equal(described.banding.endCol, 3);
   assert.throws(() => L.lookPlan(["A"], "Hours"), /No look for a tab called Hours/);
 });
 
@@ -995,6 +1184,7 @@ test("setupSheets puts the look on the Log, Flags and Settings", () => {
       [
         ["N", 230],
         ["T", 380],
+        ["N", 420],
       ],
       "#52687b",
       0,
@@ -1054,6 +1244,12 @@ test("setupSheets puts the look on the Log, Flags and Settings", () => {
     ),
     { userEnteredFormat: { wrapStrategy: "WRAP" } },
   );
+  assert.deepEqual(
+    settings.cellLook.get(
+      '{"startColumnIndex":2,"endColumnIndex":3} userEnteredFormat.wrapStrategy',
+    ),
+    { userEnteredFormat: { wrapStrategy: "WRAP" } },
+  );
 });
 
 test("setupSheets replaces staff's banding and its own rules, and keeps staff's rules first", () => {
@@ -1110,4 +1306,323 @@ test("when the look is refused, setupSheets says the tabs are set up and what to
   assert.deepEqual(ss.getSheetByName("Log").row(1), LOG_HEADERS);
   assert.deepEqual(ss.getSheetByName("Flags").row(1), FLAG_HEADERS);
   assert.equal(ss.views.get(ss.getSheetByName("Flags").sheetId).length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Staff help: Settings' What it does column, header notes and the How to tab
+
+const settingsAB = (sheet) =>
+  [...sheet.values.entries()].filter(([key]) => Number(key.split(",")[1]) <= 2).sort();
+const columnC = (sheet) =>
+  sheet
+    .getRange(1, 3, Math.max(sheet.getLastRow(), 1), 1)
+    .getValues()
+    .map((r) => r[0]);
+
+test("setupSheets writes Settings' What it does column and leaves A:B cell for cell", () => {
+  const ss = new FakeSpreadsheet();
+  sheetWith(ss, "Log", [LOG_HEADERS]);
+  const settings = sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Kiosk access code", "lettersonlylettersonly"],
+    ["Closing time", "17:00"],
+    ["", "a value with no name"],
+    ["Arrival flag minutes", "20"],
+    ["Arrival flag minutes", "30"],
+    ["Flags email ", "On"],
+    ["flags email", "on"],
+  ]);
+  const S = server(ss);
+  S.setupSheets();
+  const before = settingsAB(settings);
+  S.setupSheets();
+  assert.deepEqual(settingsAB(settings), before, "a second run changes nothing in A:B");
+
+  const fresh = new FakeSpreadsheet();
+  sheetWith(fresh, "Log", [LOG_HEADERS]);
+  const untouched = sheetWith(fresh, "Settings", [
+    ["Setting", "Value"],
+    ["Kiosk access code", "lettersonlylettersonly"],
+  ]);
+  const ab = settingsAB(untouched);
+  const F = server(fresh);
+  F.setupSheets();
+  // A:B gains only the appended default rows; the rows that were there are unchanged.
+  ab.forEach(([key, v]) => assert.equal(untouched.values.get(key), v, key));
+
+  const d = S.settingsDescriptions();
+  const c = columnC(settings);
+  assert.equal(c[0], "What it does");
+  assert.equal(c[1], d["Kiosk access code"]);
+  assert.equal(c[2], "The kiosk doesn't use this row.");
+  assert.equal(c[3], "");
+  assert.equal(c[4], d["Arrival flag minutes"]);
+  assert.equal(c[5], "Not used: an earlier row has the same name, and only the first one counts.");
+  // Each matches what readSettings_ reads: names are trimmed, and case counts.
+  assert.equal(c[6], d["Flags email"]);
+  assert.equal(c[7], "The kiosk doesn't use this row.");
+  const read = S.readSettings_();
+  assert.equal(read["Flags email"], "On");
+  assert.equal(read["Arrival flag minutes"], "20");
+  // Every row from 2 down has its description, the appended defaults included.
+  settings
+    .getDataRange()
+    .getValues()
+    .slice(1)
+    .forEach((row, i) => {
+      if (row[0] && !["Closing time", "flags email"].includes(row[0]) && i !== 4) {
+        assert.equal(row[2], d[String(row[0]).trim()], "row " + (i + 2));
+      }
+    });
+  assert.equal(settings.format(1, 3), "@");
+  assert.equal(settings.format(500, 3), "@");
+});
+
+test("Settings column C: a staff edit is replaced, a deleted row's text cleared, one protection", () => {
+  const ss = new FakeSpreadsheet();
+  const S = server(ss);
+  S.setupSheets();
+  const settings = ss.getSheetByName("Settings");
+  const last = settings.getLastRow();
+  settings.set(3, 3, "my own words");
+  // Delete the last setting's name and value; its old text stays in C until the next run.
+  const lastName = settings.get(last, 1);
+  settings.set(last, 1, "");
+  settings.set(last, 2, "");
+  S.setupSheets();
+  assert.equal(settings.get(3, 3), S.settingsDescriptionColumn([settings.get(3, 1)])[0]);
+  // setupSheets put the deleted row back below, and its old place is blank in A to C.
+  assert.equal(settings.get(last, 3), "");
+  assert.equal(settings.get(last + 1, 1), lastName);
+  assert.equal(settings.get(last + 1, 3), S.settingsDescriptions()[lastName]);
+
+  // Leftover text under the last named row is cleared.
+  settings.set(last + 5, 3, "stale");
+  S.setupSheets();
+  assert.equal(settings.get(last + 5, 3), "");
+  assert.equal(settings.getLastRow(), last + 1);
+
+  const protections = settings.getProtections("RANGE");
+  assert.equal(protections.length, 1);
+  assert.equal(protections[0].where, "2,3,999,1", "C2 to the end of column C");
+  assert.equal(protections[0].getDescription(), S.settingsDescriptionProtection());
+  assert.equal(protections[0].isWarningOnly(), true);
+});
+
+test("setSetting_ appending a missing row writes its What it does; an update writes only B", () => {
+  const ss = new FakeSpreadsheet();
+  const S = server(ss);
+  S.setupSheets();
+  const settings = ss.getSheetByName("Settings");
+  const rows = settings.getDataRange().getValues();
+  const at = rows.findIndex((r) => r[0] === "Flags email last run") + 1;
+  settings.set(at, 1, "");
+  settings.set(at, 2, "");
+  settings.set(at, 3, "");
+  S.setSetting_("Flags email last run", "2026-11-13 08:00, nothing to send");
+  const row = settings.getLastRow();
+  assert.deepEqual(settings.row(row), [
+    "Flags email last run",
+    "2026-11-13 08:00, nothing to send",
+    S.settingsDescriptions()["Flags email last run"],
+  ]);
+  settings.set(row, 3, "kept");
+  S.setSetting_("Flags email last run", "later");
+  assert.equal(settings.get(row, 3), "kept");
+  S.setSetting_("Something new", "x");
+  assert.deepEqual(settings.row(settings.getLastRow()), ["Something new", "x", ""]);
+});
+
+const notesRow = (sheet) => sheet.getRange(1, 1, 1, sheet.getLastColumn()).getNotes()[0];
+
+test("on a new spreadsheet every Log and Flags header gets exactly its kiosk note", () => {
+  const ss = new FakeSpreadsheet();
+  const S = server(ss);
+  S.setupSheets();
+  const logNotes = S.logHeaderNotes();
+  const flagNotes = S.flagHeaderNotes();
+  assert.deepEqual(notesRow(ss.getSheetByName("Log")), Object.values(plain(logNotes)));
+  assert.deepEqual(notesRow(ss.getSheetByName("Flags")), Object.values(plain(flagNotes)));
+  assert.equal(ss.getSheetByName("Settings").notes.size, 0);
+
+  // A second run writes no note at all.
+  ss.sheets.forEach((s) => (s.noteWrites = []));
+  S.setupSheets();
+  ss.sheets.forEach((s) => assert.deepEqual(s.noteWrites, [], s.name));
+});
+
+test("header notes: staff notes are never written, a deleted note comes back, a moved column keeps its note", () => {
+  const ss = new FakeSpreadsheet();
+  const log = sheetWith(ss, "Log", [LOG_HEADERS]);
+  const staffNote = "Andrea: check this one\nevery Friday.";
+  log.notes.set("1,1", staffNote);
+  const S = server(ss);
+  S.setupSheets();
+  S.setupSheets();
+  assert.equal(log.note(1, 1), staffNote, "a staff note from before the first run stays");
+  const notes = plain(S.logHeaderNotes());
+
+  // Staff change one kiosk note by a character, give others notes Sheets might reshape,
+  // and delete one.
+  const changed = notes.day.replace("weekday", "Weekday");
+  const shaped = {
+    3: notes.name + " ",
+    4: notes.role + "\n",
+    5: "Two lines\n\nwith a blank between",
+    6: "two  spaces and a\ttab",
+  };
+  log.notes.set("1,2", changed);
+  Object.entries(shaped).forEach(([col, n]) => log.notes.set("1," + col, n));
+  log.notes.delete("1,7");
+  log.noteWrites = [];
+  S.setupSheets();
+  assert.deepEqual(log.noteWrites, [[1, 7, notes.recordedOut]], "only the deleted note is written");
+  assert.equal(log.note(1, 1), staffNote);
+  assert.equal(log.note(1, 2), changed);
+  Object.entries(shaped).forEach(([col, n]) => assert.equal(log.note(1, Number(col)), n, col));
+
+  // Moving a column carries its value and note together (as Sheets does): nothing to write.
+  const move = (from, to) => {
+    const v = log.get(1, from);
+    const n = log.note(1, from);
+    log.set(1, from, log.get(1, to));
+    log.notes.set("1," + from, log.note(1, to));
+    log.set(1, to, v);
+    log.notes.set("1," + to, n);
+  };
+  move(8, 18);
+  log.noteWrites = [];
+  S.setupSheets();
+  assert.deepEqual(log.noteWrites, []);
+  assert.equal(log.get(1, 18), LOG_HEADERS[7]);
+  assert.equal(log.note(1, 18), notes.statedOut);
+});
+
+test("header notes: a renamed kiosk header loses its unchanged note, and the restored header gets one", () => {
+  const ss = new FakeSpreadsheet();
+  const S = server(ss);
+  S.setupSheets();
+  const log = ss.getSheetByName("Log");
+  const notes = plain(S.logHeaderNotes());
+  const status = LOG_HEADERS.indexOf("Status") + 1;
+  const shiftId = LOG_HEADERS.indexOf("Shift ID") + 1;
+  log.set(1, status, "State");
+  log.set(1, shiftId, "Row key");
+  log.notes.set("1," + shiftId, notes.shiftId + " Ours now.");
+  S.setupSheets();
+  const header = log.row(1);
+  assert.deepEqual(header.slice(-2), ["Status", "Shift ID"]);
+  assert.equal(log.note(1, status), "", "the renamed cell's kiosk note is cleared");
+  assert.equal(log.note(1, shiftId), notes.shiftId + " Ours now.", "a changed note stays");
+  assert.equal(log.note(1, header.length - 1), notes.status);
+  assert.equal(log.note(1, header.length), notes.shiftId);
+});
+
+const howTo = (ss) => ss.sheets.find((s) => ss.metadata.some((m) => m.sheet === s));
+const columnA = (sheet) =>
+  sheet
+    .getRange(1, 1, sheet.getLastRow(), 1)
+    .getValues()
+    .map((r) => r[0]);
+const howToText = (S) => plain(S.howToRows()).map((r) => r.text);
+// getValues gives "" for a blank row, so the text ends at the last row with text.
+const trimTail = (list) => {
+  const out = [...list];
+  while (out.length && out[out.length - 1] === "") out.pop();
+  return out;
+};
+
+test("How to, first run: the first tab, marked, warning-only, plain text, styled", () => {
+  const ss = new FakeSpreadsheet();
+  const S = server(ss);
+  S.setupSheets();
+  const sheet = ss.sheets[0];
+  assert.equal(sheet.name, "How to");
+  assert.deepEqual(plain(ss.metadata.map((m) => [m.key, m.value, m.sheet.name])), [
+    ["kiosk-guide", "how-to", "How to"],
+  ]);
+  const protections = sheet.getProtections("SHEET");
+  assert.equal(protections.length, 1);
+  assert.equal(protections[0].getDescription(), S.howToProtectionDescription());
+  assert.equal(protections[0].isWarningOnly(), true);
+  assert.deepEqual(columnA(sheet), trimTail(howToText(S)));
+  assert.equal(sheet.format(1, 1), "@");
+  assert.equal(sheet.format(1000, 1), "@");
+  assert.equal(sheet.frozen, 1);
+  assert.equal(sheet.colWidths.get(1), 820);
+  assert.equal(sheet.tabColorHex, S.lookTabColours().howTo);
+  const rows = plain(S.howToRows());
+  const styles = plain(S.howToStyles());
+  rows.forEach((r, i) => {
+    assert.equal(sheet.styles.get("weight " + (i + 1) + ",1"), styles[r.kind].weight);
+    assert.equal(sheet.styles.get("background " + (i + 1) + ",1"), styles[r.kind].background);
+    assert.equal(sheet.styles.get("style " + (i + 1) + ",1"), styles[r.kind].style);
+  });
+});
+
+test("How to, staff changes: edits are rewritten, a moved and renamed tab stays put, a deleted tab comes back", () => {
+  const ss = new FakeSpreadsheet();
+  const S = server(ss);
+  S.setupSheets();
+  ["Shifts", "Notes A", "Notes B"].forEach((n) => sheetWith(ss, n, [["x"]]));
+  const sheet = howTo(ss);
+  sheet.set(5, 1, "my edit");
+  sheet.set(200, 1, "scratch below");
+  S.setupSheets();
+  assert.deepEqual(columnA(sheet), trimTail(howToText(S)));
+
+  ss.moveSheet(sheet, 5);
+  sheet.setName("Help");
+  S.setupSheets();
+  assert.equal(ss.sheets.indexOf(sheet), 5);
+  assert.equal(sheet.name, "Help");
+  assert.equal(ss.sheets.filter((s) => s.name === "How to").length, 0);
+  assert.equal(sheet.getProtections("SHEET").length, 1);
+  assert.deepEqual(columnA(sheet), trimTail(howToText(S)));
+
+  ss.deleteSheet(sheet);
+  S.setupSheets();
+  assert.equal(ss.sheets[0].name, "How to");
+  assert.equal(howTo(ss), ss.sheets[0]);
+});
+
+test("How to, stop cases: an unmarked tab of that name in any capitals, and two marked tabs", () => {
+  for (const name of ["How to", "how to", "HOW TO"]) {
+    const ss = new FakeSpreadsheet();
+    sheetWith(ss, name, [["staff's own"]]);
+    const S = server(ss);
+    assert.throws(
+      () => S.setupSheets(),
+      new RegExp(
+        '^Error: A tab named "' +
+          name +
+          "\" is already there and isn't the kiosk's\\. Rename it, then run setupSheets again\\.$",
+      ),
+    );
+    // Everything before the last step is done.
+    assert.deepEqual(ss.getSheetByName("Log").row(1), LOG_HEADERS);
+    assert.deepEqual(ss.getSheetByName("Flags").row(1), FLAG_HEADERS);
+    assert.equal(ss.getSheetByName("Settings").get(1, 3), "What it does");
+    assert.equal(ss.getSheetByName("Log").note(1, 1), S.logHeaderNotes().date);
+    assert.equal(ss.getSheetByName(name).get(1, 1), "staff's own");
+    assert.equal(ss.metadata.length, 0);
+  }
+
+  // A marked tab renamed Help: a staff tab named How to is left alone.
+  const ss = new FakeSpreadsheet();
+  const S = server(ss);
+  S.setupSheets();
+  howTo(ss).setName("Help");
+  const staff = sheetWith(ss, "How to", [["staff's own"]]);
+  assert.doesNotThrow(() => S.setupSheets());
+  assert.equal(staff.get(1, 1), "staff's own");
+  assert.equal(staff.protections.length, 0);
+
+  // A duplicated tab carries the mark too.
+  const copy = sheetWith(ss, "Copy of Help", [["x"]]);
+  copy.addDeveloperMetadata("kiosk-guide", "how-to");
+  assert.throws(
+    () => S.setupSheets(),
+    /^Error: These tabs all carry the kiosk's How to mark: Help, Copy of Help\. Delete the copy, then run setupSheets again\.$/,
+  );
 });
