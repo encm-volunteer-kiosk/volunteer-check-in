@@ -216,6 +216,16 @@ test("a name, role or activity starting with = is written with sheetText's apost
   assert.equal(t.rows[0][9], "+Sorting");
 });
 
+test("a name, role or activity starting with an apostrophe keeps it through sheetText's second one", () => {
+  nextRow = 2;
+  const t = plain(
+    L.hoursTable([row({ name: "'Neil Ray", role: "'Kitchen", activity: "Sorting" })], [], clock),
+  );
+  assert.equal(t.rows[0][5], "''Neil Ray");
+  assert.equal(t.rows[0][8], "''Kitchen");
+  assert.equal(t.rows[0][9], "Sorting");
+});
+
 test("no User Token appears anywhere in what the refresh writes", () => {
   const entries = fixtureLog().map((e) => ({ ...e, token: e.token ? "secret-" + e.token : "" }));
   const t = plain(L.hoursTable(entries, [{ name: "Ann", shiftId: "x", reviewed: false }], clock));

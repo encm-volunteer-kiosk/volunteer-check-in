@@ -212,12 +212,15 @@ function normalizeCode(text) {
 }
 
 /**
- * Text written into a sheet cell. A leading '=' would make Sheets read the value as a
- * formula, so such text gets the apostrophe that marks a cell as plain text.
+ * Text written into a sheet cell, so the cell holds exactly the text. Sheets reads a
+ * leading '=' as a formula and takes a leading apostrophe as its plain-text mark, dropping
+ * it, so text starting with either gets one apostrophe more: "=1" is kept as "=1" and
+ * "'Neil" as "'Neil", and each reads back as typed.
  */
 function sheetText(text) {
   const s = cellString(text);
-  return s.charAt(0) === "=" ? "'" + s : s;
+  const first = s.charAt(0);
+  return first === "=" || first === "'" ? "'" + s : s;
 }
 
 function utf8Length(text) {

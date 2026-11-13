@@ -106,6 +106,10 @@ test("sheetText marks formula-looking text as plain text", () => {
   assert.equal(L.sheetText('=HYPERLINK("x")'), '\'=HYPERLINK("x")');
   assert.equal(L.sheetText(" Maria "), "Maria");
   assert.equal(L.sheetText("-Ann"), "-Ann");
+  // Sheets drops a leading apostrophe as its plain-text mark, so one more keeps the one typed.
+  assert.equal(L.sheetText("'Neil"), "''Neil");
+  assert.equal(L.sheetText("''"), "'''");
+  assert.equal(L.sheetText("O'Neil"), "O'Neil");
 });
 
 test("utf8Length counts UTF-8 bytes", () => {
