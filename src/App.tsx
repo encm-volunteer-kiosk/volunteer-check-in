@@ -22,7 +22,7 @@ import {
   type ListStorage,
 } from "./listStore";
 import { searchNames } from "./nameSearch";
-import { QuickPicks } from "./QuickPicks";
+import { QuickPicks } from "./QuickPicks.tsx";
 import {
   abandonSave,
   autoHomeMs,
@@ -1427,7 +1427,7 @@ export default function App() {
   };
 
   return (
-    <div className={`app-shell screen-${code ? screen : "welcome"}${hasQuery ? " has-query" : ""}`}>
+    <div className={`app-shell screen-${code ? screen : "welcome"}${code ? "" : " setup"}${hasQuery ? " has-query" : ""}`}>
       {!code && (
         <>
           <Header />

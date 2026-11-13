@@ -361,6 +361,14 @@ ENCM is the shared account, so:
 - the first time the account uses the menu, Google asks it to authorize the script. Accept
   once and the menu works from then on.
 
+> **Warning: use the menu with only one Google account signed in.** If the browser is
+> signed into more than one Google account, the menu's windows can fail with "We're sorry,
+> a server error occurred while reading from storage. Error code PERMISSION_DENIED".
+> Google sends the window's requests as the browser's *default* account (the first one
+> signed in) rather than the account that has the sheet open. To fix it, open the sheet in
+> an incognito/private window signed into only the shared account, or give that account its
+> own browser profile.
+
 Each item except Refresh Hours opens a small window. Every save asks for the admin's **initials**: 1 to 5
 letters, with spaces and dots dropped, stored in capitals (`j.p.` is stored as `JP`). The
 initials go in Check-In Entered By and Check-Out Entered By, since everyone at ENCM signs
