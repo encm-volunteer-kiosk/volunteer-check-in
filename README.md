@@ -762,14 +762,8 @@ together; clear every slicer for all time. The Grand Total rows are then the per
 stated hours, shifts, volunteers and average shift.
 
 **Your picks are yours alone.** A pick shows only in the window you made it in: nobody
-else sees it, and it's gone when you close the tab.
-
-<!-- pick-after-refresh: start -->
-
-If Hours is refreshed while your tab is open, look at the slicers again before you read
-the totals.
-
-<!-- pick-after-refresh: end -->
+else sees it, and it's gone when you close the tab. A refresh keeps it: if Hours is
+refreshed while your tab is open, the new tables still follow your picks.
 
 Don't use "Set current filters as default" in a slicer's menu. It saves the pick for
 everyone, and because a slicer saves the values it hides, months and volunteers added
