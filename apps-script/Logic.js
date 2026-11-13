@@ -2800,6 +2800,7 @@ function flagSources() {
     checkIn: "kiosk check-in",
     checkOut: "kiosk check-out",
     autoClose: "auto-close",
+    import: "import",
   };
 }
 
@@ -2954,4 +2955,462 @@ function flagFilterViewRequests(cols, sheetId, existingViewId) {
       },
     },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Past hours import
+//
+// The Kiosk admin menu's Import past hours (Import.js) reads a tab laid out like ENCM's
+// "Historical Hours": a header row, then one row per shift with its Date, First name, Last
+// name and hours, and optionally the month tab and cell the shift was copied from. Each
+// shift becomes a closed Log row with its stated hours and no times. Import.js reads and
+// writes; the rules are here.
+//
+// A source row is known by its source key: its date, its written name and its count among
+// the source rows with that date and name. Never by its position, since rows move in the
+// old sheet. The Import ledger tab keeps every key brought in, so a second run adds
+// nothing and a row staff delete from the Log stays deleted. Once imported, a row is
+// corrected on the Log, never in the source: a corrected name or date is a new key.
+
+/** The tab in the Check-In Log that remembers every source key imported. */
+function importLedgerTab() {
+  return "Import ledger";
+}
+
+/** The Settings rows that prefill the dialog; a run that writes saves what it used. */
+function importFileSetting() {
+  return "Past hours file ID";
+}
+
+function importTabSetting() {
+  return "Past hours tab";
+}
+
+/** The tab the dialog offers when Settings names none. */
+function importDefaultTab() {
+  return "Historical Hours";
+}
+
+/**
+ * Both Entered By cells of an imported row. Six letters, so entrySource reads it as
+ * "other", never as an admin's initials.
+ */
+function importEnteredBy() {
+  return "import";
+}
+
+/** Rows written per lock: a tablet call waits at most one block. */
+function importBlockSize() {
+  return 250;
+}
+
+/** A run starts no new block after this long, inside Apps Script's 6-minute limit. */
+function importTimeBudgetMs() {
+  return 270000;
+}
+
+/** The ledger headers, keyed by the short names the code uses, in the order a new tab gets them. */
+function importLedgerHeaderNames() {
+  return {
+    key: "Source key",
+    shiftId: "Shift ID",
+    importedAt: "Imported At",
+    importedBy: "Imported By",
+    source: "Source",
+  };
+}
+
+function importLedgerHeaders() {
+  const names = importLedgerHeaderNames();
+  return Object.keys(names).map((key) => names[key]);
+}
+
+/**
+ * Maps each ledger header to its 0-based index in headerRow (normalizeHeader forms). Each
+ * must be there exactly once, else this throws: the ledger is the import's memory, and a
+ * run that can't read it would import everything again.
+ */
+function importLedgerColumns(headerRow) {
+  const cols = {};
+  importLedgerHeaders().forEach((h) => {
+    const found = logHeaderIndexes(headerRow, h);
+    if (found.length !== 1) {
+      throw new Error(
+        'The "' +
+          importLedgerTab() +
+          '" tab needs exactly one "' +
+          h +
+          '" column in row 1. Put it back, then run the import again.',
+      );
+    }
+    cols[h] = found[0];
+  });
+  return cols;
+}
+
+/** Why a source row is left out, by code, as the preview lists them. */
+function importLeftOutReasons() {
+  return {
+    date: "date can't be read",
+    future: "date is after today",
+    launch: 'date is on or after the "Kiosk launch date"',
+    name: "no first or last name",
+    hours: "hours aren't a number above 0 and at most 24",
+  };
+}
+
+/** {ok: false, refusal, message} for an import refusal; detail fills in the message. */
+function importRefusal(code, detail) {
+  const d = cellString(detail);
+  const messages = {
+    IMPORT_LAUNCH_DATE:
+      'The Settings value "Kiosk launch date" is blank or isn\'t a date (yyyy-MM-dd). The import' +
+      " brings in only shifts before that date, so set it first.",
+    IMPORT_FILE_ID: "Please paste the spreadsheet's link or ID.",
+    IMPORT_FILE:
+      "That spreadsheet can't be opened. Check the link or ID, and that this account can open it.",
+    IMPORT_TAB: 'That spreadsheet has no tab named "' + d + '".',
+    IMPORT_HEADERS: "The tab's first row has no " + d + " column.",
+  };
+  if (!messages[code]) throw new Error("Unknown import refusal code: " + code);
+  return { ok: false, refusal: code, message: messages[code] };
+}
+
+/**
+ * The spreadsheet ID in a pasted link (".../spreadsheets/d/<id>/edit...") or a bare ID;
+ * '' when there is neither.
+ */
+function importFileId(text) {
+  const s = cellString(text);
+  const link = /\/d\/([A-Za-z0-9_-]{10,})/.exec(s);
+  if (link) return link[1];
+  return /^[A-Za-z0-9_-]{10,}$/.test(s) ? s : "";
+}
+
+/**
+ * The source tab's columns from its header row, as {cols, missing}. cols holds 0-based
+ * indexes {date, firstName, lastName, hours, sourceTab, sourceCell}, -1 when absent;
+ * missing lists the required headers the row lacks. Date, First name and Last name are
+ * required. Hours is the column headed "Hours", else the column right after Last name
+ * (ENCM's tab leaves it unheaded). "Source cell" is optional, and the unheaded column just
+ * left of it, when that isn't the hours column, is the source tab. Both are kept only for
+ * the row's Notes.
+ */
+function importColumns(headerRow) {
+  const headers = (headerRow || []).map(normalizeHeader);
+  const at = (name) => headers.indexOf(name);
+  const cols = {
+    date: at("date"),
+    firstName: at("first name"),
+    lastName: at("last name"),
+    hours: at("hours"),
+    sourceTab: -1,
+    sourceCell: at("source cell"),
+  };
+  const missing = [];
+  if (cols.date < 0) missing.push("Date");
+  if (cols.firstName < 0) missing.push("First name");
+  if (cols.lastName < 0) missing.push("Last name");
+  if (cols.hours < 0 && cols.lastName >= 0) cols.hours = cols.lastName + 1;
+  const left = cols.sourceCell - 1;
+  if (cols.sourceCell > 0 && headers[left] === "" && left !== cols.hours) cols.sourceTab = left;
+  return { cols, missing };
+}
+
+/** The same-name key of a written name: volunteerNameKey of its first and last name. */
+function importNameKey(firstName, lastName) {
+  return volunteerNameKey({ firstName, lastName });
+}
+
+/** A written name as it goes on the Log: first and last, trimmed, runs of spaces as one. */
+function importWrittenName(firstName, lastName) {
+  return (cellString(firstName) + " " + cellString(lastName)).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The User Token an unmatched name's rows get, so the reports count them as one volunteer
+ * under the written name: "import:" and the name key with its "|" as a space ("import:jane
+ * doe"). A real token never starts this way. Staff who find the volunteer type the real
+ * token over it.
+ */
+function importStandInToken(nameKey) {
+  return "import:" + cellString(nameKey).replace(/\|/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** A source row's key: date, name key and its count among rows with that date and name. */
+function importSourceKey(date, nameKey, n) {
+  return date + "|" + nameKey + "|" + n;
+}
+
+/** An imported row's Shift ID: "import-" and the first 16 hex of the key's SHA-256. */
+function importShiftId(key, hashFn) {
+  return "import-" + String(hashFn(key)).toLowerCase().slice(0, 16);
+}
+
+/** The launch date as yyyy-MM-dd, or the IMPORT_LAUNCH_DATE refusal as {refusal}. */
+function importLaunchDate(text) {
+  const launch = parseStartDate(text);
+  return launch ? { launch } : { refusal: importRefusal("IMPORT_LAUNCH_DATE") };
+}
+
+/** A source hours cell as a number, NaN when blank or not a number. */
+function importHours(value) {
+  return hoursCell(typeof value === "number" ? value : cellString(value));
+}
+
+/**
+ * Works out what an import would do. input is {header, rows, launchDate, todayDate,
+ * volunteers, ledgerKeys, logShiftIds, hashFn}: the source header row, its data rows (data
+ * row i is source row i + 2; a date cell already as yyyy-MM-dd text, hours as read), the
+ * Settings launch date, today, the Profiles list, the source keys in the ledger, the Shift
+ * IDs on the Log, and a SHA-256 hex function.
+ *
+ * A row is importable when its Date reads as a day (parseStartDate) not after today and
+ * before the launch date, it has a first or last name, and its hours are a number above 0
+ * and at most 24. Wholly blank rows are skipped and not counted. A key counts every row
+ * whose date reads and that has a name, left out or not, so fixing one row's hours in the
+ * source doesn't change its neighbours' keys.
+ *
+ * A name matches when exactly one Profiles volunteer has its name key. Returns {refusal}
+ * (launch date or headers), or {rowsRead, toImport, alreadyImported, onLog, leftOut}: the
+ * first three are lists of items {sourceRow, date, firstName, lastName, name, nameKey, key,
+ * shiftId, hours, volunteer (null when unmatched), matches, sourceTab, sourceCell}, in
+ * source order; leftOut is [{row, reason}] with reason a code of importLeftOutReasons().
+ * An item in toImport is neither in the ledger nor on the Log; one in onLog has its Shift
+ * ID on the Log but no ledger line, which the run adds.
+ */
+function importPlan(input) {
+  const launch = importLaunchDate(input.launchDate);
+  if (launch.refusal) return { refusal: launch.refusal };
+  const columns = importColumns(input.header);
+  if (columns.missing.length) {
+    return {
+      refusal: importRefusal(
+        "IMPORT_HEADERS",
+        columns.missing.map((h) => '"' + h + '"').join(" or "),
+      ),
+    };
+  }
+  const c = columns.cols;
+  const byName = new Map();
+  (input.volunteers || []).forEach((v) => {
+    const key = volunteerNameKey(v);
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(v);
+  });
+  const ledger = new Set((input.ledgerKeys || []).map(cellString));
+  const onLogIds = new Set((input.logShiftIds || []).map(cellString));
+  const counts = new Map();
+  const plan = { rowsRead: 0, toImport: [], alreadyImported: [], onLog: [], leftOut: [] };
+
+  (input.rows || []).forEach((cells, i) => {
+    const row = i + 2;
+    if ((cells || []).every((v) => cellString(v) === "")) return;
+    plan.rowsRead++;
+    const cell = (at) => (at >= 0 ? cells[at] : "");
+    const date = parseStartDate(cell(c.date));
+    const firstName = cellString(cell(c.firstName));
+    const lastName = cellString(cell(c.lastName));
+    const hours = importHours(cell(c.hours));
+    const hasName = firstName !== "" || lastName !== "";
+    const nameKey = importNameKey(firstName, lastName);
+    let n = 0;
+    if (date && hasName) {
+      const at = date + "|" + nameKey;
+      n = (counts.get(at) || 0) + 1;
+      counts.set(at, n);
+    }
+    let reason = "";
+    if (!date) reason = "date";
+    else if (date > input.todayDate) reason = "future";
+    else if (date >= launch.launch) reason = "launch";
+    else if (!hasName) reason = "name";
+    else if (!isFinite(hours) || hours <= 0 || hours > 24) reason = "hours";
+    if (reason) {
+      plan.leftOut.push({ row, reason });
+      return;
+    }
+    const key = importSourceKey(date, nameKey, n);
+    const shiftId = importShiftId(key, input.hashFn);
+    const same = byName.get(nameKey) || [];
+    const item = {
+      sourceRow: row,
+      date,
+      firstName,
+      lastName,
+      name: importWrittenName(firstName, lastName),
+      nameKey,
+      key,
+      shiftId,
+      hours,
+      volunteer: same.length === 1 ? same[0] : null,
+      matches: same.length,
+      sourceTab: cellString(cell(c.sourceTab)),
+      sourceCell: cellString(cell(c.sourceCell)),
+    };
+    if (ledger.has(key)) plan.alreadyImported.push(item);
+    else if (onLogIds.has(shiftId)) plan.onLog.push(item);
+    else plan.toImport.push(item);
+  });
+  return plan;
+}
+
+/** Hours added up in hundredths, so 0.1 + 0.2 is 0.3. */
+function importHoursTotal(items) {
+  return items.reduce((sum, item) => sum + Math.round(item.hours * 100), 0) / 100;
+}
+
+/** {name key: rows} for the unmatched items. */
+function importUnmatchedCounts(items) {
+  const counts = {};
+  items.forEach((item) => {
+    if (!item.volunteer) counts[item.nameKey] = (counts[item.nameKey] || 0) + 1;
+  });
+  return counts;
+}
+
+/**
+ * The preview's counts for a plan: {rowsRead, toImport, matched, unmatched, hours,
+ * alreadyImported, onLog, leftOut, unmatchedNames: [{name, rows, matches}] sorted by name,
+ * leftOutRows: [{reason (text), rows: [source row numbers]}] in importLeftOutReasons()
+ * order}. No User Token.
+ */
+function importSummary(plan) {
+  const unmatched = plan.toImport.filter((item) => !item.volunteer);
+  const counts = importUnmatchedCounts(plan.toImport);
+  const names = [];
+  const seen = new Set();
+  unmatched.forEach((item) => {
+    if (seen.has(item.nameKey)) return;
+    seen.add(item.nameKey);
+    names.push({ name: item.name, rows: counts[item.nameKey], matches: item.matches });
+  });
+  names.sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name)));
+  const reasons = importLeftOutReasons();
+  const leftOutRows = Object.keys(reasons)
+    .map((code) => ({
+      reason: reasons[code],
+      rows: plan.leftOut.filter((l) => l.reason === code).map((l) => l.row),
+    }))
+    .filter((group) => group.rows.length);
+  return {
+    rowsRead: plan.rowsRead,
+    toImport: plan.toImport.length,
+    matched: plan.toImport.length - unmatched.length,
+    unmatched: unmatched.length,
+    hours: importHoursTotal(plan.toImport),
+    alreadyImported: plan.alreadyImported.length,
+    onLog: plan.onLog.length,
+    leftOut: plan.leftOut.length,
+    unmatchedNames: names,
+    leftOutRows,
+  };
+}
+
+/** The Admin Alerts? text of an unmatched row: no Profiles match, or a same-name group. */
+function importAlert(matches) {
+  const why =
+    matches > 1
+      ? "imported: name matches " + matches + " Volunteer Profiles rows"
+      : "imported: no Volunteer Profiles match for this name";
+  return why + "; correct this row on the Log, not in the old sheet";
+}
+
+/**
+ * An imported row's Notes: "Imported by JP from Old Volunteer Hours › Historical Hours row
+ * 12 (2025.12 C3)", the part in brackets only when the source names its tab or cell.
+ */
+function importNote(initials, fileName, tab, item) {
+  const from = [item.sourceTab, item.sourceCell].filter((s) => cellString(s) !== "").join(" ");
+  return (
+    "Imported by " +
+    initials +
+    " from " +
+    cellString(fileName) +
+    " › " +
+    cellString(tab) +
+    " row " +
+    item.sourceRow +
+    (from ? " (" + from + ")" : "")
+  );
+}
+
+/**
+ * The cell map of an imported row. note is the Notes text, or '' to leave Notes alone
+ * (when the Log has no Notes column). The four times and Hours Served (timestamps) are
+ * not written: the source has no times.
+ */
+function importCells(item, note) {
+  const H = logHeaderNames();
+  const token = item.volunteer ? item.volunteer.token : importStandInToken(item.nameKey);
+  requireRowKeys(token, item.shiftId);
+  const cells = {
+    [H.date]: item.date,
+    [H.day]: weekdayName(item.date),
+    [H.name]: sheetText(item.volunteer ? volunteerFullName(item.volunteer) : item.name),
+    [H.statedHours]: item.hours,
+    [H.token]: sheetText(token),
+    [H.status]: "closed",
+    [H.inBy]: importEnteredBy(),
+    [H.outBy]: importEnteredBy(),
+    [H.shiftId]: item.shiftId,
+  };
+  if (!item.volunteer) cells[H.alerts] = importAlert(item.matches);
+  if (cellString(note)) cells[H.notes] = sheetText(note);
+  return cells;
+}
+
+/** One ledger line as a header-keyed map. */
+function importLedgerLine(item, nowMs, initials, fileId, tab) {
+  const L = importLedgerHeaderNames();
+  return {
+    [L.key]: sheetText(item.key),
+    [L.shiftId]: item.shiftId,
+    [L.importedAt]: nowMs,
+    [L.importedBy]: sheetText(initials),
+    [L.source]: sheetText(fileId + ", " + tab + ", row " + item.sourceRow),
+  };
+}
+
+/** One ledger map as a row of width cells under cols (importLedgerColumns). */
+function importLedgerValues(line, cols, width) {
+  const row = Array.from({ length: width }, () => "");
+  Object.keys(line).forEach((h) => (row[cols[h]] = line[h]));
+  return row;
+}
+
+/** The items cut into blocks of size, in order. */
+function importBlocks(items, size) {
+  const blocks = [];
+  for (let i = 0; i < items.length; i += size) blocks.push(items.slice(i, i + size));
+  return blocks;
+}
+
+/**
+ * The Flags rows for one written block: one per unmatched name not in flagged (the name
+ * keys already flagged this run), for the name's first row in the block. written is
+ * [{item, row}] with row the Log row, counts the run's unmatched rows per name key. Adds
+ * the names it flags to flagged. Reason is the row's alert and the name's rows in this run.
+ */
+function importFlagRows(written, counts, flagged, nowMs) {
+  const rows = [];
+  written.forEach(({ item, row }) => {
+    if (item.volunteer || flagged.has(item.nameKey)) return;
+    flagged.add(item.nameKey);
+    const n = counts[item.nameKey] || 1;
+    const reason =
+      importAlert(item.matches) + " (" + n + (n === 1 ? " row" : " rows") + " in this import)";
+    flagRows(
+      {
+        date: item.date,
+        name: item.name,
+        shiftId: item.shiftId,
+        raisedAtMs: nowMs,
+        source: flagSources().import,
+        logRow: row,
+      },
+      [reason],
+    ).forEach((r) => rows.push(r));
+  });
+  return rows;
 }

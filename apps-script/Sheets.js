@@ -443,6 +443,38 @@ function updateLogRow_(row, cells, cols) {
   writeLogCells_(sheet_(LOG_TAB), row, cells, cols);
 }
 
+/**
+ * Appends many rows (cell maps) below the Log's last row in one write, for a batch such
+ * as Import past hours; appendLogRow_ writes cell by cell and is far too slow for hundreds
+ * of rows. Grows the tab first when the rows would pass its last grid row. Then one
+ * setNumberFormats and one setValues across the full width: each kiosk column a map names
+ * gets its column's format, staff's columns keep theirs, and cells the maps don't name are
+ * left blank. Returns the first new row number; map i is on that row plus i.
+ */
+function appendLogRows_(cellMaps, cols) {
+  const sheet = sheet_(LOG_TAB);
+  const first = sheet.getLastRow() + 1;
+  if (!cellMaps.length) return first;
+  const width = logHeaderRow_(sheet).length;
+  const last = first + cellMaps.length - 1;
+  if (last > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), Math.max(50, last - sheet.getMaxRows()));
+  }
+  const range = sheet.getRange(first, 1, cellMaps.length, width);
+  const formats = range.getNumberFormats();
+  const values = cellMaps.map((cells, i) => {
+    const line = Array.from({ length: width }, () => "");
+    cellWrites(cells, cols).forEach((w) => {
+      line[w.col - 1] = w.kind === "time" && w.value !== "" ? new Date(w.value) : w.value;
+      formats[i][w.col - 1] = logFormat_(w.kind);
+    });
+    return line;
+  });
+  range.setNumberFormats(formats);
+  range.setValues(values);
+  return first;
+}
+
 // ---------------------------------------------------------------------------
 // Flags
 
