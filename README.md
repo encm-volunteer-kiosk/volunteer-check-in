@@ -207,10 +207,11 @@ ticked, newest first. Tick Reviewed, type your initials in Reviewed By, and add 
 there's something to say. A ticked flag leaves the view. The sheet's edit history (right
 click a cell > Show edit history) shows who ticked it and when.
 
-The kiosk only adds rows to this tab. It finds its columns by header, as on the Log, and
-never reads a Flags row back, so sorting, filtering or deleting Flags rows is safe, and so
-are columns of your own. Reviewed By and Notes are yours; the kiosk never writes them.
-There is no User Token on this tab; find it on the Log row by Shift ID if you need it.
+The kiosk only adds rows to this tab. It finds its columns by header, as on the Log. Only
+the weekly flags email (see Daily jobs) reads Flags rows, and only to count and list them,
+so sorting, filtering or deleting Flags rows is safe, and so are columns of your own.
+Reviewed By and Notes are yours; the kiosk never writes them. There is no User Token on
+this tab; find it on the Log row by Shift ID if you need it.
 
 A flag can be missing from this tab only when the tab was broken at the time (renamed,
 deleted or missing a header), or when a row typed by hand with no Shift ID is closed at
@@ -243,10 +244,32 @@ there.
 | Check-out flag minutes        | 15                              | How far a stated check-out may be from the tap before it gets an alert.                    |
 | Volunteer hour value          | blank                           | The dollar value of one volunteer hour, for the monthly report (see Reports).              |
 | Profiles problems             | blank                           | Written by the kiosk: Profiles rows it had to leave out, and why.                          |
-| Closing time Monday to Sunday | 17:00                           | Kept for the nightly close, which is not built yet.                                        |
+| Closing time Monday to Sunday | 17:00                           | Not read. The auto clock-out takes shift times from the `Shifts` tab instead.              |
+| Auto clock-out after hours    | 12                              | Hours after the check-in tap that an open row stays on the tablet. 10 to 24 (below).       |
+| Auto clock-out last run       | blank                           | Written by the auto clock-out: when it last ran, Central, and how many rows it closed.     |
+| Long shift flag hours         | 8                               | A tablet check-out crediting more hours than this is flagged (below).                      |
+| Flags email                   | Off                             | `On` (any capitals) turns the weekly flags email on; anything else is off.                 |
+| Flags email to                | blank                           | Who gets it: addresses separated by commas, semicolons, spaces or new lines.               |
+| Flags email day               | Monday                          | The day it sends: an English weekday, in full or its first three letters.                  |
+| Flags email hour              | 8                               | The hour it sends, Central: a whole number from 0 to 23.                                   |
+| Flags email last run          | blank                           | Written by the weekly email: when it last ran, and `sent to N` or `nothing to send`.       |
+| Daily jobs installed by       | blank                           | Written by `setupDailyJobs`: the account that owns the daily jobs.                         |
+| Past hours file ID            | blank                           | Fills in the Import past hours window; an import that adds rows saves what it used.        |
+| Past hours tab                | Historical Hours                | The same, for the tab.                                                                     |
 
-"Check-out flag minutes" is new with the check-out time picker, and "Volunteer hour value"
-with the reports. On a spreadsheet set up before them, run `setupSheets` once to add them.
+"Auto clock-out after hours" is read as given from 10 to 24; anything else, blank or
+unreadable, reads as 12. A window shorter than a shift plus some slack would take a
+volunteer who is still there off the tablet: they would show as not checked in, could
+check in a second time, and both rows would get a guessed time.
+
+"Long shift flag hours": a tablet check-out whose stated hours (from the stated arrival to
+the stated check-out, the hours the row is credited) are more than this gets an alert in
+Admin Alerts? and a Flags row, whatever the clock or date. Exactly this many is not
+flagged. A blank, 0, negative or unreadable value reads as 8.
+
+"Check-out flag minutes" is new with the check-out time picker, "Volunteer hour value"
+with the reports, and the rows from "Auto clock-out after hours" down with the daily jobs.
+On a spreadsheet set up before them, run `setupSheets` once to add them.
 
 ## Kiosk admin menu
 
@@ -354,6 +377,73 @@ to run `setupSheets`, which adds it.
 
 The menu can't be reached from the kiosk page. Every menu function checks that it was
 called from the open spreadsheet, through a window the menu opened.
+
+## Daily jobs
+
+Jobs the script runs on its own, on Google's timed triggers: the weekly flags email,
+checked every hour. They live in `apps-script/Jobs.js`.
+
+### Who runs them
+
+The jobs run as the account that installed them, and only that account. At ENCM that is
+a Workspace account kept for the kiosk. It needs edit access to the Check-In Log
+spreadsheet; it doesn't need Volunteer Profiles.
+
+To install them, sign in to Google as that account, open the Check-In Log, then
+Extensions > Apps Script, choose `setupDailyJobs` in the function list and Run it. Accept
+the permissions Google asks for. It deletes that account's own earlier job triggers,
+makes one trigger per job, and writes the account into Settings "Daily jobs installed
+by". Running it again replaces the account's triggers, so there is never a second copy.
+The editor's Triggers page (the clock icon) shows them.
+
+- **Failures.** When a job fails, Google emails a failure summary to the account that
+  owns the trigger, and to nobody else. Make sure someone reads that account's mail, or
+  forward it.
+- **After a push that adds a permission**, the owner must open the Apps Script editor and
+  run `setupDailyJobs` again (or any function) to authorize it. Until then every job run
+  fails, and only the owner hears about it.
+- **Other accounts are asked too.** Google's permissions belong to the whole script, so
+  the account that deploys the web app and the account that uses the Kiosk admin menu are
+  also asked to allow sending email and managing triggers the next time they run
+  something. They never send email or install a trigger; accept so the menu and kiosk keep
+  working.
+- **Moving the jobs to another account.** Google lets an account see and delete only its
+  own triggers. Signed in as the old owner, run `removeDailyJobs`: it deletes that
+  account's job triggers and clears "Daily jobs installed by" if it names that account.
+  Then install them as the new owner. If the old account can't sign in any more, its
+  triggers stop when the account is disabled or removed.
+
+`setupDailyJobs` and `removeDailyJobs` run only from the editor. The jobs themselves run
+only from their own triggers: run from the editor or the kiosk page they refuse. Two
+accounts' triggers running side by side would not send twice; each job checks its
+last-run row first, under the kiosk's lock.
+
+### Weekly flags email
+
+Every hour the email job checks Settings. It sends nothing until "Flags email" is `On`
+and "Flags email to" holds at least one address. Then it sends once a week, at the first
+hourly run on or after "Flags email day" at "Flags email hour" (Central), and writes
+"Flags email last run". A run that couldn't send is caught up by the next hourly run. A
+changed day or hour applies at once. To send again this week, clear "Flags email last
+run": the next hourly run sends.
+
+The email comes from the owner account's domain no-reply address, named "ENCM Volunteer
+Kiosk". It says:
+
+- how many flags were raised in the last 7 days, and how many are still unreviewed, of
+  any age (rows with a Volunteer Name or Shift ID whose Reviewed isn't ticked, the same
+  rows the `Flags: Unreviewed` view shows plus any staff typed without a Shift ID);
+- a link that opens the Flags tab;
+- the week's flags, newest first: date, name and reason, up to 25, then "and N more";
+- first, when the auto clock-out hasn't run for more than 2 days (or ever), a warning that
+  open shifts aren't being closed, with when it last ran;
+- last, any entries in "Flags email to" that aren't email addresses, which were skipped.
+
+When there is no new flag, none unreviewed and no warning, it sends nothing and writes
+`nothing to send`. The email holds volunteers' names and flag reasons, never a User
+Token. A missing or broken Flags tab makes the run fail (and the owner gets Google's
+failure email) rather than send a wrong count. If the run finds the kiosk's lock busy for
+30 seconds, it stops and the next hourly run catches up.
 
 ## Reports
 
@@ -667,6 +757,7 @@ apps-script/Api.js          doGet and the api* functions the page calls
 apps-script/Admin.js        the Kiosk admin menu and its dialogs' server functions
 apps-script/AdminDialog.html the admin dialogs (plain HTML and JavaScript, committed source)
 apps-script/Reports.js      setupReports and the Monthly report menu item's server functions
+apps-script/Jobs.js         the daily jobs: setupDailyJobs, removeDailyJobs, the weekly flags email
 apps-script/Report.html     the Monthly report window (plain HTML and JavaScript, committed source)
 apps-script/Logic.js        the rules, as plain functions the Node tests load
 apps-script/Sheets.js       Log, Settings, Flags and Profiles access; setupSheets, setupSampleProfiles
