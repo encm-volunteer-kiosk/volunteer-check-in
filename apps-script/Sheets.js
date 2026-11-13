@@ -301,7 +301,7 @@ function zoneClock_(date, zone) {
  *
  * Each UTC hour's offset costs one formatDate call, at the hour's start, and is kept for
  * the rest of the script run. That offset holds for the whole hour when the zone's clock
- * can only change on a whole UTC hour. The kiosk's zone (America/Chicago) does: from local
+ * can only change on a whole UTC hour. America/Chicago, the kiosk's zone, does: from local
  * mean time to Central at 18:00 UTC in 1883, and since then whole-hour offsets changed at
  * a whole local hour. Any other zone may change at a half hour (America/St_Johns) or at
  * an odd second (a local mean time), so its hour is used only when the next hour's start
@@ -311,7 +311,7 @@ function zoneOffset_(ms, zone) {
   if (!isFinite(ms)) return null;
   const hour = Math.floor(ms / 3600000);
   const offset = hourOffset_(zone, hour);
-  if (offset === null || zone === kioskTimeZone()) return offset;
+  if (offset === null || zone === "America/Chicago") return offset;
   return hourOffset_(zone, hour + 1) === offset ? offset : null;
 }
 
