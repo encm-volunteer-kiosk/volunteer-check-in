@@ -1756,11 +1756,13 @@ function parseMoneyCents(text) {
 
 /**
  * The order rows are walked in: row date, then shift start (a row whose start can't be read
- * comes after those whose start can), then Log row. Only for rows that have a month.
+ * comes after those whose start can), then Log row. The date is read as rowDate reads it,
+ * so a Date typed as m/d/yyyy sorts among the yyyy-MM-dd ones; a Date it can't read is
+ * compared as its text.
  */
 function reportRowOrder(a, b) {
-  const da = cellString(a.dateText);
-  const db = cellString(b.dateText);
+  const da = rowDate(a.dateText) || cellString(a.dateText);
+  const db = rowDate(b.dateText) || cellString(b.dateText);
   if (da !== db) return da < db ? -1 : 1;
   const sa = shiftStartMs(a);
   const sb = shiftStartMs(b);

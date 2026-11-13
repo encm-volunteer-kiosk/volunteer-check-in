@@ -2951,6 +2951,35 @@ test("usualLength looks back 26 weeks and takes the 8 most recent", () => {
   );
 });
 
+test("a Date typed as m/d/yyyy sorts by its day among yyyy-MM-dd dates", () => {
+  const typed = (row, date, iso, outBy, minutes = 120) =>
+    past(row, date, minutes, outBy, {
+      recordedInMs: C(iso, "09:00"),
+      statedInMs: C(iso, "09:00"),
+    });
+  // The typed row is the latest: its check-out decides the notice.
+  const missed = (rows) => L.missedSignOut(rows, TOKEN, LAUNCH);
+  assert.equal(
+    missed([past(2, "2026-11-10", 120, "kiosk"), typed(3, "11/12/2026", TODAY, "EM")]),
+    true,
+  );
+  assert.equal(
+    missed([past(2, "2026-11-10", 120, "auto-close"), typed(3, "11/12/2026", TODAY, "kiosk")]),
+    false,
+  );
+  // The most recent Thursday is typed; it is one of the 8 most recent, and the oldest isn't.
+  const open = tapped(2, TODAY, "09:00");
+  const lengths = [200, 200, 200, 260, 200, 260, 260, 200, 260];
+  const rows = lengths.map((m, i) => {
+    const date = L.addDays("2026-11-05", -7 * i);
+    return i === 0 ? typed(30, "11/5/2026", date, "kiosk", m) : past(30 + i, date, m);
+  });
+  assert.deepEqual(plain(L.usualLength([open, ...rows], open)), {
+    minutes: 200,
+    weekday: "Thursday",
+  });
+});
+
 // ENCM's Shifts tab layout: A "Shifts" (the weekday), B "Shift Schedule" (a label), D
 // "Start", E "Finish". Invented windows; times as sheet times (a Date on 1899-12-30) and
 // as text.
