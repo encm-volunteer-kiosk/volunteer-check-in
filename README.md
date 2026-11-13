@@ -14,6 +14,17 @@ so hours can be credited to each volunteer and reported to grantmakers.
   There is no name grid and no sign-up path, because every volunteer is registered
   before they volunteer. The first time, a board member types the kiosk access code
   from the Settings tab; the tablet remembers it.
+- **Check-out reminders**: every check-in ends on a "You're checked in." screen with the
+  line "Don't forget to check out before you leave." When the volunteer's last shift
+  ended without their own Check Out, a notice comes first: "Welcome back, Sam! Last time
+  you didn't check out. Please tap Check Out before you leave today." It has one button,
+  Got it, which leads to the checked-in screen, and it never shows a time. Left untouched
+  for 60 seconds it goes back to the welcome screen; the check-in is already saved. The
+  last shift counts as missed when it is still open, or was closed by anything other than
+  the volunteer's tap: the auto clock-out, Fix a sign-out, Add a shift, or a row typed by
+  hand. Only shifts dated on or after "Kiosk launch date" count, so imported history never
+  shows the notice. Nothing is stored for it: the check-in that shows the notice is the
+  shift looked at next time, so each missed check-out shows it once.
 - **Server**: Apps Script (`apps-script/`) bound to a Check-In Log spreadsheet with Log
   and Settings tabs. Each shift is one Log row. The Log uses ENCM's own column names from
   their "2026-11 Log" sketch, then four columns of the kiosk's: Status, who entered the
@@ -30,7 +41,8 @@ so hours can be credited to each volunteer and reported to grantmakers.
 - **Reports**: a Monthly Hours tab that updates by itself, a frozen monthly report with
   CSV and PDF downloads, saved filter views on the Log, and a warning when someone edits
   a column the kiosk fills (see Reports).
-- **Not built yet**: the nightly close of shifts nobody signed out of.
+- **Daily jobs**: a weekly email of flags to staff, and an auto clock-out at about 4 AM
+  that closes shifts nobody checked out of, with a guessed time, flagged (see Daily jobs).
 
 Team design pages (private; ask Ethan for access):
 
@@ -51,7 +63,9 @@ to fix it quietly.
 
 The kiosk writes one tab named `Log`. A month is a filter on the Date column, not a tab of
 its own. Other tabs in the spreadsheet, such as ENCM's "2026-11 Log", belong to staff; the
-kiosk never reads or writes them.
+kiosk never reads or writes them. The exceptions are `Import ledger`, which Import past
+hours makes and adds to (see Kiosk admin menu), and `Shifts`, staff's shift schedule,
+which the auto clock-out reads and never writes (see Daily jobs).
 
 Row 1 is the header and stays frozen. The kiosk finds each column by its header text, not
 by its position, so staff can reorder columns, add columns of their own between them, and
@@ -77,7 +91,7 @@ an error naming the column, and `setupSheets` puts a missing one back (see Setup
 | N      | User Token                     | The volunteer's User Token from Volunteer Profiles, unhashed.          |
 | O      | Status                         | `open` from check-in until check-out, then `closed`.                   |
 | P      | Check-In Entered By            | `kiosk`, or the initials of the admin who entered the check-in.        |
-| Q      | Check-Out Entered By           | `kiosk`, or the initials of the admin who entered the check-out.       |
+| Q      | Check-Out Entered By           | `kiosk`, an admin's initials, or `auto-close` (see Daily jobs).        |
 | R      | Shift ID                       | A unique ID the kiosk gives each row; the admin menu finds rows by it. |
 
 The letters are where a new Log puts each column. A to N are ENCM's headers, word for word.
@@ -106,12 +120,32 @@ The kiosk writes these alerts here and nothing else:
   flag minutes" (Settings) from the tap.
 - `check-out differs by N min`, at check-out, when the stated check-out is more than
   "Check-out flag minutes" (Settings) from the tap.
+- `long shift: 10.25 h stated, over 8 h`, at check-out, when the shift's stated hours are
+  more than "Long shift flag hours" (Settings), whatever the clock or date (see Check-out
+  time).
 - `check-in time unreadable, stated hours left blank`, at check-out, when someone has
   edited the row's check-in times into something the kiosk can't read, such as `9ish` or
   a time on another date. A time typed alone, such as `9:00 AM`, is read (see Rows typed
   by hand), so it doesn't raise this alert. The tablet still shows the volunteer as
   checked in, and the row still closes at check-out, with blank hours, and counts as a
   shift of 0 hours until staff fix the times and hours by hand.
+
+The auto clock-out (see Daily jobs) writes one of these:
+
+- `auto clock-out at 1:30 PM, ...`, on a row it closed, ending with where the time came
+  from: `usual Tuesday length`, `Finish of the 9:00 AM Shifts window`, `arrival + 3 h`,
+  `time of the check-in tap`, `start of the next shift` or `time of this run`. The time
+  carries its weekday (`at Friday 2:00 AM`) when it is on another day than the row's Date.
+- `auto clock-out skipped: check-in time unreadable`, once, on an open row it couldn't
+  close because no time on it reads.
+
+Import past hours (Kiosk admin menu) writes one of these on an imported row whose name it
+couldn't match to exactly one volunteer:
+
+- `imported: no Volunteer Profiles match for this name; correct this row on the Log, not in
+  the old sheet`
+- `imported: name matches N Volunteer Profiles rows; correct this row on the Log, not in the
+  old sheet`, when N volunteers share the name.
 
 Check-out adds its alert after whatever the cell holds, joined with `; `. Text staff typed
 there is kept.
@@ -164,30 +198,71 @@ or earlier than the volunteer's stated arrival. The link shows only when at leas
 quarter-hour (:00, :15, :30, :45) falls between the stated arrival and now. It doesn't
 show when the open row's check-in time can't be read (or, for volunteers who share a name,
 any of their open rows'): there is no arrival to start from, so Check Out uses the
-server's clock.
+server's clock. It doesn't show either when the stated arrival is on an earlier date than
+today (for volunteers who share a name, the earliest of their arrivals): the picker offers
+times of today only, so Check Out uses the server's clock.
+
+The check-out screen says "You checked in at 9:45 PM.", or "You checked in yesterday at
+11:00 PM." after midnight, and shows "Your time so far".
 
 The server refuses a check-out time that is:
 
 - more than 5 minutes in the future. Up to 5 minutes ahead is taken as now.
-- on another day. The tablet only offers today.
 - before the volunteer's stated arrival. Equal to it is accepted, for 0 hours.
+- on another day than today, but only when the open row's check-in time can't be read.
+  Otherwise any time from the arrival up to now is accepted, past midnight too.
 
 A check-out earlier than the recorded check-in tap is allowed: a volunteer who states they
 arrived at 9:00, taps in at 11:00 and states they left at 10:00 is credited 1 stated hour,
 and the arrival alert marks the row. The server accepts any minute; the 15-minute steps
 are only the tablet's.
 
+### Overnight shifts
+
+A volunteer stays checked in on the tablet for "Auto clock-out after hours" (Settings,
+12 by default) after they tapped Check In, whatever arrival time they chose and past
+midnight too. A volunteer who checks in at 10 PM can check out at 1 AM, and is listed in
+the Checked-in sidebar until then. After midnight the check-out screen says "You checked
+in yesterday at 10:00 PM." and has no "Change your check-out time" link. Once that time has passed since the tap, the row is
+the auto clock-out's (see Daily jobs): the tablet shows the volunteer as not checked in,
+and they can check in again. Check Out with no chosen time uses the server's clock,
+whatever the date.
+
+A check-out past midnight is written as a date and time on its own date. The Log reads
+every time on a row as being on the row's Date, so the kiosk and the reports read that
+check-out as unreadable. The hours are safe: Hours Served (stated) is worked out when the
+row is written, and every report counts that cell. Two things leave the row out: the
+monthly report's adjustments comparison, which needs all four times, and the admin
+overlap check, as for a check-out typed before the check-in.
+
+### Long shifts
+
+A tablet check-out whose stated hours (from the stated arrival to the stated check-out,
+the hours the row is credited) are more than "Long shift flag hours" (Settings, 8 by
+default) gets the alert `long shift: 10.25 h stated, over 8 h` in Admin Alerts? and a
+Flags row, whatever the clock or date. Exactly that many hours is not flagged. It catches
+a sign-out made the next morning that credits the whole night; a short overnight shift,
+such as 11 PM to 2 AM, is not flagged. Fix a sign-out, Add a shift and the auto clock-out
+don't raise it: staff typed those times, and every auto clock-out is flagged anyway.
+
 ## Flags tab
 
 A flag is an alert the kiosk writes to Admin Alerts? on the Log: a stated arrival or
-check-out far from the tap, or a check-in time it couldn't read. Each one is also copied
+check-out far from the tap, a long shift, a check-in time it couldn't read, a time the
+auto clock-out guessed, or an imported name it couldn't match. Each one is also copied
 to a tab named `Flags`, one row per flag, so staff can tick it off once someone has looked
 at it. The Log row is still the record: Admin Alerts? keeps every flag.
 
-Only the kiosk adds Flags rows, at check-in and at check-out. The Kiosk admin menu adds
-none: shifts added or closed with it carry the admin's initials in the Entered By columns
-and show in the `Kiosk: Admin-entered` filter view (see Reports). Editing the Log by hand
-adds no Flags row.
+Only the kiosk adds Flags rows, at check-in and at check-out, the auto clock-out, one per
+row it closes or skips, and Import past hours, for names it couldn't match. Add a shift and Fix a sign-out add none: shifts added or closed
+with them carry the admin's initials in the Entered By columns and show in the `Kiosk:
+Admin-entered` filter view (see Reports). Editing the Log by hand adds no Flags row.
+
+Import past hours adds one Flags row per unmatched name per run, not one per row: Source
+`import`, the Reason is the row's alert with the name's row count in that run added (`(14
+rows in this import)`), and Date, Shift ID and Log Row are those of the name's first new
+row. The other rows of that name carry the alert in Admin Alerts? and show in the `Kiosk:
+Flagged` view.
 
 | Column | Header         | What it holds                                                     |
 | ------ | -------------- | ----------------------------------------------------------------- |
@@ -199,7 +274,7 @@ adds no Flags row.
 | F      | Reviewed       | A tickbox. Tick it once you've looked at the flag.                |
 | G      | Reviewed By    | Your initials.                                                    |
 | H      | Notes          | What you found or did.                                            |
-| I      | Source         | `kiosk check-in` or `kiosk check-out`.                            |
+| I      | Source         | `kiosk check-in`, `kiosk check-out`, `auto-close` or `import`.    |
 | J      | Log Row        | The Log row number then. A hint only: sorting the Log moves rows. |
 
 To review: open Data > Filter views > `Flags: Unreviewed`. It shows the flags not yet
@@ -207,10 +282,11 @@ ticked, newest first. Tick Reviewed, type your initials in Reviewed By, and add 
 there's something to say. A ticked flag leaves the view. The sheet's edit history (right
 click a cell > Show edit history) shows who ticked it and when.
 
-The kiosk only adds rows to this tab. It finds its columns by header, as on the Log, and
-never reads a Flags row back, so sorting, filtering or deleting Flags rows is safe, and so
-are columns of your own. Reviewed By and Notes are yours; the kiosk never writes them.
-There is no User Token on this tab; find it on the Log row by Shift ID if you need it.
+The kiosk only adds rows to this tab. It finds its columns by header, as on the Log. Only
+the weekly flags email (see Daily jobs) reads Flags rows, and only to count and list them,
+so sorting, filtering or deleting Flags rows is safe, and so are columns of your own.
+Reviewed By and Notes are yours; the kiosk never writes them. There is no User Token on
+this tab; find it on the Log row by Shift ID if you need it.
 
 A flag can be missing from this tab only when the tab was broken at the time (renamed,
 deleted or missing a header), or when a row typed by hand with no Shift ID is closed at
@@ -243,15 +319,38 @@ there.
 | Check-out flag minutes        | 15                              | How far a stated check-out may be from the tap before it gets an alert.                    |
 | Volunteer hour value          | blank                           | The dollar value of one volunteer hour, for the monthly report (see Reports).              |
 | Profiles problems             | blank                           | Written by the kiosk: Profiles rows it had to leave out, and why.                          |
-| Closing time Monday to Sunday | 17:00                           | Kept for the nightly close, which is not built yet.                                        |
+| Closing time Monday to Sunday | 17:00                           | Not read. The auto clock-out takes shift times from the `Shifts` tab instead.              |
+| Auto clock-out after hours    | 12                              | Hours after the check-in tap that an open row stays on the tablet. 10 to 24 (below).       |
+| Auto clock-out last run       | blank                           | Written by the auto clock-out: when it last ran, Central, and how many rows it closed.     |
+| Long shift flag hours         | 8                               | A tablet check-out crediting more hours than this is flagged (below).                      |
+| Flags email                   | Off                             | `On` (any capitals) turns the weekly flags email on; anything else is off.                 |
+| Flags email to                | blank                           | Who gets it: addresses separated by commas, semicolons, spaces or new lines.               |
+| Flags email day               | Monday                          | The day it sends: an English weekday, in full or its first three letters.                  |
+| Flags email hour              | 8                               | The hour it sends, Central: a whole number from 0 to 23.                                   |
+| Flags email last run          | blank                           | Written by the weekly email: when it last ran, and `sent to N` or `nothing to send`.       |
+| Daily jobs installed by       | blank                           | Written by `setupDailyJobs`: the account that owns the daily jobs.                         |
+| Past hours file ID            | blank                           | Fills in the Import past hours window; an import that adds rows saves what it used.        |
+| Past hours tab                | Historical Hours                | The same, for the tab.                                                                     |
 
-"Check-out flag minutes" is new with the check-out time picker, and "Volunteer hour value"
-with the reports. On a spreadsheet set up before them, run `setupSheets` once to add them.
+"Auto clock-out after hours" is read as given from 10 to 24; anything else, blank or
+unreadable, reads as 12. A window shorter than a shift plus some slack would take a
+volunteer who is still there off the tablet: they would show as not checked in, could
+check in a second time, and both rows would get a guessed time.
+
+"Long shift flag hours": a tablet check-out whose stated hours (from the stated arrival to
+the stated check-out, the hours the row is credited) are more than this gets an alert in
+Admin Alerts? and a Flags row, whatever the clock or date. Exactly this many is not
+flagged. A blank, 0, negative or unreadable value reads as 8.
+
+"Check-out flag minutes" is new with the check-out time picker, "Volunteer hour value"
+with the reports, and the rows from "Auto clock-out after hours" down with the daily jobs.
+On a spreadsheet set up before them, run `setupSheets` once to add them.
 
 ## Kiosk admin menu
 
-Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with three items: Add a
-shift, Fix a sign-out, and Monthly report, which is described under Reports. Anyone
+Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with four items: Add a
+shift, Fix a sign-out, Monthly report, which is described under Reports, and Import past
+hours. Anyone
 who can edit the spreadsheet can use it. It runs as whoever has the sheet open, which at
 ENCM is the shared account, so:
 
@@ -338,6 +437,78 @@ Check-Out Entered By. A note is added after whatever Notes holds. Check-Out Reco
 Hours Served (timestamps) stay blank. Any open row can be fixed, today's included; the
 tablet shows the volunteer as not checked in at its next refresh.
 
+### Import past hours
+
+For bringing shifts from an old hours sheet into the Log, such as ENCM's "Old Volunteer
+Hours". It can be run again at any time: it never brings in the same shift twice.
+
+The window asks for the spreadsheet (paste its link or its ID), the tab, and your initials.
+The account at the sheet needs to be able to open that spreadsheet. The first time, the tab
+is `Historical Hours`; after a run that writes, the window offers the spreadsheet and tab
+that run used, kept in the Settings rows "Past hours file ID" and "Past hours tab".
+
+**The tab's layout**: a header row, then one row per shift. Columns are found by header,
+as on the Log:
+
+- `Date`, `First name` and `Last name` must be there.
+- Hours are in the column headed `Hours`, or, when there is none, in the column right
+  after `Last name` (ENCM's tab leaves it without a header).
+- `Source cell`, and the column without a header just left of it, which names the month
+  tab, are optional. They are copied into the row's Notes.
+
+**Preview** reads the tab and writes nothing. It shows the rows read; how many it would
+import, split into names matched to Volunteer Profiles and names not matched; the
+unmatched names with their row counts, so you can fix Profiles first; how many are already
+imported; rows left out, with their row numbers and why; and the hours it would add.
+**Import** works the list out again and writes it, then says what it did.
+
+A row is **left out** when its Date isn't a day (`yyyy-MM-dd`, `m/d/yyyy` or a date the
+sheet holds as a date), its Date is after today or on or after "Kiosk launch date", it
+has no first or last name, or its hours aren't a number above 0 and at most 24. Left-out
+rows aren't remembered: fix them in the old sheet and run the import again.
+
+A Date the old sheet holds as a date is read in that spreadsheet's own time zone (File →
+Settings there), so its rows land on the day the sheet shows whatever zone it is set to.
+Dates typed as text are read as written.
+
+Both Preview and Import refuse while "Kiosk launch date" in Settings is blank or isn't a
+date. Shifts from the launch date on are the kiosk's own, and importing them would count
+them twice.
+
+Each imported row gets:
+
+- Date and Day; the source's hours in Hours Served (stated); Status `closed`; `import` in
+  both Entered By columns; and a Shift ID starting `import-`.
+- No times: the four time columns and Hours Served (timestamps) stay blank.
+- When the name matches exactly one volunteer in Profiles (first and last name, ignoring
+  capitals and extra spaces), that volunteer's name and User Token.
+- When it matches none, or several volunteers who share the name: the name as written in
+  the old sheet, the stand-in User Token `import:` followed by the name in small letters
+  (`import:jane doe`), and an alert in Admin Alerts?. One Flags row per name (see Flags
+  tab). The rows count in every report under that name, as one volunteer. When you know
+  who it is, type the volunteer's real User Token over the stand-in on each row. Nothing
+  changes or deletes these rows on its own.
+- In Notes, when the Log has a Notes column: `Imported by JP from Old Volunteer Hours ›
+  Historical Hours row 12 (2025.12 C3)`.
+
+**The Import ledger.** The first run that writes makes a tab named `Import ledger`, and
+every run adds one line per imported shift: its source key, Shift ID, when and by whom,
+and the file, tab and row it came from. A shift's source key is its date, its name as
+written, and its count among rows with that date and name. A run skips every key the
+ledger holds, so a second run adds nothing, and a row you delete from the Log stays
+deleted. Deleting the ledger tab, or lines of it, makes those shifts come back on the next
+run. Don't edit it.
+
+**Correct an imported row on the Log, never in the old sheet.** Its name and date are its
+key, so a name or date fixed in the old sheet looks like a new shift, and the next run
+would import it again beside the old row. Fix the name, User Token, date or hours on the
+Log. Only rows the preview left out are fixed in the old sheet.
+
+Rows are written in blocks of 250, each taking the kiosk's lock for a few seconds, so the
+tablet keeps working during an import. If a run stops part way (the kiosk was busy, or
+Google's 6-minute limit was near), the window says so; whole blocks are kept, and running
+it again brings in the rest.
+
 ### What the menu won't do
 
 It doesn't edit a closed row, change a check-in time, or delete a row. Staff change those
@@ -345,7 +516,7 @@ cells by hand in the sheet.
 
 It can't close an open row whose Date or check-in time can't be read. Fix that cell by
 hand first, then use Fix a sign-out. If the row is dated today, the volunteer can still
-check out on the tablet instead: the row closes with blank hours and the
+check out on the tablet that day instead: the row closes with blank hours and the
 `check-in time unreadable, stated hours left blank` alert, and staff then fix the times
 and hours by hand.
 
@@ -354,6 +525,135 @@ to run `setupSheets`, which adds it.
 
 The menu can't be reached from the kiosk page. Every menu function checks that it was
 called from the open spreadsheet, through a window the menu opened.
+
+## Daily jobs
+
+Jobs the script runs on its own, on Google's timed triggers: the weekly flags email,
+checked every hour, and the auto clock-out, once a day at about 4 AM Central. They live in
+`apps-script/Jobs.js`.
+
+### Who runs them
+
+The jobs run as the account that installed them, and only that account. At ENCM that is
+a Workspace account kept for the kiosk. It needs edit access to the Check-In Log
+spreadsheet; it doesn't need Volunteer Profiles.
+
+To install them, sign in to Google as that account, open the Check-In Log, then
+Extensions > Apps Script, choose `setupDailyJobs` in the function list and Run it. Accept
+the permissions Google asks for. It deletes that account's own earlier job triggers,
+makes one trigger per job, and writes the account into Settings "Daily jobs installed
+by". Running it again replaces the account's triggers, so there is never a second copy.
+The editor's Triggers page (the clock icon) shows them.
+
+- **Failures.** When a job fails, Google emails a failure summary to the account that
+  owns the trigger, and to nobody else. Make sure someone reads that account's mail, or
+  forward it.
+- **After a push that adds a permission**, the owner must open the Apps Script editor and
+  run `setupDailyJobs` again (or any function) to authorize it. Until then every job run
+  fails, and only the owner hears about it.
+- **Other accounts are asked too.** Google's permissions belong to the whole script, so
+  the account that deploys the web app and the account that uses the Kiosk admin menu are
+  also asked to allow sending email and managing triggers the next time they run
+  something. They never send email or install a trigger; accept so the menu and kiosk keep
+  working.
+- **Moving the jobs to another account.** Google lets an account see and delete only its
+  own triggers. Signed in as the old owner, run `removeDailyJobs`: it deletes that
+  account's job triggers and clears "Daily jobs installed by" if it names that account.
+  Then install them as the new owner. If the old account can't sign in any more, its
+  triggers stop when the account is disabled or removed.
+
+`setupDailyJobs` and `removeDailyJobs` run only from the editor. The jobs themselves run
+only from their own triggers: run from the editor or the kiosk page they refuse. Two
+accounts' triggers running side by side would not send twice; each job checks its
+last-run row first, under the kiosk's lock.
+
+### Weekly flags email
+
+Every hour the email job checks Settings. It sends nothing until "Flags email" is `On`
+and "Flags email to" holds at least one address. Then it sends once a week, at the first
+hourly run on or after "Flags email day" at "Flags email hour" (Central), and writes
+"Flags email last run". A run that couldn't send is caught up by the next hourly run. A
+changed day or hour applies at once. To send again this week, clear "Flags email last
+run": the next hourly run sends.
+
+The email comes from the owner account's domain no-reply address, named "ENCM Volunteer
+Kiosk". It says:
+
+- how many flags were raised in the last 7 days, and how many are still unreviewed, of
+  any age (rows with a Volunteer Name or Shift ID whose Reviewed isn't ticked, the same
+  rows the `Flags: Unreviewed` view shows plus any staff typed without a Shift ID);
+- a link that opens the Flags tab;
+- the week's flags, newest first: date, name and reason, up to 25, then "and N more";
+- first, when the auto clock-out hasn't run for more than 2 days (or ever), a warning that
+  open shifts aren't being closed, with when it last ran;
+- last, any entries in "Flags email to" that aren't email addresses, which were skipped.
+
+When there is no new flag, none unreviewed and no warning, it sends nothing and writes
+`nothing to send`. The email holds volunteers' names and flag reasons, never a User
+Token. A missing or broken Flags tab makes the run fail (and the owner gets Google's
+failure email) rather than send a wrong count. If the run finds the kiosk's lock busy for
+30 seconds, it stops and the next hourly run catches up.
+
+### Auto clock-out
+
+Once a day, at some minute between 4 and 5 AM Central, the auto clock-out closes shifts
+nobody checked out of. It closes every `open` row dated on or after "Kiosk launch date"
+whose check-in tap was at least "Auto clock-out after hours" ago (or, for a row with no
+recorded tap, its stated arrival). That is the same line at which the tablet stops
+offering the row, so a row is never both the tablet's and the job's. It closes old rows
+as well as last night's, so a run that was missed is caught up the next day. A blank or
+unreadable "Kiosk launch date" makes the run fail, and the owner gets Google's failure
+email, rather than close every open row the Log has ever had.
+
+The time it writes is a guess, and never before the volunteer tapped in, after the run, or
+after the start of the volunteer's next shift. It tries, in order:
+
+1. **The volunteer's usual length** on that weekday: the middle value of their stated
+   hours on the same weekday in the last 26 weeks, from up to 8 of their most recent
+   shifts checked out at the tablet, by an admin, or typed by hand (never auto-closed or
+   imported ones). It needs at least 3 such shifts, and two thirds of them within an hour
+   of each other.
+2. **The Finish of their shift on the `Shifts` tab**: the window on that weekday whose
+   Start is nearest their arrival, counting an arrival up to 30 minutes early. A Finish
+   not after its Start is the next morning.
+3. **Their arrival plus 3 hours**, moved up to their check-in tap when that was later,
+   and back to their next shift's start when that was earlier.
+
+The row gets the guess in Check-Out Stated, Hours Served (stated) from the arrival to the
+guess, Status `closed`, and `auto-close` in Check-Out Entered By. Check-Out Recorded and
+Hours Served (timestamps) stay blank: nobody tapped. Admin Alerts? gets
+`auto clock-out at 1:30 PM, ...` naming where the time came from, and the Flags tab a row
+with Source `auto-close`. The guessed hours count in reports straight away. At the end it
+writes "Auto clock-out last run": when it ran and how many rows it closed. The weekly email
+warns when that is more than 2 days old.
+
+**The `Shifts` tab** is staff's; the job only reads it. It finds the columns by their
+headers, `Shifts` (the weekday, in full or its first three letters), `Start` and
+`Finish`, in the first of the tab's top rows that has all three; other columns, such as
+`Shift Schedule`, are ignored. Times may be sheet times or text such as `9:00 AM` or
+`9 AM`. A row missing any of the three is skipped. With no `Shifts` tab, or no such headers,
+step 2 is skipped and the run logs one line saying so.
+
+**To correct a guessed time**, edit the row on the Log by hand: Check-Out Stated and Hours
+Served (stated). Fix a sign-out only takes open rows. Tick the Flags row once done.
+
+**An open row whose check-in time can't be read** (such as `9ish`) can't be guessed for.
+From the day after its Date, the run leaves it open, gives it a Shift ID if it has none,
+and flags it once with `auto clock-out skipped: check-in time unreadable`. To clear it,
+type its check-in time on the Log, then close it with Fix a sign-out, or let the next run
+guess it.
+
+Open rows dated before "Kiosk launch date", or whose Date can't be read, are never closed
+or flagged. An open row counts no hours, and doesn't stop the volunteer checking in.
+
+Each run takes the kiosk's lock, so a tablet tap at that minute may wait or see "The kiosk
+is busy". A run that finds the lock busy for 30 seconds fails, and the next day's run
+catches up. A first run at ENCM may close a backlog of old open rows: `setupDailyJobs`
+logs how many a run would close now. A run stops starting new rows after 4.5 minutes,
+inside Google's 6-minute limit, and leaves the rest for the next day. Just before it
+writes a row, it reads that row again; if staff have sorted, inserted, deleted or edited
+Log rows so the row is no longer the open one it read at the start, it leaves it alone,
+logs one line, and the next day's run picks it up where it now is.
 
 ## Reports
 
@@ -388,11 +688,26 @@ Log cell. No report shows a User Token: tokens are read only to tell volunteers 
   with a User Token, using its stated hours. It has no recorded time for the end the admin
   entered, so it is never in the adjustments comparison. It is listed under rows entered
   by an admin, with the initials.
-- **Auto-closed rows**: the nightly close isn't built, and what it will write isn't
-  decided. Whatever it writes, a row with a Status other than `open` or `closed` is not
-  counted and is listed for review. A row whose Check-In Entered By or Check-Out Entered
-  By holds something other than `kiosk` or initials, such as `auto-close`, is listed for
-  review too, and counts if it is `closed` with a User Token.
+- **Auto-closed rows** (see Daily jobs) are `closed`, keep their User Token, and count
+  with the hours from the guessed time. They have no Check-Out Recorded, so they are never
+  in the adjustments comparison. A report lists them under flagged rows and under rows
+  entered another way (`out "auto-close"`), and the `Kiosk: Flagged` and `Kiosk: Other
+  status or source` views show them. A row with a Status other than `open` or `closed` is
+  not counted and is listed for review.
+- **Imported rows** (Import past hours, Kiosk admin menu) are `closed`, have a User
+  Token and Hours Served (stated), and count in the month of their Date. They have no
+  times, so they are never in the adjustments comparison; a report lists them under rows
+  entered another way (`in "import", out "import"`), and an unmatched one under flagged
+  rows too. A report for an imported month lists every imported row for review. Importing
+  changes reports made afterwards, including for kiosk months:
+  - **New volunteers**: a volunteer's first shift is their first in the whole Log, so a
+    volunteer with imported shifts is new in the month of the earliest, not when they first
+    used the kiosk.
+  - **Milestones** are counted over every counted row, so a milestone may now be crossed
+    in an imported month instead of a later one. The kiosk counts imported hours toward
+    milestones too, so a volunteer with years of hours isn't told at check-out that they
+    reached 50 hours for the first time.
+  - The **`Kiosk: Other status or source`** view shows every imported row.
 
 ### Monthly Hours tab
 
@@ -650,8 +965,10 @@ To add the reports to a sheet in use, follow the steps under Setting up the repo
 ```
 pnpm dev         front end alone, with invented volunteers kept in the browser (two
                  Jordan Riveras try the phone step: 0142 and 0187). Any code of 16+
-                 letters opens it; Shift+D opens its test tools.
-pnpm test        server logic and setup tests (Node)
+                 letters opens it; Shift+D opens its test tools. The window after the
+                 tap is 12 hours. Jennifer Smith and Chris Thompson show the missed
+                 check-out notice at their next check-in (reset to see it again).
+pnpm test        server logic, setup and kiosk store tests (Node)
 pnpm build       the Figma Make build
 pnpm build:gas   one self-contained page, copied to apps-script/Index.html
 pnpm push        build:gas, then clasp push
@@ -667,7 +984,10 @@ apps-script/Api.js          doGet and the api* functions the page calls
 apps-script/Admin.js        the Kiosk admin menu and its dialogs' server functions
 apps-script/AdminDialog.html the admin dialogs (plain HTML and JavaScript, committed source)
 apps-script/Reports.js      setupReports and the Monthly report menu item's server functions
+apps-script/Jobs.js         the daily jobs: setupDailyJobs, removeDailyJobs, the weekly flags email
 apps-script/Report.html     the Monthly report window (plain HTML and JavaScript, committed source)
+apps-script/Import.js       the Import past hours menu item: preview, write, ledger and flags
+apps-script/ImportDialog.html the Import past hours dialog (plain HTML and JavaScript, committed source)
 apps-script/Logic.js        the rules, as plain functions the Node tests load
 apps-script/Sheets.js       Log, Settings, Flags and Profiles access; setupSheets, setupSampleProfiles
 apps-script/SampleData.js   invented Volunteer Profiles rows for development

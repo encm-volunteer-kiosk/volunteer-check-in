@@ -6,9 +6,14 @@ export type Volunteer = {
   email?: string;
   active: boolean;
   expectedToday: boolean;
+  // The stated arrival of the volunteer's latest open shift, or null.
   currentCheckIn: string | null;
-  // From the server's list: checked in today, even when the open row's check-in time can't
-  // be read (currentCheckIn is then null).
+  // Local store only: when that shift's Check In was tapped. The window is measured from it;
+  // a shift stored without it is measured from its stated arrival, as on the server.
+  currentCheckInTappedAt?: string | null;
+  // From the server's list: checked in, so the tablet offers Check Out. The server keeps a
+  // volunteer checked in for the window after the tap, past midnight too, even when the
+  // open row's check-in time can't be read (currentCheckIn is then null).
   checkedIn?: boolean;
   completedShiftCount: number;
   totalVolunteerMinutes: number;
@@ -23,6 +28,9 @@ export type VolunteerEvent = {
   eventType: "check_in" | "check_out";
   timestamp: string;
   shiftId: string;
+  // A check-out's maker. Absent or "kiosk" is a tablet tap; anything else, such as
+  // "auto-close" or staff initials, is a check-out the volunteer didn't make.
+  enteredBy?: string;
 };
 
 export type KioskData = {
@@ -104,6 +112,40 @@ export function isToday(iso: string) {
   return centralDay(iso) === centralDay(new Date().toISOString());
 }
 
+// "Auto clock-out after hours" at its default. The local store has no Settings tab.
+export const checkInWindowMs = 12 * 3_600_000;
+
+/**
+ * True when the volunteer's open shift is still the tablet's at nowMs: less than the window
+ * has passed since its Check In tap (else its stated arrival). Past midnight too. Once the
+ * window has passed, the shift waits for the auto clock-out and the volunteer can check in
+ * again.
+ */
+export function isCheckedInAt(volunteer: Volunteer, nowMs: number, windowMs = checkInWindowMs) {
+  if (!volunteer.currentCheckIn) return false;
+  const at = Date.parse(volunteer.currentCheckInTappedAt ?? volunteer.currentCheckIn);
+  return Number.isFinite(at) && nowMs - at < windowMs;
+}
+
+/**
+ * True when the volunteer's latest shift, by stated arrival, ended without their own Check
+ * Out: still open (so it has left the window, or check-in would be refused), or closed by
+ * someone else. Read before a check-in writes its shift, so it is true at most once per
+ * missed check-out.
+ */
+export function missedSignOut(data: KioskData, volunteerId: string) {
+  let last: VolunteerEvent | null = null;
+  for (const event of data.events) {
+    if (event.volunteerId !== volunteerId || event.eventType !== "check_in") continue;
+    // On a tie the later one written wins.
+    if (!last || Date.parse(event.timestamp) >= Date.parse(last.timestamp)) last = event;
+  }
+  if (!last) return false;
+  const shiftId = last.shiftId;
+  const out = data.events.find((e) => e.shiftId === shiftId && e.eventType === "check_out");
+  return !out || (out.enteredBy ?? "kiosk") !== "kiosk";
+}
+
 function createSeed(): KioskData {
   const now = Date.now();
   const volunteers = names.map(([firstName, lastName], index) => ({
@@ -140,6 +182,9 @@ function createSeed(): KioskData {
           eventType: "check_out",
           timestamp: new Date(start.getTime() + duration * 60_000).toISOString(),
           shiftId,
+          // Jennifer Smith's latest shift was closed by the auto clock-out, so her next
+          // check-in shows the missed check-out notice.
+          ...(v.id === "vol-3" && h === 0 ? { enteredBy: "auto-close" } : {}),
         },
       );
     }
@@ -153,7 +198,8 @@ function createSeed(): KioskData {
     timestamp: active.currentCheckIn!,
     shiftId: activeShift,
   });
-  // An intentionally unfinished old shift: preserved, but never treated as today's active shift.
+  // An unfinished old shift, long out of the window: Chris Thompson isn't checked in, and his
+  // next check-in shows the missed check-out notice.
   const oldIncomplete = new Date(now - 3 * 86_400_000).toISOString();
   events.push({
     id: "incomplete-vol-6",
@@ -165,24 +211,11 @@ function createSeed(): KioskData {
   return { volunteers, events, recognizedMilestones: [], messageIndex: 0 };
 }
 
-function normalize(data: KioskData): KioskData {
-  return {
-    ...data,
-    volunteers: data.volunteers.map((volunteer) => ({
-      ...volunteer,
-      currentCheckIn:
-        volunteer.currentCheckIn && isToday(volunteer.currentCheckIn)
-          ? volunteer.currentCheckIn
-          : null,
-    })),
-  };
-}
-
 export const kioskStore = {
   load(): KioskData {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) return normalize(JSON.parse(stored));
+      if (stored) return JSON.parse(stored);
       const seed = createSeed();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(seed));
       return seed;
@@ -205,16 +238,25 @@ export const kioskStore = {
   },
 };
 
-export function checkIn(data: KioskData, volunteerId: string, timestamp: string): KioskData {
+// timestamp is the stated arrival, tappedAt the moment Check In was tapped. An open shift
+// that has left the window stays open, without a check-out, as the auto clock-out finds it.
+export function checkIn(
+  data: KioskData,
+  volunteerId: string,
+  timestamp: string,
+  tappedAt = new Date().toISOString(),
+): KioskData {
   const volunteer = data.volunteers.find((v) => v.id === volunteerId);
-  if (!volunteer || (volunteer.currentCheckIn && isToday(volunteer.currentCheckIn))) {
+  if (!volunteer || isCheckedInAt(volunteer, Date.parse(tappedAt))) {
     throw new Error("Volunteer is already checked in");
   }
   const shiftId = crypto.randomUUID();
   return {
     ...data,
     volunteers: data.volunteers.map((v) =>
-      v.id === volunteerId ? { ...v, currentCheckIn: timestamp } : v,
+      v.id === volunteerId
+        ? { ...v, currentCheckIn: timestamp, currentCheckInTappedAt: tappedAt }
+        : v,
     ),
     events: [
       ...data.events,
@@ -223,9 +265,14 @@ export function checkIn(data: KioskData, volunteerId: string, timestamp: string)
   };
 }
 
-export function checkOut(data: KioskData, volunteerId: string, timestamp: string) {
+export function checkOut(
+  data: KioskData,
+  volunteerId: string,
+  timestamp: string,
+  nowMs = Date.now(),
+) {
   const volunteer = data.volunteers.find((v) => v.id === volunteerId);
-  if (!volunteer?.currentCheckIn || !isToday(volunteer.currentCheckIn))
+  if (!volunteer?.currentCheckIn || !isCheckedInAt(volunteer, nowMs))
     throw new Error("No active shift");
   const openEvent = [...data.events]
     .reverse()
@@ -296,6 +343,7 @@ export function checkOut(data: KioskData, volunteerId: string, timestamp: string
           ? {
               ...v,
               currentCheckIn: null,
+              currentCheckInTappedAt: null,
               completedShiftCount: after.shifts,
               totalVolunteerMinutes: after.minutes,
             }

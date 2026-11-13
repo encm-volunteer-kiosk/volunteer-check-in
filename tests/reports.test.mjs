@@ -884,9 +884,9 @@ test('refusal("ADMIN_BAD_MONTH")', () => {
   });
 });
 
-test("settingsDefaults has 15 rows, Volunteer hour value blank after the check-out flag", () => {
+test("settingsDefaults has 26 rows, Volunteer hour value blank after the check-out flag", () => {
   const rows = plain(L.settingsDefaults("2026-11-12"));
-  assert.equal(rows.length, 15);
+  assert.equal(rows.length, 26);
   const names = rows.map((r) => r[0]);
   const at = names.indexOf("Volunteer hour value");
   assert.equal(at, names.indexOf("Check-out flag minutes") + 1);

@@ -1,15 +1,18 @@
-// Tests for apps-script/Admin.js, the Kiosk admin menu, and the public functions of
-// apps-script/Reports.js, which the menu's Monthly report item calls. The server files are loaded into
+// Tests for apps-script/Admin.js, the Kiosk admin menu, the public functions of
+// apps-script/Reports.js, which the menu's Monthly report item calls, and the guard on the
+// public functions of apps-script/Jobs.js, the daily jobs. The server files are loaded into
 // one global scope, as Apps Script loads them, with stand-ins for the Google services
 // that record every call. Two kinds of test:
 //
-// - The guard. Every public function in Admin.js and Reports.js (a top-level function
-//   whose name doesn't end in _) can be named by the kiosk page through google.script.run.
-//   Each must check that the person at the sheet runs it, and that it holds a dialog key
-//   the spreadsheet's menu issued, before it reads or writes anything. Two kinds are
-//   exempt from the key only: the dialog openers, which make it, and setupReports, which
-//   runs from the editor as setupSheets does. The list of functions comes from the two
-//   files' source, so a public function added later is held to the same rule.
+// - The guard. Every public function in Admin.js, Reports.js and Jobs.js (a top-level
+//   function whose name doesn't end in _) can be named by the kiosk page through
+//   google.script.run. Each must check that the person at the sheet runs it, and that it
+//   holds a dialog key the spreadsheet's menu issued, before it reads or writes anything.
+//   Three kinds are exempt from the key only: the dialog openers, which make it; the
+//   functions run from the editor as setupSheets is (setupReports, setupDailyJobs,
+//   removeDailyJobs); and the trigger handlers, which check the trigger's id instead. The
+//   list of functions comes from the files' source, so a public function added later is
+//   held to the same rule.
 // - The glue: the admin functions read and write an in-memory Log through Sheets.js, and
 //   the kiosk's check-in and check-out copy their flags to an in-memory Flags tab.
 
@@ -20,11 +23,19 @@ import vm from "node:vm";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
-const SERVER_FILES = ["Logic.js", "Sheets.js", "Api.js", "Admin.js", "Reports.js"].map((f) => [
+const SERVER_FILES = [
+  "Logic.js",
+  "Sheets.js",
+  "Api.js",
+  "Admin.js",
+  "Reports.js",
+  "Jobs.js",
+  "Import.js",
+].map((f) => [f, read("apps-script/" + f)]);
+const GUARDED_FILES = ["Admin.js", "Reports.js", "Jobs.js", "Import.js"].map((f) => [
   f,
   read("apps-script/" + f),
 ]);
-const GUARDED_FILES = ["Admin.js", "Reports.js"].map((f) => [f, read("apps-script/" + f)]);
 
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const TZ = "America/Chicago";
@@ -188,8 +199,8 @@ class FakeSheet {
  * settings (rows), volunteers (the cached Profiles list), keys (dialog keys already
  * issued), flags (the Flags tab's rows, FLAG_HEADER alone by default; null for no Flags
  * tab), flagsMaxRows (its last grid row), now (a fixed server clock, in ms), onFlush
- * (run on each SpreadsheetApp.flush). errors
- * collects what the server logs with console.error.
+ * (run on each SpreadsheetApp.flush), triggers (this account's project triggers, as
+ * [{uid, handler}]). errors collects what the server logs with console.error.
  */
 function server(opts = {}) {
   const calls = [];
@@ -247,6 +258,16 @@ function server(opts = {}) {
           put: (k, v) => void cache.set(k, v),
         }),
     }),
+    ScriptApp: service("ScriptApp", {
+      getProjectTriggers: () =>
+        (opts.triggers || []).map((t) =>
+          service("trigger", {
+            getUniqueId: () => t.uid,
+            getHandlerFunction: () => t.handler,
+          }),
+        ),
+    }),
+    MailApp: service("MailApp", {}),
     LockService: service("LockService", {
       getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }),
     }),
@@ -326,22 +347,30 @@ function server(opts = {}) {
 // ---------------------------------------------------------------------------
 // The guard
 
-/** Top-level function names declared in Admin.js and Reports.js. */
+/** Top-level function names declared in Admin.js, Reports.js and Jobs.js. */
 const declared = GUARDED_FILES.flatMap(([, source]) =>
   [...source.matchAll(/^function\s+([\w$]+)\s*\(/gm)].map((m) => m[1]),
 );
 const PUBLIC = declared.filter((name) => !name.endsWith("_"));
 const isOpener = (name) => /^open\w*Dialog$/.test(name);
 // Run by hand from the editor, guarded like setupSheets: no dialog, so no key.
-const EDITOR_ONLY = ["setupReports"];
+const EDITOR_ONLY = ["setupReports", "setupDailyJobs", "removeDailyJobs"];
+// Run by a trigger: the trigger's id stands in for the key.
+const TRIGGER_ONLY = ["runFlagsEmail", "runAutoClockOut"];
 const KEYED = PUBLIC.filter(
-  (name) => name !== "onOpen" && !isOpener(name) && !EDITOR_ONLY.includes(name),
+  (name) =>
+    name !== "onOpen" &&
+    !isOpener(name) &&
+    !EDITOR_ONLY.includes(name) &&
+    !TRIGGER_ONLY.includes(name),
 );
 const onlyFrom = (calls, allowed) =>
   calls.filter((c) => !allowed.some((a) => (a.endsWith(".") ? c.startsWith(a) : c === a)));
 
-test("Admin.js and Reports.js declare the menu's public functions, and only functions", () => {
+test("Admin.js, Reports.js and Jobs.js declare the public functions, and only functions", () => {
   for (const name of [
+    ...EDITOR_ONLY,
+    ...TRIGGER_ONLY,
     "onOpen",
     "openAddShiftDialog",
     "openFixSignOutDialog",
@@ -391,6 +420,25 @@ test("every function the report dialog or menu names is public; every writer is 
   ]);
 });
 
+test("ImportDialog.html calls only keyed functions; Import.js's other public name is its opener", () => {
+  const html = read("apps-script/ImportDialog.html");
+  const called = [...html.matchAll(/call\("(\w+)"/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(called)].sort(), ["adminImportPreview", "adminImportRun"]);
+  for (const name of called) assert.ok(KEYED.includes(name), name);
+  // Every server call goes through call(), which passes the key first.
+  assert.equal(html.match(/google\.script\.run/g).length, 1);
+  assert.match(html, /\[name\]\(KEY, \.\.\.args\)/);
+  const source = GUARDED_FILES.find(([f]) => f === "Import.js")[1];
+  const importPublic = [...source.matchAll(/^function\s+([\w$]+)\s*\(/gm)]
+    .map((m) => m[1])
+    .filter((n) => !n.endsWith("_"));
+  assert.deepEqual(importPublic.sort(), [
+    "adminImportPreview",
+    "adminImportRun",
+    "openImportDialog",
+  ]);
+});
+
 test("every public admin function refuses a caller who isn't the person at the sheet, before anything else", () => {
   const callers = [
     { active: "" },
@@ -425,6 +473,58 @@ test("every keyed admin function refuses a missing or unknown key before it read
   }
 });
 
+test("Jobs.js's public functions are the editor-run setup and the trigger handlers", () => {
+  const jobs = GUARDED_FILES.find(([f]) => f === "Jobs.js")[1];
+  const jobsPublic = [...jobs.matchAll(/^function\s+([\w$]+)\s*\(/gm)]
+    .map((m) => m[1])
+    .filter((n) => !n.endsWith("_"));
+  assert.deepEqual(jobsPublic.sort(), [
+    "removeDailyJobs",
+    "runAutoClockOut",
+    "runFlagsEmail",
+    "setupDailyJobs",
+  ]);
+  // Every daily job's handler is a trigger-only public function.
+  const { ctx } = server();
+  for (const job of plain(ctx.dailyJobs()))
+    assert.ok(TRIGGER_ONLY.includes(job.handler), job.handler);
+});
+
+test("every trigger handler refuses a missing, forged or another account's trigger id before it reads or writes", () => {
+  // This account's triggers: one for each handler, and one for something else.
+  const triggers = [
+    ...TRIGGER_ONLY.map((handler, i) => ({ uid: "own-" + i, handler })),
+    { uid: "own-other", handler: "someOtherFunction" },
+  ];
+  for (const name of TRIGGER_ONLY) {
+    const events = [
+      undefined,
+      null,
+      "own-0",
+      {},
+      { triggerUid: "" },
+      { triggerUid: "forged" },
+      // Another account's trigger: getProjectTriggers never lists it.
+      { triggerUid: "other-account-1" },
+      // This account's trigger, but for another handler.
+      { triggerUid: "own-other" },
+    ];
+    for (const e of events) {
+      const { ctx, calls } = server({ triggers });
+      assert.throws(
+        () => ctx[name](e),
+        /runs only from its trigger/,
+        name + " " + JSON.stringify(e),
+      );
+      assert.deepEqual(
+        onlyFrom(calls, ["Session.", "ScriptApp.getProjectTriggers", "trigger."]),
+        [],
+        name,
+      );
+    }
+  }
+});
+
 test("the dialog openers issue no key outside the spreadsheet's UI", () => {
   for (const name of PUBLIC.filter(isOpener)) {
     const { ctx, calls, cache } = server({ ui: false });
@@ -443,6 +543,7 @@ test("onOpen only adds the menu, and its items name the openers", () => {
     ["Add a shift…", "openAddShiftDialog"],
     ["Fix a sign-out…", "openFixSignOutDialog"],
     ["Monthly report…", "openMonthlyReportDialog"],
+    ["Import past hours…", "openImportDialog"],
   ]);
   for (const [, fn] of menu.slice(1)) assert.ok(PUBLIC.filter(isOpener).includes(fn), fn);
   // From the web app it throws at getUi and does nothing else.
@@ -955,4 +1056,113 @@ test("adminFixSignOut closes a row whose check-in was typed as a time with no da
   assert.equal(row["Hours Served (stated)"], 3.25);
   // The typed cell is never rewritten.
   assert.equal(row["Check-In Stated (user)"].getTime(), at("1899-12-30", "09:00").getTime());
+});
+
+// ---------------------------------------------------------------------------
+// The window after the tap, the missed check-out and the long-shift flag, end to end
+
+const WINDOW_SETTINGS = [
+  ...KIOSK_SETTINGS,
+  ["Kiosk launch date", "2026-11-01"],
+  ["Auto clock-out after hours", "12"],
+  ["Long shift flag hours", "8"],
+];
+const YESTERDAY = "2026-11-11";
+const closedBy = (shiftId, date, outBy) =>
+  logRow({
+    "Shift ID": shiftId,
+    "User Token": "tok-sam",
+    Status: "closed",
+    Date: date,
+    "Volunteer Name": "Sam Lee",
+    "Check-In Recorded (timestamp)": at(date, "09:00"),
+    "Check-In Stated (user)": at(date, "09:00"),
+    "Check-Out Stated (user)": at(date, "12:00"),
+    "Hours Served (stated)": 3,
+    "Check-In Entered By": "kiosk",
+    "Check-Out Entered By": outBy,
+  });
+
+test("apiCheckIn's reply carries missedSignOut, from the whole Log", () => {
+  const reply = (outBy) =>
+    plain(
+      kiosk({
+        settings: WINDOW_SETTINGS,
+        log: [LOG_HEADER, closedBy("s-old", "2026-11-03", outBy)],
+      }).ctx.apiCheckIn(CODE, SAM.id, null, null),
+    );
+  const missed = reply("auto-close");
+  assert.deepEqual(Object.keys(missed).sort(), [
+    "arrivedAt",
+    "id",
+    "missedSignOut",
+    "ok",
+    "shiftId",
+    "tappedAt",
+  ]);
+  assert.equal(missed.ok, true);
+  assert.equal(missed.missedSignOut, true);
+  assert.equal(reply("EM").missedSignOut, true);
+  assert.equal(reply("kiosk").missedSignOut, false);
+  // No rows since launch: no notice.
+  assert.equal(
+    plain(kiosk({ settings: WINDOW_SETTINGS }).ctx.apiCheckIn(CODE, SAM.id, null, null))
+      .missedSignOut,
+    false,
+  );
+});
+
+test("an evening check-in stays checked in past midnight: listed, refused a second check-in, and checked out", () => {
+  const evening = kioskOpen("s-eve", YESTERDAY, "23:00");
+  const s = kiosk({ settings: WINDOW_SETTINGS, log: [LOG_HEADER, evening] });
+  const [listed] = plain(s.ctx.apiListVolunteers(CODE).volunteers);
+  assert.equal(listed.checkedIn, true);
+  assert.equal(listed.openShiftArrival, at(YESTERDAY, "23:00").toISOString());
+  assert.deepEqual(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)), {
+    ok: false,
+    refusal: "ALREADY_IN",
+    message: "You're already checked in.",
+  });
+  const out = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.equal(out.ok, true);
+  const row = s.sheets.Log.rowByHeader(2);
+  assert.equal(row.Status, "closed");
+  assert.equal(row["Hours Served (stated)"], 11);
+  // Eleven stated hours is a long shift.
+  assert.equal(row["Admin Alerts?"], "long shift: 11 h stated, over 8 h");
+  // A row checked in more than 12 hours ago is no longer the tablet's.
+  const old = kiosk({
+    settings: WINDOW_SETTINGS,
+    log: [LOG_HEADER, kioskOpen("s-old", YESTERDAY, "21:59")],
+  });
+  assert.equal(plain(old.ctx.apiListVolunteers(CODE).volunteers)[0].checkedIn, false);
+  assert.equal(plain(old.ctx.apiCheckOut(CODE, SAM.id, null, null)).refusal, "NOT_IN");
+});
+
+test("apiCheckOut flags a long shift in Admin Alerts? and on the Flags tab, after the check-out flag", () => {
+  const open = kioskOpen("s-long", TODAY, "00:30");
+  const s = kiosk({ settings: WINDOW_SETTINGS, log: [LOG_HEADER, open] });
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30))).ok, true);
+  const log = s.sheets.Log.rowByHeader(2);
+  assert.equal(log["Hours Served (stated)"], 9);
+  assert.equal(
+    log["Admin Alerts?"],
+    "check-out differs by 30 min; long shift: 9 h stated, over 8 h",
+  );
+  const flags = [2, 3].map((r) => s.sheets.Flags.rowByHeader(r));
+  assert.deepEqual(
+    flags.map((f) => [f.Reason, f.Source, f["Shift ID"]]),
+    [
+      ["check-out differs by 30 min", "kiosk check-out", "s-long"],
+      ["long shift: 9 h stated, over 8 h", "kiosk check-out", "s-long"],
+    ],
+  );
+  // A Long shift flag hours of 10 moves the line.
+  const t = kiosk({
+    settings: [...KIOSK_SETTINGS, ["Long shift flag hours", "10"]],
+    log: [LOG_HEADER, kioskOpen("s-long", TODAY, "00:30")],
+  });
+  t.ctx.apiCheckOut(CODE, SAM.id, null, null);
+  assert.equal(t.sheets.Log.rowByHeader(2)["Admin Alerts?"], "");
+  assert.equal(t.sheets.Flags.getLastRow(), 1);
 });

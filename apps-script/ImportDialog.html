@@ -1,0 +1,336 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top" />
+    <meta charset="utf-8" />
+    <!--
+      The Import past hours dialog, served by openImportDialog (Import.js) as a template.
+      The server puts the dialog key and the Settings prefill into the body's data
+      attributes; nothing else on the page is filled in by the server. Plain HTML and
+      JavaScript, no build step. Preview writes nothing; Import works the list out again on
+      the server and checks the initials there.
+    -->
+    <style>
+      body {
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 14px;
+        color: #202124;
+        margin: 0;
+        padding: 4px 8px 12px;
+      }
+      label {
+        display: block;
+        font-weight: bold;
+        margin: 12px 0 4px;
+      }
+      .hint {
+        font-weight: normal;
+        color: #5f6368;
+        margin-top: 4px;
+      }
+      input {
+        font: inherit;
+        box-sizing: border-box;
+        padding: 6px;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        width: 100%;
+      }
+      .initials {
+        width: 8em;
+        text-transform: uppercase;
+      }
+      .buttons {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 16px;
+      }
+      button {
+        font: inherit;
+        padding: 8px 16px;
+        border-radius: 4px;
+        border: 1px solid #dadce0;
+        background: #fff;
+        cursor: pointer;
+      }
+      button.primary {
+        background: #1a73e8;
+        border-color: #1a73e8;
+        color: #fff;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .message {
+        margin-top: 12px;
+        padding: 8px;
+        border-radius: 4px;
+        display: none;
+      }
+      .message.error {
+        display: block;
+        background: #fce8e6;
+        color: #a50e0e;
+      }
+      .message.ok {
+        display: block;
+        background: #e6f4ea;
+        color: #0d652d;
+      }
+      .message.info {
+        display: block;
+        background: #f1f3f4;
+      }
+      .result {
+        margin-top: 12px;
+        max-height: 260px;
+        overflow-y: auto;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        padding: 4px 8px;
+      }
+      .result table {
+        border-collapse: collapse;
+      }
+      .result td {
+        padding: 2px 12px 2px 0;
+        vertical-align: top;
+      }
+      .result td.n {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .result h3 {
+        font-size: 14px;
+        margin: 10px 0 4px;
+      }
+      .result ul {
+        margin: 0;
+        padding-left: 20px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body data-key="<?= key ?>" data-file="<?= fileId ?>" data-tab="<?= tab ?>">
+    <form id="form">
+      <label for="file">Spreadsheet</label>
+      <input id="file" type="text" autocomplete="off" />
+      <div class="hint">Paste its link or ID. This account needs to be able to open it.</div>
+
+      <label for="tab">Tab</label>
+      <input id="tab" type="text" autocomplete="off" />
+      <div class="hint">
+        A header row with Date, First name and Last name, then one row per shift. Hours are in the
+        column headed Hours, or the one right after Last name.
+      </div>
+
+      <label for="initials">Your initials</label>
+      <input id="initials" class="initials" type="text" maxlength="10" autocomplete="off" />
+      <div class="hint">
+        Preview first: it writes nothing. Import adds the rows to the Log and can be run again; it
+        never brings in the same shift twice. Fix an imported row on the Log, not in the old sheet.
+      </div>
+    </form>
+
+    <div id="message" class="message" role="status"></div>
+    <div id="result" class="result" hidden></div>
+
+    <div class="buttons">
+      <button type="button" id="close">Close</button>
+      <button type="button" id="preview">Preview</button>
+      <button type="button" id="import" class="primary" disabled>Import</button>
+    </div>
+
+    <script>
+      const KEY = document.body.dataset.key;
+      const $ = (id) => document.getElementById(id);
+      let busy = false;
+      // The file and tab the last preview read; Import is offered only for those.
+      let previewed = null;
+
+      $("file").value = document.body.dataset.file || "";
+      $("tab").value = document.body.dataset.tab || "";
+
+      function show(text, kind) {
+        const box = $("message");
+        box.textContent = text;
+        box.className = "message " + (text ? kind : "");
+      }
+
+      function sameAsPreviewed() {
+        return (
+          previewed !== null &&
+          previewed.file === $("file").value.trim() &&
+          previewed.tab === $("tab").value.trim()
+        );
+      }
+
+      function setBusy(on) {
+        busy = on;
+        $("preview").disabled = on;
+        $("import").disabled = on || !sameAsPreviewed() || !previewed.writes;
+      }
+
+      function call(name, args, onOk) {
+        setBusy(true);
+        google.script.run
+          .withSuccessHandler((reply) => {
+            setBusy(false);
+            if (reply && reply.ok) onOk(reply);
+            else
+              show((reply && reply.message) || "Something went wrong. Please try again.", "error");
+          })
+          .withFailureHandler((error) => {
+            setBusy(false);
+            show((error && error.message) || String(error), "error");
+          })
+          [name](KEY, ...args);
+      }
+
+      function el(tag, text) {
+        const node = document.createElement(tag);
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function table(rows) {
+        const t = el("table");
+        rows.forEach(([label, value]) => {
+          const tr = el("tr");
+          tr.append(el("td", label));
+          const n = el("td", String(value));
+          n.className = "n";
+          tr.append(n);
+          t.append(tr);
+        });
+        return t;
+      }
+
+      function hoursText(hours) {
+        return Number(hours).toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+      }
+
+      function plural(n, one, many) {
+        return n + " " + (n === 1 ? one : many);
+      }
+
+      function showSummary(title, s) {
+        const box = $("result");
+        box.textContent = "";
+        box.append(el("h3", title));
+        box.append(
+          table([
+            ["Rows read", s.rowsRead],
+            ["To import", s.toImport],
+            ["  matched to Volunteer Profiles", s.matched],
+            ["  not matched (imported and flagged)", s.unmatched],
+            ["Hours to add", hoursText(s.hours)],
+            ["Already imported (in the Import ledger)", s.alreadyImported],
+            ["Already on the Log (ledger line added on import)", s.onLog],
+            ["Left out", s.leftOut],
+          ]),
+        );
+        if (s.unmatchedNames.length) {
+          box.append(el("h3", "Names not matched in Volunteer Profiles"));
+          const list = el("ul");
+          s.unmatchedNames.forEach((n) => {
+            const why = n.matches > 1 ? ", matches " + n.matches + " Profiles rows" : "";
+            list.append(el("li", n.name + " (" + plural(n.rows, "row", "rows") + why + ")"));
+          });
+          box.append(list);
+        }
+        if (s.leftOutRows.length) {
+          box.append(el("h3", "Left out (fix these in the source, then run again)"));
+          const list = el("ul");
+          s.leftOutRows.forEach((g) => {
+            list.append(el("li", g.reason + ": source row " + g.rows.join(", ")));
+          });
+          box.append(list);
+        }
+        box.hidden = false;
+      }
+
+      function form() {
+        return {
+          file: $("file").value.trim(),
+          tab: $("tab").value.trim(),
+          initials: $("initials").value,
+        };
+      }
+
+      function preview() {
+        if (busy) return;
+        const f = form();
+        if (!f.file) return show("Please paste the spreadsheet's link or ID.", "error");
+        previewed = null;
+        $("result").hidden = true;
+        show("Reading " + (f.tab || "the tab") + "…", "info");
+        call("adminImportPreview", [f], (reply) => {
+          previewed = {
+            file: f.file,
+            tab: f.tab,
+            writes: reply.summary.toImport + reply.summary.onLog > 0,
+          };
+          setBusy(false);
+          showSummary(reply.fileName + " › " + reply.tab, reply.summary);
+          show(
+            previewed.writes
+              ? "Nothing has been written. Check the counts, then Import."
+              : "Nothing to import.",
+            "info",
+          );
+        });
+      }
+
+      function runImport() {
+        if (busy || !sameAsPreviewed()) return;
+        const f = form();
+        if (!f.initials.trim()) return show("Please enter your initials, letters only.", "error");
+        show("Importing… this can take a minute. Keep this window open.", "info");
+        call("adminImportRun", [f], (reply) => {
+          previewed = null;
+          setBusy(false);
+          let text =
+            "Imported " +
+            plural(reply.imported, "row", "rows") +
+            " (" +
+            reply.matched +
+            " matched, " +
+            reply.unmatched +
+            " not matched), " +
+            hoursText(reply.hours) +
+            " hours.";
+          if (reply.ledgerAdded)
+            text +=
+              " Added " +
+              plural(reply.ledgerAdded, "missing ledger line", "missing ledger lines") +
+              ".";
+          if (reply.flags) text += " " + plural(reply.flags, "Flags row", "Flags rows") + " added.";
+          if (reply.flagsFailed)
+            text +=
+              " " +
+              plural(reply.flagsFailed, "Flags row", "Flags rows") +
+              " could not be written; the alerts are still in Admin Alerts? on the Log.";
+          if (!reply.done) text += " " + reply.message;
+          show(text, reply.done ? "ok" : "error");
+        });
+      }
+
+      $("preview").addEventListener("click", preview);
+      $("import").addEventListener("click", runImport);
+      $("close").addEventListener("click", () => google.script.host.close());
+      ["file", "tab"].forEach((id) => $(id).addEventListener("input", () => setBusy(busy)));
+      $("form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        preview();
+      });
+    </script>
+  </body>
+</html>

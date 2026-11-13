@@ -68,6 +68,19 @@ function settingsDefaults(todayDate) {
   ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].forEach((day) =>
     rows.push(["Closing time " + day, "17:00"]),
   );
+  rows.push(
+    ["Auto clock-out after hours", String(defaultAutoClockOutHours())],
+    ["Auto clock-out last run", ""],
+    ["Long shift flag hours", String(defaultLongShiftHours())],
+    ["Flags email", "Off"],
+    ["Flags email to", ""],
+    ["Flags email day", defaultFlagsEmailDay()],
+    ["Flags email hour", String(defaultFlagsEmailHour())],
+    ["Flags email last run", ""],
+    ["Daily jobs installed by", ""],
+    ["Past hours file ID", ""],
+    ["Past hours tab", "Historical Hours"],
+  );
   return rows;
 }
 
@@ -96,8 +109,8 @@ function refusalMessages() {
   return {
     ACCESS: "This kiosk needs to be set up. Please ask a board member.",
     NOT_FOUND: "We couldn't find your profile. Please see a board member.",
-    ALREADY_IN: "You're already checked in today.",
-    NOT_IN: "You're not checked in today.",
+    ALREADY_IN: "You're already checked in.",
+    NOT_IN: "You're not checked in.",
     ARRIVAL_FUTURE: "Your arrival time can't be in the future. Please choose an earlier time.",
     ARRIVAL_OTHER_DAY: "Please choose a time from today.",
     PHONE_NEEDED: "Please enter the last four digits of your phone number.",
@@ -543,15 +556,20 @@ function validateArrival(nowMs, arrivedMs, arrivedDate, todayDate) {
 /**
  * {outMs} for an acceptable check-out time, else a refusal code. A null time (the
  * volunteer chose none, or the page is older than the check-out picker) is server time
- * and is never refused. Otherwise, in order: unreadable, future, another day, then before
- * startMs, the open shift's start. Equal to the start is accepted. When startMs is
- * unreadable that last check is skipped. outDate is the time's Central date.
+ * and is never refused, whatever the date. Otherwise, in order: unreadable
+ * (CHECKOUT_OTHER_DAY), future, then before startMs, the open shift's start. Equal to the
+ * start is accepted. Any time from the start up to now is accepted, past midnight too, so
+ * an evening shift can be checked out after midnight. Only when startMs is unreadable is
+ * the time held to today instead (CHECKOUT_OTHER_DAY): there is no start to measure from.
+ * outDate is the time's Central date.
  */
 function validateCheckOut(nowMs, outMs, outDate, todayDate, startMs) {
   if (outMs === null) return { outMs: nowMs };
-  const checked = checkStatedTime(nowMs, outMs, outDate, todayDate);
+  const hasStart = typeof startMs === "number" && isFinite(startMs);
+  // With a start, the time's own date is the date wanted, so no date is refused.
+  const checked = checkStatedTime(nowMs, outMs, outDate, hasStart ? outDate : todayDate);
   if (checked.refused) return "CHECKOUT_" + checked.refused;
-  if (isFinite(startMs) && checked.ms < startMs) return "CHECKOUT_BEFORE_ARRIVAL";
+  if (hasStart && checked.ms < startMs) return "CHECKOUT_BEFORE_ARRIVAL";
   return { outMs: checked.ms };
 }
 
@@ -855,7 +873,8 @@ function rowTimeMs(t, day, read) {
 /**
  * One Log row as the entry the rest of this file uses:
  * {row, shiftId, token, name, dateText, recordedInMs, statedInMs, recordedOutMs,
- * statedOutMs, recordedHours, statedHours, alerts, notes, status}.
+ * statedOutMs, recordedHours, statedHours, alerts, notes, status, outBy}. outBy is the
+ * Check-Out Entered By text.
  *
  * cells is the row's raw values, row its sheet row number, cols the logColumns map. read
  * holds the functions the caller supplies: read.text(value) gives a cell as text (a date
@@ -898,6 +917,7 @@ function logEntry(cells, row, cols, read) {
     alerts: text(H.alerts),
     notes: text(H.notes),
     status: text(H.status),
+    outBy: text(H.outBy),
   };
 }
 
@@ -957,16 +977,61 @@ function hasReadableStart(entry) {
   return isFinite(shiftStartMs(entry));
 }
 
-/** This token's open row dated today (the latest start if staff edits left more than one), or null. */
-function findOpenShiftToday(entries, token, todayDate) {
+/**
+ * When the row was checked in, which is where its age is measured from: Check-In Recorded
+ * (the tap) when it reads, else the start (shiftStartMs). NaN when neither reads. The tap,
+ * not the stated arrival, because the arrival picker offers any earlier time of the day:
+ * measured from a stated 8 AM, a volunteer tapping in at 4 PM could be out of the window
+ * the moment the row is written. A row with no readable tap was typed or edited by hand,
+ * and its start is the only time it has.
+ */
+function checkedInMs(entry) {
+  return isFinite(entry.recordedInMs) ? entry.recordedInMs : shiftStartMs(entry);
+}
+
+/**
+ * True when an open row is the tablet's at nowMs: its age (checkedInMs) is under windowMs,
+ * the "Auto clock-out after hours" window. A row with no readable time has no age and is
+ * the tablet's while it is dated todayDate. Once a row's age is at least the window it is
+ * the auto clock-out's (autoClockOutRows) and no longer the tablet's, so a row is never
+ * both.
+ */
+function isTabletOpenRow(entry, nowMs, windowMs, todayDate) {
+  if (!isStatus(entry, "open")) return false;
+  const at = checkedInMs(entry);
+  if (isFinite(at)) return nowMs - at < windowMs;
+  return isRowToday(entry.dateText, todayDate);
+}
+
+/**
+ * This token's open row that the tablet can still check out (isTabletOpenRow), or null.
+ * When staff edits left more than one, the latest start wins.
+ */
+function findOpenShift(entries, token, nowMs, windowMs, todayDate) {
   let found = null;
   entries.forEach((e) => {
-    if (!isTokenRow(e, token) || !isStatus(e, "open") || !isRowToday(e.dateText, todayDate)) {
-      return;
-    }
+    if (!isTokenRow(e, token) || !isTabletOpenRow(e, nowMs, windowMs, todayDate)) return;
     if (!found || shiftStartMs(e) > shiftStartMs(found)) found = e;
   });
   return found;
+}
+
+/**
+ * The "Auto clock-out after hours" Settings value as milliseconds (parseAutoClockOutHours).
+ */
+function autoClockOutWindowMs(text) {
+  return parseAutoClockOutHours(text) * 3600000;
+}
+
+/**
+ * The Log dates the kiosk list reads: yesterday and today. Every readable time on a row is
+ * on its Date (rowTimeMs) and the window is at most 24 hours, so a row still in the window
+ * is dated one of these. The one exception is the night clocks spring forward with the
+ * window at 24: a tap just before midnight two days back is still in it for that hour.
+ * The list misses that row; check-in reads the whole Log and refuses with ALREADY_IN.
+ */
+function recentLogDates(todayDate) {
+  return [addDays(todayDate, -1), todayDate];
 }
 
 /** Count and total whole minutes, from milestoneHours, of this token's closed rows. */
@@ -983,13 +1048,14 @@ function closedTotals(entries, token) {
 
 /**
  * The list the page gets: the hashed ID only, and no phone, start date, token or row.
- * checkedIn is the test check-in and check-out use, an open row dated today, so it holds
- * even when that row's start can't be read. openShiftArrival is that row's start, or null
- * when there is no such row or its start can't be read.
+ * checkedIn is the test check-in and check-out use, an open row the tablet can still
+ * check out (findOpenShift), so it holds past midnight for the window after the tap, and
+ * holds even when that row's start can't be read. openShiftArrival is that row's start,
+ * or null when there is no such row or its start can't be read.
  */
-function volunteerSummaries(volunteers, entries, todayDate) {
+function volunteerSummaries(volunteers, entries, nowMs, windowMs, todayDate) {
   return volunteers.map((v) => {
-    const open = findOpenShiftToday(entries, v.token, todayDate);
+    const open = findOpenShift(entries, v.token, nowMs, windowMs, todayDate);
     const startMs = open ? shiftStartMs(open) : NaN;
     return {
       id: v.id,
@@ -1000,6 +1066,28 @@ function volunteerSummaries(volunteers, entries, todayDate) {
       needsPhoneCheck: v.needsPhoneCheck,
     };
   });
+}
+
+/**
+ * True when this token's latest row dated on or after the launch date, in reportRowOrder,
+ * is a check-out the volunteer didn't make: still open, or closed with a Check-Out Entered
+ * By other than kiosk (the auto clock-out, an admin's Fix a sign-out or Add a shift, or a
+ * row typed by hand). Read at check-in, before the new row is written, so the notice
+ * shows once per missed check-out: the new row is the one looked at next time. An open
+ * row found here has left the window, or the check-in would have been refused. False
+ * when the launch date can't be read; rows before it, such as imported ones, never count.
+ */
+function missedSignOut(entries, token, launchDate) {
+  const launch = parseStartDate(launchDate);
+  if (!launch) return false;
+  const rows = entries.filter((e) => {
+    const date = rowDate(e.dateText);
+    return isTokenRow(e, token) && date !== "" && date >= launch;
+  });
+  if (!rows.length) return false;
+  const last = rows.slice().sort(reportRowOrder)[rows.length - 1];
+  if (isStatus(last, "open")) return true;
+  return isStatus(last, "closed") && entrySource(last.outBy) !== "kiosk";
 }
 
 // ---------------------------------------------------------------------------
@@ -1046,26 +1134,52 @@ function unreadableStartAlert() {
 }
 
 /**
- * The flags a kiosk check-out raises, in the order Admin Alerts? gets them: the check-out
- * flag when there is one, then unreadableStartAlert() when the open row has no readable
- * start. The Flags tab gets one row for each, so it and Admin Alerts? never disagree.
+ * '' or the Admin Alerts? text for a tablet check-out whose stated hours are more than
+ * limitHours ("Long shift flag hours"): "long shift: 10.25 h stated, over 8 h". statedHours
+ * is the Hours Served (stated) value the check-out writes, so the flag and the cell never
+ * disagree; exactly limitHours is not flagged. Blank hours (no readable start) give ''.
  */
-function checkOutFlags(open, flag) {
+function longShiftAlert(statedHours, limitHours) {
+  if (typeof statedHours !== "number" || !isFinite(statedHours)) return "";
+  if (!(statedHours > limitHours)) return "";
+  return (
+    "long shift: " +
+    hoursNumberText(statedHours) +
+    " h stated, over " +
+    hoursNumberText(limitHours) +
+    " h"
+  );
+}
+
+/** Hours as the alerts print them: up to 2 decimals, no trailing zeros ("8", "10.25", "8.5"). */
+function hoursNumberText(hours) {
+  return String(Math.round(hours * 100) / 100);
+}
+
+/**
+ * The flags a kiosk check-out raises, in the order Admin Alerts? gets them: the check-out
+ * flag when there is one, then the long-shift flag (longShiftAlert) when there is one,
+ * then unreadableStartAlert() when the open row has no readable start. The Flags tab gets
+ * one row for each, so it and Admin Alerts? never disagree.
+ */
+function checkOutFlags(open, flag, longFlag) {
   const flags = [];
   if (cellString(flag)) flags.push(cellString(flag));
+  if (cellString(longFlag)) flags.push(cellString(longFlag));
   if (!hasReadableStart(open)) flags.push(unreadableStartAlert());
   return flags;
 }
 
 /**
  * The cells a kiosk check-out writes on the open row. nowMs is the tap (Check-Out
- * Recorded), statedOutMs the stated check-out, flag the check-out flag or ''. Each hours
+ * Recorded), statedOutMs the stated check-out, flag the check-out flag or '', longFlag the
+ * long-shift flag or ''. Each hours
  * value pairs times of one kind and is blank when either is unreadable. Admin Alerts? is
  * written only when checkOutFlags has something to add, and then keeps what the cell
  * held. A row whose start can't be read closes with blank stated hours and an alert
  * saying so, not with a zero.
  */
-function checkOutCells(open, nowMs, statedOutMs, flag) {
+function checkOutCells(open, nowMs, statedOutMs, flag, longFlag) {
   const H = logHeaderNames();
   const cells = {
     [H.recordedOut]: nowMs,
@@ -1075,7 +1189,7 @@ function checkOutCells(open, nowMs, statedOutMs, flag) {
     [H.status]: "closed",
     [H.outBy]: "kiosk",
   };
-  const flags = checkOutFlags(open, flag);
+  const flags = checkOutFlags(open, flag, longFlag);
   if (flags.length) cells[H.alerts] = sheetText(flags.reduce(appendText, open.alerts));
   return cells;
 }
@@ -1084,18 +1198,20 @@ function checkOutCells(open, nowMs, statedOutMs, flag) {
 // Check-in and check-out decisions
 
 /**
- * Checks a check-in in order: NOT_FOUND, phone, ALREADY_IN, ARRIVAL_FUTURE,
- * ARRIVAL_OTHER_DAY. Input: {volunteers, id (the tapped entry), digits, entries,
- * todayDate, nowMs, arrivedMs (null for server time), arrivedDate, flagMinutes}. Returns
- * {refusal} or {volunteer, arrivedMs, flag, flags}; volunteer is the one resolveVolunteer
- * found, flag the arrival flag or '', and flags the list the Flags tab gets: [flag], or []
- * when nothing is flagged.
+ * Checks a check-in in order: NOT_FOUND, phone, ALREADY_IN (an open row still in the
+ * window, findOpenShift), ARRIVAL_FUTURE, ARRIVAL_OTHER_DAY. Input: {volunteers, id (the
+ * tapped entry), digits, entries (the whole Log), todayDate, nowMs, windowMs, arrivedMs
+ * (null for server time), arrivedDate, flagMinutes, launchDate}. Returns {refusal} or
+ * {volunteer, arrivedMs, flag, flags, missedSignOut}; volunteer is the one
+ * resolveVolunteer found, flag the arrival flag or '', flags the list the Flags tab gets:
+ * [flag], or [] when nothing is flagged, and missedSignOut whether the volunteer's last
+ * check-out was one they didn't make (missedSignOut).
  */
 function decideCheckIn(input) {
   const who = resolveVolunteer(input.volunteers, input.id, input.digits);
   if (who.refusal) return { refusal: who.refusal };
   const volunteer = who.volunteer;
-  if (findOpenShiftToday(input.entries, volunteer.token, input.todayDate)) {
+  if (findOpenShift(input.entries, volunteer.token, input.nowMs, input.windowMs, input.todayDate)) {
     return { refusal: "ALREADY_IN" };
   }
   const arrival = validateArrival(input.nowMs, input.arrivedMs, input.arrivedDate, input.todayDate);
@@ -1106,26 +1222,35 @@ function decideCheckIn(input) {
     arrivedMs: arrival.arrivedMs,
     flag,
     flags: flag ? [flag] : [],
+    missedSignOut: missedSignOut(input.entries, volunteer.token, input.launchDate),
   };
 }
 
 /**
- * Checks a check-out in order: NOT_FOUND, phone, NOT_IN, then the stated check-out time
- * (CHECKOUT_OTHER_DAY, CHECKOUT_FUTURE, CHECKOUT_BEFORE_ARRIVAL). Input: {volunteers, id
- * (the tapped entry), digits, entries (the whole Log), todayDate, nowMs, outMs (null for
- * server time), outDate, flagMinutes, launchDate}.
+ * Checks a check-out in order: NOT_FOUND, phone, NOT_IN (no open row in the window,
+ * findOpenShift), then the stated check-out time (validateCheckOut). Input: {volunteers, id
+ * (the tapped entry), digits, entries (the whole Log), todayDate, nowMs, windowMs, outMs
+ * (null for server time), outDate, flagMinutes, longShiftHours (parseLongShiftHours),
+ * launchDate}.
  *
  * Returns {refusal} or {volunteer, row, cells, minutes, milestone, statedOutMs, flags,
  * open}: volunteer is the one resolveVolunteer found, row the open row, cells its
  * check-out cell map, minutes the whole minutes this shift adds toward milestones, and the
  * milestone is counted from the closed rows before this one. flags is checkOutFlags, the
- * texts the cells add to Admin Alerts?, and open the open row's entry.
+ * texts the cells add to Admin Alerts? (the long-shift flag among them when the stated
+ * hours are more than longShiftHours), and open the open row's entry.
  */
 function decideCheckOut(input) {
   const who = resolveVolunteer(input.volunteers, input.id, input.digits);
   if (who.refusal) return { refusal: who.refusal };
   const volunteer = who.volunteer;
-  const open = findOpenShiftToday(input.entries, volunteer.token, input.todayDate);
+  const open = findOpenShift(
+    input.entries,
+    volunteer.token,
+    input.nowMs,
+    input.windowMs,
+    input.todayDate,
+  );
   if (!open) return { refusal: "NOT_IN" };
   const out = validateCheckOut(
     input.nowMs,
@@ -1136,7 +1261,8 @@ function decideCheckOut(input) {
   );
   if (typeof out === "string") return { refusal: out };
   const flag = checkOutFlag(input.nowMs, out.outMs, input.flagMinutes);
-  const cells = checkOutCells(open, input.nowMs, out.outMs, flag);
+  const longFlag = longShiftAlert(pairHours(shiftStartMs(open), out.outMs), input.longShiftHours);
+  const cells = checkOutCells(open, input.nowMs, out.outMs, flag, longFlag);
   const H = logHeaderNames();
   const minutes = minutesFromHours(
     milestoneHours({ ...open, statedHours: hoursCell(cells[H.statedHours]) }),
@@ -1155,7 +1281,7 @@ function decideCheckOut(input) {
       input.launchDate,
     ),
     statedOutMs: out.outMs,
-    flags: checkOutFlags(open, flag),
+    flags: checkOutFlags(open, flag, longFlag),
     open,
   };
 }
@@ -1516,8 +1642,8 @@ function reportColumns(headerRow) {
 }
 
 /**
- * One Log row as a report reads it: logEntry's fields plus inBy, outBy (the Entered By
- * texts), roleType, activity (blank when the column is missing), and statedHoursCell and
+ * One Log row as a report reads it: logEntry's fields (outBy among them) plus inBy (the
+ * Check-In Entered By text), roleType, activity (blank when the column is missing), and statedHoursCell and
  * recordedHoursCell, the raw Hours Served (stated) and (timestamps) values as the sheet
  * gave them. Arguments as logEntry's.
  */
@@ -1531,7 +1657,6 @@ function reportEntry(cells, row, cols, read) {
   const text = (header) => cellString(read.text(raw(header)));
   const entry = logEntry(cells, row, cols, read);
   entry.inBy = text(H.inBy);
-  entry.outBy = text(H.outBy);
   entry.roleType = text(H.role);
   entry.activity = text(H.activity);
   entry.statedHoursCell = raw(H.statedHours);
@@ -1631,11 +1756,13 @@ function parseMoneyCents(text) {
 
 /**
  * The order rows are walked in: row date, then shift start (a row whose start can't be read
- * comes after those whose start can), then Log row. Only for rows that have a month.
+ * comes after those whose start can), then Log row. The date is read as rowDate reads it,
+ * so a Date typed as m/d/yyyy sorts among the yyyy-MM-dd ones; a Date it can't read is
+ * compared as its text.
  */
 function reportRowOrder(a, b) {
-  const da = cellString(a.dateText);
-  const db = cellString(b.dateText);
+  const da = rowDate(a.dateText) || cellString(a.dateText);
+  const db = rowDate(b.dateText) || cellString(b.dateText);
   if (da !== db) return da < db ? -1 : 1;
   const sa = shiftStartMs(a);
   const sb = shiftStartMs(b);
@@ -2751,9 +2878,10 @@ function setupReportsMessage(counts) {
 //
 // One row per flag, for staff to tick off as reviewed. The Log row is the record: Admin
 // Alerts? keeps every kiosk flag, and a Flags row is a copy for review. The script only
-// appends Flags rows. It reads the Flags header to place its writes and never reads a
-// Flags row back, so staff may sort, filter or delete rows. Reviewed By and Notes are
-// staff's; the script writes Reviewed once, unticked, on the row it appends.
+// appends Flags rows. It reads the Flags header to place its writes; only the weekly
+// flags email reads Flags rows back, and only to count and list them, so staff may sort,
+// filter or delete rows. Reviewed By and Notes are staff's; the script writes Reviewed
+// once, unticked, on the row it appends.
 
 /** The Flags headers, keyed by the short names the code uses, in the order a new tab gets them. */
 function flagHeaderNames() {
@@ -2794,12 +2922,16 @@ function flagColumnKinds() {
   return kinds;
 }
 
-/** Where a flag came from, the Source column. auto-close is kept for the nightly close. */
+/**
+ * Where a flag came from, the Source column. auto-close is the daily auto clock-out
+ * (runAutoClockOut), import is Import past hours.
+ */
 function flagSources() {
   return {
     checkIn: "kiosk check-in",
     checkOut: "kiosk check-out",
     autoClose: "auto-close",
+    import: "import",
   };
 }
 
@@ -2954,4 +3086,1167 @@ function flagFilterViewRequests(cols, sheetId, existingViewId) {
       },
     },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Daily jobs
+//
+// Jobs.js runs these on installable triggers owned by one account, which installs them
+// with setupDailyJobs. This section holds their pure rules: the list of jobs, the Settings
+// values they read, when the weekly flags email is due and what it says. Times of day are
+// Central wall-clock texts, "yyyy-MM-dd HH:mm", as Jobs.js formats the server's clock and
+// as the last-run Settings values are written.
+
+/**
+ * The jobs setupDailyJobs installs, one trigger each, and nothing else. handler is the
+ * public Jobs.js function the trigger calls. A job runs either every everyHours hours or
+ * once a day at atHour (Central).
+ */
+function dailyJobs() {
+  return [
+    { handler: "runFlagsEmail", everyHours: 1 },
+    { handler: "runAutoClockOut", atHour: 4 },
+  ];
+}
+
+/** "Auto clock-out after hours" when blank or out of range. */
+function defaultAutoClockOutHours() {
+  return 12;
+}
+
+/** The fewest and most hours "Auto clock-out after hours" may be. */
+function autoClockOutHoursRange() {
+  return { min: 10, max: 24 };
+}
+
+/** "Long shift flag hours" when blank or not above 0. */
+function defaultLongShiftHours() {
+  return 8;
+}
+
+function defaultFlagsEmailDay() {
+  return "Monday";
+}
+
+function defaultFlagsEmailHour() {
+  return 8;
+}
+
+/** The weekly email's sender name. The address is the job owner's domain no-reply address. */
+function flagsEmailSenderName() {
+  return "ENCM Volunteer Kiosk";
+}
+
+/** How many of the week's flags the email lists before "and N more". */
+function flagsEmailListMax() {
+  return 25;
+}
+
+/** The email warns when "Auto clock-out last run" is blank or older than this many hours. */
+function autoClockOutStaleHours() {
+  return 48;
+}
+
+/** The text of a number Setting, or NaN when it isn't a finite number. */
+function settingNumber(text) {
+  const s = cellString(text);
+  const n = Number(s);
+  return s !== "" && isFinite(n) ? n : NaN;
+}
+
+/**
+ * "Auto clock-out after hours": a number from 10 to 24 as given, anything else 12. Below
+ * 10 is read as a mistake: a window shorter than a shift plus some slack would take a
+ * volunteer who is still there off the tablet.
+ */
+function parseAutoClockOutHours(text) {
+  const n = settingNumber(text);
+  const range = autoClockOutHoursRange();
+  return n >= range.min && n <= range.max ? n : defaultAutoClockOutHours();
+}
+
+/** "Long shift flag hours": a finite number above 0 as given, anything else 8. */
+function parseLongShiftHours(text) {
+  const n = settingNumber(text);
+  return n > 0 ? n : defaultLongShiftHours();
+}
+
+/** "Flags email": true only for On, in any case. */
+function parseFlagsEmailOn(text) {
+  return cellString(text).toLowerCase() === "on";
+}
+
+/**
+ * "Flags email to": the addresses split on commas, semicolons, spaces or new lines, as
+ * {valid, invalid}. Valid ones look like a@b.c and are kept once each, in the order
+ * written, ignoring case for the repeat.
+ */
+function parseEmailAddresses(text) {
+  const valid = [];
+  const invalid = [];
+  const seen = {};
+  cellString(text)
+    .split(/[,;\s]+/)
+    .filter((part) => part !== "")
+    .forEach((part) => {
+      if (!/^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(part)) {
+        invalid.push(part);
+        return;
+      }
+      const key = part.toLowerCase();
+      if (!seen[key]) {
+        seen[key] = true;
+        valid.push(part);
+      }
+    });
+  return { valid, invalid };
+}
+
+/** An English weekday, full or its first three letters, any case, as its full name; else ''. */
+function weekdayFromText(text) {
+  const s = cellString(text).toLowerCase();
+  const names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const found = names.find((name) => {
+    const n = name.toLowerCase();
+    return s === n || s === n.slice(0, 3);
+  });
+  return found || "";
+}
+
+/** "Flags email day": an English weekday, full or its first three letters, any case; else Monday. */
+function parseWeekdaySetting(text) {
+  return weekdayFromText(text) || defaultFlagsEmailDay();
+}
+
+/** "Flags email hour": a whole hour from 0 to 23, Central; else 8. */
+function parseEmailHour(text) {
+  const n = settingNumber(text);
+  return Number.isInteger(n) && n >= 0 && n <= 23 ? n : defaultFlagsEmailHour();
+}
+
+/** A yyyy-MM-dd date moved by a whole number of days; empty for an unreadable date. */
+function addDays(dateText, days) {
+  const date = parseStartDate(dateText);
+  if (!date) return "";
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
+/**
+ * The "yyyy-MM-dd HH:mm" a last-run Settings value starts with ("2026-11-09 08:05, sent to
+ * 3"), or empty when it doesn't start with a readable one.
+ */
+function lastRunTime(text) {
+  const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2})(?!\d)/.exec(cellString(text));
+  if (!m || !parseStartDate(m[1]) || Number(m[2]) > 23 || Number(m[3]) > 59) return "";
+  return m[0];
+}
+
+/** A last-run Settings value: the time, then ", " and what the run did. */
+function lastRunText(nowText, what) {
+  return nowText + ", " + what;
+}
+
+/**
+ * The weekly email's due slot: the latest "yyyy-MM-dd HH:00" at or before nowText that
+ * falls on weekday (a name from parseWeekdaySetting) at hour (0-23).
+ */
+function flagsEmailSlot(nowText, weekday, hour) {
+  const today = nowText.slice(0, 10);
+  const nowHour = Number(nowText.slice(11, 13));
+  const names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  let back = (names.indexOf(weekdayName(today)) - names.indexOf(weekday) + 7) % 7;
+  if (back === 0 && nowHour < hour) back = 7;
+  return addDays(today, -back) + " " + String(hour).padStart(2, "0") + ":00";
+}
+
+/**
+ * True when the weekly email is due at nowText: "Flags email last run" (lastRunValue) is
+ * before the due slot. A blank or unreadable last run is before every slot. The texts are
+ * Central wall-clock times, compared as text, so the hour repeated when clocks fall back
+ * can't send twice.
+ */
+function flagsEmailDue(nowText, lastRunValue, weekday, hour) {
+  const last = lastRunTime(lastRunValue);
+  return last === "" || last < flagsEmailSlot(nowText, weekday, hour);
+}
+
+/** A "yyyy-MM-dd HH:mm" text as milliseconds on a clock with no time zone, for differences. */
+function wallClockMs(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/.exec(cellString(text));
+  if (!m) return NaN;
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
+}
+
+/**
+ * {stale, lastRun}: stale when "Auto clock-out last run" (lastRunValue) is blank,
+ * unreadable or more than 48 hours before nowText (an hour either way across a clock
+ * change); lastRun is its "yyyy-MM-dd HH:mm" or empty.
+ */
+function autoClockOutCheck(lastRunValue, nowText) {
+  const lastRun = lastRunTime(lastRunValue);
+  const stale =
+    lastRun === "" ||
+    wallClockMs(nowText) - wallClockMs(lastRun) > autoClockOutStaleHours() * 3600000;
+  return { stale, lastRun };
+}
+
+/**
+ * The weekly email's counts from the Flags tab's rows. flags is [{date, name, shiftId,
+ * reason, raisedAtMs, reviewed}]. recent: the rows raised in the 7 days before nowMs,
+ * newest first. unreviewed: rows with a Volunteer Name or Shift ID whose Reviewed isn't
+ * ticked, any age.
+ */
+function flagsSummary(flags, nowMs) {
+  const from = nowMs - 7 * 24 * 3600000;
+  const recent = flags
+    .filter((f) => isFinite(f.raisedAtMs) && f.raisedAtMs > from && f.raisedAtMs <= nowMs)
+    .sort((a, b) => b.raisedAtMs - a.raisedAtMs);
+  const unreviewed = flags.filter(
+    (f) => (cellString(f.name) !== "" || cellString(f.shiftId) !== "") && f.reviewed !== true,
+  ).length;
+  return { recent, unreviewed };
+}
+
+/** True for a ticked Reviewed cell: the checkbox's true, or the text TRUE. */
+function isTicked(value) {
+  return value === true || cellString(value).toLowerCase() === "true";
+}
+
+function htmlText(text) {
+  return cellString(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function plural(count, one, many) {
+  return count + " " + (count === 1 ? one : many);
+}
+
+/**
+ * The weekly flags email, or null when there is nothing to send: no flag raised in the
+ * week, none unreviewed and the auto clock-out not stale. input is {summary
+ * (flagsSummary), autoClockOut (autoClockOutCheck), flagsUrl, skipped (addresses in
+ * "Flags email to" that couldn't be read)}. Returns {subject, body, htmlBody}. Names
+ * and reasons come from the Flags tab, which staff already see; no User Token.
+ */
+function flagsEmailMessage(input) {
+  const recent = input.summary.recent;
+  const unreviewed = input.summary.unreviewed;
+  const auto = input.autoClockOut;
+  if (!recent.length && !unreviewed && !auto.stale) return null;
+
+  const counts =
+    plural(recent.length, "new flag", "new flags") + " this week, " + unreviewed + " unreviewed";
+  const subject = "Volunteer kiosk: " + (auto.stale ? "auto clock-out not running, " : "") + counts;
+
+  const text = [];
+  const html = [];
+  const para = (plain, markup) => {
+    text.push(plain);
+    html.push("<p>" + (markup === undefined ? htmlText(plain) : markup) + "</p>");
+  };
+  if (auto.stale) {
+    para(
+      (auto.lastRun
+        ? "The auto clock-out last ran at " + auto.lastRun + "."
+        : "The auto clock-out has never run.") +
+        " Shifts nobody checked out of are not being closed. Ask whoever looks after the" +
+        ' kiosk to check its daily jobs; Settings "Daily jobs installed by" names the account' +
+        " that runs them.",
+    );
+  }
+  para("Flags raised in the last 7 days: " + recent.length);
+  para("Flags still unreviewed: " + unreviewed);
+  para(
+    "Review them on the Flags tab (Data > Filter views > " +
+      flagsViewTitle() +
+      "): " +
+      input.flagsUrl,
+    'Review them on the <a href="' +
+      htmlText(input.flagsUrl) +
+      '">Flags tab</a> (Data &gt; Filter views &gt; ' +
+      htmlText(flagsViewTitle()) +
+      ").",
+  );
+  if (recent.length) {
+    const shown = recent.slice(0, flagsEmailListMax());
+    const line = (f) =>
+      cellString(f.date) + ", " + cellString(f.name) + ": " + cellString(f.reason);
+    const more = recent.length - shown.length;
+    text.push(
+      ["This week's flags, newest first:"]
+        .concat(shown.map(line))
+        .concat(more > 0 ? ["and " + more + " more"] : [])
+        .join("\n"),
+    );
+    html.push(
+      "<p>This week's flags, newest first:</p><ul>" +
+        shown.map((f) => "<li>" + htmlText(line(f)) + "</li>").join("") +
+        "</ul>" +
+        (more > 0 ? "<p>and " + more + " more</p>" : ""),
+    );
+  }
+  if (input.skipped && input.skipped.length) {
+    para(
+      'Not sent to these entries in Settings "Flags email to", which aren\'t email addresses: ' +
+        input.skipped.join(", "),
+    );
+  }
+  para(
+    'Sent by the volunteer kiosk because Settings "Flags email" is On. Set it to Off to stop' +
+      " these emails.",
+  );
+  return { subject, body: text.join("\n\n"), htmlBody: html.join("\n") };
+}
+
+// ---------------------------------------------------------------------------
+// Past hours import
+//
+// The Kiosk admin menu's Import past hours (Import.js) reads a tab laid out like ENCM's
+// "Historical Hours": a header row, then one row per shift with its Date, First name, Last
+// name and hours, and optionally the month tab and cell the shift was copied from. Each
+// shift becomes a closed Log row with its stated hours and no times. Import.js reads and
+// writes; the rules are here.
+//
+// A source row is known by its source key: its date, its written name and its count among
+// the source rows with that date and name. Never by its position, since rows move in the
+// old sheet. The Import ledger tab keeps every key brought in, so a second run adds
+// nothing and a row staff delete from the Log stays deleted. Once imported, a row is
+// corrected on the Log, never in the source: a corrected name or date is a new key.
+
+/** The tab in the Check-In Log that remembers every source key imported. */
+function importLedgerTab() {
+  return "Import ledger";
+}
+
+/** The Settings rows that prefill the dialog; a run that writes saves what it used. */
+function importFileSetting() {
+  return "Past hours file ID";
+}
+
+function importTabSetting() {
+  return "Past hours tab";
+}
+
+/** The tab the dialog offers when Settings names none. */
+function importDefaultTab() {
+  return "Historical Hours";
+}
+
+/**
+ * Both Entered By cells of an imported row. Six letters, so entrySource reads it as
+ * "other", never as an admin's initials.
+ */
+function importEnteredBy() {
+  return "import";
+}
+
+/** Rows written per lock: a tablet call waits at most one block. */
+function importBlockSize() {
+  return 250;
+}
+
+/** A run starts no new block after this long, inside Apps Script's 6-minute limit. */
+function importTimeBudgetMs() {
+  return 270000;
+}
+
+/** The ledger headers, keyed by the short names the code uses, in the order a new tab gets them. */
+function importLedgerHeaderNames() {
+  return {
+    key: "Source key",
+    shiftId: "Shift ID",
+    importedAt: "Imported At",
+    importedBy: "Imported By",
+    source: "Source",
+  };
+}
+
+function importLedgerHeaders() {
+  const names = importLedgerHeaderNames();
+  return Object.keys(names).map((key) => names[key]);
+}
+
+/**
+ * Maps each ledger header to its 0-based index in headerRow (normalizeHeader forms). Each
+ * must be there exactly once, else this throws: the ledger is the import's memory, and a
+ * run that can't read it would import everything again.
+ */
+function importLedgerColumns(headerRow) {
+  const cols = {};
+  importLedgerHeaders().forEach((h) => {
+    const found = logHeaderIndexes(headerRow, h);
+    if (found.length !== 1) {
+      throw new Error(
+        'The "' +
+          importLedgerTab() +
+          '" tab needs exactly one "' +
+          h +
+          '" column in row 1. Put it back, then run the import again.',
+      );
+    }
+    cols[h] = found[0];
+  });
+  return cols;
+}
+
+/** Why a source row is left out, by code, as the preview lists them. */
+function importLeftOutReasons() {
+  return {
+    date: "date can't be read",
+    future: "date is after today",
+    launch: 'date is on or after the "Kiosk launch date"',
+    name: "no first or last name",
+    hours: "hours aren't a number above 0 and at most 24",
+  };
+}
+
+/** {ok: false, refusal, message} for an import refusal; detail fills in the message. */
+function importRefusal(code, detail) {
+  const d = cellString(detail);
+  const messages = {
+    IMPORT_LAUNCH_DATE:
+      'The Settings value "Kiosk launch date" is blank or isn\'t a date (yyyy-MM-dd). The import' +
+      " brings in only shifts before that date, so set it first.",
+    IMPORT_FILE_ID: "Please paste the spreadsheet's link or ID.",
+    IMPORT_FILE:
+      "That spreadsheet can't be opened. Check the link or ID, and that this account can open it.",
+    IMPORT_TAB: 'That spreadsheet has no tab named "' + d + '".',
+    IMPORT_HEADERS: "The tab's first row has no " + d + " column.",
+  };
+  if (!messages[code]) throw new Error("Unknown import refusal code: " + code);
+  return { ok: false, refusal: code, message: messages[code] };
+}
+
+/**
+ * The spreadsheet ID in a pasted link (".../spreadsheets/d/<id>/edit...") or a bare ID;
+ * '' when there is neither.
+ */
+function importFileId(text) {
+  const s = cellString(text);
+  const link = /\/d\/([A-Za-z0-9_-]{10,})/.exec(s);
+  if (link) return link[1];
+  return /^[A-Za-z0-9_-]{10,}$/.test(s) ? s : "";
+}
+
+/**
+ * The source tab's columns from its header row, as {cols, missing}. cols holds 0-based
+ * indexes {date, firstName, lastName, hours, sourceTab, sourceCell}, -1 when absent;
+ * missing lists the required headers the row lacks. Date, First name and Last name are
+ * required. Hours is the column headed "Hours", else the column right after Last name
+ * (ENCM's tab leaves it unheaded). "Source cell" is optional, and the unheaded column just
+ * left of it, when that isn't the hours column, is the source tab. Both are kept only for
+ * the row's Notes.
+ */
+function importColumns(headerRow) {
+  const headers = (headerRow || []).map(normalizeHeader);
+  const at = (name) => headers.indexOf(name);
+  const cols = {
+    date: at("date"),
+    firstName: at("first name"),
+    lastName: at("last name"),
+    hours: at("hours"),
+    sourceTab: -1,
+    sourceCell: at("source cell"),
+  };
+  const missing = [];
+  if (cols.date < 0) missing.push("Date");
+  if (cols.firstName < 0) missing.push("First name");
+  if (cols.lastName < 0) missing.push("Last name");
+  if (cols.hours < 0 && cols.lastName >= 0) cols.hours = cols.lastName + 1;
+  const left = cols.sourceCell - 1;
+  if (cols.sourceCell > 0 && headers[left] === "" && left !== cols.hours) cols.sourceTab = left;
+  return { cols, missing };
+}
+
+/** The same-name key of a written name: volunteerNameKey of its first and last name. */
+function importNameKey(firstName, lastName) {
+  return volunteerNameKey({ firstName, lastName });
+}
+
+/** A written name as it goes on the Log: first and last, trimmed, runs of spaces as one. */
+function importWrittenName(firstName, lastName) {
+  return (cellString(firstName) + " " + cellString(lastName)).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The User Token an unmatched name's rows get, so the reports count them as one volunteer
+ * under the written name: "import:" and the name key with its "|" as a space ("import:jane
+ * doe"). A real token never starts this way. Staff who find the volunteer type the real
+ * token over it.
+ */
+function importStandInToken(nameKey) {
+  return "import:" + cellString(nameKey).replace(/\|/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** A source row's key: date, name key and its count among rows with that date and name. */
+function importSourceKey(date, nameKey, n) {
+  return date + "|" + nameKey + "|" + n;
+}
+
+/** An imported row's Shift ID: "import-" and the first 16 hex of the key's SHA-256. */
+function importShiftId(key, hashFn) {
+  return "import-" + String(hashFn(key)).toLowerCase().slice(0, 16);
+}
+
+/** The launch date as yyyy-MM-dd, or the IMPORT_LAUNCH_DATE refusal as {refusal}. */
+function importLaunchDate(text) {
+  const launch = parseStartDate(text);
+  return launch ? { launch } : { refusal: importRefusal("IMPORT_LAUNCH_DATE") };
+}
+
+/** A source hours cell as a number, NaN when blank or not a number. */
+function importHours(value) {
+  return hoursCell(typeof value === "number" ? value : cellString(value));
+}
+
+/**
+ * Works out what an import would do. input is {header, rows, launchDate, todayDate,
+ * volunteers, ledgerKeys, logShiftIds, hashFn}: the source header row, its data rows (data
+ * row i is source row i + 2; a date cell already as yyyy-MM-dd text, hours as read), the
+ * Settings launch date, today, the Profiles list, the source keys in the ledger, the Shift
+ * IDs on the Log, and a SHA-256 hex function.
+ *
+ * A row is importable when its Date reads as a day (parseStartDate) not after today and
+ * before the launch date, it has a first or last name, and its hours are a number above 0
+ * and at most 24. Wholly blank rows are skipped and not counted. A key counts every row
+ * whose date reads and that has a name, left out or not, so fixing one row's hours in the
+ * source doesn't change its neighbours' keys.
+ *
+ * A name matches when exactly one Profiles volunteer has its name key. Returns {refusal}
+ * (launch date or headers), or {rowsRead, toImport, alreadyImported, onLog, leftOut}: the
+ * first three are lists of items {sourceRow, date, firstName, lastName, name, nameKey, key,
+ * shiftId, hours, volunteer (null when unmatched), matches, sourceTab, sourceCell}, in
+ * source order; leftOut is [{row, reason}] with reason a code of importLeftOutReasons().
+ * An item in toImport is neither in the ledger nor on the Log; one in onLog has its Shift
+ * ID on the Log but no ledger line, which the run adds.
+ */
+function importPlan(input) {
+  const launch = importLaunchDate(input.launchDate);
+  if (launch.refusal) return { refusal: launch.refusal };
+  const columns = importColumns(input.header);
+  if (columns.missing.length) {
+    return {
+      refusal: importRefusal(
+        "IMPORT_HEADERS",
+        columns.missing.map((h) => '"' + h + '"').join(" or "),
+      ),
+    };
+  }
+  const c = columns.cols;
+  const byName = new Map();
+  (input.volunteers || []).forEach((v) => {
+    const key = volunteerNameKey(v);
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(v);
+  });
+  const ledger = new Set((input.ledgerKeys || []).map(cellString));
+  const onLogIds = new Set((input.logShiftIds || []).map(cellString));
+  const counts = new Map();
+  const plan = { rowsRead: 0, toImport: [], alreadyImported: [], onLog: [], leftOut: [] };
+
+  (input.rows || []).forEach((cells, i) => {
+    const row = i + 2;
+    if ((cells || []).every((v) => cellString(v) === "")) return;
+    plan.rowsRead++;
+    const cell = (at) => (at >= 0 ? cells[at] : "");
+    const date = parseStartDate(cell(c.date));
+    const firstName = cellString(cell(c.firstName));
+    const lastName = cellString(cell(c.lastName));
+    const hours = importHours(cell(c.hours));
+    const hasName = firstName !== "" || lastName !== "";
+    const nameKey = importNameKey(firstName, lastName);
+    let n = 0;
+    if (date && hasName) {
+      const at = date + "|" + nameKey;
+      n = (counts.get(at) || 0) + 1;
+      counts.set(at, n);
+    }
+    let reason = "";
+    if (!date) reason = "date";
+    else if (date > input.todayDate) reason = "future";
+    else if (date >= launch.launch) reason = "launch";
+    else if (!hasName) reason = "name";
+    else if (!isFinite(hours) || hours <= 0 || hours > 24) reason = "hours";
+    if (reason) {
+      plan.leftOut.push({ row, reason });
+      return;
+    }
+    const key = importSourceKey(date, nameKey, n);
+    const shiftId = importShiftId(key, input.hashFn);
+    const same = byName.get(nameKey) || [];
+    const item = {
+      sourceRow: row,
+      date,
+      firstName,
+      lastName,
+      name: importWrittenName(firstName, lastName),
+      nameKey,
+      key,
+      shiftId,
+      hours,
+      volunteer: same.length === 1 ? same[0] : null,
+      matches: same.length,
+      sourceTab: cellString(cell(c.sourceTab)),
+      sourceCell: cellString(cell(c.sourceCell)),
+    };
+    if (ledger.has(key)) plan.alreadyImported.push(item);
+    else if (onLogIds.has(shiftId)) plan.onLog.push(item);
+    else plan.toImport.push(item);
+  });
+  return plan;
+}
+
+/** Hours added up in hundredths, so 0.1 + 0.2 is 0.3. */
+function importHoursTotal(items) {
+  return items.reduce((sum, item) => sum + Math.round(item.hours * 100), 0) / 100;
+}
+
+/** {name key: rows} for the unmatched items. */
+function importUnmatchedCounts(items) {
+  const counts = {};
+  items.forEach((item) => {
+    if (!item.volunteer) counts[item.nameKey] = (counts[item.nameKey] || 0) + 1;
+  });
+  return counts;
+}
+
+/**
+ * The preview's counts for a plan: {rowsRead, toImport, matched, unmatched, hours,
+ * alreadyImported, onLog, leftOut, unmatchedNames: [{name, rows, matches}] sorted by name,
+ * leftOutRows: [{reason (text), rows: [source row numbers]}] in importLeftOutReasons()
+ * order}. No User Token.
+ */
+function importSummary(plan) {
+  const unmatched = plan.toImport.filter((item) => !item.volunteer);
+  const counts = importUnmatchedCounts(plan.toImport);
+  const names = [];
+  const seen = new Set();
+  unmatched.forEach((item) => {
+    if (seen.has(item.nameKey)) return;
+    seen.add(item.nameKey);
+    names.push({ name: item.name, rows: counts[item.nameKey], matches: item.matches });
+  });
+  names.sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name)));
+  const reasons = importLeftOutReasons();
+  const leftOutRows = Object.keys(reasons)
+    .map((code) => ({
+      reason: reasons[code],
+      rows: plan.leftOut.filter((l) => l.reason === code).map((l) => l.row),
+    }))
+    .filter((group) => group.rows.length);
+  return {
+    rowsRead: plan.rowsRead,
+    toImport: plan.toImport.length,
+    matched: plan.toImport.length - unmatched.length,
+    unmatched: unmatched.length,
+    hours: importHoursTotal(plan.toImport),
+    alreadyImported: plan.alreadyImported.length,
+    onLog: plan.onLog.length,
+    leftOut: plan.leftOut.length,
+    unmatchedNames: names,
+    leftOutRows,
+  };
+}
+
+/** The Admin Alerts? text of an unmatched row: no Profiles match, or a same-name group. */
+function importAlert(matches) {
+  const why =
+    matches > 1
+      ? "imported: name matches " + matches + " Volunteer Profiles rows"
+      : "imported: no Volunteer Profiles match for this name";
+  return why + "; correct this row on the Log, not in the old sheet";
+}
+
+/**
+ * An imported row's Notes: "Imported by JP from Old Volunteer Hours › Historical Hours row
+ * 12 (2025.12 C3)", the part in brackets only when the source names its tab or cell.
+ */
+function importNote(initials, fileName, tab, item) {
+  const from = [item.sourceTab, item.sourceCell].filter((s) => cellString(s) !== "").join(" ");
+  return (
+    "Imported by " +
+    initials +
+    " from " +
+    cellString(fileName) +
+    " › " +
+    cellString(tab) +
+    " row " +
+    item.sourceRow +
+    (from ? " (" + from + ")" : "")
+  );
+}
+
+/**
+ * The cell map of an imported row. note is the Notes text, or '' to leave Notes alone
+ * (when the Log has no Notes column). The four times and Hours Served (timestamps) are
+ * not written: the source has no times.
+ */
+function importCells(item, note) {
+  const H = logHeaderNames();
+  const token = item.volunteer ? item.volunteer.token : importStandInToken(item.nameKey);
+  requireRowKeys(token, item.shiftId);
+  const cells = {
+    [H.date]: item.date,
+    [H.day]: weekdayName(item.date),
+    [H.name]: sheetText(item.volunteer ? volunteerFullName(item.volunteer) : item.name),
+    [H.statedHours]: item.hours,
+    [H.token]: sheetText(token),
+    [H.status]: "closed",
+    [H.inBy]: importEnteredBy(),
+    [H.outBy]: importEnteredBy(),
+    [H.shiftId]: item.shiftId,
+  };
+  if (!item.volunteer) cells[H.alerts] = importAlert(item.matches);
+  if (cellString(note)) cells[H.notes] = sheetText(note);
+  return cells;
+}
+
+/** One ledger line as a header-keyed map. */
+function importLedgerLine(item, nowMs, initials, fileId, tab) {
+  const L = importLedgerHeaderNames();
+  return {
+    [L.key]: sheetText(item.key),
+    [L.shiftId]: item.shiftId,
+    [L.importedAt]: nowMs,
+    [L.importedBy]: sheetText(initials),
+    [L.source]: sheetText(fileId + ", " + tab + ", row " + item.sourceRow),
+  };
+}
+
+/** One ledger map as a row of width cells under cols (importLedgerColumns). */
+function importLedgerValues(line, cols, width) {
+  const row = Array.from({ length: width }, () => "");
+  Object.keys(line).forEach((h) => (row[cols[h]] = line[h]));
+  return row;
+}
+
+/** The items cut into blocks of size, in order. */
+function importBlocks(items, size) {
+  const blocks = [];
+  for (let i = 0; i < items.length; i += size) blocks.push(items.slice(i, i + size));
+  return blocks;
+}
+
+/**
+ * The Flags rows for one written block: one per unmatched name not in flagged (the name
+ * keys already flagged this run), for the name's first row in the block. written is
+ * [{item, row}] with row the Log row, counts the run's unmatched rows per name key. Adds
+ * the names it flags to flagged. Reason is the row's alert and the name's rows in this run.
+ */
+function importFlagRows(written, counts, flagged, nowMs) {
+  const rows = [];
+  written.forEach(({ item, row }) => {
+    if (item.volunteer || flagged.has(item.nameKey)) return;
+    flagged.add(item.nameKey);
+    const n = counts[item.nameKey] || 1;
+    const reason =
+      importAlert(item.matches) + " (" + n + (n === 1 ? " row" : " rows") + " in this import)";
+    flagRows(
+      {
+        date: item.date,
+        name: item.name,
+        shiftId: item.shiftId,
+        raisedAtMs: nowMs,
+        source: flagSources().import,
+        logRow: row,
+      },
+      [reason],
+    ).forEach((r) => rows.push(r));
+  });
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Auto clock-out
+//
+// The daily job runAutoClockOut (Jobs.js), at about 4 AM Central, closes open rows nobody
+// checked out of with a guessed time, and flags each one. An open row's age is measured
+// from when it was checked in (checkedInMs). It is the tablet's while that age is under the
+// "Auto clock-out after hours" window (isTabletOpenRow) and the job's once it is at least
+// the window, so a row is never both, and a volunteer can check out at the tablet for the
+// whole window after the tap. Jobs.js reads and writes; the rules are here.
+//
+// The guess is never before the volunteer tapped in (the floor) and never after the run's
+// time or the start of the volunteer's next row (the limit); when the limit is before the
+// floor, the limit wins. In order: the volunteer's usual length on that weekday, else the
+// Finish of the matching window on the Shifts tab, else the arrival plus 3 hours, raised to
+// the floor and cut to the limit. The volunteer's own history comes first, and every guess
+// is flagged with where it came from.
+
+/**
+ * The Check-Out Entered By of a row the auto clock-out closes. entrySource reads it as
+ * "other", never as an admin's initials, so reports list the row as entered another way.
+ */
+function autoCloseEnteredBy() {
+  return "auto-close";
+}
+
+/** The tab in the Check-In Log the job reads shift windows from. Staff's: only ever read. */
+function shiftsTab() {
+  return "Shifts";
+}
+
+/** The Shifts headers the job reads, after normalizeHeader. Other columns are ignored. */
+function shiftsHeaderNames() {
+  return { weekday: "shifts", start: "start", finish: "finish" };
+}
+
+/** The header row is the first of the tab's top rows that holds all three headers. */
+function shiftsHeaderSearchRows() {
+  return 10;
+}
+
+/** A start this many minutes before a Shifts window's Start still matches it. */
+function shiftsEarlyMinutes() {
+  return 30;
+}
+
+/** The usual length looks back this many weeks. */
+function usualLengthWeeks() {
+  return 26;
+}
+
+/** The usual length takes at most this many of the most recent rows. */
+function usualLengthSampleMax() {
+  return 8;
+}
+
+/** The usual length needs at least this many rows. */
+function usualLengthMinRows() {
+  return 3;
+}
+
+/** How far from the median a row may be and still count as near it, for the spread rule. */
+function usualLengthSpreadMinutes() {
+  return 60;
+}
+
+/** The last step's length: the arrival plus this many hours. */
+function fallbackShiftHours() {
+  return 3;
+}
+
+/** A run starts no new row after this long, well inside Google's 6-minute limit. */
+function autoClockOutBudgetMs() {
+  return 4.5 * 60000;
+}
+
+/** The Admin Alerts? text of an open row the job can't close because no time on it reads. */
+function autoClockOutSkippedAlert() {
+  return "auto clock-out skipped: check-in time unreadable";
+}
+
+/**
+ * "Kiosk launch date" as yyyy-MM-dd. Throws when it is blank or unreadable, so the run
+ * fails (and the owner gets Google's failure email) rather than close every open row the
+ * Log has ever had.
+ */
+function autoClockOutLaunchDate(text) {
+  const launch = parseStartDate(text);
+  if (!launch) {
+    throw new Error(
+      'Auto clock-out: the Settings value "Kiosk launch date" is blank or not a date, so ' +
+        "no row was closed. Write it as yyyy-MM-dd.",
+    );
+  }
+  return launch;
+}
+
+/**
+ * The open rows a run at nowMs acts on, as {close, skip}. Only rows with Status open and
+ * a Date on or after launchDate. close: rows whose age (checkedInMs) is at least windowMs,
+ * oldest first; a row edited by hand so its start is not before nowMs is left for a later
+ * run. skip: rows dated before todayDate on which no time reads, so no time can be
+ * guessed, and whose Admin Alerts? doesn't yet hold autoClockOutSkippedAlert(), so each is
+ * flagged once. A row whose Date can't be read is in neither list: it has no age and isn't
+ * dated today.
+ */
+function autoClockOutRows(entries, nowMs, windowMs, todayDate, launchDate) {
+  const close = [];
+  const skip = [];
+  entries.forEach((e) => {
+    if (!isStatus(e, "open")) return;
+    const date = rowDate(e.dateText);
+    if (!date || date < launchDate) return;
+    const at = checkedInMs(e);
+    if (isFinite(at)) {
+      if (nowMs - at >= windowMs && shiftStartMs(e) < nowMs) close.push(e);
+      return;
+    }
+    if (date < todayDate && !cellString(e.alerts).includes(autoClockOutSkippedAlert())) {
+      skip.push(e);
+    }
+  });
+  close.sort((a, b) => checkedInMs(a) - checkedInMs(b) || a.row - b.row);
+  return { close, skip };
+}
+
+/**
+ * True when a Log row read again just before an auto clock-out write (current, a log
+ * entry, or null when the row is past the Log's end) is still the row the run planned for:
+ * still open, with the same Shift ID, User Token, Date and check-in times. Staff can sort,
+ * insert or delete Log rows while a run goes on, which moves rows under their numbers; a
+ * row that changed is left for the next run rather than written by a stale number.
+ */
+function autoClockOutRowUnchanged(planned, current) {
+  if (!current || !isStatus(current, "open")) return false;
+  return (
+    cellString(current.shiftId) === cellString(planned.shiftId) &&
+    cellString(current.token) === cellString(planned.token) &&
+    cellString(current.dateText) === cellString(planned.dateText) &&
+    Object.is(current.recordedInMs, planned.recordedInMs) &&
+    Object.is(current.statedInMs, planned.statedInMs)
+  );
+}
+
+/**
+ * The volunteer's usual length for an open row's weekday, as {minutes, weekday}, or null.
+ * The sample is the same token's closed rows dated on the same weekday, before this row's
+ * Date and at most 26 weeks before it, with Hours Served (stated) a number above 0 and at
+ * most 24, and a check-out made at the kiosk, by an admin's initials or typed by hand
+ * (entrySource). Auto-closed and imported rows are left out, so guesses never feed guesses.
+ * The 8 most recent by Date are taken; there must be at least 3. minutes is their median
+ * stated length in whole minutes (an even count takes the mean of the middle two, rounded
+ * down). Null when the sample is too spread: fewer than two thirds of it (rounded up) within
+ * 60 minutes of the median, so one odd shift in three passes and no usual length doesn't.
+ */
+function usualLength(entries, row) {
+  const date = rowDate(row.dateText);
+  if (!date) return null;
+  const weekday = weekdayName(date);
+  const from = addDays(date, -7 * usualLengthWeeks());
+  const sources = ["kiosk", "initials", "typed"];
+  const sample = entries
+    .filter((e) => {
+      if (e.row === row.row || !isTokenRow(e, row.token) || !isStatus(e, "closed")) return false;
+      const d = rowDate(e.dateText);
+      if (!d || d >= date || d < from || weekdayName(d) !== weekday) return false;
+      const hours = e.statedHours;
+      if (typeof hours !== "number" || !isFinite(hours) || hours <= 0 || hours > 24) return false;
+      return sources.indexOf(entrySource(e.outBy)) >= 0;
+    })
+    .sort((a, b) => reportRowOrder(b, a))
+    .slice(0, usualLengthSampleMax());
+  if (sample.length < usualLengthMinRows()) return null;
+  const minutes = sample.map((e) => Math.round(e.statedHours * 60)).sort((a, b) => a - b);
+  const n = minutes.length;
+  const median =
+    n % 2 ? minutes[(n - 1) / 2] : Math.floor((minutes[n / 2 - 1] + minutes[n / 2]) / 2);
+  const near = minutes.filter((m) => Math.abs(m - median) <= usualLengthSpreadMinutes()).length;
+  if (near < Math.ceil((2 * n) / 3)) return null;
+  return { minutes: median, weekday };
+}
+
+/**
+ * A Shifts Start or Finish cell as "HH:mm", or ''. clock is what read.clock gave (a sheet
+ * time, or text clockText reads, such as "9:00 AM"); text is the cell's text, for an hour
+ * with AM or PM and no minutes, such as "9 AM" or "1pm".
+ */
+function shiftsClock(clock, text) {
+  if (cellString(clock)) return cellString(clock);
+  const m = /^(\d{1,2})\s*([ap])\.?\s*m\.?$/i.exec(cellString(text));
+  return m ? clockText(m[1] + ":00 " + m[2] + "m") : "";
+}
+
+/**
+ * The Shifts tab's windows from its values (rows of cells), as {windows, problem}.
+ * windows: [{weekday, start, finish}], weekday a full English name and start and finish
+ * "HH:mm". Columns are found by header (shiftsHeaderNames), in the first of the top rows
+ * that holds all three; other columns are ignored. A weekday cell is an English weekday,
+ * full or its first three letters, any case. A row missing any of the three is skipped.
+ * read.text(value) gives a cell as text and read.clock(value) its "HH:mm" or ''. problem
+ * is '' or a line for the log when no header row is found.
+ */
+function shiftsTabWindows(values, read) {
+  const H = shiftsHeaderNames();
+  let cols = null;
+  let headerAt = -1;
+  for (let i = 0; i < Math.min(values.length, shiftsHeaderSearchRows()); i++) {
+    const names = values[i].map((v) => normalizeHeader(cellString(read.text(v))));
+    const found = {
+      weekday: names.indexOf(H.weekday),
+      start: names.indexOf(H.start),
+      finish: names.indexOf(H.finish),
+    };
+    if (found.weekday >= 0 && found.start >= 0 && found.finish >= 0) {
+      cols = found;
+      headerAt = i;
+      break;
+    }
+  }
+  if (!cols) {
+    return {
+      windows: [],
+      problem: 'the "' + shiftsTab() + '" tab has no header row with Shifts, Start and Finish',
+    };
+  }
+  const windows = [];
+  values.slice(headerAt + 1).forEach((cells) => {
+    const cell = (at) => (at < cells.length ? cells[at] : "");
+    const weekday = weekdayFromText(read.text(cell(cols.weekday)));
+    const start = shiftsClock(read.clock(cell(cols.start)), read.text(cell(cols.start)));
+    const finish = shiftsClock(read.clock(cell(cols.finish)), read.text(cell(cols.finish)));
+    if (weekday && start && finish) windows.push({ weekday, start, finish });
+  });
+  return { windows, problem: "" };
+}
+
+/**
+ * The Shifts window an open row's start matches, as {startMs, finishMs, start}, or null.
+ * A window is Start to Finish on the row's Date, on the row's weekday; Finish is on the
+ * next day when it is not after Start. It matches when startMs is at or after Start minus
+ * 30 minutes and before Finish. Of the matches, the one whose Start is nearest startMs
+ * wins, a tie going to the later Start. at(dateText, clock) gives {ms, date} as read.at.
+ */
+function matchShiftsWindow(windows, dateText, startMs, at) {
+  const date = rowDate(dateText);
+  if (!date || !isFinite(startMs)) return null;
+  const weekday = weekdayName(date);
+  let best = null;
+  (windows || []).forEach((w) => {
+    if (w.weekday !== weekday) return;
+    const s = at(date, w.start);
+    if (!s || !isFinite(s.ms)) return;
+    let f = at(date, w.finish);
+    if (!f || !(f.ms > s.ms)) f = at(addDays(date, 1), w.finish);
+    if (!f || !isFinite(f.ms)) return;
+    if (startMs < s.ms - shiftsEarlyMinutes() * 60000 || startMs >= f.ms) return;
+    const gap = Math.abs(startMs - s.ms);
+    if (!best || gap < best.gap || (gap === best.gap && s.ms > best.startMs)) {
+      best = { startMs: s.ms, finishMs: f.ms, start: w.start, gap };
+    }
+  });
+  return best && { startMs: best.startMs, finishMs: best.finishMs, start: best.start };
+}
+
+/**
+ * The auto clock-out's time for an open row (one autoClockOutRows closes), as {ms, source}
+ * plus weekday for "usual" and windowStart for "shifts". start is the row's start
+ * (shiftStartMs); floor the later of start and Check-In Recorded when it reads; limit the
+ * earlier of nowMs and the start of the same token's next row (any Status, the earliest
+ * start after start).
+ *
+ * The usual length (usualLength) and then the Shifts window's Finish (matchShiftsWindow)
+ * are each used only when they lie between floor and limit. Otherwise start + 3 hours
+ * ("arrival"), raised to floor when earlier ("tap"), then cut to limit when later ("next"
+ * when the next row's start is the limit, "run" when nowMs is). So the guess is never in
+ * the future, never runs into the next shift, and is never before the tap unless the
+ * volunteer's own rows disagree. windows is the Shifts tab's (shiftsTabWindows), [] when
+ * there is none; read.at is as logEntry's.
+ */
+function autoClockOutGuess(entries, row, nowMs, windows, read) {
+  const start = shiftStartMs(row);
+  const floor = isFinite(row.recordedInMs) ? Math.max(start, row.recordedInMs) : start;
+  let next = Infinity;
+  entries.forEach((e) => {
+    if (e.row === row.row || !isTokenRow(e, row.token)) return;
+    const s = shiftStartMs(e);
+    if (isFinite(s) && s > start && s < next) next = s;
+  });
+  const limit = Math.min(nowMs, next);
+  const fits = (ms) => ms >= floor && ms <= limit;
+
+  const usual = usualLength(entries, row);
+  if (usual && fits(start + usual.minutes * 60000)) {
+    return { ms: start + usual.minutes * 60000, source: "usual", weekday: usual.weekday };
+  }
+  const window = matchShiftsWindow(windows, row.dateText, start, read.at);
+  if (window && fits(window.finishMs)) {
+    return { ms: window.finishMs, source: "shifts", windowStart: window.start };
+  }
+  let ms = start + fallbackShiftHours() * 3600000;
+  let source = "arrival";
+  if (ms < floor) {
+    ms = floor;
+    source = "tap";
+  }
+  if (ms > limit) {
+    ms = limit;
+    source = limit === next ? "next" : "run";
+  }
+  return { ms, source };
+}
+
+/** A Central "HH:mm" as "1:30 PM". */
+function clockLabel(hhmm) {
+  const m = /^(\d{2}):(\d{2})$/.exec(cellString(hhmm));
+  if (!m) return cellString(hhmm);
+  const hour = Number(m[1]);
+  return (hour % 12 || 12) + ":" + m[2] + (hour < 12 ? " AM" : " PM");
+}
+
+/**
+ * The Admin Alerts? text and Flags reason of a row the job closes, naming where its time
+ * came from: "auto clock-out at 1:30 PM, usual Tuesday length", "..., Finish of the 9:00
+ * AM Shifts window", "..., arrival + 3 h", "..., time of the check-in tap", "..., start of
+ * the next shift" or "..., time of this run". The time carries its weekday ("Wednesday
+ * 2:00 AM") when it falls on another day than the row's Date. read.time(value) is as
+ * logEntry's; it is given a Date.
+ */
+function autoClockOutAlert(row, guess, read) {
+  const t = read.time(new Date(guess.ms));
+  const day = t.date && t.date !== rowDate(row.dateText) ? weekdayName(t.date) + " " : "";
+  const why = {
+    usual: "usual " + guess.weekday + " length",
+    shifts: "Finish of the " + clockLabel(guess.windowStart) + " Shifts window",
+    arrival: "arrival + " + fallbackShiftHours() + " h",
+    tap: "time of the check-in tap",
+    next: "start of the next shift",
+    run: "time of this run",
+  }[guess.source];
+  return "auto clock-out at " + day + clockLabel(t.clock) + ", " + why;
+}
+
+/**
+ * The cells the job writes on a row it closes. Check-Out Stated is the guess, as a
+ * date-time (on the next day for an overnight guess); Check-Out Recorded and Hours Served
+ * (timestamps) are blank, since nobody tapped; Hours Served (stated) is from the start to
+ * the guess. Status closed, so the guessed hours count at once, flagged. Admin Alerts? gets
+ * the alert after what it holds. A row with no Shift ID gets shiftId, so its Flags row can
+ * find it.
+ */
+function autoClockOutCells(row, guess, alert, shiftId) {
+  const H = logHeaderNames();
+  const cells = {
+    [H.recordedOut]: "",
+    [H.statedOut]: guess.ms,
+    [H.recordedHours]: "",
+    [H.statedHours]: pairHours(shiftStartMs(row), guess.ms),
+    [H.alerts]: sheetText(appendText(row.alerts, alert)),
+    [H.status]: "closed",
+    [H.outBy]: autoCloseEnteredBy(),
+  };
+  if (!cellString(row.shiftId)) cells[H.shiftId] = sheetText(shiftId);
+  return cells;
+}
+
+/**
+ * The cells the job writes on a row it skips (autoClockOutRows skip): the skipped alert
+ * after what Admin Alerts? holds, and shiftId when the row has no Shift ID. The row stays
+ * open.
+ */
+function autoClockOutSkipCells(row, shiftId) {
+  const H = logHeaderNames();
+  const cells = { [H.alerts]: sheetText(appendText(row.alerts, autoClockOutSkippedAlert())) };
+  if (!cellString(row.shiftId)) cells[H.shiftId] = sheetText(shiftId);
+  return cells;
+}
+
+/**
+ * The Flags row base (flagRows) for a row the job writes: Source auto-close, Raised At the
+ * run's time.
+ */
+function autoClockOutFlagBase(row, shiftId, nowMs) {
+  return {
+    date: rowDate(row.dateText),
+    name: row.name,
+    shiftId: cellString(row.shiftId) || shiftId,
+    raisedAtMs: nowMs,
+    source: flagSources().autoClose,
+    logRow: row.row,
+  };
 }
