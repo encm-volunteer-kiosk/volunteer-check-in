@@ -80,6 +80,15 @@ class FakeRange {
     this.sheet.set(this.row, this.col, value);
     return this;
   }
+  // A formula is kept apart from the values; the cell's value stays as it was written.
+  setFormula(formula) {
+    assert.equal(this.rows * this.cols, 1, "setFormula on one cell");
+    this.sheet.formulas.set(this.row + "," + this.col, formula);
+    return this;
+  }
+  getFormula() {
+    return this.sheet.formulas.get(this.row + "," + this.col) || "";
+  }
   setNumberFormat(format) {
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols; c++) {
@@ -182,6 +191,8 @@ class FakeSheet {
     this.name = name;
     this.sheetId = sheetId;
     this.values = new Map();
+    // Formulas by "row,col"; writing a value to the cell removes its formula, as in Sheets.
+    this.formulas = new Map();
     this.formats = new Map();
     // Data validations by "row,col,rows,cols" of the range they were set on.
     this.validations = new Map();
@@ -218,6 +229,7 @@ class FakeSheet {
   }
   clear() {
     this.values.clear();
+    this.formulas.clear();
     this.formats.clear();
     this.styles.clear();
     this.wraps.clear();
@@ -240,6 +252,7 @@ class FakeSheet {
   }
   set(r, c, v) {
     assert.ok(r <= this.maxRows && c <= this.maxCols, "write outside the sheet at " + r + "," + c);
+    this.formulas.delete(r + "," + c);
     if (v === "") this.values.delete(r + "," + c);
     else this.values.set(r + "," + c, v);
   }
@@ -302,6 +315,7 @@ class FakeSheet {
     return {
       name: this.name,
       values: [...this.values.entries()].sort(),
+      formulas: [...this.formulas.entries()].sort(),
       formats: [...this.formats.entries()].sort(),
       validations: [...this.validations.entries()].sort(),
       maxCols: this.maxCols,
@@ -670,7 +684,7 @@ test("on a new spreadsheet Settings gets every default, the check-out flag at 15
   const settings = ss.getSheetByName("Settings");
   assert.deepEqual(settings.row(1), ["Setting", "Value", "What it does"]);
   const rows = settings.getDataRange().getValues().slice(1);
-  assert.equal(rows.length, 19);
+  assert.equal(rows.length, 20);
   const names = rows.map((r) => r[0]);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
   assert.deepEqual(rows.find((r) => r[0] === "Check-out flag minutes").slice(0, 2), [
@@ -793,7 +807,7 @@ test("existing Settings values are kept and missing rows appended", () => {
     .map((r) => r.slice(0, 2));
   assert.deepEqual(rows[0], ["Kiosk access code", "lettersonlylettersonly"]);
   assert.deepEqual(rows[1], ["Arrival flag minutes", "20"]);
-  assert.equal(rows.length, 19);
+  assert.equal(rows.length, 20);
   assert.deepEqual(
     rows.find((r) => r[0] === "Check-out flag minutes"),
     ["Check-out flag minutes", "15"],
@@ -941,7 +955,7 @@ test("without the advanced Sheets service, setupSheets names the view step and t
   assert.equal(flags.frozen, 1);
   assert.deepEqual([...flags.validations.entries()], [["2,6,999,1", CHECKBOX]]);
   assert.deepEqual(ss.getSheetByName("Log").row(1), LOG_HEADERS);
-  assert.equal(ss.getSheetByName("Settings").getDataRange().getValues().length, 20);
+  assert.equal(ss.getSheetByName("Settings").getDataRange().getValues().length, 21);
   assert.equal(ss.views.size, 0);
 });
 
@@ -1561,6 +1575,80 @@ test("How to, first run: the first tab, marked, warning-only, plain text, styled
     assert.equal(sheet.styles.get("background " + (i + 1) + ",1"), styles[r.kind].background);
     assert.equal(sheet.styles.get("style " + (i + 1) + ",1"), styles[r.kind].style);
   });
+});
+
+test("How to: the contact cell holds the live formula in General format; every other row is plain text", () => {
+  const ss = new FakeSpreadsheet();
+  const S = server(ss);
+  S.setupSheets();
+  const sheet = howTo(ss);
+  const rows = plain(S.howToRows());
+  const at = rows.findIndex((r) => r.kind === "contact") + 1;
+  assert.equal(at, 6, "under the first heading");
+  assert.equal(sheet.get(at, 1), "");
+  assert.equal(sheet.getRange(at, 1).getFormula(), S.kioskContactFormula());
+  assert.equal(sheet.format(at, 1), "General");
+  rows.forEach((r, i) => {
+    if (i + 1 === at) return;
+    assert.equal(sheet.getRange(i + 1, 1).getFormula(), "", "row " + (i + 1));
+    assert.equal(sheet.format(i + 1, 1), "@", "row " + (i + 1));
+  });
+  assert.deepEqual(columnA(sheet), trimTail(howToText(S)));
+  assert.deepEqual([...sheet.formulas.keys()], [at + ",1"]);
+  // A second run gives the same tab: one formula, the same cell.
+  const once = JSON.stringify(sheet.snapshot());
+  S.setupSheets();
+  assert.equal(JSON.stringify(sheet.snapshot()), once);
+});
+
+test("Kiosk contact: a staff value survives every run; a tab without the row gets it once, last, blank", () => {
+  const ss = new FakeSpreadsheet();
+  sheetWith(ss, "Log", [LOG_HEADERS]);
+  const settings = sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Kiosk access code", "lettersonlylettersonly"],
+    ["Kiosk contact", "Pat Example\n555-0100"],
+  ]);
+  const S = server(ss);
+  S.setupSheets();
+  S.setupSheets();
+  assert.deepEqual(settings.row(3).slice(0, 2), ["Kiosk contact", "Pat Example\n555-0100"]);
+  assert.equal(settings.get(3, 3), S.settingsDescriptions()["Kiosk contact"]);
+  const names = settings
+    .getDataRange()
+    .getValues()
+    .map((r) => r[0]);
+  assert.equal(names.filter((n) => n === "Kiosk contact").length, 1);
+  assert.equal(S.kioskContact_(), "Pat Example\n555-0100");
+
+  // A Settings tab from before the row: it is appended once, at the bottom, with B blank.
+  const old = new FakeSpreadsheet();
+  sheetWith(old, "Log", [LOG_HEADERS]);
+  const rows = [["Setting", "Value"]].concat(
+    plain(S.settingsDefaults("2026-11-13"))
+      .filter((r) => r[0] !== "Kiosk contact")
+      .map((r) => [r[0], r[1] || "kept"]),
+  );
+  const tab = sheetWith(old, "Settings", rows);
+  const O = server(old);
+  O.setupSheets();
+  O.setupSheets();
+  const last = tab.getLastRow();
+  assert.equal(last, rows.length + 1);
+  assert.deepEqual(tab.row(last), ["Kiosk contact", "", S.settingsDescriptions()["Kiosk contact"]]);
+  rows.forEach((r, i) => assert.deepEqual(tab.row(i + 1).slice(0, 2), r, "row " + (i + 1)));
+  assert.equal(O.kioskContact_(), "");
+});
+
+test("kioskContact_ is blank, logged, when Settings can't be read", () => {
+  const ss = new FakeSpreadsheet();
+  const S = server(ss);
+  const logs = [];
+  S.console = { log: (...a) => logs.push(a.join(" ")) };
+  assert.equal(S.kioskContact_(), "");
+  assert.deepEqual(logs, [
+    'Kiosk contact not read: The "Settings" tab is missing. Run setupSheets().',
+  ]);
 });
 
 test("How to, staff changes: edits are rewritten, a moved and renamed tab stays put, a deleted tab comes back", () => {

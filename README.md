@@ -408,6 +408,7 @@ once.
 | Daily jobs installed by    | blank                           | Written by the kiosk: the Google account that runs the nightly jobs and the weekly email, so leave it alone.                                                                                                                                                                           |
 | Past hours file ID         | blank                           | The old hours spreadsheet that Kiosk admin > Import past hours… offers first; an import fills it in, and blank just means the window starts empty.                                                                                                                                     |
 | Past hours tab             | Historical Hours                | The tab in that old hours spreadsheet that Import past hours… offers first; blank means Historical Hours.                                                                                                                                                                              |
+| Kiosk contact              | blank                           | Who to ask when the kiosk or this sheet isn't working, such as a name and an email or phone: the How to tab shows it, and so does the Kiosk admin menu when something goes wrong; while it's blank, the How to tab says to ask whoever looks after the kiosk.                          |
 
 "Flags email to" also splits on semicolons; the sentence leaves that out to stay short.
 "Daily jobs installed by" is written by `setupDailyJobs`, and the two Past hours rows by an
@@ -422,6 +423,15 @@ check in a second time, and both rows would get a guessed time.
 the stated check-out, the hours the row is credited) are more than this gets an alert in
 Admin Alerts? and a Flags row, whatever the clock or date. Exactly this many is not
 flagged. A blank, 0, negative or unreadable value reads as 8.
+
+"Kiosk contact" is who staff should ask when the kiosk or the sheet isn't working, typed
+as staff like it (a name and an email or phone, on one line or several). The kiosk never
+checks or shortens it. The How to tab's first section shows it, read live from this row
+(see What setupSheets does), and the Kiosk admin menu adds it to an error (see Kiosk admin
+menu). The tablet never shows it or receives it: volunteers use it in a public room and
+are sent to a board member on site. It is the last row, added blank by `setupSheets` on a
+sheet set up before it; this repository holds no real contact, only examples such as
+"Pat Example, pat@example.org" or "555-0100".
 
 "Check-out flag minutes" is new with the check-out time picker, "Volunteer hour value"
 with the reports, and the rows from "Auto clock-out after hours" down with the daily jobs.
@@ -446,7 +456,7 @@ ENCM is the shared account, so:
 > **Warning: use the menu with only one Google account signed in.** If the browser is
 > signed into more than one Google account, the menu's windows can fail with "We're sorry,
 > a server error occurred while reading from storage. Error code PERMISSION_DENIED".
-> Google sends the window's requests as the browser's *default* account (the first one
+> Google sends the window's requests as the browser's _default_ account (the first one
 > signed in) rather than the account that has the sheet open. To fix it, open the sheet in
 > an incognito/private window signed into only the shared account, or give that account its
 > own browser profile.
@@ -456,6 +466,17 @@ for the admin's **initials**: 1 to 5 letters, with spaces and dots dropped, stor
 initials go in Check-In Entered By and Check-Out Entered By, since everyone at ENCM signs
 in as the same account. A window stops working after 30 minutes; close it and open the
 menu again. If a save is refused, the window says why and keeps what was typed.
+
+When something goes wrong that isn't a refusal, the window shows the error, and while the
+Settings row "Kiosk contact" has a value the error ends with "If this keeps happening,
+contact: " and that value, its lines joined with commas. That covers every error that
+reaches a window's failure handler (one from Google, or a missing tab the kiosk names) and
+a reply with no message. Refresh Hours and Check the Log now add the same line to an alert
+that reports an error: a refresh that failed or found no Hours tabs, or a Log check that
+failed. A refusal, a busy message or a run's result is shown as it is, since each says
+what to do. With the row blank, the error is shown alone. A Settings tab that can't be
+read doesn't stop the shift or Monthly report windows opening; they just have no contact
+line. Import past hours needs Settings to open, so there it stops with Google's error.
 
 The "type to search" box in Add a shift, Fix a sign-out, Remove a shift and Restore a
 shift ignores accents, apostrophes, periods, hyphens, capitals and extra spaces, the same
@@ -1510,9 +1531,16 @@ nothing, except that it puts its look and its help back.
     back as it was. A cell that is no longer a kiosk header loses a note that is exactly a
     kiosk text, since it describes the wrong column. A deleted note comes back at the
     next run.
-  - The How to tab, last: short walkthroughs for staff (review flags, fix a sign-out,
-    add, remove and restore a shift, the monthly report, the flags email, changing a
-    setting, the Hours tab), a "Please don't" list, and every Log and Flags header note.
+  - The How to tab, last: who to ask for help, short walkthroughs for staff (review
+    flags, fix a sign-out, add, remove and restore a shift, the monthly report, the flags
+    email, changing a setting, the Hours tab), a "Please don't" list, and every Log and
+    Flags header note. Its first section, "Problems with the kiosk", is one cell holding a
+    formula (in the General format; every other cell is plain text) that reads the
+    Settings row "Kiosk contact" live: it shows "...contact: " and the value, trimmed, or
+    while the row is blank, missing or unreadable, says to ask whoever looks after the
+    kiosk and how to fill the row in. It finds the row as the kiosk does (the first row,
+    exact name, case counting) and trims the same characters, so a value of only spaces or
+    line breaks reads as blank. Staff edits to the row show at once, with no run.
     It is found by its developer metadata (key `kiosk-guide`), not by name. With no marked
     tab, it is created first in the tab bar; after that it is never moved or renamed, so
     it stays where staff put it. It is cleared and rewritten whole on every run, and has a

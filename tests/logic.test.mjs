@@ -230,7 +230,8 @@ test("settingsDefaults", () => {
   assert.equal(defaults["Daily jobs installed by"], "");
   assert.equal(defaults["Past hours file ID"], "");
   assert.equal(defaults["Past hours tab"], "Historical Hours");
-  assert.equal(rows.length, 19);
+  assert.equal(defaults["Kiosk contact"], "");
+  assert.equal(rows.length, 20);
   const names = rows.map((r) => r[0]);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);

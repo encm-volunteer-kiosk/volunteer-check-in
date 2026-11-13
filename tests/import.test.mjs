@@ -651,6 +651,23 @@ test("the opener prefills the dialog from Settings, and its key works", () => {
   fresh.ctx.openImportDialog();
   assert.equal(fresh.shown[0].output.template.fileId, "");
   assert.equal(fresh.shown[0].output.template.tab, "Historical Hours");
+  // No Kiosk contact row: no contact line.
+  assert.equal(fresh.shown[0].output.template.contactNote, "");
+});
+
+test("the opener puts the Kiosk contact line into the window", () => {
+  const s = server({
+    keys: [],
+    settings: settingsRows([["Kiosk contact", "Pat Example\n 555-0100 \n"]]),
+  });
+  s.ctx.openImportDialog();
+  assert.equal(
+    s.shown[0].output.template.contactNote,
+    "If this keeps happening, contact: Pat Example, 555-0100",
+  );
+  const blank = server({ keys: [], settings: settingsRows([["Kiosk contact", "\n"]]) });
+  blank.ctx.openImportDialog();
+  assert.equal(blank.shown[0].output.template.contactNote, "");
 });
 
 test("a blank, unreadable or missing launch date changes nothing: Preview and Import work", () => {

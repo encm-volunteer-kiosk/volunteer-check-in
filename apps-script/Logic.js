@@ -77,6 +77,7 @@ function settingsDefaults(todayDate) {
     ["Daily jobs installed by", ""],
     ["Past hours file ID", ""],
     ["Past hours tab", "Historical Hours"],
+    [kioskContactSetting(), ""],
   );
   return rows;
 }
@@ -132,6 +133,8 @@ function settingsDescriptions() {
       "The old hours spreadsheet that Kiosk admin > Import past hours… offers first; an import fills it in, and blank just means the window starts empty.",
     [importTabSetting()]:
       "The tab in that old hours spreadsheet that Import past hours… offers first; blank means Historical Hours.",
+    [kioskContactSetting()]:
+      "Who to ask when the kiosk or this sheet isn't working, such as a name and an email or phone: the How to tab shows it, and so does the Kiosk admin menu when something goes wrong; while it's blank, the How to tab says to ask whoever looks after the kiosk.",
   };
 }
 
@@ -6879,11 +6882,110 @@ function howToColumnLines(names, notes) {
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Kiosk contact
+//
+// Staff type who to ask for help in the Settings row "Kiosk contact": a name and an email or
+// phone, on as many lines as they like. Only people with access to the spreadsheet see it.
+// The How to tab shows it through one formula cell that reads the row live, so it is never
+// stale; the Kiosk admin menu adds it to errors (kioskContactNote). The tablet never gets it.
+//
+// One rule for blank in both places: a value is blank when nothing is left after trimming
+// the characters JavaScript's trim() removes (spaces, line breaks, tabs, no-break and other
+// Unicode spaces), so a value of only line breaks is blank on the How to tab too.
+
+/** The Settings row that names who to ask for help. */
+function kioskContactSetting() {
+  return "Kiosk contact";
+}
+
 /**
- * The How to tab's sections, as [{title, lines: [{kind, text}]}], kind "text", "step",
- * "tip" or "item"; a step's text carries its own number. setupSheets rewrites the whole
- * tab from this on every run, so a release that changes this text, or the Hours lines it
- * copies from hoursHowTo() and hoursDateNote(), runs setupSheets after the push.
+ * The How to contact line's two texts: blank, shown while the row is blank, missing or
+ * unreadable; prefix, shown before the value otherwise.
+ */
+function howToContactTexts() {
+  return {
+    blank:
+      "If the kiosk or this sheet isn't working and this tab doesn't help, ask whoever looks after the kiosk. To name them here, type their name and an email or phone in Kiosk contact on the Settings tab.",
+    prefix: "If the kiosk or this sheet isn't working and this tab doesn't help, contact: ",
+  };
+}
+
+/**
+ * A Sheets (RE2) pattern for REGEXREPLACE that matches the characters trim() removes at
+ * either end of a text: tab, line feed, vertical tab, form feed, carriage return, every
+ * Unicode space and line or paragraph separator (\p{Z}), and the byte-order mark.
+ */
+function kioskContactTrimPattern() {
+  const set = "[\\t\\n\\x{0B}\\f\\r\\p{Z}\\x{FEFF}]";
+  return "^" + set + "+|" + set + "+$";
+}
+
+/**
+ * The How to contact cell's formula. It finds the row the way readSettings_ (Sheets.js)
+ * does: the first row below the header whose column A, trimmed, is exactly "Kiosk contact"
+ * (case counts). Its column B, trimmed, follows the prefix; a blank value, a missing row or
+ * any error (a deleted Settings tab) gives the blank text. Both trims are
+ * kioskContactTrimPattern, the same characters cellString trims. The tab is the literal
+ * "Settings", which a test holds equal to Sheets.js's SETTINGS_TAB.
+ */
+function kioskContactFormula() {
+  const q = (t) => '"' + String(t).replace(/"/g, '""') + '"';
+  const trim = (x) => "REGEXREPLACE(" + x + '&"", ' + q(kioskContactTrimPattern()) + ', "")';
+  const texts = howToContactTexts();
+  const row =
+    "MATCH(1, ARRAYFORMULA(EXACT(" +
+    trim("Settings!A:A") +
+    ", " +
+    q(kioskContactSetting()) +
+    ")*(ROW(Settings!A:A)>1)), 0)";
+  return (
+    "=LET(contact, IFERROR(" +
+    trim("INDEX(Settings!B:B, " + row + ")") +
+    ', ""), IF(contact = "", ' +
+    q(texts.blank) +
+    ", " +
+    q(texts.prefix) +
+    " & contact))"
+  );
+}
+
+/**
+ * The line the Kiosk admin menu adds to an error: the value's lines, each trimmed, empty
+ * ones dropped, joined with ", ", after "If this keeps happening, contact: "; "" when
+ * nothing is left.
+ */
+function kioskContactNote(value) {
+  const lines = cellString(value)
+    .split(/\r\n|[\n\r\u2028\u2029]/)
+    .map(cellString)
+    .filter((line) => line !== "");
+  return lines.length ? "If this keeps happening, contact: " + lines.join(", ") : "";
+}
+
+/**
+ * An error's text with the contact line after it, or the text alone when note is "".
+ *
+ * Which messages name the contact, one rule for the whole Kiosk admin menu: every error it
+ * shows in a window or an alert, and nothing else. An error thrown before a window or alert
+ * exists (Import past hours with an unreadable Settings tab, a run from the wrong place) is
+ * Google's own and carries no contact. In the three windows (AdminDialog.html, Report.html,
+ * ImportDialog.html), that is whatever reaches the failure handler (a throw, Google's or the
+ * kiosk's own) and a reply with no message. In the Refresh Hours alert, a run whose result
+ * carries a message (it failed, or the Hours tabs are missing); in Check the Log now's, a
+ * failed run. A refusal, a busy message or a run's result is shown as it is: each says what
+ * to do. The windows join the two the same way, in their failed().
+ */
+function withKioskContact(text, note) {
+  return note ? text + " " + note : text;
+}
+
+/**
+ * The How to tab's sections, as [{title, lines: [{kind, text, formula?}]}], kind "contact",
+ * "text", "step", "tip" or "item"; a step's text carries its own number. The one contact
+ * line has text "" and a formula, kioskContactFormula. setupSheets rewrites the whole tab
+ * from this on every run, so a release that changes this text, or the Hours lines it copies
+ * from hoursHowTo() and hoursDateNote(), runs setupSheets after the push.
  */
 function howToSections() {
   const text = (t) => ({ kind: "text", text: t });
@@ -6891,6 +6993,10 @@ function howToSections() {
   const tip = (t) => ({ kind: "tip", text: t });
   const item = (t) => ({ kind: "item", text: t });
   return [
+    {
+      title: "Problems with the kiosk",
+      lines: [{ kind: "contact", text: "", formula: kioskContactFormula() }],
+    },
     {
       title: "Before you start",
       lines: [
@@ -7104,8 +7210,9 @@ function howToSections() {
 }
 
 /**
- * The How to tab's rows, one per line of column A, as [{kind, text}]: the title, the two
- * notes under it, then per section a blank row, its heading and its lines.
+ * The How to tab's rows, one per line of column A, as [{kind, text, formula?}]: the title,
+ * the two notes under it, then per section a blank row, its heading and its lines. Only
+ * the contact line has a formula.
  */
 function howToRows() {
   const rows = [
@@ -7122,7 +7229,13 @@ function howToRows() {
   howToSections().forEach((section) => {
     rows.push({ kind: "blank", text: "" });
     rows.push({ kind: "heading", text: section.title });
-    section.lines.forEach((line) => rows.push({ kind: line.kind, text: line.text }));
+    section.lines.forEach((line) =>
+      rows.push(
+        line.formula
+          ? { kind: line.kind, text: line.text, formula: line.formula }
+          : { kind: line.kind, text: line.text },
+      ),
+    );
   });
   return rows;
 }
@@ -7146,6 +7259,7 @@ function howToStyles() {
     title: look("bold", lookTitleFontSize(), P.navy, P.white, "normal"),
     note: look("normal", 10, P.grey, P.white, "italic"),
     heading: look("bold", 11, P.navy, P.section, "normal"),
+    contact: look("normal", 10, black, P.white, "normal"),
     text: look("normal", 10, black, P.white, "normal"),
     step: look("normal", 10, black, P.white, "normal"),
     tip: look("normal", 10, P.grey, P.white, "italic"),

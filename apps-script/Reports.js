@@ -72,7 +72,10 @@ function setupReports() {
 // and the Flags tab and the work in Logic.js take no lock, and nothing here asks for the
 // kiosk's script lock.
 
-/** Refreshes Hours from the Kiosk admin menu and shows what happened in an alert. */
+/**
+ * Refreshes Hours from the Kiosk admin menu and shows what happened in an alert; an error
+ * ends with the Kiosk contact line.
+ */
 function refreshHoursNow() {
   requireEditorRun_();
   const ui = SpreadsheetApp.getUi();
@@ -80,7 +83,9 @@ function refreshHoursNow() {
   try {
     const result = refreshHours_("menu", hold);
     console.log(hoursRunLog_("menu", result));
-    ui.alert(hoursMenuText_(result));
+    // A result with a message is an error (withKioskContact, Logic.js, has the rule).
+    const note = result.message ? kioskContactNote(kioskContact_()) : "";
+    ui.alert(withKioskContact(hoursMenuText_(result), note));
   } finally {
     releaseHoursLock_(hold);
   }
@@ -696,7 +701,7 @@ function setupKioskWarnings_(log, cols) {
 // ---------------------------------------------------------------------------
 // The Monthly report dialog
 
-/** Opens the Monthly report dialog from Report.html with a new key in it. */
+/** Opens the Monthly report dialog from Report.html with a new key and the contact line in it. */
 function openMonthlyReportDialog() {
   requireEditorRun_();
   const ui = SpreadsheetApp.getUi();
@@ -704,6 +709,7 @@ function openMonthlyReportDialog() {
   CacheService.getScriptCache().put(adminKeyCacheKey(key), "1", adminKeySeconds());
   const page = HtmlService.createTemplateFromFile("Report");
   page.key = key;
+  page.contactNote = kioskContactNote(kioskContact_());
   ui.showModalDialog(page.evaluate().setWidth(460).setHeight(380), "Monthly report");
 }
 

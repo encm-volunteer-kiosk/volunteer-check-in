@@ -26,7 +26,7 @@
  * rest. The rules are in Logic.js (Past hours import).
  */
 
-/** Opens the Import past hours dialog with a new key, prefilled from Settings. */
+/** Opens the Import past hours dialog with a new key, prefilled from Settings, with the contact line. */
 function openImportDialog() {
   requireEditorRun_();
   const ui = SpreadsheetApp.getUi();
@@ -37,6 +37,7 @@ function openImportDialog() {
   page.key = key;
   page.fileId = settings[importFileSetting()] || "";
   page.tab = settings[importTabSetting()] || importDefaultTab();
+  page.contactNote = kioskContactNote(settings[kioskContactSetting()]);
   ui.showModalDialog(page.evaluate().setWidth(560).setHeight(640), "Import past hours");
 }
 

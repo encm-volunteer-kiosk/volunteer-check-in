@@ -5,9 +5,9 @@
     <meta charset="utf-8" />
     <!--
       The Kiosk admin dialogs, served by openAdminDialog_ (Admin.js) as a template. The
-      server puts the dialog key and the mode ("add", "fix", "remove" or "restore") into the
-      body's data
-      attributes; nothing else on the page is filled in by the server. Plain HTML and
+      server puts the dialog key, the mode ("add", "fix", "remove" or "restore") and the
+      Kiosk contact line into the body's data attributes, through the escaping print
+      scriptlet; nothing else on the page is filled in by the server. Plain HTML and
       JavaScript, no build step. Every limit shown here is checked again on the server.
     -->
     <style>
@@ -120,7 +120,7 @@
       }
     </style>
   </head>
-  <body data-key="<?= key ?>" data-mode="<?= mode ?>">
+  <body data-key="<?= key ?>" data-mode="<?= mode ?>" data-contact="<?= contactNote ?>">
     <form id="add" hidden>
       <label for="add-search">Volunteer <span class="hint">(type to search)</span></label>
       <input id="add-search" type="search" autocomplete="off" />
@@ -204,6 +204,9 @@
 
     <script>
       const KEY = document.body.dataset.key;
+      // Who to ask, added to an error: whatever reaches the failure handler and a reply
+      // with no message. A refusal's own message is shown as it is.
+      const CONTACT = document.body.dataset.contact || "";
       const MODES = ["add", "fix", "remove", "restore"];
       const MODE = MODES.includes(document.body.dataset.mode) ? document.body.dataset.mode : "add";
       const $ = (id) => document.getElementById(id);
@@ -219,6 +222,10 @@
         const box = $("message");
         box.textContent = text;
         box.className = "message " + (text ? kind : "");
+      }
+
+      function failed(text) {
+        show(CONTACT ? text + " " + CONTACT : text, "error");
       }
 
       // name search: begin
@@ -340,13 +347,13 @@
             busy = false;
             $("save").disabled = false;
             if (reply && reply.ok) onOk(reply);
-            else
-              show((reply && reply.message) || "Something went wrong. Please try again.", "error");
+            else if (reply && reply.message) show(reply.message, "error");
+            else failed("Something went wrong. Please try again.");
           })
           .withFailureHandler((error) => {
             busy = false;
             $("save").disabled = false;
-            show((error && error.message) || String(error), "error");
+            failed((error && error.message) || String(error));
           })
           [name](KEY, ...args);
       }

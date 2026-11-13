@@ -5,9 +5,10 @@
     <meta charset="utf-8" />
     <!--
       The Monthly report dialog, served by openMonthlyReportDialog (Reports.js) as a
-      template. The server puts the dialog key into the body's data attribute; nothing else
-      on the page is filled in by the server. Plain HTML and JavaScript, no build step. The
-      server checks the month and the initials again.
+      template. The server puts the dialog key and the Kiosk contact line into the body's
+      data attributes, through the escaping print scriptlet; nothing else on the page is
+      filled in by the server. Plain HTML and JavaScript, no build step. The server checks
+      the month and the initials again.
     -->
     <style>
       body {
@@ -94,7 +95,7 @@
       }
     </style>
   </head>
-  <body data-key="<?= key ?>">
+  <body data-key="<?= key ?>" data-contact="<?= contactNote ?>">
     <form id="form">
       <label for="month">Month</label>
       <select id="month" disabled></select>
@@ -120,6 +121,9 @@
 
     <script>
       const KEY = document.body.dataset.key;
+      // Who to ask, added to an error: whatever reaches the failure handler and a reply
+      // with no message. A refusal's own message is shown as it is.
+      const CONTACT = document.body.dataset.contact || "";
       const $ = (id) => document.getElementById(id);
       let busy = false;
       let loaded = false;
@@ -128,6 +132,10 @@
         const box = $("message");
         box.textContent = text;
         box.className = "message " + (text ? kind : "");
+      }
+
+      function failed(text) {
+        show(CONTACT ? text + " " + CONTACT : text, "error");
       }
 
       function setBusy(on) {
@@ -141,12 +149,12 @@
           .withSuccessHandler((reply) => {
             setBusy(false);
             if (reply && reply.ok) onOk(reply);
-            else
-              show((reply && reply.message) || "Something went wrong. Please try again.", "error");
+            else if (reply && reply.message) show(reply.message, "error");
+            else failed("Something went wrong. Please try again.");
           })
           .withFailureHandler((error) => {
             setBusy(false);
-            show((error && error.message) || String(error), "error");
+            failed((error && error.message) || String(error));
           })
           [name](KEY, ...args);
       }
