@@ -1097,7 +1097,7 @@ function hoursOps(calls) {
       if (c.op === "setValue" && STATE.includes(c.a1)) {
         out.push({ op: "set", cell: c.a1, value: c.value });
       } else if (c.op === "setValues" && c.a1.startsWith("A2:")) out.push({ op: "values" });
-      else if (c.op === "clearContent" && c.a1 === "A2:J2") out.push({ op: "clear" });
+      else if (c.op === "clearContent" && c.a1 === "A2:K2") out.push({ op: "clear" });
       else if (c.op === "deleteRows") out.push({ op: "trim" });
       else if (c.op !== "setNumberFormat") out.push({ op: "unexpected " + c.op });
     } else if (isHoursWrite(c)) out.push({ op: "unexpected " + c.op + " " + c.a1 });
@@ -1146,14 +1146,17 @@ test("setupReports builds Hours and Hours data, marked, fills them, and then del
   assert.equal(data.hiddenSheet, true);
   const table = plain(s.ctx.readHoursTable_().table);
   assert.ok(table.rows.length >= 3);
-  assert.deepEqual(data.getRange("A1:J1").getValues()[0], table.header);
-  assert.deepEqual(data.getRange(2, 1, table.rows.length, 10).getValues(), table.rows);
+  assert.deepEqual(data.getRange("A1:K1").getValues()[0], table.header);
+  assert.deepEqual(data.getRange(2, 1, table.rows.length, 11).getValues(), table.rows);
   assert.equal(data.maxRows, table.rows.length + 1);
   // One format per run of columns, on whole columns from row 2, not one per cell.
-  assert.equal(data.rangeFormats.get("A2:F"), "@");
+  assert.equal(data.rangeFormats.get("A2:A"), "yyyy-mm-dd");
+  assert.equal(data.rangeFormats.get("B2:C"), "@");
+  assert.equal(data.rangeFormats.get("D2:D"), "yyyy-mm-dd");
+  assert.equal(data.rangeFormats.get("E2:F"), "@");
   assert.equal(data.rangeFormats.get("G2:G"), "0");
   assert.equal(data.rangeFormats.get("H2:H"), "0.00");
-  assert.equal(data.rangeFormats.get("I2:J"), "@");
+  assert.equal(data.rangeFormats.get("I2:K"), "@");
   assert.equal(data.rangeFormats.get("L1:Q1"), "@");
   const [l1, m1, n1, o1, p1, q1] = cellsOf(s);
   assert.deepEqual(
@@ -1189,7 +1192,7 @@ test("setupReports builds Hours and Hours data, marked, fills them, and then del
   assert.ok(complete > 0 && deleted > complete);
   assert.ok(s.calls.slice(complete, deleted).some((c) => c.op === "flush"));
   // The spare rows went only after the table's setValues.
-  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:J1");
+  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:K1");
   assert.ok(values > 0 && at((c) => c.op === "deleteRows") > values);
   const text = s.logs.join("\n");
   assert.match(text, /Hours is filled as of 2026-11-13 9:14 AM\./);
@@ -1223,7 +1226,7 @@ test("setupReports gives a new Hours data its rows in one call before the pivots
   );
   const grow = at((c) => c.sheet === "Hours data" && c.op === "insertRowsAfter");
   const pivots = at((c) => c.op === "batchUpdate" && c.value > 40);
-  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:J1");
+  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:K1");
   assert.ok(grow > 0 && grow < pivots && pivots < values);
   // Formats go on whole column runs, never cell by cell.
   assert.ok(!s.calls.some((c) => c.op === "setNumberFormats"));
@@ -1243,10 +1246,13 @@ test("a refresh that grows Hours data sets the new rows' formats one range per c
     .map((c) => [c.a1, c.value]);
   const from = max - 1;
   assert.deepEqual(formats, [
-    ["A" + from + ":F" + max, "@"],
+    ["A" + from + ":A" + max, "yyyy-mm-dd"],
+    ["B" + from + ":C" + max, "@"],
+    ["D" + from + ":D" + max, "yyyy-mm-dd"],
+    ["E" + from + ":F" + max, "@"],
     ["G" + from + ":G" + max, "0"],
     ["H" + from + ":H" + max, "0.00"],
-    ["I" + from + ":J" + max, "@"],
+    ["I" + from + ":K" + max, "@"],
   ]);
 });
 
@@ -1270,7 +1276,7 @@ test("setupReports' first fill gives a new 1,000-row Hours tab rows for the Shif
   );
   const grow = at((c) => c.sheet === "Hours" && c.op === "insertRowsAfter");
   const pivots = at((c) => c.op === "batchUpdate" && c.value > 40);
-  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:J1");
+  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:K1");
   assert.ok(building >= 0 && building < grow && grow < pivots && pivots < values);
   // The tables were marked not whole, and that was flushed, before the tab grew.
   assert.ok(s.calls.slice(building, grow).some((c) => c.op === "flush"));
@@ -1823,7 +1829,7 @@ test("setupReports keeps Monthly Hours and throws when the write completes but H
       name: "the last row",
       off: (data) => {
         const last = data.getLastRow();
-        for (let col = 1; col <= 10; col++) data.set(last, col, "");
+        for (let col = 1; col <= 11; col++) data.set(last, col, "");
       },
       m1: "complete",
     },

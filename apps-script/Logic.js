@@ -3041,7 +3041,7 @@ function setupReportsMessage(counts) {
 // kiosk tap starts no recalculation there; the tables are as of the last refresh.
 //
 // Hours data's row 1 also holds the refresh's state cells, L1 to Q1, outside the pivots'
-// columns A to J. Every time in them is epoch milliseconds written as digits:
+// columns A to K. Every time in them is epoch milliseconds written as digits:
 //   L1 table time   "<ms>": when the read behind the table in place started
 //   M1 table state  "complete", "writing <ms>" or "stopped <ms>" (or "stopped")
 //   N1 last event   "<kind>|<cause>|<T ms>|<W ms>|<message>"
@@ -3072,29 +3072,46 @@ function hoursTabMark() {
   return { key: "kiosk-tab", hours: "hours", data: "hours-data" };
 }
 
-/** Hours data's headers, columns A to J. */
+/**
+ * Hours data's headers, columns A to K. Date and To date hold the same day, so a From date
+ * slicer on one and a To date slicer on the other make a range: two slicers on one column
+ * would share one filter.
+ */
 function hoursDataHeaders() {
   return [
     "Date",
     "Year",
     "Month",
-    "Weekday",
+    "To date",
     "Start",
     "Volunteer",
     "Shifts",
     "Hours",
     "Role/Type",
     "Activity",
+    "Shift",
   ];
 }
 
 /**
- * Hours data's number formats, columns A to J: plain text for every text column, so
- * "2026-11" and "2026" are not read as a date or a number, "0" for Shifts and "0.00" for
- * Hours.
+ * Hours data's number formats, columns A to K: Date and To date are real dates shown as
+ * yyyy-mm-dd; every text column is plain text, so "2026-11" and "2026" are not read as a
+ * date or a number; "0" for Shifts and "0.00" for Hours.
  */
 function hoursDataFormats() {
-  return ["@", "@", "@", "@", "@", "@", "0", "0.00", "@", "@"];
+  return ["yyyy-mm-dd", "@", "@", "yyyy-mm-dd", "@", "@", "0", "0.00", "@", "@", "@"];
+}
+
+/**
+ * A yyyy-MM-dd date as a sheet's date number: days since 1899-12-30, worked out with
+ * Date.UTC so no time zone moves the day. "" for anything that isn't a real yyyy-MM-dd
+ * date; every Hours data row has one, since a row needs a month.
+ */
+function hoursDateSerial(dateText) {
+  const s = cellString(dateText);
+  if (!monthKey(s)) return "";
+  const [year, month, day] = s.split("-").map(Number);
+  return (Date.UTC(year, month - 1, day) - Date.UTC(1899, 11, 30)) / 86400000;
 }
 
 /** The state cells on Hours data, in order, and their range. */
@@ -3108,10 +3125,10 @@ function hoursStateRange() {
 
 /**
  * The one range every pivot and slicer on the Hours tab reads: Hours data from row 1 with
- * no end row, columns A to J. Built here once so every spec holds an equal value.
+ * no end row, columns A to K. Built here once so every spec holds an equal value.
  */
 function hoursSourceRange(dataSheetId) {
-  return { sheetId: dataSheetId, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 10 };
+  return { sheetId: dataSheetId, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 11 };
 }
 
 /** The row the Hours tab's pivots start on (A8, E8, K8). */
@@ -3173,53 +3190,61 @@ function hoursLabelKey(text) {
 }
 
 /**
+ * Labels for items in their order, none equal to an earlier one under hoursLabelKey: an
+ * item takes its base text (baseOf(item)) when no earlier label has its key, else
+ * "<base> (k)" with the smallest k from 2 whose key no earlier label has. The key keeps
+ * digits, so "<base> (k)" for different k never share a key and a free k always exists.
+ * An item's label depends only on the items before it.
+ */
+function hoursDistinct(items, baseOf) {
+  const taken = new Set();
+  return items.map((item) => {
+    const base = baseOf(item);
+    let label = base;
+    for (let k = 2; taken.has(hoursLabelKey(label)); k++) label = base + " (" + k + ")";
+    taken.add(hoursLabelKey(label));
+    return label;
+  });
+}
+
+/**
  * Each volunteer's label on the Hours tab, as Map token -> label, over the whole Log (every
- * counted row with a month). No two tokens end with labels equal under hoursLabelKey, so
- * no two volunteers share a line in a pivot.
+ * counted row with a month).
  *
- * 1. A token's base label is the Volunteer Name on its latest counted row in
- *    reportRowOrder, spaced as hoursSpaced, or "(no name)" when that cell is blank.
- * 2. When two or more tokens have base labels equal under hoursLabelKey, each gets
- *    " · first shift yyyy-MM-dd", the Date of its first shift (firstShifts).
- * 3. Then, until no label is shared: each label not yet given a Log row that equals another
- *    token's under hoursLabelKey gets ", Log row N", N its first shift's Log row. A token
- *    gets this at most once. N is unique to its token and ends the label (the key changes
- *    no digit), so two labels with a Log row are never equal; each pass gives at least one
- *    token its Log row, so the loop ends within one pass per token.
+ * 1. Units: a token whose latest counted row in reportRowOrder has a Volunteer Name is a
+ *    unit of its own, its base label that name spaced as hoursSpaced. Every token whose
+ *    latest name is blank is in one shared unit, base label "(no name)". A unit's first
+ *    shift is the earliest of its tokens' first shifts (firstShifts).
+ * 2. Order: the nameless unit first, then the named units by first shift in
+ *    reportRowOrder, which ends on the Log row, so no two units tie.
+ * 3. hoursDistinct in that order, and every token of a unit gets the unit's label.
+ *
+ * So two tokens' labels are equal under hoursLabelKey exactly when both are nameless, and
+ * a unit's label depends only on the units before it: a new volunteer's first shift is
+ * the newest, so it comes last and changes nobody's label.
  */
 function hoursLabels(entries) {
   const rows = hoursRows(entries);
   const first = firstShifts(entries);
   const latest = new Map();
   rows.forEach((e) => latest.set(cellString(e.token), e));
+  const named = [];
+  const nameless = { base: "(no name)", tokens: [], first: null };
+  latest.forEach((e, token) => {
+    const name = hoursSpaced(e.name);
+    const shift = first.get(token);
+    if (name) {
+      named.push({ base: name, tokens: [token], first: shift });
+      return;
+    }
+    nameless.tokens.push(token);
+    if (!nameless.first || reportRowOrder(shift, nameless.first) < 0) nameless.first = shift;
+  });
+  named.sort((a, b) => reportRowOrder(a.first, b.first));
+  const units = (nameless.tokens.length ? [nameless] : []).concat(named);
+  const unitLabels = hoursDistinct(units, (u) => u.base);
   const labels = new Map();
-  latest.forEach((e, token) => labels.set(token, hoursSpaced(e.name) || "(no name)"));
-  const groups = () => {
-    const by = new Map();
-    labels.forEach((label, token) => {
-      const key = hoursLabelKey(label);
-      if (!by.has(key)) by.set(key, []);
-      by.get(key).push(token);
-    });
-    return Array.from(by.values()).filter((tokens) => tokens.length > 1);
-  };
-  groups().forEach((tokens) =>
-    tokens.forEach((t) =>
-      labels.set(t, labels.get(t) + " · first shift " + cellString(first.get(t).dateText)),
-    ),
-  );
-  const withRow = new Set();
-  for (let pass = 0; pass <= labels.size; pass++) {
-    const shared = groups();
-    if (!shared.length) break;
-    shared.forEach((tokens) =>
-      tokens.forEach((t) => {
-        if (withRow.has(t)) return;
-        withRow.add(t);
-        labels.set(t, labels.get(t) + ", Log row " + first.get(t).row);
-      }),
-    );
-  }
+  units.forEach((u, i) => u.tokens.forEach((t) => labels.set(t, unitLabels[i])));
   return labels;
 }
 
@@ -3246,10 +3271,11 @@ function hoursSpellings(rows, field) {
  * Returns {
  *   header        hoursDataHeaders();
  *   rows          Hours data's rows 2 down, one per counted row with a month, in
- *                 reportRowOrder: Date, Year, Month, Weekday, Start ("HH:mm" or "no
- *                 time"), Volunteer (hoursLabels), 1, Hours (reportHundredths of the stated
- *                 hours over 100), Role/Type and Activity (one spelling per group, or "(not
- *                 set)"). Text through hoursCellText; no User Token anywhere;
+ *                 reportRowOrder: Date (hoursDateSerial), Year, Month, To date (the same
+ *                 number as Date), Start ("HH:mm" or "no time"), Volunteer (hoursLabels),
+ *                 1, Hours (reportHundredths of the stated hours over 100), Role/Type and
+ *                 Activity (one spelling per group, or "(not set)"), Shift (below).
+ *                 Text through hoursCellText; no User Token anywhere;
  *   counts        {open, alerts, unreviewedFlags (null without a Flags read), undatable}
  *                 over the whole Log: open rows, non-blank rows with Admin Alerts? set,
  *                 unreviewed Flags rows with a Volunteer Name or Shift ID, and counted rows
@@ -3257,6 +3283,12 @@ function hoursSpellings(rows, field) {
  *   countsLine    the Hours tab's row 3, hoursCountsLine(counts);
  *   digestText    the text whose SHA-256 is P1: the rows and row 3 together.
  * }
+ *
+ * The Shift label is "<yyyy-MM-dd> <Ddd> <Start> · <volunteer label>", so the Shifts pivot
+ * sorts by it in date then start order. It is built from the raw volunteer label, not
+ * Volunteer's cell text (which may carry an apostrophe), made unique per row through
+ * hoursDistinct in the rows' order, so every shift is its own pivot line and a newer row
+ * changes no older row's label, and only then made cell-safe, whole.
  */
 function hoursTable(entries, flags, clock) {
   const list = entries || [];
@@ -3266,20 +3298,33 @@ function hoursTable(entries, flags, clock) {
   const activities = hoursSpellings(rows, "activity");
   const group = (spelling, value) =>
     hoursCellText(spelling.get(normalizeName(value)) || hoursNotSet());
-  const table = rows.map((e) => {
-    const date = cellString(e.dateText);
+  const starts = rows.map((e) => {
     const start = shiftStartMs(e);
+    return isFinite(start) ? clock(start) : hoursNoTime();
+  });
+  const shifts = hoursDistinct(
+    rows.map((e, i) => {
+      const date = cellString(e.dateText);
+      const volunteer = labels.get(cellString(e.token));
+      return date + " " + weekdayName(date).slice(0, 3) + " " + starts[i] + " · " + volunteer;
+    }),
+    (base) => base,
+  ).map(hoursCellText);
+  const table = rows.map((e, i) => {
+    const date = cellString(e.dateText);
+    const serial = hoursDateSerial(date);
     return [
-      date,
+      serial,
       date.slice(0, 4),
       monthKey(date),
-      weekdayName(date),
-      isFinite(start) ? clock(start) : hoursNoTime(),
+      serial,
+      starts[i],
       hoursCellText(labels.get(cellString(e.token))),
       1,
       reportHundredths(e.statedHoursCell) / 100,
       group(roles, e.roleType),
       group(activities, e.activity),
+      shifts[i],
     ];
   });
   const counts = {
@@ -3564,7 +3609,7 @@ function hoursBudget(sinceOpenMs, state, rowsNow) {
  * call, when it has fewer than hoursTabRows of the rows, so the Shifts pivot never grows
  * its tab during the write; then add rows to Hours data if it is short, with formats on
  * the new rows; neither tab is made smaller), "values" (one setValues of the rows),
- * "clear" (A2:J2, only when there are no rows), "trim" (delete Hours data's rows below the
+ * "clear" (A2:K2, only when there are no rows), "trim" (delete Hours data's rows below the
  * last one kept), "counts" (row 3 on the Hours tab).
  *
  * The rule, clause by clause:

@@ -91,9 +91,14 @@ function fixtureLog() {
   ];
 }
 
-test("for every month the table's shifts, hours and volunteers equal monthFigures'", () => {
-  const entries = fixtureLog();
+test("for every month the table's shifts, hours and volunteers equal monthFigures', nameless volunteers counted once", () => {
+  const entries = fixtureLog().concat([
+    row({ token: "tok-n1", name: "", date: "2026-10-07", hours: 1 }),
+    row({ token: "tok-n2", name: "  ", date: "2026-10-09", hours: 2 }),
+    row({ token: "tok-n3", name: "", date: "2026-11-07", hours: 1.5 }),
+  ]);
   const t = plain(L.hoursTable(entries, [], clock));
+  const labels = Object.fromEntries(L.hoursLabels(entries));
   const months = new Set(entries.map((e) => L.monthKey(e.dateText)).filter(Boolean));
   assert.deepEqual([...new Set(t.rows.map((r) => r[2]))].sort(), [...months].sort());
   const first = L.firstShifts(entries);
@@ -110,7 +115,18 @@ test("for every month the table's shifts, hours and volunteers equal monthFigure
       f.hundredths,
       month + " hours",
     );
-    assert.equal(new Set(mine.map((r) => r[5])).size, f.headcount, month + " volunteers");
+    // The month's nameless tokens share one "(no name)" line.
+    const tokens = new Set(
+      entries
+        .filter((e) => L.isCountedRow(e) && L.monthKey(e.dateText) === month)
+        .map((e) => e.token),
+    );
+    const nameless = [...tokens].filter((tok) => labels[tok] === "(no name)").length;
+    assert.equal(
+      new Set(mine.map((r) => r[5])).size,
+      f.headcount - nameless + (nameless ? 1 : 0),
+      month + " volunteers",
+    );
   }
   // Every counted row with a month, and nothing else.
   assert.equal(
@@ -119,7 +135,7 @@ test("for every month the table's shifts, hours and volunteers equal monthFigure
   );
 });
 
-test("the table's columns: dates, start in 24-hour Central time or no time, one shift, hours", () => {
+test("the table's columns: real dates in Date and To date, start in 24-hour Central time or no time, one shift, hours, the Shift label", () => {
   nextRow = 2;
   const entries = [
     row({
@@ -143,31 +159,68 @@ test("the table's columns: dates, start in 24-hour Central time or no time, one 
     "Date",
     "Year",
     "Month",
-    "Weekday",
+    "To date",
     "Start",
     "Volunteer",
     "Shifts",
     "Hours",
     "Role/Type",
     "Activity",
+    "Shift",
   ]);
+  const notSet = ["(not set)", "(not set)"];
   assert.deepEqual(t.rows, [
-    ["2026-11-12", "2026", "2026-11", "Thursday", "no time", "Ann", 1, 1, "(not set)", "(not set)"],
-    ["2026-11-13", "2026", "2026-11", "Friday", "08:30", "Ann", 1, 2, "(not set)", "(not set)"],
-    ["2026-11-13", "2026", "2026-11", "Friday", "14:05", "Ann", 1, 1.5, "(not set)", "(not set)"],
+    [
+      46338,
+      "2026",
+      "2026-11",
+      46338,
+      "no time",
+      "Ann",
+      1,
+      1,
+      ...notSet,
+      "2026-11-12 Thu no time · Ann",
+    ],
+    [
+      46339,
+      "2026",
+      "2026-11",
+      46339,
+      "08:30",
+      "Ann",
+      1,
+      2,
+      ...notSet,
+      "2026-11-13 Fri 08:30 · Ann",
+    ],
+    [
+      46339,
+      "2026",
+      "2026-11",
+      46339,
+      "14:05",
+      "Ann",
+      1,
+      1.5,
+      ...notSet,
+      "2026-11-13 Fri 14:05 · Ann",
+    ],
   ]);
   assert.deepEqual(plain(L.hoursDataFormats()), [
+    "yyyy-mm-dd",
     "@",
     "@",
-    "@",
-    "@",
+    "yyyy-mm-dd",
     "@",
     "@",
     "0",
     "0.00",
     "@",
     "@",
+    "@",
   ]);
+  assert.equal(L.hoursDataFormats().length, L.hoursDataHeaders().length);
   // As text, 24-hour starts sort in clock order and "no time" after every time.
   assert.deepEqual(["14:05", "no time", "08:30", "23:59", "00:00"].sort(), [
     "00:00",
@@ -176,6 +229,31 @@ test("the table's columns: dates, start in 24-hour Central time or no time, one 
     "23:59",
     "no time",
   ]);
+});
+
+test("hoursDateSerial: the day count from 1899-12-30, across month and year ends and leap days", () => {
+  assert.equal(L.hoursDateSerial("1899-12-30"), 0);
+  assert.equal(L.hoursDateSerial("1900-03-01"), 61);
+  assert.equal(L.hoursDateSerial("2026-11-13"), 46339);
+  const next = [
+    ["2026-11-30", "2026-12-01"],
+    ["2026-12-31", "2027-01-01"],
+    ["2024-02-28", "2024-02-29"],
+    ["2024-02-29", "2024-03-01"],
+    ["2026-02-28", "2026-03-01"],
+    ["2000-02-29", "2000-03-01"],
+  ];
+  for (const [a, b] of next) assert.equal(L.hoursDateSerial(b), L.hoursDateSerial(a) + 1, a);
+  // Every day of 2024 to 2027 maps back to its own date, whole days only.
+  const day0 = Date.UTC(1899, 11, 30);
+  for (let ms = Date.UTC(2024, 0, 1); ms < Date.UTC(2028, 0, 1); ms += 86400000) {
+    const text = new Date(ms).toISOString().slice(0, 10);
+    const n = L.hoursDateSerial(text);
+    assert.ok(Number.isInteger(n), text);
+    assert.equal(new Date(day0 + n * 86400000).toISOString().slice(0, 10), text);
+  }
+  for (const bad of ["", "2026-02-29", "11/4/2026", "soon", "2026-11-13 09:00"])
+    assert.equal(L.hoursDateSerial(bad), "", bad);
 });
 
 test("one spelling per Role/Type and Activity group: the group's latest row's, spaces collapsed", () => {
@@ -199,7 +277,7 @@ test("one spelling per Role/Type and Activity group: the group's latest row's, s
   );
   // The Log has no Role/Type or Activity column: reportEntry gives blanks.
   const none = plain(L.hoursTable([row({ role: "", activity: "" })], [], clock));
-  assert.deepEqual(none.rows[0].slice(8), ["(not set)", "(not set)"]);
+  assert.deepEqual(none.rows[0].slice(8, 10), ["(not set)", "(not set)"]);
 });
 
 test("a name, role or activity starting with = is written with sheetText's apostrophe", () => {
@@ -214,6 +292,9 @@ test("a name, role or activity starting with = is written with sheetText's apost
   assert.equal(t.rows[0][5], "'=HYPERLINK(1)");
   assert.equal(t.rows[0][8], "'=Kitchen");
   assert.equal(t.rows[0][9], "+Sorting");
+  // The Shift label is built from the name itself, not Volunteer's cell text, so no
+  // apostrophe lands inside it; it starts with the date, so it needs none in front.
+  assert.equal(t.rows[0][10], "2026-11-02 Mon 09:00 · =HYPERLINK(1)");
 });
 
 test("a name, role or activity starting with an apostrophe keeps it through sheetText's second one", () => {
@@ -224,6 +305,7 @@ test("a name, role or activity starting with an apostrophe keeps it through shee
   assert.equal(t.rows[0][5], "''Neil Ray");
   assert.equal(t.rows[0][8], "''Kitchen");
   assert.equal(t.rows[0][9], "Sorting");
+  assert.equal(t.rows[0][10], "2026-11-02 Mon 09:00 · 'Neil Ray");
 });
 
 test("no User Token appears anywhere in what the refresh writes", () => {
@@ -275,10 +357,13 @@ test("an empty Log gives no rows and zero counts", () => {
 // ---------------------------------------------------------------------------
 // Volunteer labels
 
+const NO_NAME = "(no name)";
+
 /**
- * No two labels share a pivot line: distinct under normalizeName, under hoursLabelKey, and
- * under an upper-case fold, the way the live pivot grouped "Anna Straße" with "ANNA
- * STRASSE".
+ * No two volunteers share a pivot line unless both are nameless: labels other than
+ * "(no name)" are distinct under normalizeName, under hoursLabelKey, and under an
+ * upper-case fold, the way the live pivot grouped "Anna Straße" with "ANNA STRASSE", and
+ * none of them equals "(no name)" under any of those.
  */
 function assertDistinct(labels) {
   const folds = [
@@ -286,107 +371,139 @@ function assertDistinct(labels) {
     (l) => L.hoursLabelKey(l),
     (l) => L.hoursSpaced(l).toUpperCase(),
   ];
+  const all = Object.values(labels);
+  const named = all.filter((l) => l !== NO_NAME);
   for (const fold of folds) {
-    const keys = Object.values(labels).map(fold);
+    const keys = named.map(fold);
     assert.equal(new Set(keys).size, keys.length, JSON.stringify(labels));
+    if (named.length < all.length) assert.ok(!keys.includes(fold(NO_NAME)), JSON.stringify(labels));
   }
 }
 
-test("labels: names equal under case or spacing get the first shift's date", () => {
+test("labels: namesakes are numbered by first shift, each keeping its own spelling", () => {
   nextRow = 2;
   const labels = labelsOf([
     row({ token: "t1", name: "Ann Lee", date: "2026-10-01" }),
     row({ token: "t2", name: "ann  lee", date: "2026-11-02" }),
     row({ token: "t3", name: "Bo Tran", date: "2026-11-02" }),
+    row({ token: "t4", name: "ANN LEE", date: "2026-11-05" }),
+    // t2's later shifts don't move its place: its first shift does.
+    row({ token: "t2", name: "ann lee", date: "2026-11-20" }),
   ]);
   assert.deepEqual(labels, {
-    t1: "Ann Lee · first shift 2026-10-01",
-    t2: "ann lee · first shift 2026-11-02",
+    t1: "Ann Lee",
+    t2: "ann lee (2)",
     t3: "Bo Tran",
+    t4: "ANN LEE (3)",
   });
   assertDistinct(labels);
 });
 
-test("labels: namesakes whose first shifts share a date also get their first Log row", () => {
+test("labels: namesakes whose first shifts share a date are numbered by start, then by Log row", () => {
   nextRow = 2;
   const labels = labelsOf([
     row({ token: "t1", name: "Ann Lee", date: "2026-11-02", row: 7 }),
     row({ token: "t2", name: "Ann Lee", date: "2026-11-02", row: 9 }),
-    row({ token: "t3", name: "Ann Lee", date: "2026-11-05", row: 12 }),
+    row({
+      token: "t3",
+      name: "Ann Lee",
+      date: "2026-11-02",
+      start: at("2026-11-02", "08:00"),
+      row: 12,
+    }),
+    // No start: after every shift whose start can be read on that day.
+    row({ token: "t4", name: "Ann Lee", date: "2026-11-02", start: NaN, row: 3 }),
   ]);
   assert.deepEqual(labels, {
-    t1: "Ann Lee · first shift 2026-11-02, Log row 7",
-    t2: "Ann Lee · first shift 2026-11-02, Log row 9",
-    t3: "Ann Lee · first shift 2026-11-05",
+    t3: "Ann Lee",
+    t1: "Ann Lee (2)",
+    t2: "Ann Lee (3)",
+    t4: "Ann Lee (4)",
   });
   assertDistinct(labels);
 });
 
-test("labels: a token renamed on its latest row takes the new name; a blank name is (no name)", () => {
+test("labels: every nameless token is one (no name), first; a token renamed on its latest row takes the new name", () => {
   nextRow = 2;
   const labels = labelsOf([
     row({ token: "t1", name: "Ann Lee", date: "2026-10-01" }),
     row({ token: "t1", name: "Ann  Smith ", date: "2026-11-01" }),
     row({ token: "t2", name: "", date: "2026-11-01" }),
     row({ token: "t3", name: "  ", date: "2026-11-03" }),
+    // Named once, blank on its latest row: nameless.
+    row({ token: "t4", name: "Cy Moss", date: "2026-10-02" }),
+    row({ token: "t4", name: "", date: "2026-11-04" }),
+    // Blank once, named on its latest row: named.
+    row({ token: "t5", name: "", date: "2026-10-03" }),
+    row({ token: "t5", name: "Di Fox", date: "2026-11-05" }),
   ]);
   assert.deepEqual(labels, {
     t1: "Ann Smith",
-    t2: "(no name) · first shift 2026-11-01",
-    t3: "(no name) · first shift 2026-11-03",
+    t2: NO_NAME,
+    t3: NO_NAME,
+    t4: NO_NAME,
+    t5: "Di Fox",
+  });
+  assertDistinct(labels);
+});
+
+test("labels: someone named (no name) is numbered, since the nameless line comes first", () => {
+  nextRow = 2;
+  const labels = labelsOf([
+    row({ token: "t1", name: "(No Name)", date: "2026-10-01" }),
+    row({ token: "t2", name: "", date: "2026-11-01" }),
+  ]);
+  assert.deepEqual(labels, { t1: "(No Name) (2)", t2: NO_NAME });
+  assertDistinct(labels);
+  // With no nameless token, the name is plain.
+  nextRow = 2;
+  assert.deepEqual(labelsOf([row({ token: "t1", name: "(no name)", date: "2026-10-01" })]), {
+    t1: NO_NAME,
   });
 });
 
-test("labels: a typed name equal to another token's first-shift or Log-row label is still told apart", () => {
+test("labels: a typed Ann Lee (2) keeps its label when its first shift is before the second Ann Lee's, else is numbered itself", () => {
   nextRow = 2;
-  const typedRule2 = labelsOf([
-    row({ token: "t1", name: "Ann", date: "2026-11-02", row: 5 }),
-    row({ token: "t2", name: "Ann", date: "2026-11-03", row: 6 }),
-    row({ token: "t3", name: "ann · first shift 2026-11-02", date: "2026-11-04", row: 8 }),
+  const before = labelsOf([
+    row({ token: "t1", name: "Ann Lee", date: "2026-11-01" }),
+    row({ token: "t2", name: "Ann Lee (2)", date: "2026-11-02" }),
+    row({ token: "t3", name: "Ann Lee", date: "2026-11-03" }),
   ]);
-  assert.deepEqual(typedRule2, {
-    t1: "Ann · first shift 2026-11-02, Log row 5",
-    t2: "Ann · first shift 2026-11-03",
-    t3: "ann · first shift 2026-11-02, Log row 8",
-  });
-  assertDistinct(typedRule2);
+  assert.deepEqual(before, { t1: "Ann Lee", t2: "Ann Lee (2)", t3: "Ann Lee (3)" });
+  assertDistinct(before);
 
-  // A typed name equal to a label with a Log row: the loop runs again for it.
-  const typedRule3 = labelsOf([
-    row({ token: "t1", name: "Ann", date: "2026-11-02", row: 5 }),
-    row({ token: "t2", name: "Ann", date: "2026-11-02", row: 6 }),
-    row({
-      token: "t3",
-      name: "Ann · first shift 2026-11-02, Log row 5",
-      date: "2026-11-04",
-      row: 9,
-    }),
+  nextRow = 2;
+  const after = labelsOf([
+    row({ token: "t1", name: "Ann Lee", date: "2026-11-01" }),
+    row({ token: "t2", name: "Ann Lee", date: "2026-11-02" }),
+    row({ token: "t3", name: "ann lee  (2)", date: "2026-11-03" }),
   ]);
-  assert.deepEqual(typedRule3, {
-    t1: "Ann · first shift 2026-11-02, Log row 5",
-    t2: "Ann · first shift 2026-11-02, Log row 6",
-    t3: "Ann · first shift 2026-11-02, Log row 5, Log row 9",
-  });
-  assertDistinct(typedRule3);
+  assert.deepEqual(after, { t1: "Ann Lee", t2: "Ann Lee (2)", t3: "ann lee (2) (2)" });
+  assertDistinct(after);
+});
 
-  // Someone named "Ann, Log row 12": the next pass gives that one its own row.
-  const chain = labelsOf([
-    row({ token: "t1", name: "Ann", date: "2026-11-02", row: 12 }),
-    row({ token: "t2", name: "Ann", date: "2026-11-02", row: 13 }),
-    row({
-      token: "t3",
-      name: "Ann · first shift 2026-11-02, Log row 12",
-      date: "2026-11-02",
-      row: 14,
-    }),
-    row({
-      token: "t4",
-      name: "Ann · first shift 2026-11-02, Log row 12, Log row 14",
-      date: "2026-11-09",
-      row: 15,
-    }),
-  ]);
-  assertDistinct(chain);
+test("labels: a newest volunteer changes no other label", () => {
+  nextRow = 2;
+  const base = [
+    row({ token: "t1", name: "Ann Lee", date: "2026-11-01" }),
+    row({ token: "t2", name: "Ann Lee", date: "2026-11-02" }),
+    row({ token: "t3", name: "", date: "2026-11-03" }),
+    row({ token: "t4", name: "Bo", date: "2026-11-04" }),
+  ];
+  const before = labelsOf(base);
+  const newer = [
+    ...base,
+    row({ token: "t5", name: "ann lee", date: "2026-11-09" }),
+    row({ token: "t6", name: "Bo", date: "2026-11-09" }),
+    row({ token: "t7", name: "", date: "2026-11-09" }),
+  ];
+  const after = labelsOf(newer);
+  for (const [token, label] of Object.entries(before)) assert.equal(after[token], label, token);
+  assert.deepEqual(
+    { t5: after.t5, t6: after.t6, t7: after.t7 },
+    { t5: "ann lee (3)", t6: "Bo (2)", t7: NO_NAME },
+  );
+  assertDistinct(after);
 });
 
 test("labels: a counted row with no month changes no label", () => {
@@ -395,12 +512,17 @@ test("labels: a counted row with no month changes no label", () => {
     row({ token: "t1", name: "Ann", date: "2026-11-02" }),
     row({ token: "t2", name: "Bo", date: "2026-11-03" }),
   ];
-  const withUndated = [...base, row({ token: "t1", name: "Bo", date: "11/30/2026" })];
+  const withUndated = [
+    ...base,
+    row({ token: "t1", name: "Bo", date: "11/30/2026" }),
+    // An earlier date that can't be read moves no first shift either.
+    row({ token: "t2", name: "Bo", date: "1/1/2020" }),
+  ];
   assert.deepEqual(labelsOf(withUndated), labelsOf(base));
   assert.deepEqual(labelsOf(base), { t1: "Ann", t2: "Bo" });
 });
 
-test("labels outside ASCII: Zoë and ZOË and Straße and STRASSE get suffixes, İpek and ipek don't", () => {
+test("labels outside ASCII: Zoë and ZOË and Straße and STRASSE are numbered, İpek and ipek are apart and plain", () => {
   // normalizeName itself is unchanged: the kiosk's matching uses it.
   assert.equal(L.normalizeName("Zoë"), L.normalizeName("ZOË"));
   assert.notEqual(L.normalizeName("İpek"), L.normalizeName("ipek"));
@@ -419,12 +541,12 @@ test("labels outside ASCII: Zoë and ZOË and Straße and STRASSE get suffixes, 
     row({ token: "s2", name: "STRASSE", date: "2026-11-02" }),
   ]);
   assert.deepEqual(labels, {
-    z1: "Zoë · first shift 2026-11-01",
-    z2: "ZOË · first shift 2026-11-02",
+    z1: "Zoë",
+    z2: "ZOË (2)",
     i1: "İpek",
     i2: "ipek",
-    s1: "Straße · first shift 2026-11-01",
-    s2: "STRASSE · first shift 2026-11-02",
+    s1: "Straße",
+    s2: "STRASSE (2)",
   });
   assertDistinct(labels);
 });
@@ -442,12 +564,12 @@ test("labels outside ASCII on the live check's pairs: the month's volunteers equ
   ]);
   const labels = labelsOf(entries);
   assert.deepEqual(labels, {
-    a0: "Zoë Park · first shift 2026-11-03",
-    b0: "ZOË PARK · first shift 2026-11-04",
+    a0: "Zoë Park",
+    b0: "ZOË PARK (2)",
     a1: "İpek Demir",
     b1: "ipek demir",
-    a2: "Anna Straße · first shift 2026-11-03",
-    b2: "ANNA STRASSE · first shift 2026-11-04",
+    a2: "Anna Straße",
+    b2: "ANNA STRASSE (2)",
   });
   assertDistinct(labels);
   const t = plain(L.hoursTable(entries, [], clock));
@@ -457,7 +579,8 @@ test("labels outside ASCII on the live check's pairs: the month's volunteers equ
   assert.equal(new Set(t.rows.map((r) => r[5].toUpperCase())).size, f.headcount);
 });
 
-test("labels stay distinct under normalizeName on a large mixed fixture", () => {
+/** A mix of namesakes by case and spacing, typed suffixes, blanks and the ß fold. */
+function mixedLog() {
   nextRow = 2;
   const names = [
     "Ann Lee",
@@ -465,8 +588,9 @@ test("labels stay distinct under normalizeName on a large mixed fixture", () => 
     "ANN  LEE",
     "Bo",
     "",
-    "Ann Lee · first shift 2026-11-01",
-    "Ann Lee · first shift 2026-11-01, Log row 2",
+    "Ann Lee (2)",
+    "ann lee (3)",
+    "(no name)",
     "Anna Straße",
     "ANNA STRASSE",
   ];
@@ -477,12 +601,132 @@ test("labels stay distinct under normalizeName on a large mixed fixture", () => 
         token: "t" + (i % 23),
         name: names[i % names.length],
         date: "2026-11-0" + (1 + (i % 3)),
+        start: i % 7 === 0 ? NaN : at("2026-11-0" + (1 + (i % 3)), i % 2 ? "09:00" : "10:30"),
       }),
     );
   }
+  return entries;
+}
+
+test("labels on a large mixed fixture: equal under hoursLabelKey only for nameless tokens", () => {
+  const entries = mixedLog();
   const labels = labelsOf(entries);
   assert.equal(Object.keys(labels).length, 23);
   assertDistinct(labels);
+  const first = L.firstShifts(entries);
+  const latest = new Map();
+  [...entries].sort(L.reportRowOrder).forEach((e) => latest.set(e.token, e));
+  for (const [token, label] of Object.entries(labels)) {
+    const nameless = L.hoursSpaced(latest.get(token).name) === "";
+    assert.equal(label === NO_NAME, nameless, token + " " + label);
+    assert.ok(first.has(token));
+  }
+  assert.ok(Object.values(labels).includes(NO_NAME));
+});
+
+// ---------------------------------------------------------------------------
+// The Shift label
+
+const shiftsOf = (entries) => plain(L.hoursTable(entries, [], clock)).rows.map((r) => r[10]);
+
+test("hoursDistinct: the base when free, else the smallest free (k) from 2, checked under hoursLabelKey", () => {
+  const out = plain(
+    L.hoursDistinct(["Ann", "ann", "ANN (2)", "Ann", "Bo", "ann  (3) "], (x) => L.hoursSpaced(x)),
+  );
+  // "ann" comes before the typed "ANN (2)", so it takes (2) and the typed one is numbered.
+  assert.deepEqual(out, ["Ann", "ann (2)", "ANN (2) (2)", "Ann (3)", "Bo", "ann (3) (2)"]);
+  assert.deepEqual(plain(L.hoursDistinct([], (x) => x)), []);
+});
+
+test("Shift labels are unique per shift: two same-minute shifts of one volunteer, and of two nameless volunteers", () => {
+  nextRow = 2;
+  const entries = [
+    row({ token: "t1", name: "Ann Lee", date: "2026-11-13", hours: 2 }),
+    row({ token: "t1", name: "Ann Lee", date: "2026-11-13", hours: 1 }),
+    row({ token: "n1", name: "", date: "2026-11-13", start: at("2026-11-13", "10:00") }),
+    row({ token: "n2", name: " ", date: "2026-11-13", start: at("2026-11-13", "10:00") }),
+    row({ token: "t2", name: "Ann Lee", date: "2026-11-13", start: NaN }),
+    row({ token: "t2", name: "Ann Lee", date: "2026-11-14", start: NaN }),
+  ];
+  assert.deepEqual(shiftsOf(entries), [
+    "2026-11-13 Fri 09:00 · Ann Lee",
+    "2026-11-13 Fri 09:00 · Ann Lee (2)",
+    "2026-11-13 Fri 10:00 · (no name)",
+    "2026-11-13 Fri 10:00 · (no name) (2)",
+    "2026-11-13 Fri no time · Ann Lee (2)",
+    "2026-11-14 Sat no time · Ann Lee (2)",
+  ]);
+});
+
+test("a Shift label is never changed by a newer row", () => {
+  nextRow = 2;
+  const base = [
+    row({ token: "t1", name: "Ann Lee", date: "2026-11-13" }),
+    row({ token: "t2", name: "", date: "2026-11-13" }),
+    row({ token: "t1", name: "Ann Lee", date: "2026-11-13" }),
+  ];
+  const before = shiftsOf(base);
+  const newer = [
+    ...base,
+    row({ token: "t1", name: "Ann Lee", date: "2026-11-13" }),
+    row({ token: "t3", name: "", date: "2026-11-13" }),
+    row({ token: "t4", name: "Ann  Lee", date: "2026-11-13" }),
+    row({ token: "t1", name: "Ann Lee", date: "2026-11-14" }),
+  ];
+  const after = shiftsOf(newer);
+  assert.deepEqual(after.slice(0, before.length), before);
+  assert.deepEqual(after.slice(before.length), [
+    "2026-11-13 Fri 09:00 · Ann Lee (3)",
+    "2026-11-13 Fri 09:00 · (no name) (2)",
+    // A second Ann Lee's label is "Ann Lee (2)", which an older row's Shift label holds.
+    "2026-11-13 Fri 09:00 · Ann Lee (2) (2)",
+    "2026-11-14 Sat 09:00 · Ann Lee",
+  ]);
+});
+
+test("Shift labels sorted as text: newest first puts a day's no-time shifts first, then latest start first; oldest first the reverse", () => {
+  nextRow = 2;
+  const entries = [
+    row({ token: "t1", name: "Ann", date: "2026-11-12", start: at("2026-11-12", "13:00") }),
+    row({ token: "t2", name: "Bo", date: "2026-11-13", start: at("2026-11-13", "09:00") }),
+    row({ token: "t1", name: "Ann", date: "2026-11-13", start: NaN }),
+    row({ token: "t1", name: "Ann", date: "2026-11-13", start: at("2026-11-13", "14:30") }),
+    row({ token: "t2", name: "Bo", date: "2026-11-13", start: at("2026-11-13", "14:30") }),
+    row({ token: "t2", name: "Bo", date: "2026-11-12", start: NaN }),
+  ];
+  const oldest = [...shiftsOf(entries)].sort();
+  assert.deepEqual(oldest, [
+    "2026-11-12 Thu 13:00 · Ann",
+    "2026-11-12 Thu no time · Bo",
+    "2026-11-13 Fri 09:00 · Bo",
+    "2026-11-13 Fri 14:30 · Ann",
+    "2026-11-13 Fri 14:30 · Bo",
+    "2026-11-13 Fri no time · Ann",
+  ]);
+  assert.deepEqual([...oldest].reverse(), [
+    "2026-11-13 Fri no time · Ann",
+    "2026-11-13 Fri 14:30 · Bo",
+    "2026-11-13 Fri 14:30 · Ann",
+    "2026-11-13 Fri 09:00 · Bo",
+    "2026-11-12 Thu no time · Bo",
+    "2026-11-12 Thu 13:00 · Ann",
+  ]);
+});
+
+test("Shift labels on the large mixed fixture: one per row, distinct under every fold a pivot uses", () => {
+  const entries = mixedLog();
+  const t = plain(L.hoursTable(entries, [], clock));
+  const shifts = t.rows.map((r) => r[10]);
+  assert.equal(shifts.length, t.rows.length);
+  for (const fold of [(l) => L.hoursLabelKey(l), (l) => L.hoursSpaced(l).toUpperCase()])
+    assert.equal(new Set(shifts.map(fold)).size, shifts.length);
+  // Each starts with its row's date text and holds its row's volunteer label.
+  for (const r of t.rows) {
+    const date = new Date(Date.UTC(1899, 11, 30) + r[0] * 86400000).toISOString().slice(0, 10);
+    assert.ok(
+      r[10].startsWith(date + " " + L.weekdayName(date).slice(0, 3) + " " + r[4] + " · " + r[5]),
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -977,9 +1221,9 @@ test("the open budget: too big over 20 s with O1's write time scaled by rows, no
 // ---------------------------------------------------------------------------
 // The Hours tab's plan
 
-test("one GridRange for every pivot and every slicer: Hours data from row 1, no end row, A to J", () => {
+test("one GridRange for every pivot and every slicer: Hours data from row 1, no end row, A to K", () => {
   const plan = plain(L.hoursTabPlan(11, 22, "refresh"));
-  const source = { sheetId: 22, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 10 };
+  const source = { sheetId: 22, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 11 };
   assert.deepEqual(plain(L.hoursSourceRange(22)), source);
   assert.equal(plan.pivots.length, 3);
   assert.equal(plan.slicers.length, 5);
