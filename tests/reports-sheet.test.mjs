@@ -19,7 +19,6 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { createHash } from "node:crypto";
 import { formatInZone } from "./zoneFormat.mjs";
-import { useLogCheckStandIn } from "./logCheckStandIn.mjs";
 
 const root = new URL("../", import.meta.url);
 const SERVER_FILES = ["Logic.js", "Sheets.js", "Api.js", "Admin.js", "Reports.js", "Jobs.js"].map(
@@ -636,7 +635,6 @@ function server(logRows, opts = {}) {
     };
   }
   for (const [file, source] of SERVER_FILES) vm.runInContext(source, ctx, { filename: file });
-  useLogCheckStandIn(ctx);
   // Who releases the Hours lock: the function that called releaseHoursLock_.
   const release = ctx.releaseHoursLock_;
   ctx.releaseHoursLock_ = (hold) => {

@@ -34,8 +34,9 @@ so hours can be credited to each volunteer and reported to grantmakers.
   to it. Volunteers who share a name confirm the last four digits of their phone, and the
   digits decide which of them is signed in or out.
 - **Kiosk admin menu**: a menu in the Check-In Log spreadsheet for staff to add a shift a
-  volunteer forgot to log, to close one they forgot to sign out of, to make a monthly
-  report, or to refresh the Hours tab (see below).
+  volunteer forgot to log, to close one they forgot to sign out of, to move a wrong shift
+  out of the Log and back, to check the Log for broken rows, to make a monthly report, or to
+  refresh the Hours tab (see below).
 - **Flags tab**: each alert the kiosk writes is also copied to a Flags tab, one row per
   alert, for staff to tick off as reviewed (see Flags tab).
 - **Reports**: the Hours tab, tables and slicers for hours over any period you pick, a
@@ -65,8 +66,9 @@ to fix it quietly.
 The kiosk writes one tab named `Log`. A month is a filter on the Date column, not a tab of
 its own. Other tabs in the spreadsheet, such as ENCM's "2026-11 Log", belong to staff; the
 kiosk never reads or writes them. The exceptions are `Import ledger`, which Import past
-hours makes and adds to (see Kiosk admin menu), and `Shifts`, staff's shift schedule,
-which the auto clock-out reads and never writes (see Daily jobs).
+hours makes and adds to (see Kiosk admin menu), `Removed shifts`, which Remove a shift
+makes and Restore a shift takes rows back from (see Kiosk admin menu), and `Shifts`, staff's
+shift schedule, which the auto clock-out reads and never writes (see Daily jobs).
 
 Row 1 is the header and stays frozen. The kiosk finds each column by its header text, not
 by its position, so staff can reorder columns, add columns of their own between them, and

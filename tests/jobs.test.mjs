@@ -9,7 +9,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { formatInZone } from "./zoneFormat.mjs";
-import { useLogCheckStandIn } from "./logCheckStandIn.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -349,7 +348,6 @@ function server(opts = {}) {
     }
   };
   for (const [file, source] of SERVER_FILES) vm.runInContext(source, ctx, { filename: file });
-  useLogCheckStandIn(ctx);
   calls.length = 0;
 
   const setting = (name) => {
