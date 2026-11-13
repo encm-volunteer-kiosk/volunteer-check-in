@@ -6967,7 +6967,9 @@ function kioskContactNote(value) {
  * An error's text with the contact line after it, or the text alone when note is "".
  *
  * Which messages name the contact, one rule for the whole Kiosk admin menu: every error it
- * reports, and nothing else. In the three windows (AdminDialog.html, Report.html,
+ * shows in a window or an alert, and nothing else. An error thrown before a window or alert
+ * exists (Import past hours with an unreadable Settings tab, a run from the wrong place) is
+ * Google's own and carries no contact. In the three windows (AdminDialog.html, Report.html,
  * ImportDialog.html), that is whatever reaches the failure handler (a throw, Google's or the
  * kiosk's own) and a reply with no message. In the Refresh Hours alert, a run whose result
  * carries a message (it failed, or the Hours tabs are missing); in Check the Log now's, a

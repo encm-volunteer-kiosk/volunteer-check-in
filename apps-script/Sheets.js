@@ -1319,7 +1319,10 @@ function setupHowTo_(ss) {
     .setFontStyles(pick("style"));
   rows.forEach((r, i) => {
     if (!r.formula) return;
-    sheet.getRange(i + 1, 1).setNumberFormat("General").setFormula(r.formula);
+    sheet
+      .getRange(i + 1, 1)
+      .setNumberFormat("General")
+      .setFormula(r.formula);
   });
   sheet.setColumnWidth(1, 820);
   sheet.getRange("A:A").setWrap(true);

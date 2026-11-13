@@ -456,7 +456,7 @@ ENCM is the shared account, so:
 > **Warning: use the menu with only one Google account signed in.** If the browser is
 > signed into more than one Google account, the menu's windows can fail with "We're sorry,
 > a server error occurred while reading from storage. Error code PERMISSION_DENIED".
-> Google sends the window's requests as the browser's *default* account (the first one
+> Google sends the window's requests as the browser's _default_ account (the first one
 > signed in) rather than the account that has the sheet open. To fix it, open the sheet in
 > an incognito/private window signed into only the shared account, or give that account its
 > own browser profile.
@@ -475,7 +475,8 @@ a reply with no message. Refresh Hours and Check the Log now add the same line t
 that reports an error: a refresh that failed or found no Hours tabs, or a Log check that
 failed. A refusal, a busy message or a run's result is shown as it is, since each says
 what to do. With the row blank, the error is shown alone. A Settings tab that can't be
-read never stops a window opening; it just has no contact line.
+read doesn't stop the shift or Monthly report windows opening; they just have no contact
+line. Import past hours needs Settings to open, so there it stops with Google's error.
 
 The "type to search" box in Add a shift, Fix a sign-out, Remove a shift and Restore a
 shift ignores accents, apostrophes, periods, hyphens, capitals and extra spaces, the same
