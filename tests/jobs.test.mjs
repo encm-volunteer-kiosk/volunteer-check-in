@@ -911,14 +911,16 @@ test("setupDailyJobs replaces only this account's daily-job triggers and creates
   assert.deepEqual(jobs, [
     { handler: "runFlagsEmail", everyHours: 1 },
     { handler: "runAutoClockOut", atHour: 4 },
+    { handler: "runHoursRefresh", atHour: 5 },
   ]);
   assert.deepEqual(plain(s.created), [
     { handler: "runFlagsEmail", everyHours: 1 },
     { handler: "runAutoClockOut", atHour: 4, everyDays: 1, timeZone: TZ },
+    { handler: "runHoursRefresh", atHour: 5, everyDays: 1, timeZone: TZ },
   ]);
   assert.deepEqual(
     s.triggers[OWNER].map((t) => t.uid),
-    ["keep", "new-1", "new-2"],
+    ["keep", "new-1", "new-2", "new-3"],
   );
   assert.deepEqual(
     s.triggers["second@example.org"].map((t) => t.uid),
@@ -927,13 +929,13 @@ test("setupDailyJobs replaces only this account's daily-job triggers and creates
   assert.equal(s.setting("Daily jobs installed by"), OWNER);
   assert.match(
     s.logs.join("\n"),
-    /removed 2 old trigger\(s\) and installed runFlagsEmail every 1 hour\(s\); runAutoClockOut daily at 4:00 Central, owned by jobs@example\.org/,
+    /removed 2 old trigger\(s\) and installed runFlagsEmail every 1 hour\(s\); runAutoClockOut daily at 4:00 Central; runHoursRefresh daily at 5:00 Central, owned by jobs@example\.org/,
   );
   // Again: still one of each.
   s.ctx.setupDailyJobs();
   assert.deepEqual(
     s.triggers[OWNER].map((t) => t.handler),
-    ["someOtherFunction", "runFlagsEmail", "runAutoClockOut"],
+    ["someOtherFunction", "runFlagsEmail", "runAutoClockOut", "runHoursRefresh"],
   );
 });
 

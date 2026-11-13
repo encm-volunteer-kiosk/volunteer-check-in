@@ -8,7 +8,8 @@
 //   function whose name doesn't end in _) can be named by the kiosk page through
 //   google.script.run. Each must check that the person at the sheet runs it, and that it
 //   holds a dialog key the spreadsheet's menu issued, before it reads or writes anything.
-//   Three kinds are exempt from the key only: the dialog openers, which make it; the
+//   Four kinds are exempt from the key only: the dialog openers, which make it; the menu
+//   items that open no dialog (refreshHoursNow), which check getUi as the openers do; the
 //   functions run from the editor as setupSheets is (setupReports, setupDailyJobs,
 //   removeDailyJobs); and the trigger handlers, which check the trigger's id instead. The
 //   list of functions comes from the files' source, so a public function added later is
@@ -422,11 +423,14 @@ const isOpener = (name) => /^open\w*Dialog$/.test(name);
 // Run by hand from the editor, guarded like setupSheets: no dialog, so no key.
 const EDITOR_ONLY = ["setupReports", "setupDailyJobs", "removeDailyJobs"];
 // Run by a trigger: the trigger's id stands in for the key.
-const TRIGGER_ONLY = ["runFlagsEmail", "runAutoClockOut"];
+const TRIGGER_ONLY = ["runFlagsEmail", "runAutoClockOut", "runHoursRefresh"];
+// A Kiosk admin menu item that opens no dialog: like an opener, it checks getUi first.
+const MENU_RUN = ["refreshHoursNow"];
 const KEYED = PUBLIC.filter(
   (name) =>
     name !== "onOpen" &&
     !isOpener(name) &&
+    !MENU_RUN.includes(name) &&
     !EDITOR_ONLY.includes(name) &&
     !TRIGGER_ONLY.includes(name),
 );
@@ -437,6 +441,7 @@ test("Admin.js, Reports.js and Jobs.js declare the public functions, and only fu
   for (const name of [
     ...EDITOR_ONLY,
     ...TRIGGER_ONLY,
+    ...MENU_RUN,
     "onOpen",
     "openAddShiftDialog",
     "openFixSignOutDialog",
@@ -482,6 +487,7 @@ test("every function the report dialog or menu names is public; every writer is 
     "adminMonthlyReport",
     "adminReportMonths",
     "openMonthlyReportDialog",
+    "refreshHoursNow",
     "setupReports",
   ]);
 });
@@ -548,6 +554,7 @@ test("Jobs.js's public functions are the editor-run setup and the trigger handle
     "removeDailyJobs",
     "runAutoClockOut",
     "runFlagsEmail",
+    "runHoursRefresh",
     "setupDailyJobs",
   ]);
   // Every daily job's handler is a trigger-only public function.
@@ -600,18 +607,39 @@ test("the dialog openers issue no key outside the spreadsheet's UI", () => {
   }
 });
 
-test("onOpen only adds the menu, and its items name the openers", () => {
+test("the menu items that open no dialog read nothing outside the spreadsheet's UI", () => {
+  for (const name of MENU_RUN) {
+    const { ctx, calls } = server({ ui: false });
+    assert.throws(() => ctx[name](), /getUi/, name);
+    assert.deepEqual(onlyFrom(calls, ["Session.", "SpreadsheetApp.getUi"]), [], name);
+  }
+});
+
+test("onOpen adds the menu first, and its items name the openers and Refresh Hours", () => {
   const { ctx, calls, menu } = server({ active: "" });
+  const logs = [];
+  ctx.console.log = (...args) => logs.push(args.join(" "));
+  // getUi comes first and the menu is whole before anything else. The Hours note after it
+  // (tests/reports-sheet.test.mjs) finds no Hours tabs on this stand-in and fails; the
+  // failure is logged and costs nothing.
   assert.equal(ctx.onOpen({}), undefined);
-  assert.deepEqual(onlyFrom(calls, ["SpreadsheetApp.getUi", "menu."]), []);
+  assert.equal(calls[0], "SpreadsheetApp.getUi");
+  const added = calls.indexOf("menu.addToUi");
+  assert.deepEqual(onlyFrom(calls.slice(0, added + 1), ["SpreadsheetApp.getUi", "menu."]), []);
+  assert.deepEqual(calls.slice(added + 1), ["SpreadsheetApp.getActiveSpreadsheet"]);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /^Hours note \(open\) failed: /);
   assert.deepEqual(menu, [
     "Kiosk admin",
     ["Add a shift…", "openAddShiftDialog"],
     ["Fix a sign-out…", "openFixSignOutDialog"],
     ["Monthly report…", "openMonthlyReportDialog"],
     ["Import past hours…", "openImportDialog"],
+    ["Refresh Hours", "refreshHoursNow"],
   ]);
-  for (const [, fn] of menu.slice(1)) assert.ok(PUBLIC.filter(isOpener).includes(fn), fn);
+  for (const [, fn] of menu.slice(1)) {
+    assert.ok(PUBLIC.filter(isOpener).includes(fn) || MENU_RUN.includes(fn), fn);
+  }
   // From the web app it throws at getUi and does nothing else.
   const web = server({ ui: false });
   assert.throws(() => web.ctx.onOpen(), /getUi/);

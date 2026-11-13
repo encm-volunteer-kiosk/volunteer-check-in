@@ -1,7 +1,8 @@
-// Tests for setupSheets (apps-script/Sheets.js) and the pure header helpers it uses in
-// apps-script/Logic.js. Logic.js and Sheets.js are loaded into one context the way Apps
-// Script loads them, with a small in-memory stand-in for SpreadsheetApp and the advanced
-// Sheets service's filter views, so the real setupSheets runs against it.
+// Tests for setupSheets (apps-script/Sheets.js) and the pure header and look helpers it
+// uses in apps-script/Logic.js. Logic.js and Sheets.js are loaded into one context the way
+// Apps Script loads them, with a small in-memory stand-in for SpreadsheetApp and the
+// advanced Sheets service's filter views, bandings, conditional formats and formats, so
+// the real setupSheets runs against it.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -107,6 +108,10 @@ class FakeSheet {
     this.maxRows = maxRows;
     this.maxCols = maxCols;
     this.frozen = 0;
+    // What the advanced Sheets service's look requests set, by range and fields.
+    this.cellLook = new Map();
+    this.dims = new Map();
+    this.tabColor = null;
   }
   get(r, c) {
     return this.values.has(r + "," + c) ? this.values.get(r + "," + c) : "";
@@ -175,6 +180,9 @@ class FakeSheet {
       validations: [...this.validations.entries()].sort(),
       maxCols: this.maxCols,
       frozen: this.frozen,
+      cellLook: [...this.cellLook.entries()].sort(),
+      dims: [...this.dims.entries()].sort(),
+      tabColor: this.tabColor,
     };
   }
 }
@@ -183,10 +191,14 @@ class FakeSpreadsheet {
   constructor() {
     this.sheets = [];
     this.timeZone = "America/Chicago";
-    // Filter views by sheetId, as the advanced Sheets service holds them.
+    // Filter views, bandings and conditional format rules by sheetId, as the advanced
+    // Sheets service holds them.
     this.views = new Map();
+    this.bandings = new Map();
+    this.rules = new Map();
     this.nextSheetId = 100;
     this.nextViewId = 1;
+    this.nextBandingId = 1;
   }
   getId() {
     return "file-1";
@@ -214,22 +226,56 @@ class FakeSpreadsheet {
       timeZone: this.timeZone,
       sheets: this.sheets.map((s) => s.snapshot()),
       views: [...this.views.entries()].sort(),
+      // A banding's id changes when it is replaced; its range and colours are the look.
+      bandings: [...this.bandings.entries()]
+        .sort()
+        .map(([id, list]) => [id, list.map(({ bandedRangeId, ...b }) => b)]),
+      rules: [...this.rules.entries()].sort(),
     };
   }
 }
 
-/** The advanced Sheets service's filter-view calls, on ss.views. */
-function sheetsService(ss) {
+/** True when two GridRanges share a cell; a missing end runs to the tab's edge. */
+function overlaps(a, b) {
+  const meet = (s1, e1, s2, e2) => (s1 || 0) < (e2 ?? Infinity) && (s2 || 0) < (e1 ?? Infinity);
+  return (
+    meet(a.startRowIndex, a.endRowIndex, b.startRowIndex, b.endRowIndex) &&
+    meet(a.startColumnIndex, a.endColumnIndex, b.startColumnIndex, b.endColumnIndex)
+  );
+}
+
+/**
+ * The advanced Sheets service's calls setupSheets makes: filter views on ss.views,
+ * bandings on ss.bandings, conditional format rules on ss.rules, and the formats the look
+ * sets on each sheet. opts.failOn names a request type that throws, as the API does when
+ * it refuses a request.
+ */
+function sheetsService(ss, opts = {}) {
+  const byId = (sheetId) => {
+    const sheet = ss.sheets.find((s) => s.sheetId === sheetId);
+    assert.ok(sheet, "no sheet " + sheetId);
+    return sheet;
+  };
   return {
     Spreadsheets: {
       get: (id, params) => {
         assert.equal(id, "file-1");
-        assert.match(params.fields, /filterViews\(filterViewId,title\)/);
+        const fields = params.fields;
         return {
           sheets: ss.sheets.map((s) => {
             const out = { properties: { sheetId: s.sheetId } };
             const views = ss.views.get(s.sheetId);
-            if (views && views.length) out.filterViews = plain(views);
+            if (/filterViews\(filterViewId,title\)/.test(fields) && views && views.length) {
+              out.filterViews = plain(views);
+            }
+            const bands = ss.bandings.get(s.sheetId);
+            if (/bandedRanges\(bandedRangeId\)/.test(fields) && bands && bands.length) {
+              out.bandedRanges = bands.map((b) => ({ bandedRangeId: b.bandedRangeId }));
+            }
+            const rules = ss.rules.get(s.sheetId);
+            if (/conditionalFormats/.test(fields) && rules && rules.length) {
+              out.conditionalFormats = plain(rules);
+            }
             return out;
           }),
         };
@@ -237,12 +283,62 @@ function sheetsService(ss) {
       batchUpdate: (body, id) => {
         assert.equal(id, "file-1");
         for (const r of body.requests) {
-          if (r.addFilterView) {
+          const type = Object.keys(r)[0];
+          if (type === opts.failOn) throw new Error("Invalid requests[0]." + type);
+          if (r.deleteBanding) {
+            const found = [...ss.bandings.values()].find((list) =>
+              list.some((b) => b.bandedRangeId === r.deleteBanding.bandedRangeId),
+            );
+            assert.ok(found, "deleted banding exists");
+            found.splice(
+              found.findIndex((b) => b.bandedRangeId === r.deleteBanding.bandedRangeId),
+              1,
+            );
+          } else if (r.addBanding) {
+            const band = plain(r.addBanding.bandedRange);
+            const list = ss.bandings.get(band.range.sheetId) || [];
+            // Two bandings may not share a cell.
+            assert.ok(!list.some((b) => overlaps(b.range, band.range)), "bandings overlap");
+            list.push({ ...band, bandedRangeId: ss.nextBandingId++ });
+            ss.bandings.set(band.range.sheetId, list);
+          } else if (r.deleteConditionalFormatRule) {
+            const { sheetId, index } = r.deleteConditionalFormatRule;
+            const list = ss.rules.get(sheetId) || [];
+            assert.ok(index >= 0 && index < list.length, "deleted rule exists");
+            list.splice(index, 1);
+          } else if (r.addConditionalFormatRule) {
+            const { index, rule } = plain(r.addConditionalFormatRule);
+            const sheetId = rule.ranges[0].sheetId;
+            assert.ok(
+              rule.ranges.every((g) => g.sheetId === sheetId),
+              "one sheet per rule",
+            );
+            const list = ss.rules.get(sheetId) || [];
+            assert.ok(index >= 0 && index <= list.length, "rule index in the list");
+            list.splice(index, 0, rule);
+            ss.rules.set(sheetId, list);
+          } else if (r.repeatCell) {
+            const { range, cell, fields } = plain(r.repeatCell);
+            const { sheetId, ...where } = range;
+            byId(sheetId).cellLook.set(JSON.stringify(where) + " " + fields, cell);
+          } else if (r.updateDimensionProperties) {
+            const { range, properties, fields } = plain(r.updateDimensionProperties);
+            assert.equal(fields, "pixelSize");
+            byId(range.sheetId).dims.set(
+              range.dimension + " " + range.startIndex + "-" + range.endIndex,
+              properties.pixelSize,
+            );
+          } else if (r.updateSheetProperties) {
+            const { properties, fields } = plain(r.updateSheetProperties);
+            assert.equal(fields, "tabColorStyle");
+            byId(properties.sheetId).tabColor = properties.tabColorStyle;
+          } else if (r.addFilterView) {
             const view = { ...plain(r.addFilterView.filter), filterViewId: ss.nextViewId++ };
             const list = ss.views.get(view.range.sheetId) || [];
             list.push(view);
             ss.views.set(view.range.sheetId, list);
           } else {
+            assert.ok(r.updateFilterView, "a request the stand-in knows: " + type);
             const { filterViewId, ...view } = plain(r.updateFilterView.filter);
             assert.equal(r.updateFilterView.fields, "title,range,filterSpecs,sortSpecs");
             const list = ss.views.get(view.range.sheetId) || [];
@@ -258,7 +354,8 @@ function sheetsService(ss) {
 
 /**
  * A fresh context with Logic.js and Sheets.js loaded and SpreadsheetApp pointing at ss.
- * opts.noSheetsService leaves the advanced Sheets service out, as when it is off.
+ * opts.noSheetsService leaves the advanced Sheets service out, as when it is off;
+ * opts.failOn is passed to sheetsService.
  */
 function server(ss, opts = {}) {
   const checkbox = () => {
@@ -283,7 +380,7 @@ function server(ss, opts = {}) {
       },
     },
   };
-  if (!opts.noSheetsService) ctx.Sheets = sheetsService(ss);
+  if (!opts.noSheetsService) ctx.Sheets = sheetsService(ss, opts);
   vm.createContext(ctx);
   vm.runInContext(read("apps-script/Logic.js"), ctx);
   vm.runInContext(read("apps-script/Sheets.js"), ctx);
@@ -669,4 +766,348 @@ test("without the advanced Sheets service, setupSheets names the view step and t
   assert.deepEqual(ss.getSheetByName("Log").row(1), LOG_HEADERS);
   assert.equal(ss.getSheetByName("Settings").getDataRange().getValues().length, 27);
   assert.equal(ss.views.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+// The look of the Log, Flags and Settings
+
+const NAVY = "#062f5a";
+const TEAL = "#168c86";
+const rgb = (hex) => ({
+  red: parseInt(hex.slice(1, 3), 16) / 255,
+  green: parseInt(hex.slice(3, 5), 16) / 255,
+  blue: parseInt(hex.slice(5, 7), 16) / 255,
+});
+const MARK = 'N("kiosk look")';
+// The Log's header colours (N navy, T teal) and widths, in LOG_HEADERS order.
+const LOG_LOOK = [
+  ["N", 95],
+  ["N", 90],
+  ["N", 170],
+  ["T", 130],
+  ["N", 150],
+  ["N", 150],
+  ["N", 150],
+  ["N", 150],
+  ["N", 95],
+  ["N", 95],
+  ["N", 220],
+  ["T", 130],
+  ["T", 260],
+  ["N", 120],
+  ["N", 75],
+  ["N", 95],
+  ["N", 95],
+  ["N", 120],
+];
+const FLAG_LOOK = [
+  ["N", 95],
+  ["N", 170],
+  ["N", 120],
+  ["N", 260],
+  ["N", 150],
+  ["T", 80],
+  ["T", 95],
+  ["T", 260],
+  ["N", 90],
+  ["N", 75],
+];
+const colour = (c) => (c === "N" ? NAVY : TEAL);
+const formulaOf = (rule) => rule.booleanRule.condition.values[0].userEnteredValue;
+
+test("the palette is the kiosk page's colours, and the tints are light", () => {
+  const css = read("src/index.css");
+  const page = (name) => new RegExp("--" + name + ":\\s*(#[0-9a-f]{6});").exec(css)[1];
+  const P = plain(L.lookPalette());
+  assert.equal(P.navy, page("navy"));
+  assert.equal(P.teal, page("teal"));
+  assert.equal(P.yellow, page("yellow"));
+  assert.equal(P.grey, page("muted"));
+  assert.equal(P.blue, page("blue"));
+  assert.equal(P.section, page("light-blue"));
+  const light = (hex) => Object.values(rgb(hex)).every((v) => v > 0.8);
+  for (const tint of ["band", "open", "alert"]) assert.ok(light(P[tint]), tint);
+  assert.deepEqual(plain(L.lookTabColours()), {
+    log: P.navy,
+    flags: P.yellow,
+    settings: P.grey,
+    hours: P.teal,
+    hoursData: P.grey,
+    report: P.blue,
+  });
+});
+
+test("lookPlan for the Log: header colours and widths by header, a staff header teal with no width", () => {
+  const header = [...LOG_HEADERS.slice(0, 14), "Checked by", ...LOG_HEADERS.slice(14)];
+  const plan = plain(L.lookPlan(header, "log"));
+  const want = [...LOG_LOOK.slice(0, 14), ["T", null], ...LOG_LOOK.slice(14)];
+  assert.equal(plan.width, 19);
+  assert.deepEqual(
+    plan.headerColours,
+    want.map(([c]) => colour(c)),
+  );
+  assert.deepEqual(
+    plan.widths,
+    want.flatMap(([, px], col) => (px ? [{ col, px }] : [])),
+  );
+  assert.equal(plan.headerHeight, 40);
+  assert.deepEqual(plan.wrapColumns, []);
+  assert.deepEqual(plan.banding, { startRow: 1, endCol: 19, first: "#ffffff", second: "#eef7fc" });
+  assert.equal(plan.tabColour, NAVY);
+  // Admin Alerts? is K; Status moved one right to P. The alert cell's rule comes first.
+  assert.deepEqual(plan.rules, [
+    {
+      ranges: [{ startRowIndex: 1, startColumnIndex: 10, endColumnIndex: 11 }],
+      booleanRule: {
+        condition: {
+          type: "CUSTOM_FORMULA",
+          values: [{ userEnteredValue: "=AND(" + MARK + ' = 0, TRIM($K2) <> "")' }],
+        },
+        format: { backgroundColorStyle: { rgbColor: rgb("#fbe3e2") } },
+      },
+    },
+    {
+      ranges: [{ startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 19 }],
+      booleanRule: {
+        condition: {
+          type: "CUSTOM_FORMULA",
+          values: [{ userEnteredValue: "=AND(" + MARK + ' = 0, LOWER(TRIM($P2)) = "open")' }],
+        },
+        format: { backgroundColorStyle: { rgbColor: rgb("#fff4d6") } },
+      },
+    },
+  ]);
+});
+
+test("lookPlan follows a reordered Log header; blank cells between headers are teal", () => {
+  const header = [...LOG_HEADERS].reverse();
+  header.splice(3, 0, "");
+  const plan = plain(L.lookPlan([...header, "", ""], "log"));
+  assert.equal(plan.width, 19, "trailing blanks are not the header's");
+  assert.equal(plan.headerColours[3], TEAL);
+  assert.ok(!plan.widths.some((w) => w.col === 3));
+  const alerts = header.indexOf("Admin\nAlerts?");
+  const status = header.indexOf("Status");
+  const letter = (i) => String.fromCharCode(65 + i);
+  assert.equal(
+    formulaOf(plan.rules[0]),
+    "=AND(" + MARK + " = 0, TRIM($" + letter(alerts) + '2) <> "")',
+  );
+  assert.deepEqual(plan.rules[0].ranges[0], {
+    startRowIndex: 1,
+    startColumnIndex: alerts,
+    endColumnIndex: alerts + 1,
+  });
+  assert.match(formulaOf(plan.rules[1]), new RegExp("\\$" + letter(status) + '2\\)\\) = "open"'));
+  // Every known header still gets its own colour and width wherever it is.
+  LOG_HEADERS.forEach((h, i) => {
+    const at = header.indexOf(h);
+    assert.equal(plan.headerColours[at], colour(LOG_LOOK[i][0]), h);
+    assert.ok(
+      plan.widths.some((w) => w.col === at && w.px === LOG_LOOK[i][1]),
+      h,
+    );
+  });
+});
+
+test("lookPlan for Flags and Settings", () => {
+  const flags = plain(L.lookPlan(FLAG_HEADERS, "flags"));
+  assert.deepEqual(
+    flags.headerColours,
+    FLAG_LOOK.map(([c]) => colour(c)),
+  );
+  assert.deepEqual(
+    flags.widths,
+    FLAG_LOOK.map(([, px], col) => ({ col, px })),
+  );
+  assert.equal(flags.tabColour, "#f9bd2f");
+  assert.deepEqual(flags.rules, [
+    {
+      ranges: [{ startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 10 }],
+      booleanRule: {
+        condition: {
+          type: "CUSTOM_FORMULA",
+          values: [{ userEnteredValue: "=AND(" + MARK + " = 0, $F2 = TRUE)" }],
+        },
+        format: { textFormat: { foregroundColorStyle: { rgbColor: rgb("#8a9aa8") } } },
+      },
+    },
+  ]);
+
+  const settings = plain(L.lookPlan(["Setting", "Value"], "settings"));
+  assert.deepEqual(settings.headerColours, [NAVY, TEAL]);
+  assert.deepEqual(settings.widths, [
+    { col: 0, px: 230 },
+    { col: 1, px: 380 },
+  ]);
+  assert.deepEqual(settings.wrapColumns, [1]);
+  assert.deepEqual(settings.rules, []);
+  assert.equal(settings.tabColour, "#52687b");
+  assert.equal(settings.banding.endCol, 2);
+  assert.throws(() => L.lookPlan(["A"], "Hours"), /No look for a tab called Hours/);
+});
+
+test("isLookRule finds the marker; lookRuleRequests keeps staff's rules, first and in order", () => {
+  const rule = (formula) => ({
+    ranges: [{ sheetId: 7, startRowIndex: 1 }],
+    booleanRule: { condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: formula }] } },
+  });
+  const staffA = rule('=$A2 = "x"');
+  const kitX = rule("=AND(" + MARK + " = 0, $B2)");
+  const staffB = { ranges: [{ sheetId: 7 }], gradientRule: {} };
+  const kitY = rule('=AND(N("kiosk look")=0,$C2)');
+  assert.deepEqual(
+    [staffA, kitX, staffB, kitY].map((r) => L.isLookRule(r)),
+    [false, true, false, true],
+  );
+  const fresh = [
+    { ranges: [{ startRowIndex: 1 }], booleanRule: { condition: {} } },
+    { ranges: [{ startRowIndex: 2 }], booleanRule: { condition: {} } },
+  ];
+  assert.deepEqual(plain(L.lookRuleRequests(7, [staffA, kitX, staffB, kitY], fresh)), [
+    { deleteConditionalFormatRule: { sheetId: 7, index: 3 } },
+    { deleteConditionalFormatRule: { sheetId: 7, index: 1 } },
+    {
+      addConditionalFormatRule: {
+        index: 2,
+        rule: { ranges: [{ sheetId: 7, startRowIndex: 1 }], booleanRule: { condition: {} } },
+      },
+    },
+    {
+      addConditionalFormatRule: {
+        index: 3,
+        rule: { ranges: [{ sheetId: 7, startRowIndex: 2 }], booleanRule: { condition: {} } },
+      },
+    },
+  ]);
+  assert.deepEqual(plain(L.lookRuleRequests(7, [], [])), []);
+});
+
+test("setupSheets puts the look on the Log, Flags and Settings", () => {
+  const ss = new FakeSpreadsheet();
+  const S = server(ss);
+  S.setupSheets();
+  const tabs = [
+    ["Log", LOG_LOOK, NAVY, 2],
+    ["Flags", FLAG_LOOK, "#f9bd2f", 1],
+    [
+      "Settings",
+      [
+        ["N", 230],
+        ["T", 380],
+      ],
+      "#52687b",
+      0,
+    ],
+  ];
+  for (const [name, look, tab, ruleCount] of tabs) {
+    const sheet = ss.getSheetByName(name);
+    const id = sheet.sheetId;
+    assert.deepEqual(sheet.tabColor, { rgbColor: rgb(tab) }, name);
+    assert.equal(sheet.dims.get("ROWS 0-1"), 40, name);
+    look.forEach(([c, px], col) => {
+      assert.equal(sheet.dims.get("COLUMNS " + col + "-" + (col + 1)), px, name + " width " + col);
+      const styled = [...sheet.cellLook.entries()].find(([key]) => {
+        const where = JSON.parse(key.split(" ")[0]);
+        return (
+          where.endRowIndex === 1 && where.startColumnIndex <= col && col < where.endColumnIndex
+        );
+      });
+      assert.ok(styled, name + " header " + col);
+      const format = styled[1].userEnteredFormat;
+      assert.deepEqual(format.backgroundColorStyle, { rgbColor: rgb(colour(c)) });
+      assert.deepEqual(format.textFormat, {
+        foregroundColorStyle: { rgbColor: rgb("#ffffff") },
+        bold: true,
+      });
+      assert.equal(format.wrapStrategy, "WRAP");
+      assert.equal(format.verticalAlignment, "MIDDLE");
+    });
+    // One banding from row 2 over the header's columns, with no end row.
+    assert.deepEqual(
+      plain(ss.bandings.get(id)).map(({ bandedRangeId, ...b }) => b),
+      [
+        {
+          range: {
+            sheetId: id,
+            startRowIndex: 1,
+            startColumnIndex: 0,
+            endColumnIndex: look.length,
+          },
+          rowProperties: {
+            firstBandColorStyle: { rgbColor: rgb("#ffffff") },
+            secondBandColorStyle: { rgbColor: rgb("#eef7fc") },
+          },
+        },
+      ],
+    );
+    const rules = ss.rules.get(id) || [];
+    assert.equal(rules.length, ruleCount, name);
+    assert.ok(rules.every((r) => S.isLookRule(r) && r.ranges[0].endRowIndex === undefined));
+    // The header keeps its text and plain-text format.
+    assert.equal(sheet.format(1, 1), "@");
+  }
+  const settings = ss.getSheetByName("Settings");
+  assert.deepEqual(
+    settings.cellLook.get(
+      '{"startColumnIndex":1,"endColumnIndex":2} userEnteredFormat.wrapStrategy',
+    ),
+    { userEnteredFormat: { wrapStrategy: "WRAP" } },
+  );
+});
+
+test("setupSheets replaces staff's banding and its own rules, and keeps staff's rules first", () => {
+  const ss = new FakeSpreadsheet();
+  const log = sheetWith(ss, "Log", [[...LOG_HEADERS, "Checked by"]]);
+  const id = log.sheetId;
+  ss.bandings.set(id, [
+    { bandedRangeId: 900, range: { sheetId: id, startRowIndex: 0, endRowIndex: 50 } },
+  ]);
+  const staffRule = {
+    ranges: [{ sheetId: id, startColumnIndex: 18, endColumnIndex: 19 }],
+    booleanRule: {
+      condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: '=$S1 = "x"' }] },
+      format: { textFormat: { bold: true } },
+    },
+  };
+  ss.rules.set(id, [plain(staffRule)]);
+  const S = server(ss);
+  S.setupSheets();
+  assert.equal(ss.bandings.get(id).length, 1);
+  assert.equal(ss.bandings.get(id)[0].range.endColumnIndex, 19);
+  assert.deepEqual(
+    ss.rules.get(id).map((r) => S.isLookRule(r)),
+    [false, true, true],
+  );
+  // The staff column's header is teal and its width is left alone.
+  assert.equal(log.dims.has("COLUMNS 18-19"), false);
+  assert.ok(
+    [...log.cellLook.entries()].some(
+      ([key, cell]) =>
+        key.startsWith('{"startRowIndex":0,"endRowIndex":1,"startColumnIndex":18,') &&
+        cell.userEnteredFormat.backgroundColorStyle.rgbColor.green === rgb(TEAL).green,
+    ),
+  );
+
+  // A staff rule added after the kiosk's moves ahead of them on the next run.
+  const later = { ...plain(staffRule), booleanRule: { ...staffRule.booleanRule, format: {} } };
+  ss.rules.get(id).push(later);
+  S.setupSheets();
+  assert.deepEqual(plain(ss.rules.get(id)).slice(0, 2), [plain(staffRule), later]);
+  assert.equal(ss.rules.get(id).filter((r) => S.isLookRule(r)).length, 2);
+  const after = JSON.stringify(ss.snapshot());
+  S.setupSheets();
+  assert.equal(JSON.stringify(ss.snapshot()), after, "a further run changes nothing");
+});
+
+test("when the look is refused, setupSheets says the tabs are set up and what to check", () => {
+  const ss = new FakeSpreadsheet();
+  const S = server(ss, { failOn: "addBanding" });
+  assert.throws(
+    () => S.setupSheets(),
+    /^Error: The tabs are set up, but their look could not be applied: Invalid requests\[0\]\.addBanding\. Check that the Sheets API advanced service is on \(it is in appsscript\.json\), then run setupSheets\(\) again\.$/,
+  );
+  assert.deepEqual(ss.getSheetByName("Log").row(1), LOG_HEADERS);
+  assert.deepEqual(ss.getSheetByName("Flags").row(1), FLAG_HEADERS);
+  assert.equal(ss.views.get(ss.getSheetByName("Flags").sheetId).length, 1);
 });

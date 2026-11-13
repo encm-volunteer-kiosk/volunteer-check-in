@@ -106,6 +106,10 @@ test("sheetText marks formula-looking text as plain text", () => {
   assert.equal(L.sheetText('=HYPERLINK("x")'), '\'=HYPERLINK("x")');
   assert.equal(L.sheetText(" Maria "), "Maria");
   assert.equal(L.sheetText("-Ann"), "-Ann");
+  // Sheets drops a leading apostrophe as its plain-text mark, so one more keeps the one typed.
+  assert.equal(L.sheetText("'Neil"), "''Neil");
+  assert.equal(L.sheetText("''"), "'''");
+  assert.equal(L.sheetText("O'Neil"), "O'Neil");
 });
 
 test("utf8Length counts UTF-8 bytes", () => {
@@ -3162,10 +3166,11 @@ test("autoClockOutCells close the row with the guess, blank recorded cells and t
   });
 });
 
-test("dailyJobs lists the hourly email and the 4 AM auto clock-out", () => {
+test("dailyJobs lists the hourly email, the 4 AM auto clock-out and the 5 AM Hours refresh", () => {
   assert.deepEqual(plain(L.dailyJobs()), [
     { handler: "runFlagsEmail", everyHours: 1 },
     { handler: "runAutoClockOut", atHour: 4 },
+    { handler: "runHoursRefresh", atHour: 5 },
   ]);
   assert.equal(L.flagSources().autoClose, "auto-close");
   assert.equal(L.weekdayFromText("TUE"), "Tuesday");
