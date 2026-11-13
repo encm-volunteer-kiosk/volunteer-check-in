@@ -900,42 +900,115 @@ Log cell. No report shows a User Token: tokens are read only to tell volunteers 
 ### Hours tab
 
 The Hours tab shows stated hours, shifts and volunteers for any period you pick: a year, a
-month, several months or all time, narrowed to a role, an activity or a volunteer if you
-want. `setupReports` builds it (see Setting up the reports). It replaces the old Monthly
-Hours tab, so there is no month to pick in B1 any more.
+month, several months, a range of days or all time, narrowed to a role, an activity or a
+volunteer if you want. `setupReports` builds it (see Setting up the reports). It replaces
+the old Monthly Hours tab, so there is no month to pick in B1 any more.
 
 - **Row 1**: the title, and in B1 when the tables are from (below). Row 1 stays on screen
   when you scroll.
 - **Row 2**: a short note on how to use the tab.
 - **Row 3**: counts for the whole Log that don't follow the slicers (below).
+- **Row 4**: one line on the slicers and the sort boxes: "In a slicer, click Clear, then
+  tick what you want. Reload the page to clear every slicer. A sort box takes up to 20
+  seconds."
 - **Row 5**: five slicers: Year, Month, Role/Type, Activity and Volunteer.
+- **Row 6**: two more slicers, From date and To date, for a range of days. The note in F6
+  says how to use them.
+- **Row 7**: a sort box above each table (see Sorting).
 - **From row 8**, three tables side by side, each with a Grand Total row:
-  - **Hours by volunteer**: shifts and hours per volunteer, most hours first;
-  - **Hours by month**: shifts, hours, volunteers and average shift per month, oldest
-    first;
-  - **Shifts**: one line per shift with its date, start, volunteer, role/type, activity
-    and hours, newest first.
+  - **Hours by volunteer**: shifts and hours per volunteer;
+  - **Hours by month**: shifts, hours, volunteers and average shift per month;
+  - **Shifts**: one line per shift with its role/type, activity and hours (see The Shifts
+    table).
 
-**Picking a period.** Click a slicer and tick what you want. Every slicer filters all
-three tables. Pick a year for that year, a month for that month, or several months
-together; clear every slicer for all time. The Grand Total rows are then the period's
-stated hours, shifts, volunteers and average shift.
+**Picking a period.** Click a slicer, click Clear, then tick what you want. Every slicer
+filters all three tables. Pick a year for that year, a month for that month, or several
+months together. The Grand Total rows are then the period's stated hours, shifts,
+volunteers and average shift. With every slicer cleared, the tables show all time.
 
-**Your picks are yours alone.** A pick shows only in the window you made it in: nobody
-else sees it, and it's gone when you close the tab. A refresh keeps it: if Hours is
-refreshed while your tab is open, the new tables still follow your picks.
+**A range of days.** Use the From date and To date slicers in row 6:
+
+1. Click From date. Choose Filter by condition, then Greater than or equal to, and type
+   the first day, written like 2026-11-01. Click OK.
+2. Click To date. Choose Filter by condition, then Less than or equal to, and type the
+   last day. Click OK.
+
+Both days you typed are included. The range works with the other slicers too: a range of
+days and one activity, for example.
+
+**Clearing every slicer.** Reload the page. That clears every pick at once, the date range
+included. To clear one slicer, click it and click Clear.
+
+**Your picks are yours alone.** A slicer pick shows only in the window you made it in:
+nobody else sees it, and it's gone when you reload the page or close the tab. A refresh
+keeps it: if Hours is refreshed while your tab is open, the new tables still follow your
+picks.
 
 Don't use "Set current filters as default" in a slicer's menu. It saves the pick for
-everyone, and because a slicer saves the values it hides, months and volunteers added
-later show in that default until someone clears it. `setupReports` clears a saved default.
+everyone, and it comes back after a reload. Because a slicer saves the values it hides,
+months and volunteers added later show in that default until someone clears it.
+`setupReports` clears a saved default.
 
-**Sorting.** The tables have no click-a-header sort. Click a table, and in the editor that
-opens use Sort by. A sort is saved for everyone and kept through refreshes; `setupReports`
-puts each table back in its own order.
+**Sorting.** Each table has a sort box above it, in row 7. Click the box and pick an order.
+The table sorts itself. The new order can take up to 20 seconds to show. The choices, with
+the one each table starts with first:
+
+- **Hours by volunteer** (the box in A7): most hours first, fewest hours first, most
+  shifts first, name A to Z, name Z to A.
+- **Hours by month** (E7): oldest month first, newest month first, most hours first, most
+  shifts first, most volunteers first.
+- **Shifts** (K7): newest first, oldest first, most hours first, fewest hours first. The
+  Shifts table below says how each day's shifts are ordered.
+
+Each choice starts "Sort: " in the box. On name A to Z, `(no name)` comes first, and "Ann
+Lee" comes before "Ann Lee (2)". Name Z to A turns both round. Lines with the same hours,
+or the same number of shifts, can come in any order among themselves.
+
+A sort is shared. It changes the order for everyone who has the sheet open, not just for
+you. Only people who can edit the spreadsheet can change a box: with view-only access you
+can't.
+
+A sort stays through every refresh and through `setupReports`. To go back to a table's
+first order, pick its first choice.
+
+- If a table doesn't follow its box, pick the order again.
+- A pick made while Hours is refreshing waits for the refresh to finish, then sorts.
+- The box takes only its own choices: typing anything else is refused. If a box is emptied,
+  or something else is pasted into it, it goes back to its first choice and its table
+  follows.
+- Don't sort a table in the editor that opens when you click it (the pivot table editor).
+  That sort no longer lasts: the next pick in any box, or the next `setupReports`, puts the
+  table back in its box's order. Any other change made in that editor goes too.
+- Don't rename the Hours tab. The boxes work only on a tab named Hours. Renamed, they do
+  nothing until you rename it back.
+- If no pick ever re-sorts a table, the boxes' trigger may be missing (see Setting up the
+  reports).
+
+**The Shifts table.** One line per shift. Its first column, Shift, is a label made from the
+shift's date, weekday, start time and volunteer: "2026-11-13 Fri 09:00 · Ann Lee". A shift
+with no start time, such as an imported one, shows `no time` in its place: "2026-11-13 Fri
+no time · Ann Lee". Then come the shift's Role/Type, Activity and Hours. There are no
+separate Date, Start or Volunteer columns: all three are in the label. To find a Shifts
+line on the Log, look for its Date, Start and Volunteer.
+
+If one volunteer has two shifts that start the same minute on one day, the second gets
+"(2)" at the end of its label, so each shift has its own line. The same goes for two
+volunteers with no name. A label never changes when newer shifts come in.
+
+How the Shifts choices order the lines:
+
+- **Newest first**: the newest day first. Within a day, the `no time` shifts first, then
+  the latest start to the earliest. Shifts that start the same minute go by the
+  volunteer's name, Z to A.
+- **Oldest first**: the oldest day first. Within a day, the earliest start first and the
+  `no time` shifts last. Shifts that start the same minute go by the volunteer's name, A
+  to Z.
+- **Most hours first** and **fewest hours first**: by each shift's hours.
 
 **The shifts behind a number.** Double-click a number in a table and Sheets opens a new tab
-listing the Hours data rows behind it. Each double-click makes another tab, so they pile
-up; delete them when you're done. They hold no User Token.
+listing the Hours data rows behind it, with Hours data's columns (below). Each
+double-click makes another tab, so they pile up; delete them when you're done. They hold no
+User Token. Date and To date there hold the same day, shown as a date such as 2026-11-13.
 
 **When the tables are from.** The tables aren't live. They show the Log as of the last
 refresh, and B1 says when that was, such as "As of 2026-11-13 9:14 AM, refreshed from the
@@ -984,32 +1057,56 @@ reads the Log, writes the tables again and shows what B1 now says. Other answers
 The monthly report gives open and flagged rows month by month.
 
 **Volunteers' names.** A volunteer is a User Token, shown with the Volunteer Name from
-their latest counted shift in the whole Log, or `(no name)` when that is blank. When two
-volunteers' names match, ignoring capitals and extra spaces, each gets the date of their
-first shift: "Maria Lopez · first shift 2026-03-02". If two still match, ", Log row N" is
-added, N being the Log row of that volunteer's first counted shift at that refresh. Runs
-of spaces in names, Role/Type and Activity show as one, and values that differ only in
-capitals show in one spelling, the one on the latest shift. To find a Shifts line on the
-Log, look for its Date, Start and Volunteer.
+their latest counted shift in the whole Log.
+
+- **No name.** Every volunteer whose name there is blank is on one line, `(no name)`, with
+  their shifts and hours added together. The Volunteer slicer has one `(no name)` entry.
+- **The same name.** When two volunteers' names match, ignoring capitals and extra spaces,
+  the one whose first shift came first keeps the plain name. The next gets a number: "Ann
+  Lee", then "Ann Lee (2)", then "Ann Lee (3)". Each keeps their own spelling. Someone
+  whose name really is "(no name)" shows as "(no name) (2)".
+- **Names stay put.** A new volunteer's first shift is the newest, so they never change
+  anyone else's name. A name changes only when a volunteer's latest name changes, when an
+  older shift is added, edited or removed (an import, say), or when a volunteer with no
+  name gets one.
+
+Runs of spaces in names, Role/Type and Activity show as one, and values that differ only in
+capitals show in one spelling, the one on the latest shift.
+
+**The Volunteers count** in Hours by month counts the names in the table. So all of a
+month's volunteers with no name count as one volunteer that month.
 
 **Hours data.** The tables read a hidden tab, Hours data, which the refresh writes: one row
-per counted shift with a month, as plain values, with no User Token. Leave it hidden and
-don't edit it. An edit there shows in the tables only until a refresh writes the whole
-table again, which every refresh from the menu, at night or by `setupReports` does. Its
-cells L1 to Q1 are the refresh's own record of what it wrote, and B1 is worked out from
-them; leave them alone. Neither tab warns before an edit (a warning would pop up at every
-slicer click), and `setupReports` clears the Hours tab and builds it again, so anything
-typed on it is lost.
+per counted shift with a month, as plain values, with no User Token. Its columns are A
+Date, B Year, C Month, D To date, E Start, F Volunteer, G Shifts, H Hours, I Role/Type, J
+Activity and K Shift. Date and To date hold the same day as a real date: the From date
+slicer reads Date, and the To date slicer reads To date. Shift is the Shifts table's label.
+There is no Weekday column; the weekday is in the Shift label.
+
+Leave Hours data hidden and don't edit it. An edit there shows in the tables only until a
+refresh writes the whole table again, which every refresh from the menu, at night or by
+`setupReports` does. Its cells L1 to Q1 are the refresh's own record of what it wrote, and
+B1 is worked out from them; leave them alone. Neither tab warns before an edit (a warning
+would pop up at every slicer click), and `setupReports` clears the Hours tab and builds it
+again, so anything typed on it is lost. The sort boxes' choices are the one thing it keeps.
 
 **Where Hours and the monthly report differ.** Both count with the same code, so for a
-month, with Hours refreshed since the Log last changed, they give the same hours, shifts
-and volunteers. Names can differ: Hours names a volunteer from the whole Log and the report
-from the month, so someone whose name was spelled differently that month shows under
-different names. Hours also tidies spacing and capitals as above, and adds ", Log row N"
-to any name still shared, where the report adds it only to namesakes whose first shifts
-share a date. And the refresh reads the Log without the kiosk's lock, so a row the kiosk
-was writing at that moment can be read half-written; the next refresh reads it whole. The
-report reads under the lock.
+month, with Hours refreshed since the Log last changed, they give the same hours and
+shifts. Names, and sometimes the number of volunteers, differ:
+
+- Hours names a volunteer from the whole Log and the report from the month, so someone
+  whose name was spelled differently that month shows under different names. Hours also
+  tidies spacing and capitals as above.
+- For volunteers with the same name, Hours numbers them: "Ann Lee (2)". The report adds the
+  date of each one's first shift instead: "Ann Lee · first shift 2026-03-02", plus the Log
+  row when their first shifts share a date.
+- Hours puts every volunteer with no name on one `(no name)` line and counts them as one
+  volunteer in a month. The report lists and counts each one. So in a month with 3
+  volunteers with no name, Hours' Volunteers figure is 2 lower than the report's.
+
+And the refresh reads the Log without the kiosk's lock, so a row the kiosk was writing at
+that moment can be read half-written; the next refresh reads it whole. The report reads
+under the lock.
 
 **On a phone or tablet.** Use Hours in Sheets on a computer: the Sheets apps for phones and
 tablets can't edit pivot tables.
@@ -1152,14 +1249,16 @@ asks to authorize the script again, for the Sheets service it uses to save filte
 and build the Hours tab. Accept.
 
 It makes or repairs the Hours and Hours data tabs, the filter views and the warnings, from
-the Log's current columns, and fills Hours. It changes only what it made: the Hours and
-Hours data tabs, the views titled `Kiosk: ` and the warnings it put on the Log. It also
-deletes the old Monthly Hours tab (below). It never changes a Log cell, a report tab or any
-other tab.
+the Log's current columns, and fills Hours. Then it installs the trigger the sort boxes
+need (below). It changes only what it made: the Hours and Hours data tabs, the views titled
+`Kiosk: `, the warnings it put on the Log and its own sort trigger. It also deletes the old
+Monthly Hours tab (below). It never changes a Log cell, a report tab or any other tab.
 
-Each run builds the Hours tab again from scratch: it clears it and makes the slicers and
-tables anew, so a sort or a saved slicer default goes back to the start, and anything typed
-on the tab is lost. Otherwise running it again changes nothing.
+Each run builds the Hours tab again from scratch: it clears it and makes the slicers, sort
+boxes and tables anew. Each sort box keeps the order it held, and its table follows it. A
+saved slicer default is cleared, a sort made in the pivot table editor goes back to its
+box's order, and anything typed on the tab is lost. Otherwise running it again changes
+nothing.
 
 It stops before changing anything when:
 
@@ -1182,6 +1281,37 @@ filled, `setupReports` keeps Monthly Hours and stops with "Hours was not filled 
 Monthly Hours was kept. Fix that and run setupReports again." The reason in the brackets is
 what B1 says.
 
+**The sort boxes' trigger.** A pick in a sort box runs a short job, `runHoursSort`, that
+re-sorts the table. A trigger starts it. Once Hours is filled, `setupReports` installs that
+trigger for the Google account running `setupReports`. Every pick then runs as that
+account, whoever made it. So run `setupReports` signed in as the account that owns the
+daily jobs (Settings "Daily jobs installed by").
+
+The finish message says how it went:
+
+- "The sort boxes run as ... (trigger installed)." or "(trigger already installed)." The
+  boxes work. Running `setupReports` again keeps one trigger, never two.
+- "The sort boxes' trigger couldn't be installed: ..." Hours is set up, but picking a sort
+  does nothing. Fix what the message names, then run `setupReports` again.
+
+If picking in a box never re-sorts its table, the trigger may be missing. Run
+`setupReports` again, as that account. To check first, open the editor's Triggers page
+(the clock icon), signed in as that account. It should list one `runHoursSort` trigger
+whose event is On edit.
+
+- **Removing it.** Delete the `runHoursSort` trigger on the Triggers page. The sort boxes
+  then do nothing. `removeDailyJobs` doesn't remove it, since it isn't a daily job. The
+  next `setupReports` adds it back.
+- **Failure emails.** If a sort fails, Google emails a failure notice to the account
+  that ran `setupReports`. The table may keep its old order: pick the order again.
+- **Two accounts.** If a second account also ran `setupReports`, it has its own trigger,
+  and each pick runs twice. That does no harm. To stop it, sign in as that account and
+  delete its `runHoursSort` trigger. The Triggers page shows only the signed-in account's
+  own triggers.
+- **The Executions page** lists a `runHoursSort` run for every edit anywhere in the
+  spreadsheet, not only for picks. Those runs see that the edit wasn't in a sort box and
+  stop at once. That is normal.
+
 When it finishes, its log in the editor says what it did, with two reminders: run
 `setupDailyJobs` once more if the daily jobs were installed before the Hours refresh, and
 run `setupReports` again after a Log column moves.
@@ -1189,6 +1319,10 @@ run `setupReports` again after a Log column moves.
 **After inserting, deleting or moving a Log column, run `setupReports` again**, so the
 filter views follow the columns. Hours reads the Log by its headers and follows by itself.
 Run `setupSheets` again too, for the look's colour rules.
+
+**After pushing a new version that changes Hours, run `setupReports` straight away.**
+Until it runs, the tabs keep their old layout: the sort boxes may be missing, and the
+Shifts table may show dates as day numbers such as 46339.
 
 To add the reports to a spreadsheet already in use, or to move one from the Monthly Hours
 tab to the Hours tab and the new look, do these steps in this order:
@@ -1198,8 +1332,9 @@ tab to the Hours tab and the new look, do these steps in this order:
    and Refresh Hours says "Run setupReports." until then.
 2. Run `setupSheets` from the editor. It adds any missing Settings row, such as "Volunteer
    hour value", and applies the look.
-3. Run `setupReports` from the editor, and authorize it when asked. It builds and fills
-   Hours, then deletes Monthly Hours.
+3. Run `setupReports` from the editor, and authorize it when asked. If the daily jobs are
+   installed, sign in as the account that owns them first. It builds and fills Hours,
+   deletes Monthly Hours, and installs the sort boxes' trigger.
 4. If the daily jobs are installed, sign in as the account that owns them (Settings "Daily
    jobs installed by") and run `setupDailyJobs` once more, to add the nightly Hours
    refresh. Doing it after step 3 means the first nightly run finds Hours set up.
@@ -1340,6 +1475,7 @@ apps-script/Admin.js        the Kiosk admin menu and its dialogs' server functio
 apps-script/AdminDialog.html the admin dialogs (plain HTML and JavaScript, committed source)
 apps-script/Reports.js      setupReports, the Hours refresh and the Monthly report menu item's server functions
 apps-script/Jobs.js         the daily jobs: setupDailyJobs, removeDailyJobs, the weekly flags email, the nightly Hours refresh
+apps-script/HoursSort.js    the Hours tab's sort boxes: the on-edit handler that re-sorts a table when a box changes
 apps-script/Report.html     the Monthly report window (plain HTML and JavaScript, committed source)
 apps-script/Import.js       the Import past hours menu item: preview, write, ledger and flags
 apps-script/ImportDialog.html the Import past hours dialog (plain HTML and JavaScript, committed source)

@@ -1213,3 +1213,39 @@ test("setupReportsMessage gives the counts, when Hours is filled as of, Monthly 
   assert.doesNotMatch(none, /Monthly Hours/);
   assert.ok(!none.includes("\n\n"));
 });
+
+test("setupReportsMessage names the account the sort boxes run as, or why their trigger isn't in", () => {
+  const base = {
+    views: { added: 0, updated: 7 },
+    warnings: { kept: 14, added: 0, removed: 0 },
+    hours: { asOf: "2026-11-13 9:14 AM", monthlyHours: "none" },
+  };
+  const installed = L.setupReportsMessage({
+    ...base,
+    trigger: { kind: "installed", account: "owner@example.org" },
+  });
+  assert.match(installed, /^The sort boxes run as owner@example\.org \(trigger installed\)\.$/m);
+  const kept = L.setupReportsMessage({
+    ...base,
+    trigger: { kind: "kept", account: "owner@example.org" },
+  });
+  assert.match(kept, /^The sort boxes run as owner@example\.org \(trigger already installed\)\.$/m);
+  const failed = L.setupReportsMessage({
+    ...base,
+    trigger: { kind: "failed", message: "Too many triggers" },
+  });
+  assert.match(
+    failed,
+    /^The sort boxes' trigger couldn't be installed: Too many triggers\. Hours is set up, but picking a sort does nothing until setupReports runs again and installs it\.$/m,
+  );
+  assert.doesNotMatch(failed, /run as/);
+  // The rest of the message is the same either way, and nothing is said without a trigger step.
+  const without = L.setupReportsMessage(base);
+  assert.doesNotMatch(without, /sort boxes/);
+  for (const text of [installed, kept, failed]) {
+    assert.deepEqual(
+      text.split("\n").filter((line) => !/sort boxes/.test(line)),
+      without.split("\n"),
+    );
+  }
+});

@@ -2992,14 +2992,25 @@ function ownedProtectionPlan(wanted, existing, prefix) {
  * {kept, added, removed}, hours: {asOf, monthlyHours}}: asOf is the Hours tables' time
  * (L1) as Central text, and monthlyHours what became of the old Monthly Hours tab:
  * "deleted", "unmarked" (a tab of that name without the kiosk's protection, left alone) or
- * "none". It ends with the things staff must do by hand: rerun setupDailyJobs once for the
- * nightly Hours refresh when the jobs were installed before it, and rerun setupReports
- * after a Log column moves, since the filter views name Log columns by letter.
+ * "none". trigger is ensureHoursSortTrigger_'s answer: {kind: "installed" or "kept",
+ * account} or {kind: "failed", message}; the sort boxes run as that account, and a failure
+ * doesn't undo Hours. It ends with the things staff must do by hand: rerun setupDailyJobs
+ * once for the nightly Hours refresh when the jobs were installed before it, and rerun
+ * setupReports after a Log column moves, since the filter views name Log columns by letter.
  */
 function setupReportsMessage(counts) {
   const v = counts.views;
   const w = counts.warnings;
   const h = counts.hours || {};
+  const t = counts.trigger || {};
+  const trigger = {
+    installed: "The sort boxes run as " + cellString(t.account) + " (trigger installed).",
+    kept: "The sort boxes run as " + cellString(t.account) + " (trigger already installed).",
+    failed:
+      "The sort boxes' trigger couldn't be installed: " +
+      hoursSentence(t.message) +
+      " Hours is set up, but picking a sort does nothing until setupReports runs again and installs it.",
+  }[t.kind];
   const old = monthlyHoursTabName();
   const monthly = {
     deleted: "The " + old + " tab was deleted; the " + hoursTabName() + " tab replaces it.",
@@ -3022,6 +3033,7 @@ function setupReportsMessage(counts) {
       cellString(h.asOf) +
       ".",
     monthly,
+    trigger,
     "Filter views: " + v.updated + " updated, " + v.added + " added.",
     "Kiosk column warnings: " + w.kept + " kept, " + w.added + " added, " + w.removed + " removed.",
     "If the daily jobs were installed before this version, run setupDailyJobs once more for the nightly Hours refresh.",
@@ -3037,11 +3049,11 @@ function setupReportsMessage(counts) {
 // Hours data is a hidden tab of plain values the script writes: one row per counted shift
 // with a month, worked out here by the monthly report's own counting code, so the Hours
 // tab and the report count the same rows the same way. The Hours tab holds three pivot
-// tables and five slicers over it. Nothing on either tab is a formula over the Log, so a
+// tables and seven slicers over it. Nothing on either tab is a formula over the Log, so a
 // kiosk tap starts no recalculation there; the tables are as of the last refresh.
 //
 // Hours data's row 1 also holds the refresh's state cells, L1 to Q1, outside the pivots'
-// columns A to J. Every time in them is epoch milliseconds written as digits:
+// columns A to K. Every time in them is epoch milliseconds written as digits:
 //   L1 table time   "<ms>": when the read behind the table in place started
 //   M1 table state  "complete", "writing <ms>" or "stopped <ms>" (or "stopped")
 //   N1 last event   "<kind>|<cause>|<T ms>|<W ms>|<message>"
@@ -3072,29 +3084,46 @@ function hoursTabMark() {
   return { key: "kiosk-tab", hours: "hours", data: "hours-data" };
 }
 
-/** Hours data's headers, columns A to J. */
+/**
+ * Hours data's headers, columns A to K. Date and To date hold the same day, so a From date
+ * slicer on one and a To date slicer on the other make a range: two slicers on one column
+ * would share one filter.
+ */
 function hoursDataHeaders() {
   return [
     "Date",
     "Year",
     "Month",
-    "Weekday",
+    "To date",
     "Start",
     "Volunteer",
     "Shifts",
     "Hours",
     "Role/Type",
     "Activity",
+    "Shift",
   ];
 }
 
 /**
- * Hours data's number formats, columns A to J: plain text for every text column, so
- * "2026-11" and "2026" are not read as a date or a number, "0" for Shifts and "0.00" for
- * Hours.
+ * Hours data's number formats, columns A to K: Date and To date are real dates shown as
+ * yyyy-mm-dd; every text column is plain text, so "2026-11" and "2026" are not read as a
+ * date or a number; "0" for Shifts and "0.00" for Hours.
  */
 function hoursDataFormats() {
-  return ["@", "@", "@", "@", "@", "@", "0", "0.00", "@", "@"];
+  return ["yyyy-mm-dd", "@", "@", "yyyy-mm-dd", "@", "@", "0", "0.00", "@", "@", "@"];
+}
+
+/**
+ * A yyyy-MM-dd date as a sheet's date number: days since 1899-12-30, worked out with
+ * Date.UTC so no time zone moves the day. "" for anything that isn't a real yyyy-MM-dd
+ * date; every Hours data row has one, since a row needs a month.
+ */
+function hoursDateSerial(dateText) {
+  const s = cellString(dateText);
+  if (!monthKey(s)) return "";
+  const [year, month, day] = s.split("-").map(Number);
+  return (Date.UTC(year, month - 1, day) - Date.UTC(1899, 11, 30)) / 86400000;
 }
 
 /** The state cells on Hours data, in order, and their range. */
@@ -3108,10 +3137,10 @@ function hoursStateRange() {
 
 /**
  * The one range every pivot and slicer on the Hours tab reads: Hours data from row 1 with
- * no end row, columns A to J. Built here once so every spec holds an equal value.
+ * no end row, columns A to K. Built here once so every spec holds an equal value.
  */
 function hoursSourceRange(dataSheetId) {
-  return { sheetId: dataSheetId, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 10 };
+  return { sheetId: dataSheetId, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 11 };
 }
 
 /** The row the Hours tab's pivots start on (A8, E8, K8). */
@@ -3173,53 +3202,61 @@ function hoursLabelKey(text) {
 }
 
 /**
+ * Labels for items in their order, none equal to an earlier one under hoursLabelKey: an
+ * item takes its base text (baseOf(item)) when no earlier label has its key, else
+ * "<base> (k)" with the smallest k from 2 whose key no earlier label has. The key keeps
+ * digits, so "<base> (k)" for different k never share a key and a free k always exists.
+ * An item's label depends only on the items before it.
+ */
+function hoursDistinct(items, baseOf) {
+  const taken = new Set();
+  return items.map((item) => {
+    const base = baseOf(item);
+    let label = base;
+    for (let k = 2; taken.has(hoursLabelKey(label)); k++) label = base + " (" + k + ")";
+    taken.add(hoursLabelKey(label));
+    return label;
+  });
+}
+
+/**
  * Each volunteer's label on the Hours tab, as Map token -> label, over the whole Log (every
- * counted row with a month). No two tokens end with labels equal under hoursLabelKey, so
- * no two volunteers share a line in a pivot.
+ * counted row with a month).
  *
- * 1. A token's base label is the Volunteer Name on its latest counted row in
- *    reportRowOrder, spaced as hoursSpaced, or "(no name)" when that cell is blank.
- * 2. When two or more tokens have base labels equal under hoursLabelKey, each gets
- *    " · first shift yyyy-MM-dd", the Date of its first shift (firstShifts).
- * 3. Then, until no label is shared: each label not yet given a Log row that equals another
- *    token's under hoursLabelKey gets ", Log row N", N its first shift's Log row. A token
- *    gets this at most once. N is unique to its token and ends the label (the key changes
- *    no digit), so two labels with a Log row are never equal; each pass gives at least one
- *    token its Log row, so the loop ends within one pass per token.
+ * 1. Units: a token whose latest counted row in reportRowOrder has a Volunteer Name is a
+ *    unit of its own, its base label that name spaced as hoursSpaced. Every token whose
+ *    latest name is blank is in one shared unit, base label "(no name)". A unit's first
+ *    shift is the earliest of its tokens' first shifts (firstShifts).
+ * 2. Order: the nameless unit first, then the named units by first shift in
+ *    reportRowOrder, which ends on the Log row, so no two units tie.
+ * 3. hoursDistinct in that order, and every token of a unit gets the unit's label.
+ *
+ * So two tokens' labels are equal under hoursLabelKey exactly when both are nameless, and
+ * a unit's label depends only on the units before it: a new volunteer's first shift is
+ * the newest, so it comes last and changes nobody's label.
  */
 function hoursLabels(entries) {
   const rows = hoursRows(entries);
   const first = firstShifts(entries);
   const latest = new Map();
   rows.forEach((e) => latest.set(cellString(e.token), e));
+  const named = [];
+  const nameless = { base: "(no name)", tokens: [], first: null };
+  latest.forEach((e, token) => {
+    const name = hoursSpaced(e.name);
+    const shift = first.get(token);
+    if (name) {
+      named.push({ base: name, tokens: [token], first: shift });
+      return;
+    }
+    nameless.tokens.push(token);
+    if (!nameless.first || reportRowOrder(shift, nameless.first) < 0) nameless.first = shift;
+  });
+  named.sort((a, b) => reportRowOrder(a.first, b.first));
+  const units = (nameless.tokens.length ? [nameless] : []).concat(named);
+  const unitLabels = hoursDistinct(units, (u) => u.base);
   const labels = new Map();
-  latest.forEach((e, token) => labels.set(token, hoursSpaced(e.name) || "(no name)"));
-  const groups = () => {
-    const by = new Map();
-    labels.forEach((label, token) => {
-      const key = hoursLabelKey(label);
-      if (!by.has(key)) by.set(key, []);
-      by.get(key).push(token);
-    });
-    return Array.from(by.values()).filter((tokens) => tokens.length > 1);
-  };
-  groups().forEach((tokens) =>
-    tokens.forEach((t) =>
-      labels.set(t, labels.get(t) + " · first shift " + cellString(first.get(t).dateText)),
-    ),
-  );
-  const withRow = new Set();
-  for (let pass = 0; pass <= labels.size; pass++) {
-    const shared = groups();
-    if (!shared.length) break;
-    shared.forEach((tokens) =>
-      tokens.forEach((t) => {
-        if (withRow.has(t)) return;
-        withRow.add(t);
-        labels.set(t, labels.get(t) + ", Log row " + first.get(t).row);
-      }),
-    );
-  }
+  units.forEach((u, i) => u.tokens.forEach((t) => labels.set(t, unitLabels[i])));
   return labels;
 }
 
@@ -3246,10 +3283,11 @@ function hoursSpellings(rows, field) {
  * Returns {
  *   header        hoursDataHeaders();
  *   rows          Hours data's rows 2 down, one per counted row with a month, in
- *                 reportRowOrder: Date, Year, Month, Weekday, Start ("HH:mm" or "no
- *                 time"), Volunteer (hoursLabels), 1, Hours (reportHundredths of the stated
- *                 hours over 100), Role/Type and Activity (one spelling per group, or "(not
- *                 set)"). Text through hoursCellText; no User Token anywhere;
+ *                 reportRowOrder: Date (hoursDateSerial), Year, Month, To date (the same
+ *                 number as Date), Start ("HH:mm" or "no time"), Volunteer (hoursLabels),
+ *                 1, Hours (reportHundredths of the stated hours over 100), Role/Type and
+ *                 Activity (one spelling per group, or "(not set)"), Shift (below).
+ *                 Text through hoursCellText; no User Token anywhere;
  *   counts        {open, alerts, unreviewedFlags (null without a Flags read), undatable}
  *                 over the whole Log: open rows, non-blank rows with Admin Alerts? set,
  *                 unreviewed Flags rows with a Volunteer Name or Shift ID, and counted rows
@@ -3257,6 +3295,12 @@ function hoursSpellings(rows, field) {
  *   countsLine    the Hours tab's row 3, hoursCountsLine(counts);
  *   digestText    the text whose SHA-256 is P1: the rows and row 3 together.
  * }
+ *
+ * The Shift label is "<yyyy-MM-dd> <Ddd> <Start> · <volunteer label>", so the Shifts pivot
+ * sorts by it in date then start order. It is built from the raw volunteer label, not
+ * Volunteer's cell text (which may carry an apostrophe), made unique per row through
+ * hoursDistinct in the rows' order, so every shift is its own pivot line and a newer row
+ * changes no older row's label, and only then made cell-safe, whole.
  */
 function hoursTable(entries, flags, clock) {
   const list = entries || [];
@@ -3266,20 +3310,33 @@ function hoursTable(entries, flags, clock) {
   const activities = hoursSpellings(rows, "activity");
   const group = (spelling, value) =>
     hoursCellText(spelling.get(normalizeName(value)) || hoursNotSet());
-  const table = rows.map((e) => {
-    const date = cellString(e.dateText);
+  const starts = rows.map((e) => {
     const start = shiftStartMs(e);
+    return isFinite(start) ? clock(start) : hoursNoTime();
+  });
+  const shifts = hoursDistinct(
+    rows.map((e, i) => {
+      const date = cellString(e.dateText);
+      const volunteer = labels.get(cellString(e.token));
+      return date + " " + weekdayName(date).slice(0, 3) + " " + starts[i] + " · " + volunteer;
+    }),
+    (base) => base,
+  ).map(hoursCellText);
+  const table = rows.map((e, i) => {
+    const date = cellString(e.dateText);
+    const serial = hoursDateSerial(date);
     return [
-      date,
+      serial,
       date.slice(0, 4),
       monthKey(date),
-      weekdayName(date),
-      isFinite(start) ? clock(start) : hoursNoTime(),
+      serial,
+      starts[i],
       hoursCellText(labels.get(cellString(e.token))),
       1,
       reportHundredths(e.statedHoursCell) / 100,
       group(roles, e.roleType),
       group(activities, e.activity),
+      shifts[i],
     ];
   });
   const counts = {
@@ -3513,6 +3570,98 @@ function hoursLine(state, formatTime) {
   return tablePart + " " + notePart;
 }
 
+/**
+ * A pivot's outer row-group sort, as text to compare: its sortOrder, then " by value k"
+ * when it sorts by a value (valueBucket.valuesIndex), or nothing when it sorts by its own
+ * labels. Sheets stores a value bucket for value 0 as {} (it leaves out a zero), so a
+ * bucket with no index reads as value 0. A pivot with no row group gives "".
+ */
+function hoursPivotSortKey(pivotTable) {
+  const group = pivotTable && pivotTable.rows && pivotTable.rows[0];
+  if (!group) return "";
+  const bucket = group.valueBucket;
+  const by = bucket ? " by value " + (Number(bucket.valuesIndex) || 0) : "";
+  return cellString(group.sortOrder) + by;
+}
+
+/**
+ * What one run of the sort boxes sends, worked out from what it read under the lock.
+ * boxes is the Hours tab's A7:N7 values; current is {hoursSheetId, dataSheetId, pivots}:
+ * the two tabs' ids and the boxed pivots' definitions as stored, one per boxed table in
+ * hoursSortChoices' order (null where no pivot was found).
+ *
+ * Each box's choice comes from hoursBoxChoices: a blank or unknown box gives its table's
+ * starting choice and a write-back of that text. The requests, for one batchUpdate, are a
+ * data validation on every box cell with its own list, as setupReports sets it, every
+ * time, since a paste can copy another cell's validation over a box or strip it; then the
+ * write-backs; then, for each pivot whose outer row-group sort (hoursPivotSortKey) differs from its choice's, the
+ * whole pivot from hoursPivots, the same plan setupReports builds, so a re-sort changes
+ * the order and nothing else. A missing pivot is left missing: setupReports makes pivots.
+ *
+ * Returns {choices (hoursBoxChoices'), requests, resorted (how many pivots are rewritten),
+ * summary ("volunteer most hours first, month oldest month first, ...", for the log)}.
+ */
+function hoursSortPlan(boxes, current) {
+  const tables = hoursSortChoices();
+  const choices = hoursBoxChoices(boxes);
+  const wanted = hoursPivots(hoursSourceRange(current.dataSheetId), choices);
+  const have = current.pivots || [];
+  const id = current.hoursSheetId;
+  const row = 6; // row 7, where the boxes are, 0-based
+  const validations = [];
+  const writeBacks = [];
+  const resorts = [];
+  tables.forEach((table, i) => {
+    const column = table.column;
+    validations.push({
+      setDataValidation: {
+        range: {
+          sheetId: id,
+          startRowIndex: row,
+          endRowIndex: row + 1,
+          startColumnIndex: column,
+          endColumnIndex: column + 1,
+        },
+        rule: {
+          condition: {
+            type: "ONE_OF_LIST",
+            values: table.choices.map((c) => ({ userEnteredValue: c.text })),
+          },
+          strict: true,
+          showCustomUi: true,
+        },
+      },
+    });
+    if (choices[i].writeBack) {
+      writeBacks.push({
+        updateCells: {
+          rows: [{ values: [{ userEnteredValue: { stringValue: choices[i].choice } }] }],
+          start: { sheetId: id, rowIndex: row, columnIndex: column },
+          fields: "userEnteredValue",
+        },
+      });
+    }
+    if (have[i] && hoursPivotSortKey(have[i]) !== hoursPivotSortKey(wanted[i])) {
+      resorts.push({
+        updateCells: {
+          rows: [{ values: [{ pivotTable: wanted[i] }] }],
+          start: { sheetId: id, rowIndex: hoursPivotRow() - 1, columnIndex: column },
+          fields: "pivotTable",
+        },
+      });
+    }
+  });
+  const summary = tables
+    .map((table, i) => table.key + " " + choices[i].choice.replace(/^Sort: /, ""))
+    .join(", ");
+  return {
+    choices,
+    requests: [].concat(validations, writeBacks, resorts),
+    resorted: resorts.length,
+    summary,
+  };
+}
+
 /** How long an open may take in all before its table write, and the lock wait counted in. */
 function hoursOpenBudgetMs() {
   return 20000;
@@ -3564,7 +3713,7 @@ function hoursBudget(sinceOpenMs, state, rowsNow) {
  * call, when it has fewer than hoursTabRows of the rows, so the Shifts pivot never grows
  * its tab during the write; then add rows to Hours data if it is short, with formats on
  * the new rows; neither tab is made smaller), "values" (one setValues of the rows),
- * "clear" (A2:J2, only when there are no rows), "trim" (delete Hours data's rows below the
+ * "clear" (A2:K2, only when there are no rows), "trim" (delete Hours data's rows below the
  * last one kept), "counts" (row 3 on the Hours tab).
  *
  * The rule, clause by clause:
@@ -3657,6 +3806,193 @@ function hoursNextState(state, run, outcome) {
 }
 
 /**
+ * How long a sort box takes to re-sort its table, in seconds, as staff are told in row 2
+ * and row 4. It is the slowest table's median edit-to-sorted time measured on a copy at
+ * full size, rounded up to the next 5 seconds; set it here when that is measured.
+ */
+function hoursSortSeconds() {
+  return 20;
+}
+
+/**
+ * The sort box above each Hours pivot, in pivot order (Hours by volunteer, Hours by month,
+ * Shifts). Each box is a dropdown in row 7, merged across its table's columns.
+ *
+ * Returns [{
+ *   key       "volunteer", "month" or "shifts": the table's short name for log lines;
+ *   title     the table's name;
+ *   cell      the box's cell, "A7", "E7" or "K7";
+ *   merge     the box's merged range, "A7:C7", "E7:I7" or "K7:N7";
+ *   column, endColumn   the merge's columns as 0-based indexes, end exclusive;
+ *   pivot     the cell the table's pivot starts at, "A8", "E8" or "K8";
+ *   choices   [{text, sortOrder, valuesIndex}]: valuesIndex is the value the outer row
+ *             group sorts by (its Grand Total), or null to sort by the group's own values;
+ *   start     the starting choice's text: what a new tab gets, and what a blank or
+ *             unknown box is reset to.
+ * }]
+ *
+ * Every choice's text starts "Sort: " so the box labels itself. The Shifts table's outer
+ * group is the Shift label, which starts with the date, then the weekday, then the start
+ * time ("no time" sorts after every HH:mm), then the volunteer: so "newest first" gives
+ * days newest first and, within a day, "no time" first, then the latest start to the
+ * earliest; "oldest first" the reverse.
+ */
+function hoursSortChoices() {
+  const choice = (text, sortOrder, valuesIndex) => ({ text, sortOrder, valuesIndex });
+  const table = (key, title, column, endColumn, choices) => ({
+    key,
+    title,
+    cell: columnLetter(column) + "7",
+    merge: columnLetter(column) + "7:" + columnLetter(endColumn - 1) + "7",
+    column,
+    endColumn,
+    pivot: columnLetter(column) + hoursPivotRow(),
+    choices,
+    start: choices[0].text,
+  });
+  return [
+    // Values: Shifts 0, Hours 1.
+    table("volunteer", "Hours by volunteer", 0, 3, [
+      choice("Sort: most hours first", "DESCENDING", 1),
+      choice("Sort: fewest hours first", "ASCENDING", 1),
+      choice("Sort: most shifts first", "DESCENDING", 0),
+      choice("Sort: name A to Z", "ASCENDING", null),
+      choice("Sort: name Z to A", "DESCENDING", null),
+    ]),
+    // Values: Shifts 0, Hours 1, Volunteers 2, Average shift 3.
+    table("month", "Hours by month", 4, 9, [
+      choice("Sort: oldest month first", "ASCENDING", null),
+      choice("Sort: newest month first", "DESCENDING", null),
+      choice("Sort: most hours first", "DESCENDING", 1),
+      choice("Sort: most shifts first", "DESCENDING", 0),
+      choice("Sort: most volunteers first", "DESCENDING", 2),
+    ]),
+    // Values: Hours 0.
+    table("shifts", "Shifts", 10, 14, [
+      choice("Sort: newest first", "DESCENDING", null),
+      choice("Sort: oldest first", "ASCENDING", null),
+      choice("Sort: most hours first", "DESCENDING", 0),
+      choice("Sort: fewest hours first", "ASCENDING", 0),
+    ]),
+  ];
+}
+
+/**
+ * Row 7's values (A7:N7, as one row of getValues; a short row reads as blanks) to each
+ * box's choice, in hoursSortChoices' order: [{key, cell, choice, writeBack}]. choice is the
+ * box's value when it is exactly one of that box's own choices, else the starting choice;
+ * writeBack is true when the cell doesn't hold choice and must be written with it (a blank
+ * box, a typed value, or another box's choice pasted over it).
+ */
+function hoursBoxChoices(values) {
+  const row = values || [];
+  return hoursSortChoices().map((t) => {
+    const value = row[t.column];
+    const known = typeof value === "string" && t.choices.some((c) => c.text === value);
+    return { key: t.key, cell: t.cell, choice: known ? value : t.start, writeBack: !known };
+  });
+}
+
+/**
+ * Each box's choice text in hoursSortChoices' order, from choices given as texts or as
+ * hoursBoxChoices' objects; a missing or unknown one gives that box's starting choice.
+ */
+function hoursChoiceTexts(choices) {
+  return hoursSortChoices().map((t, i) => {
+    const given = (choices || [])[i];
+    const text = given && typeof given === "object" ? given.choice : given;
+    return t.choices.some((c) => c.text === text) ? text : t.start;
+  });
+}
+
+/**
+ * The three Hours pivots as Sheets API pivotTable objects, in hoursSortChoices' order:
+ * Hours by volunteer, Hours by month, Shifts. source is hoursSourceRange's GridRange.
+ * choices gives each table's choice in that order, as choice texts or as hoursBoxChoices'
+ * objects; a missing or unknown one gives the starting choice. Each table's outer row group
+ * takes its choice's sort: its sortOrder, and a valueBucket on its valuesIndex when it
+ * sorts by a value (no buckets, so it sorts by that value's Grand Total).
+ *
+ * Every pivot is filtered to Shifts = 1, a column no slicer uses. The Shifts pivot has one
+ * line per shift: the Shift label (K), then Role/Type and Activity as repeated labels with
+ * no totals, and Hours.
+ */
+function hoursPivots(source, choices) {
+  const picked = hoursChoiceTexts(choices);
+  const sorts = hoursSortChoices().map((t, i) => t.choices.find((c) => c.text === picked[i]));
+  const outer = (offset, label, sort, extra) => {
+    const group = { sourceColumnOffset: offset, showTotals: true, sortOrder: sort.sortOrder };
+    if (sort.valuesIndex !== null) group.valueBucket = { valuesIndex: sort.valuesIndex };
+    return Object.assign(group, extra, { label });
+  };
+  const counted = [
+    {
+      columnOffsetIndex: 6,
+      filterCriteria: {
+        condition: { type: "NUMBER_EQ", values: [{ userEnteredValue: "1" }] },
+        visibleByDefault: true,
+      },
+    },
+  ];
+  const byVolunteer = {
+    source,
+    rows: [outer(5, "Volunteer", sorts[0], {})],
+    values: [
+      { sourceColumnOffset: 6, summarizeFunction: "SUM", name: "Shifts" },
+      { sourceColumnOffset: 7, summarizeFunction: "SUM", name: "Hours" },
+    ],
+    filterSpecs: counted,
+  };
+  const byMonth = {
+    source,
+    rows: [outer(2, "Month", sorts[1], {})],
+    values: [
+      { sourceColumnOffset: 6, summarizeFunction: "SUM", name: "Shifts" },
+      { sourceColumnOffset: 7, summarizeFunction: "SUM", name: "Hours" },
+      { sourceColumnOffset: 5, summarizeFunction: "COUNTUNIQUE", name: "Volunteers" },
+      { summarizeFunction: "CUSTOM", formula: "=SUM(Hours)/SUM(Shifts)", name: "Average shift" },
+    ],
+    filterSpecs: counted,
+  };
+  const shifts = {
+    source,
+    rows: [outer(10, "Shift", sorts[2], { repeatHeadings: true })].concat(
+      [
+        [8, "Role/Type"],
+        [9, "Activity"],
+      ].map(([offset, label]) => ({
+        sourceColumnOffset: offset,
+        showTotals: false,
+        sortOrder: "ASCENDING",
+        repeatHeadings: true,
+        label,
+      })),
+    ),
+    values: [{ sourceColumnOffset: 7, summarizeFunction: "SUM", name: "Hours" }],
+    filterSpecs: counted,
+  };
+  return [byVolunteer, byMonth, shifts];
+}
+
+/** Row 4's line, right above the slicers: how to use a slicer, clear them all, and sort. */
+function hoursHowTo() {
+  return (
+    "In a slicer, click Clear, then tick what you want. Reload the page to clear every slicer." +
+    " A sort box takes up to " +
+    hoursSortSeconds() +
+    " seconds."
+  );
+}
+
+/** F6's note, beside the From date and To date slicers: how to pick a range of days. */
+function hoursDateNote() {
+  return (
+    "Date range: From date > Filter by condition > Greater than or equal to > a date like" +
+    " 2026-11-01. To date: Less than or equal to."
+  );
+}
+
+/**
  * The Hours tab's row 2: how to use it. openPath is what opening the sheet does:
  * "refresh" (it refreshes), "note" (it only notes it didn't) or "none" (it writes nothing).
  */
@@ -3670,41 +4006,55 @@ function hoursUsageText(openPath) {
         "from Kiosk admin > Refresh Hours, and each night.";
   return (
     first +
-    " Click a slicer to pick a year, month, role, activity or volunteer; clear them all for all time." +
-    " Your picks are yours alone: nobody else sees them, and they're gone when you close the tab." +
-    " To sort a table, click it and use Sort by in the editor that opens. setupReports resets sorts."
+    " Click a slicer to pick a year, month, role, activity or volunteer, or use From date and" +
+    " To date for a range of days; clear them all for all time." +
+    " Your picks are yours alone: nobody else sees them, and they're gone when you close the tab" +
+    " or reload the page." +
+    " To sort a table, pick an order in the box above it. The new order takes up to " +
+    hoursSortSeconds() +
+    " seconds to show, and it is shared: everyone sees it."
   );
 }
 
 /**
  * Everything setupReports puts on the Hours tab, and the look of Hours data, as plain data
  * and Sheets API requests. hoursSheetId and dataSheetId are the two tabs' sheet IDs;
- * openPath as hoursUsageText's.
+ * openPath as hoursUsageText's; choices, each box's choice in hoursSortChoices' order, as
+ * hoursBoxChoices gives them from row 7 before the tab is cleared (missing: the starting
+ * choices).
  *
  * Returns {
- *   cells: [{a1, value}]   A1's title, row 2's text, row 3's line before the first refresh
- *                          (B1 is written only by the render);
+ *   cells: [{a1, value}]   A1's title, row 2's text, row 3's line before the first refresh,
+ *                          A4's how-to line, F6's date note and each box's choice (B1 is
+ *                          written only by the render);
  *   frozenRows             1;
  *   source                 hoursSourceRange(dataSheetId);
- *   formats, widths, heights, rules, pivots, slicers: Sheets API requests, by kind;
- *   requests               all of them in the order to send: formats, widths, heights,
- *                          rules (the three Grand Total rules first), pivots, slicers;
+ *   boxes                  hoursSortChoices() with each table's chosen text as choice;
+ *   formats, widths, heights, validations, rules, pivots, slicers: Sheets API requests, by
+ *                          kind;
+ *   requests               all of them in the order to send: formats (merges first),
+ *                          widths, heights, validations, rules (the three Grand Total
+ *                          rules first), pivots, slicers;
  *   data: {headers, formats, stateRange, tabColor}   Hours data's look;
  *   tabColor               the Hours tab's colour.
  * }
  *
  * Layout: row 1 the title and the refresh line in B1, not wrapped, overflowing C1:P1; row
  * 2 one merged cell A2:P2, wrapped, top-aligned, 66 px; row 3 one merged cell A3:P3 with
- * the counts; row 5 the slicers for Year, Month, Role/Type, Activity and Volunteer, left
- * to right from column A, each 240 px wide so its title shows in full and its value list
- * has room (at 165 px the titles were cut to "Ro..."); from row 8 the pivots Hours by
- * volunteer (A8), Hours by month (E8) and Shifts (K8), each filtered to Shifts = 1, a
- * column no slicer uses. Stripes and Grand Total rows come from rules keyed on each
- * pivot's first column, so they follow the pivot as it grows and shrinks; every body row
- * gets its fill from a rule, so the pivot's own grey band never shows. Widths are fixed
- * pixels, not fitted to content.
+ * the counts; row 4 the how-to line in A4, 10 pt navy, not wrapped, overflowing to the
+ * right; row 5 the slicers for Year, Month, Role/Type, Activity and Volunteer, and row 6
+ * those for From date and To date (two slicers on one column would share one filter, so
+ * each reads its own date column) with the date note in F6; both rows 38 px, each slicer
+ * 240 px wide at 250 px steps from column A, so its title shows in full and its value list
+ * has room (at 165 px the titles were cut to "Ro..."), and five fit a 1,366 px screen; row
+ * 7 the sort boxes, each merged across its table's columns so its longest choice shows,
+ * with a strict dropdown of its own choices; from row 8 the pivots Hours by volunteer
+ * (A8), Hours by month (E8) and Shifts (K8, through N), from hoursPivots. Stripes and
+ * Grand Total rows come from rules keyed on each pivot's first column, so they follow the
+ * pivot as it grows and shrinks; every body row gets its fill from a rule, so the pivot's
+ * own grey band never shows. Widths are fixed pixels, not fitted to content.
  */
-function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
+function hoursTabPlan(hoursSheetId, dataSheetId, openPath, choices) {
   const P = lookPalette();
   const navy = P.navy;
   const white = P.white;
@@ -3721,11 +4071,30 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
     repeatCell: { range: gridRange, cell: { userEnteredFormat: format }, fields },
   });
   const color = lookColorStyle;
+  const picked = hoursChoiceTexts(choices);
+  const boxes = hoursSortChoices().map((t, i) => Object.assign(t, { choice: picked[i] }));
+  // A line of navy text that doesn't wrap and runs on over the empty cells to its right.
+  const line = (r, c) =>
+    repeat(
+      range(r, r + 1, c, c + 1),
+      {
+        wrapStrategy: "OVERFLOW_CELL",
+        textFormat: { foregroundColorStyle: color(navy), fontSize: 10 },
+      },
+      "userEnteredFormat(wrapStrategy,textFormat)",
+    );
 
   const formats = [
-    { unmergeCells: { range: range(0, 3, 0, 16) } },
+    { unmergeCells: { range: range(0, 7, 0, 16) } },
     { mergeCells: { range: range(1, 2, 0, 16), mergeType: "MERGE_ALL" } },
     { mergeCells: { range: range(2, 3, 0, 16), mergeType: "MERGE_ALL" } },
+  ];
+  boxes.forEach((b) =>
+    formats.push({
+      mergeCells: { range: range(6, 7, b.column, b.endColumn), mergeType: "MERGE_ALL" },
+    }),
+  );
+  formats.push(
     repeat(
       range(0, 3, 0, 16),
       { numberFormat: { type: "TEXT", pattern: "@" } },
@@ -3758,11 +4127,25 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
       },
       "userEnteredFormat(wrapStrategy,verticalAlignment,backgroundColorStyle,textFormat)",
     ),
-  ];
+    line(3, 0),
+    line(5, 5),
+  );
+  boxes.forEach((b) =>
+    formats.push(
+      repeat(
+        range(6, 7, b.column, b.endColumn),
+        {
+          backgroundColorStyle: color(section),
+          textFormat: { foregroundColorStyle: color(navy) },
+        },
+        "userEnteredFormat(backgroundColorStyle,textFormat)",
+      ),
+    ),
+  );
   [
     [0, 3],
     [4, 9],
-    [10, 16],
+    [10, 14],
   ].forEach(([c0, c1]) =>
     formats.push(
       repeat(
@@ -3780,7 +4163,7 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
     [2, "0.00"],
     [6, "0.00"],
     [8, "0.00"],
-    [15, "0.00"],
+    [13, "0.00"],
     [1, "0"],
     [5, "0"],
     [7, "0"],
@@ -3805,11 +4188,11 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
     [7, 90],
     [8, 110],
     [9, 24],
-    [10, 110],
-    [11, 70],
-    [12, 220],
-    [13, 140],
-    [14, 140],
+    [10, 320],
+    [11, 140],
+    [12, 140],
+    [13, 90],
+    [14, 90],
     [15, 90],
   ].map(([c, pixelSize]) => ({
     updateDimensionProperties: {
@@ -3821,6 +4204,8 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
   const heights = [
     [1, 66],
     [2, 44],
+    [4, 38],
+    [5, 38],
   ].map(([r, pixelSize]) => ({
     updateDimensionProperties: {
       range: { sheetId: id, dimension: "ROWS", startIndex: r, endIndex: r + 1 },
@@ -3829,10 +4214,25 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
     },
   }));
 
+  // Each box takes only its own choices, rejects anything else, and shows its arrow.
+  const validations = boxes.map((b) => ({
+    setDataValidation: {
+      range: range(6, 7, b.column, b.column + 1),
+      rule: {
+        condition: {
+          type: "ONE_OF_LIST",
+          values: b.choices.map((c) => ({ userEnteredValue: c.text })),
+        },
+        strict: true,
+        showCustomUi: true,
+      },
+    },
+  }));
+
   const pivotsAt = [
     ["A", 0, 3],
     ["E", 4, 9],
-    ["K", 10, 16],
+    ["K", 10, 14],
   ];
   const rule = (c0, c1, formula, format) => ({
     ranges: [range(8, null, c0, c1)],
@@ -3867,62 +4267,10 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
   );
   const rules = ruleList.map((r, index) => ({ addConditionalFormatRule: { index, rule: r } }));
 
-  const counted = [
-    {
-      columnOffsetIndex: 6,
-      filterCriteria: {
-        condition: { type: "NUMBER_EQ", values: [{ userEnteredValue: "1" }] },
-        visibleByDefault: true,
-      },
-    },
-  ];
-  const byVolunteer = {
+  const pivots = hoursPivots(
     source,
-    rows: [
-      {
-        sourceColumnOffset: 5,
-        showTotals: true,
-        sortOrder: "DESCENDING",
-        valueBucket: { valuesIndex: 1 },
-        label: "Volunteer",
-      },
-    ],
-    values: [
-      { sourceColumnOffset: 6, summarizeFunction: "SUM", name: "Shifts" },
-      { sourceColumnOffset: 7, summarizeFunction: "SUM", name: "Hours" },
-    ],
-    filterSpecs: counted,
-  };
-  const byMonth = {
-    source,
-    rows: [{ sourceColumnOffset: 2, showTotals: true, sortOrder: "ASCENDING", label: "Month" }],
-    values: [
-      { sourceColumnOffset: 6, summarizeFunction: "SUM", name: "Shifts" },
-      { sourceColumnOffset: 7, summarizeFunction: "SUM", name: "Hours" },
-      { sourceColumnOffset: 5, summarizeFunction: "COUNTUNIQUE", name: "Volunteers" },
-      { summarizeFunction: "CUSTOM", formula: "=SUM(Hours)/SUM(Shifts)", name: "Average shift" },
-    ],
-    filterSpecs: counted,
-  };
-  const shifts = {
-    source,
-    rows: [
-      [0, "Date"],
-      [4, "Start"],
-      [5, "Volunteer"],
-      [8, "Role/Type"],
-      [9, "Activity"],
-    ].map(([offset, label], i) => ({
-      sourceColumnOffset: offset,
-      showTotals: i === 0,
-      sortOrder: i === 0 ? "DESCENDING" : "ASCENDING",
-      repeatHeadings: true,
-      label,
-    })),
-    values: [{ sourceColumnOffset: 7, summarizeFunction: "SUM", name: "Hours" }],
-    filterSpecs: counted,
-  };
-  const pivots = [byVolunteer, byMonth, shifts].map((pivotTable, i) => ({
+    boxes.map((b) => b.choice),
+  ).map((pivotTable, i) => ({
     updateCells: {
       rows: [{ values: [{ pivotTable }] }],
       start: { sheetId: id, rowIndex: hoursPivotRow() - 1, columnIndex: pivotsAt[i][1] },
@@ -3930,19 +4278,23 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
     },
   }));
 
+  // Row 5 (index 4) holds five slicers and row 6 (index 5) the two date slicers, each row
+  // from column A at 250 px steps.
   const slicers = [
-    [1, "Year"],
-    [2, "Month"],
-    [8, "Role/Type"],
-    [9, "Activity"],
-    [5, "Volunteer"],
-  ].map(([columnIndex, title], i) => ({
+    [4, 0, 1, "Year"],
+    [4, 1, 2, "Month"],
+    [4, 2, 8, "Role/Type"],
+    [4, 3, 9, "Activity"],
+    [4, 4, 5, "Volunteer"],
+    [5, 0, 0, "From date"],
+    [5, 1, 3, "To date"],
+  ].map(([rowIndex, i, columnIndex, title]) => ({
     addSlicer: {
       slicer: {
         spec: { dataRange: source, columnIndex, title, applyToPivotTables: true },
         position: {
           overlayPosition: {
-            anchorCell: { sheetId: id, rowIndex: 4, columnIndex: 0 },
+            anchorCell: { sheetId: id, rowIndex, columnIndex: 0 },
             offsetXPixels: i * 250,
             offsetYPixels: 2,
             widthPixels: 240,
@@ -3958,16 +4310,20 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
       { a1: "A1", value: "Volunteer hours" },
       { a1: "A2", value: hoursUsageText(openPath) },
       { a1: "A3", value: hoursCountsLine(null) },
-    ],
+      { a1: "A4", value: hoursHowTo() },
+      { a1: "F6", value: hoursDateNote() },
+    ].concat(boxes.map((b) => ({ a1: b.cell, value: b.choice }))),
     frozenRows: 1,
     source,
+    boxes,
     formats,
     widths,
     heights,
+    validations,
     rules,
     pivots,
     slicers,
-    requests: [].concat(formats, widths, heights, rules, pivots, slicers),
+    requests: [].concat(formats, widths, heights, validations, rules, pivots, slicers),
     data: {
       headers: hoursDataHeaders(),
       formats: hoursDataFormats(),

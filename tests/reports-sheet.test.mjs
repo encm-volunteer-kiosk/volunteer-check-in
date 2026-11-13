@@ -21,9 +21,15 @@ import { createHash } from "node:crypto";
 import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
-const SERVER_FILES = ["Logic.js", "Sheets.js", "Api.js", "Admin.js", "Reports.js", "Jobs.js"].map(
-  (f) => [f, readFileSync(new URL("apps-script/" + f, root), "utf8")],
-);
+const SERVER_FILES = [
+  "Logic.js",
+  "Sheets.js",
+  "Api.js",
+  "Admin.js",
+  "Reports.js",
+  "Jobs.js",
+  "HoursSort.js",
+].map((f) => [f, readFileSync(new URL("apps-script/" + f, root), "utf8")]);
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const TZ = "America/Chicago";
 
@@ -202,6 +208,20 @@ class FakeRange {
   }
   setDataValidation(rule) {
     this.sheet.validations.set(this.getA1Notation(), rule);
+    return this;
+  }
+  /** Removes every validation whose range overlaps this one. */
+  clearDataValidations() {
+    rec({ sheet: this.sheet.name, op: "clearDataValidations", a1: this.getA1Notation() });
+    for (const key of [...this.sheet.validations.keys()]) {
+      const v = this.sheet.getRange(key);
+      const apart =
+        v.row > this.row + this.rows - 1 ||
+        this.row > v.row + v.rows - 1 ||
+        v.col > this.col + this.cols - 1 ||
+        this.col > v.col + v.cols - 1;
+      if (!apart) this.sheet.validations.delete(key);
+    }
     return this;
   }
   protect() {
@@ -421,7 +441,9 @@ const FLAG_HEADER = [
  * Flags tab with its header alone (opts.flags: false for none). opts.busy makes the
  * script lock unavailable, opts.docBusy the document lock; opts.now fixes the server's
  * clock (ms); opts.ui gives a spreadsheet UI whose alerts land in alerts; opts.onFlush
- * runs at each SpreadsheetApp.flush.
+ * runs at each SpreadsheetApp.flush. The account's project triggers start as the nightly
+ * Hours refresh's alone (opts.triggers adds more, as {uid, handler, eventType}); triggers
+ * holds them as the script leaves them, and creating or deleting one is recorded.
  */
 function server(logRows, opts = {}) {
   const logs = [];
@@ -497,6 +519,16 @@ function server(logRows, opts = {}) {
     return b;
   };
   const lockCalls = [];
+  const triggers = [
+    { uid: "t-hours", handler: "runHoursRefresh", eventType: "CLOCK" },
+    ...(opts.triggers || []),
+  ];
+  let nextTrigger = 1;
+  const asTrigger = (t) => ({
+    getUniqueId: () => t.uid,
+    getHandlerFunction: () => t.handler,
+    getEventType: () => t.eventType,
+  });
   const ctx = {
     console: { log: (text) => logs.push(text) },
     Session: {
@@ -504,9 +536,32 @@ function server(logRows, opts = {}) {
       getEffectiveUser: () => ({ getEmail: () => "staff@example.org" }),
     },
     ScriptApp: {
-      getProjectTriggers: () => [
-        { getUniqueId: () => "t-hours", getHandlerFunction: () => "runHoursRefresh" },
-      ],
+      EventType: { CLOCK: "CLOCK", ON_EDIT: "ON_EDIT", ON_OPEN: "ON_OPEN" },
+      getProjectTriggers: () => triggers.map(asTrigger),
+      deleteTrigger: (t) => {
+        rec({ op: "trigger.delete", value: t.getUniqueId() });
+        triggers.splice(
+          triggers.findIndex((x) => x.uid === t.getUniqueId()),
+          1,
+        );
+      },
+      newTrigger: (handler) => ({
+        forSpreadsheet: (file) => ({
+          onEdit: () => ({
+            create: () => {
+              rec({ op: "trigger.create", value: handler });
+              const t = {
+                uid: "t-made-" + nextTrigger++,
+                handler,
+                eventType: "ON_EDIT",
+                source: file.getId(),
+              };
+              triggers.push(t);
+              return asTrigger(t);
+            },
+          }),
+        }),
+      }),
     },
     CacheService: {
       getScriptCache: () => ({ get: (k) => (k === "admin-key:k" ? "1" : null), put: () => {} }),
@@ -575,6 +630,19 @@ function server(logRows, opts = {}) {
             } else if (r.addConditionalFormatRule) {
               const rule = r.addConditionalFormatRule;
               bySheetId(rule.rule.ranges[0].sheetId).rules.splice(rule.index, 0, plain(rule.rule));
+            } else if (r.setDataValidation) {
+              // Kept by the range's A1, as Range.setDataValidation keeps it.
+              const g = r.setDataValidation.range;
+              const sheet = bySheetId(g.sheetId);
+              const a1 = sheet
+                .getRange(
+                  g.startRowIndex + 1,
+                  g.startColumnIndex + 1,
+                  g.endRowIndex - g.startRowIndex,
+                  g.endColumnIndex - g.startColumnIndex,
+                )
+                .getA1Notation();
+              sheet.validations.set(a1, plain(r.setDataValidation.rule));
             } else if (r.mergeCells) {
               bySheetId(r.mergeCells.range.sheetId).merges.push(plain(r.mergeCells.range));
             } else if (r.unmergeCells || r.repeatCell || r.updateDimensionProperties) {
@@ -647,8 +715,9 @@ function server(logRows, opts = {}) {
     plain({
       sheets: ss.sheets.map((s) => s.state()),
       views: [...ss.views],
+      triggers,
     });
-  return { ctx, ss, sheet, logs, lockCalls, snapshot, calls, alerts };
+  return { ctx, ss, sheet, logs, lockCalls, snapshot, calls, alerts, triggers };
 }
 
 // ---------------------------------------------------------------------------
@@ -1097,7 +1166,7 @@ function hoursOps(calls) {
       if (c.op === "setValue" && STATE.includes(c.a1)) {
         out.push({ op: "set", cell: c.a1, value: c.value });
       } else if (c.op === "setValues" && c.a1.startsWith("A2:")) out.push({ op: "values" });
-      else if (c.op === "clearContent" && c.a1 === "A2:J2") out.push({ op: "clear" });
+      else if (c.op === "clearContent" && c.a1 === "A2:K2") out.push({ op: "clear" });
       else if (c.op === "deleteRows") out.push({ op: "trim" });
       else if (c.op !== "setNumberFormat") out.push({ op: "unexpected " + c.op });
     } else if (isHoursWrite(c)) out.push({ op: "unexpected " + c.op + " " + c.a1 });
@@ -1146,14 +1215,17 @@ test("setupReports builds Hours and Hours data, marked, fills them, and then del
   assert.equal(data.hiddenSheet, true);
   const table = plain(s.ctx.readHoursTable_().table);
   assert.ok(table.rows.length >= 3);
-  assert.deepEqual(data.getRange("A1:J1").getValues()[0], table.header);
-  assert.deepEqual(data.getRange(2, 1, table.rows.length, 10).getValues(), table.rows);
+  assert.deepEqual(data.getRange("A1:K1").getValues()[0], table.header);
+  assert.deepEqual(data.getRange(2, 1, table.rows.length, 11).getValues(), table.rows);
   assert.equal(data.maxRows, table.rows.length + 1);
   // One format per run of columns, on whole columns from row 2, not one per cell.
-  assert.equal(data.rangeFormats.get("A2:F"), "@");
+  assert.equal(data.rangeFormats.get("A2:A"), "yyyy-mm-dd");
+  assert.equal(data.rangeFormats.get("B2:C"), "@");
+  assert.equal(data.rangeFormats.get("D2:D"), "yyyy-mm-dd");
+  assert.equal(data.rangeFormats.get("E2:F"), "@");
   assert.equal(data.rangeFormats.get("G2:G"), "0");
   assert.equal(data.rangeFormats.get("H2:H"), "0.00");
-  assert.equal(data.rangeFormats.get("I2:J"), "@");
+  assert.equal(data.rangeFormats.get("I2:K"), "@");
   assert.equal(data.rangeFormats.get("L1:Q1"), "@");
   const [l1, m1, n1, o1, p1, q1] = cellsOf(s);
   assert.deepEqual(
@@ -1176,8 +1248,18 @@ test("setupReports builds Hours and Hours data, marked, fills them, and then del
     /^The tables show the Log as of the time in B1\. Newer taps show at the next refresh: from Kiosk admin > Refresh Hours, and each night\./,
   );
   assert.equal(hours.frozenRows, 1);
-  assert.equal(hours.slicers.length, 5);
+  assert.equal(hours.slicers.length, 7);
   assert.equal(hours.pivots.length, 3);
+  // A new tab's sort boxes hold their starting choices, each with its own dropdown.
+  const boxes = plain(s.ctx.hoursSortChoices());
+  assert.deepEqual(
+    boxes.map((b) => hours.getRange(b.cell).getValue()),
+    boxes.map((b) => b.start),
+  );
+  assert.deepEqual(
+    [...hours.validations.keys()],
+    boxes.map((b) => b.cell),
+  );
   const source = plain(s.ctx.hoursSourceRange(data.sheetId));
   for (const slicer of hours.slicers) assert.deepEqual(slicer.spec.dataRange, source);
   for (const p of hours.pivots) assert.deepEqual(p.rows[0].values[0].pivotTable.source, source);
@@ -1189,12 +1271,88 @@ test("setupReports builds Hours and Hours data, marked, fills them, and then del
   assert.ok(complete > 0 && deleted > complete);
   assert.ok(s.calls.slice(complete, deleted).some((c) => c.op === "flush"));
   // The spare rows went only after the table's setValues.
-  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:J1");
+  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:K1");
   assert.ok(values > 0 && at((c) => c.op === "deleteRows") > values);
   const text = s.logs.join("\n");
   assert.match(text, /Hours is filled as of 2026-11-13 9:14 AM\./);
   assert.match(text, /The Monthly Hours tab was deleted/);
   assert.deepEqual(s.sheet("Log").state().cells, logBefore);
+});
+
+/** Each box's cell, choice text and the sort its pivot's outer group has, on the Hours tab. */
+function boxesAndSorts(s) {
+  const hours = s.sheet("Hours");
+  return plain(s.ctx.hoursSortChoices()).map((b) => {
+    const pivot = hours.pivots.find((p) => p.start.columnIndex === b.column);
+    const group = pivot.rows[0].values[0].pivotTable.rows[0];
+    return [
+      b.cell,
+      hours.getRange(b.cell).getValue(),
+      group.sortOrder,
+      group.valueBucket ? group.valueBucket.valuesIndex : null,
+    ];
+  });
+}
+
+test("setupReports keeps each sort box's choice through a rebuild and resets a blank or unknown box to its starting choice", () => {
+  const s = built();
+  assert.deepEqual(boxesAndSorts(s), [
+    ["A7", "Sort: most hours first", "DESCENDING", 1],
+    ["E7", "Sort: oldest month first", "ASCENDING", null],
+    ["K7", "Sort: newest first", "DESCENDING", null],
+  ]);
+  const hours = s.sheet("Hours");
+  hours.getRange("A7").setValue("Sort: name A to Z");
+  // The volunteer box's choice pasted onto the month box isn't one of the month box's.
+  hours.getRange("E7").setValue("Sort: name A to Z");
+  hours.getRange("K7").setValue("Sort: most hours first");
+  s.ctx.setupReports();
+  assert.deepEqual(boxesAndSorts(s), [
+    ["A7", "Sort: name A to Z", "ASCENDING", null],
+    ["E7", "Sort: oldest month first", "ASCENDING", null],
+    ["K7", "Sort: most hours first", "DESCENDING", 0],
+  ]);
+  assert.equal(hours.pivots.length, 3);
+  // Kept again over a second rebuild; a cleared box and a typed value go back to the start.
+  hours.getRange("A7").clearContent();
+  hours.getRange("E7").setValue("newest");
+  s.ctx.setupReports();
+  assert.deepEqual(boxesAndSorts(s), [
+    ["A7", "Sort: most hours first", "DESCENDING", 1],
+    ["E7", "Sort: oldest month first", "ASCENDING", null],
+    ["K7", "Sort: most hours first", "DESCENDING", 0],
+  ]);
+  assert.match(s.logs.join("\n"), /Hours is filled as of/);
+});
+
+test("setupReports clears every dropdown on the Hours tab before it lays out, so only the boxes' own are left", () => {
+  const s = built();
+  const hours = s.sheet("Hours");
+  const own = (cell) => plain(hours.validations.get(cell));
+  const a7 = own("A7");
+  const e7 = own("E7");
+  const k7 = own("K7");
+  assert.deepEqual(
+    a7.condition.values.map((v) => v.userEnteredValue),
+    plain(s.ctx.hoursSortChoices()[0].choices.map((c) => c.text)),
+  );
+  assert.equal(a7.strict, true);
+  assert.equal(a7.showCustomUi, true);
+  // A dropdown left where a layout once had one, and a box carrying another box's list.
+  hours.getRange("P20").setDataValidation({ list: "left behind" });
+  hours.getRange("B7").setDataValidation({ list: "left behind" });
+  hours.getRange("E7").setDataValidation(a7);
+  s.calls.length = 0;
+  s.ctx.setupReports();
+  assert.deepEqual([...hours.validations.keys()], ["A7", "E7", "K7"]);
+  assert.deepEqual([own("A7"), own("E7"), own("K7")], [a7, e7, k7]);
+  // Cleared over the whole tab inside the hold, before the clear and the layout's batch.
+  const at = (pred) => s.calls.findIndex(pred);
+  const cleared = at((c) => c.sheet === "Hours" && c.op === "clearDataValidations");
+  assert.equal(s.calls[cleared].a1, "A1:" + colLetters(hours.maxCols) + hours.maxRows);
+  assert.ok(at((c) => c.op === "docLock.tryLock") < cleared);
+  assert.ok(cleared < at((c) => c.sheet === "Hours" && c.op === "clear"));
+  assert.ok(cleared < at((c) => c.op === "batchUpdate" && c.value > 40));
 });
 
 test("setupReports gives a new Hours data its rows in one call before the pivots exist, and the table write grows nothing", () => {
@@ -1223,7 +1381,7 @@ test("setupReports gives a new Hours data its rows in one call before the pivots
   );
   const grow = at((c) => c.sheet === "Hours data" && c.op === "insertRowsAfter");
   const pivots = at((c) => c.op === "batchUpdate" && c.value > 40);
-  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:J1");
+  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:K1");
   assert.ok(grow > 0 && grow < pivots && pivots < values);
   // Formats go on whole column runs, never cell by cell.
   assert.ok(!s.calls.some((c) => c.op === "setNumberFormats"));
@@ -1243,10 +1401,13 @@ test("a refresh that grows Hours data sets the new rows' formats one range per c
     .map((c) => [c.a1, c.value]);
   const from = max - 1;
   assert.deepEqual(formats, [
-    ["A" + from + ":F" + max, "@"],
+    ["A" + from + ":A" + max, "yyyy-mm-dd"],
+    ["B" + from + ":C" + max, "@"],
+    ["D" + from + ":D" + max, "yyyy-mm-dd"],
+    ["E" + from + ":F" + max, "@"],
     ["G" + from + ":G" + max, "0"],
     ["H" + from + ":H" + max, "0.00"],
-    ["I" + from + ":J" + max, "@"],
+    ["I" + from + ":K" + max, "@"],
   ]);
 });
 
@@ -1270,7 +1431,7 @@ test("setupReports' first fill gives a new 1,000-row Hours tab rows for the Shif
   );
   const grow = at((c) => c.sheet === "Hours" && c.op === "insertRowsAfter");
   const pivots = at((c) => c.op === "batchUpdate" && c.value > 40);
-  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:J1");
+  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:K1");
   assert.ok(building >= 0 && building < grow && grow < pivots && pivots < values);
   // The tables were marked not whole, and that was flushed, before the tab grew.
   assert.ok(s.calls.slice(building, grow).some((c) => c.op === "flush"));
@@ -1823,7 +1984,7 @@ test("setupReports keeps Monthly Hours and throws when the write completes but H
       name: "the last row",
       off: (data) => {
         const last = data.getLastRow();
-        for (let col = 1; col <= 10; col++) data.set(last, col, "");
+        for (let col = 1; col <= 11; col++) data.set(last, col, "");
       },
       m1: "complete",
     },
@@ -1851,4 +2012,95 @@ test("setupReports keeps Monthly Hours and throws when the write completes but H
     assert.equal(cellsOf(s)[1], c.m1, c.name);
     checkOneHold(s.calls, c.name);
   }
+});
+
+// ---------------------------------------------------------------------------
+// The sort boxes' trigger
+
+/** Records each console.log in the calls too, so a test can see when the message went. */
+const logInCalls = (s) => {
+  const log = s.ctx.console.log;
+  s.ctx.console.log = (text) => {
+    s.calls.push({ op: "log", value: text });
+    return log(text);
+  };
+};
+const sortTriggers = (s) => s.triggers.filter((t) => t.handler === "runHoursSort");
+
+test("setupReports installs the sort trigger once over two runs, after the hold, and logs the finish message after it", () => {
+  const s = server(LOG, { now: NOW });
+  logInCalls(s);
+  s.ctx.setupReports();
+  assert.deepEqual(plain(sortTriggers(s)), [
+    { uid: "t-made-1", handler: "runHoursSort", eventType: "ON_EDIT", source: "file-1" },
+  ]);
+  // The daily jobs' trigger is left alone.
+  assert.ok(s.triggers.some((t) => t.handler === "runHoursRefresh"));
+  const at = (op) => s.calls.findIndex((c) => c.op === op);
+  assert.ok(at("docLock.release") > 0);
+  assert.ok(at("trigger.create") > at("docLock.release"), "the trigger step is after the hold");
+  assert.ok(at("log") > at("trigger.create"), "the message is logged after the trigger step");
+  assert.equal(s.calls.filter((c) => c.op === "log").length, 1);
+  assert.match(s.logs[0], /^The sort boxes run as staff@example\.org \(trigger installed\)\.$/m);
+
+  s.calls.length = 0;
+  s.logs.length = 0;
+  s.ctx.setupReports();
+  assert.equal(sortTriggers(s).length, 1);
+  assert.equal(sortTriggers(s)[0].uid, "t-made-1");
+  assert.ok(!s.calls.some((c) => c.op === "trigger.create" || c.op === "trigger.delete"));
+  assert.match(
+    s.logs[0],
+    /^The sort boxes run as staff@example\.org \(trigger already installed\)\.$/m,
+  );
+});
+
+test("setupReports puts back one on-edit sort trigger in place of two, or of one of the wrong kind", () => {
+  for (const extra of [
+    [
+      { uid: "t-a", handler: "runHoursSort", eventType: "ON_EDIT" },
+      { uid: "t-b", handler: "runHoursSort", eventType: "ON_EDIT" },
+    ],
+    [{ uid: "t-a", handler: "runHoursSort", eventType: "CLOCK" }],
+  ]) {
+    const s = server(LOG, { now: NOW, triggers: extra });
+    s.ctx.setupReports();
+    const label = JSON.stringify(extra);
+    assert.deepEqual(
+      s.calls.filter((c) => c.op.startsWith("trigger.")).map((c) => c.op + " " + c.value),
+      [...extra.map((t) => "trigger.delete " + t.uid), "trigger.create runHoursSort"],
+      label,
+    );
+    assert.deepEqual(
+      plain(sortTriggers(s)).map((t) => t.eventType),
+      ["ON_EDIT"],
+      label,
+    );
+    assert.match(s.logs[0], /\(trigger installed\)/, label);
+  }
+});
+
+test("a trigger that can't be installed is in the finish message, and Hours stands", () => {
+  const s = server(LOG, { now: NOW });
+  logInCalls(s);
+  FAIL = (c) => c.op === "trigger.create";
+  s.ctx.setupReports();
+  assert.equal(sortTriggers(s).length, 0);
+  assert.match(
+    s.logs[0],
+    /^The sort boxes' trigger couldn't be installed: injected\. Hours is set up, but picking a sort does nothing until setupReports runs again and installs it\.$/m,
+  );
+  assert.match(s.logs[0], /Hours is filled as of 2026-11-13 9:14 AM\./);
+  const [, m1, , , , q1] = cellsOf(s);
+  assert.equal(m1, "complete");
+  assert.equal(q1, "built " + NOW);
+  checkOneHold(s.calls, "setupReports");
+});
+
+test("setupReports installs no trigger when Hours isn't filled", () => {
+  const s = server(LOG, { now: NOW });
+  FAIL = (c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1.startsWith("A2:");
+  assert.throws(() => s.ctx.setupReports(), /Hours was not filled/);
+  assert.equal(sortTriggers(s).length, 0);
+  assert.ok(!s.calls.some((c) => c.op.startsWith("trigger.")));
 });
