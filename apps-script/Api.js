@@ -8,6 +8,12 @@
  * never receives a phone number, a User Token, a Profiles row, a start date, or anyone's
  * shift count or hours. Log columns are found by header on every call.
  *
+ * A check-in or check-out reads Settings once, before the lock, and uses that one read
+ * for the access code and for everything inside the lock: that first read pays any
+ * recalculation the last write started, outside the lock, and a Settings edit made while
+ * the call waits for the lock applies from the next call. Inside the lock it reads the
+ * Log once, header and rows in one range (readLogTable_).
+ *
  * Each flag a check-in or check-out writes to Admin Alerts? is also copied to the Flags
  * tab (raiseFlags_), after the Log write and under the same lock. The Log row is the
  * record: a failed copy is logged and never changes the reply.
@@ -37,9 +43,9 @@ function apiCheckAccess(code) {
  * ID; the raw User Token never leaves the server. Reads only yesterday's and today's rows.
  */
 function apiListVolunteers(code) {
-  const denied = accessRefusal_(code);
-  if (denied) return denied;
   const settings = readSettings_();
+  const denied = accessRefusal_(code, settings);
+  if (denied) return denied;
   const now = new Date();
   const today = centralDate_(now);
   return {
@@ -67,19 +73,19 @@ function apiListVolunteers(code) {
  * an open row checked in less than "Auto clock-out after hours" ago. Reads the whole Log.
  */
 function apiCheckIn(code, id, arrivalIso, digits) {
-  const denied = accessRefusal_(code);
+  const settings = readSettings_();
+  const denied = accessRefusal_(code, settings);
   if (denied) return denied;
   return withLock_(() => {
     const now = new Date();
     const today = centralDate_(now);
-    const settings = readSettings_();
-    const cols = readLogColumns_();
+    const log = readLogTable_();
     const arrivedMs = arrivalMsFromIso(arrivalIso);
     const decision = decideCheckIn({
       volunteers: getProfiles_(settings),
       id,
       digits,
-      entries: readLog_(cols),
+      entries: log.entries,
       todayDate: today,
       nowMs: now.getTime(),
       windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
@@ -99,7 +105,7 @@ function apiCheckIn(code, id, arrivalIso, digits) {
         decision.flag,
         shiftId,
       ),
-      cols,
+      log.cols,
     );
     raiseFlags_(
       {
@@ -136,18 +142,18 @@ function apiCheckIn(code, id, arrivalIso, digits) {
  * check-out whose stated hours are more than "Long shift flag hours" is flagged.
  */
 function apiCheckOut(code, id, digits, checkOutIso) {
-  const denied = accessRefusal_(code);
+  const settings = readSettings_();
+  const denied = accessRefusal_(code, settings);
   if (denied) return denied;
   return withLock_(() => {
     const now = new Date();
-    const settings = readSettings_();
-    const cols = readLogColumns_();
+    const log = readLogTable_();
     const outMs = arrivalMsFromIso(checkOutIso);
     const decision = decideCheckOut({
       volunteers: getProfiles_(settings),
       id,
       digits,
-      entries: readLog_(cols),
+      entries: log.entries,
       todayDate: centralDate_(now),
       nowMs: now.getTime(),
       windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
@@ -158,7 +164,7 @@ function apiCheckOut(code, id, digits, checkOutIso) {
       launchDate: settings["Kiosk launch date"],
     });
     if (decision.refusal) return refusal(decision.refusal);
-    updateLogRow_(decision.row, decision.cells, cols);
+    updateLogRow_(decision.row, decision.cells, log.cols);
     raiseFlags_(
       {
         date: rowDate(decision.open.dateText),
@@ -182,13 +188,15 @@ function apiCheckOut(code, id, digits, checkOutIso) {
 }
 
 /**
- * The ACCESS refusal, or null when the code is right. Runs before any lock is taken, so
+ * The ACCESS refusal, or null when the code is right. settings are the Settings the call
+ * already read; without them this reads Settings itself. Runs before any lock is taken, so
  * calls without the code never hold the lock or make the tablet's call return BUSY.
  * A refused code waits one second. There is no lockout: a lockout would let anyone with
  * the link lock the real tablet out.
  */
-function accessRefusal_(code) {
-  if (!checkAccessCode(code, readSettings_()["Kiosk access code"])) return null;
+function accessRefusal_(code, settings) {
+  const stored = (settings || readSettings_())["Kiosk access code"];
+  if (!checkAccessCode(code, stored)) return null;
   Utilities.sleep(1000);
   return refusal("ACCESS");
 }

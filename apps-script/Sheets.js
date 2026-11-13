@@ -556,6 +556,25 @@ function readLog_(cols) {
 }
 
 /**
+ * The Log's header map and rows from one range read, so both come from one snapshot:
+ * {cols, entries, width}. cols is logColumns (Logic.js) of row 1, entries every row below
+ * it as a log entry, with its row number, and width the number of columns read. The
+ * kiosk's check-in and check-out read the Log with this; the admin menu, the jobs and the
+ * reports use readLogColumns_ and readLog_. Throws when a column the kiosk needs is
+ * missing or repeated, so an empty tab throws the missing-column error.
+ */
+function readLogTable_() {
+  const sheet = sheet_(LOG_TAB);
+  const last = Math.max(sheet.getLastRow(), 1);
+  const width = Math.max(sheet.getLastColumn(), 1);
+  const values = sheet.getRange(1, 1, last, width).getValues();
+  const cols = logColumns(values[0].map(cellText_));
+  const read = logRead_();
+  const entries = values.slice(1).map((cells, i) => logEntry(cells, i + 2, cols, read));
+  return { cols, entries, width };
+}
+
+/**
  * One Log row as a log entry, read across the Log's full width in one range read, or null
  * when row is past the Log's last row. read is logRead_().
  */

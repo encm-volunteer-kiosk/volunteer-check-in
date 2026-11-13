@@ -100,24 +100,35 @@ const clock = (ms) => {
 /**
  * A sheet held as rows of cells; row and column numbers are 1-based, as in Apps Script.
  * A write past the last grid row (maxRows) fails, as it does in Sheets, so an append must
- * grow the sheet with insertRowsAfter first.
+ * grow the sheet with insertRowsAfter first. As in Sheets, a range of no rows or no
+ * columns throws, and so does a read past the last grid row. reads records each read the
+ * script makes, in order: "getLastRow", "getLastColumn", and "getValues row,col,rows,cols".
  */
 class FakeSheet {
-  constructor(rows, maxRows = 1000) {
+  constructor(rows, maxRows = Math.max(1000, rows.length)) {
     this.rows = rows.map((r) => r.slice());
     this.formats = {};
     this.maxRows = maxRows;
     this.inserted = [];
     // Data validations by "row:col".
     this.validations = {};
+    this.reads = [];
   }
-  getLastRow() {
+  lastRow() {
     let last = this.rows.length;
     while (last > 0 && this.rows[last - 1].every((v) => v === "")) last--;
     return last;
   }
-  getLastColumn() {
+  lastColumn() {
     return Math.max(0, ...this.rows.map((r) => r.length));
+  }
+  getLastRow() {
+    this.reads.push("getLastRow");
+    return this.lastRow();
+  }
+  getLastColumn() {
+    this.reads.push("getLastColumn");
+    return this.lastColumn();
   }
   getMaxRows() {
     return this.maxRows;
@@ -135,18 +146,26 @@ class FakeSheet {
     r[col - 1] = value;
   }
   getDataRange() {
-    return this.getRange(1, 1, this.getLastRow(), this.getLastColumn());
+    // Sheets gives an empty tab a data range of one cell, A1.
+    return this.getRange(1, 1, Math.max(this.lastRow(), 1), Math.max(this.lastColumn(), 1));
   }
   getRange(row, col, rows = 1, cols = 1) {
+    if (!(rows >= 1)) throw new Error("The number of rows in the range must be at least 1.");
+    if (!(cols >= 1)) throw new Error("The number of columns in the range must be at least 1.");
     const sheet = this;
     const range = {
-      getValues: () =>
-        Array.from({ length: rows }, (_, i) =>
+      getValues: () => {
+        sheet.reads.push("getValues " + [row, col, rows, cols].join(","));
+        if (row + rows - 1 > sheet.maxRows) {
+          throw new Error("The coordinates of the range are outside the dimensions of the sheet.");
+        }
+        return Array.from({ length: rows }, (_, i) =>
           Array.from(
             { length: cols },
             (_, j) => (sheet.rows[row - 1 + i] || [])[col - 1 + j] ?? "",
           ),
-        ),
+        );
+      },
       setNumberFormat: (format) => {
         sheet.formats[row + ":" + col] = format;
         return range;
@@ -302,6 +321,7 @@ function server(opts = {}) {
     }),
     Utilities: service("Utilities", {
       getUuid: () => "uuid-" + ++uuid,
+      sleep: () => undefined,
       formatDate: (date, tz, format) => {
         assert.equal(tz, TZ);
         if (format === "yyyy-MM-dd HH:mm:ss") return formatInZone(date, tz, format);
@@ -1167,4 +1187,117 @@ test("apiCheckOut flags a long shift in Admin Alerts? and on the Flags tab, afte
   t.ctx.apiCheckOut(CODE, SAM.id, null, null);
   assert.equal(t.sheets.Log.rowByHeader(2)["Admin Alerts?"], "");
   assert.equal(t.sheets.Flags.getLastRow(), 1);
+});
+
+// ---------------------------------------------------------------------------
+// Reads per kiosk call
+
+const valueReads = (sheet) => sheet.reads.filter((r) => r.startsWith("getValues"));
+const WRONG_CODE = "wrongwrongwrongwrong";
+
+/**
+ * Swaps in a script lock that notes how many times Settings had been read when the lock
+ * was taken. Returns the list it fills, one count per lock taken.
+ */
+const settingsReadsAtLock = (s) => {
+  const seen = [];
+  s.ctx.LockService = {
+    getScriptLock: () => ({
+      tryLock: () => (seen.push(valueReads(s.sheets.Settings).length), true),
+      releaseLock: () => undefined,
+    }),
+  };
+  return seen;
+};
+
+test("apiCheckIn reads Settings once and the Log once", () => {
+  const log = [LOG_HEADER, closedBy("s-old", "2026-11-03", "auto-close")];
+  const s = kiosk({ settings: WINDOW_SETTINGS, log });
+  const atLock = settingsReadsAtLock(s);
+  const reply = plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.missedSignOut, true);
+  assert.deepEqual(atLock, [1], "Settings are read before the lock is taken");
+  assert.deepEqual(valueReads(s.sheets.Settings), [
+    "getValues 1,1," + WINDOW_SETTINGS.length + ",2",
+  ]);
+  // Header and rows in one range.
+  assert.deepEqual(valueReads(s.sheets.Log), ["getValues 1,1,2," + LOG_HEADER.length]);
+  assert.equal(s.sheets.Log.reads.filter((r) => r === "getLastColumn").length, 1);
+  assert.equal(s.sheets.Log.rowByHeader(3).Status, "open");
+  assert.equal(s.sheets.Log.rowByHeader(3)["Shift ID"], reply.shiftId);
+});
+
+test("apiCheckOut reads Settings once and the Log once", () => {
+  const log = [
+    LOG_HEADER,
+    closedBy("s-old", "2026-11-03", "kiosk"),
+    kioskOpen("s-open", TODAY, "08:00"),
+  ];
+  const s = kiosk({ settings: WINDOW_SETTINGS, log });
+  const atLock = settingsReadsAtLock(s);
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.minutes, 120);
+  assert.deepEqual(atLock, [1], "Settings are read before the lock is taken");
+  assert.deepEqual(valueReads(s.sheets.Settings), [
+    "getValues 1,1," + WINDOW_SETTINGS.length + ",2",
+  ]);
+  assert.deepEqual(valueReads(s.sheets.Log), ["getValues 1,1,3," + LOG_HEADER.length]);
+  assert.equal(s.sheets.Log.reads.filter((r) => r === "getLastColumn").length, 1);
+  assert.equal(s.sheets.Log.rowByHeader(3).Status, "closed");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+});
+
+test("apiListVolunteers reads Settings once", () => {
+  const s = kiosk({
+    settings: WINDOW_SETTINGS,
+    log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")],
+  });
+  const [listed] = plain(s.ctx.apiListVolunteers(CODE).volunteers);
+  assert.equal(listed.checkedIn, true);
+  assert.deepEqual(valueReads(s.sheets.Settings), [
+    "getValues 1,1," + WINDOW_SETTINGS.length + ",2",
+  ]);
+});
+
+test("a wrong code refuses after one Settings read, before the lock", () => {
+  const message = plain(kiosk({}).ctx.refusalMessages()).ACCESS;
+  const refused = { ok: false, refusal: "ACCESS", message };
+  const calls = [
+    (s) => s.ctx.apiCheckIn(WRONG_CODE, SAM.id, null, null),
+    (s) => s.ctx.apiCheckOut(WRONG_CODE, SAM.id, null, null),
+    (s) => s.ctx.apiListVolunteers(WRONG_CODE),
+    (s) => s.ctx.apiCheckAccess(WRONG_CODE),
+  ];
+  for (const call of calls) {
+    const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
+    assert.deepEqual(plain(call(s)), refused);
+    assert.equal(valueReads(s.sheets.Settings).length, 1);
+    assert.ok(!s.calls.includes("LockService.getScriptLock"), "no lock taken");
+    assert.deepEqual(s.sheets.Log.reads, [], "the Log is not read");
+    assert.deepEqual(
+      s.calls.filter((c) => c === "Utilities.sleep"),
+      ["Utilities.sleep"],
+      "a wrong code waits",
+    );
+    assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+  }
+});
+
+test("the Log table read gives no entries on a header-only Log and throws the missing-column error on an empty tab", () => {
+  const s = kiosk({});
+  const table = plain(s.ctx.readLogTable_());
+  assert.deepEqual(table.entries, []);
+  assert.equal(table.width, LOG_HEADER.length);
+  assert.deepEqual(table.cols, plain(s.ctx.readLogColumns_()));
+  assert.deepEqual(valueReads(s.sheets.Log)[0], "getValues 1,1,1," + LOG_HEADER.length);
+
+  // An empty tab: one cell read, as Sheets refuses a range of no rows or columns.
+  const empty = kiosk({ log: [[]] });
+  const missing = (e) => /^The Log has no "[^"]+" column\. Run setupSheets\(\)\.$/.test(e.message);
+  assert.throws(() => empty.ctx.readLogTable_(), missing);
+  assert.deepEqual(valueReads(empty.sheets.Log), ["getValues 1,1,1,1"]);
+  assert.throws(() => empty.ctx.apiCheckIn(CODE, SAM.id, null, null), missing);
+  assert.throws(() => empty.ctx.apiCheckOut(CODE, SAM.id, null, null), missing);
 });
