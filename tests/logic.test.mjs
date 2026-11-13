@@ -714,14 +714,67 @@ const centralDate = (d) =>
     day: "2-digit",
   }).format(d);
 const isDate = (v) => Object.prototype.toString.call(v) === "[object Date]";
+/** A Central wall-clock time as milliseconds read as UTC, to compare wall clocks. */
+const centralWall = (ms) => {
+  const p = {};
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+    .formatToParts(new Date(ms))
+    .forEach((x) => (p[x.type] = x.value));
+  return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute);
+};
+/** A date's Central "HH:mm", as Utilities.formatDate(value, zone, "HH:mm") gives it. */
+const centralClock = (d) => new Date(centralWall(d.getTime())).toISOString().slice(11, 16);
+/**
+ * Sheets.js's timeOnDate_: a Central "HH:mm" on a yyyy-MM-dd as {ms, date}. Daylight time
+ * is tried before standard time; a time skipped when daylight time starts takes standard
+ * time, which lands on the next valid time, as Utilities.parseDate does.
+ */
+const timeOnDate = (dateText, clock) => {
+  const text = L.adminDateTimeText(dateText, clock);
+  if (!text) return { ms: NaN, date: "" };
+  const [, y, mo, d, h, mi] = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(text).map(Number);
+  const wall = Date.UTC(y, mo - 1, d, h, mi);
+  const ms = [5, 6].map((o) => wall + o * HOUR).find((t) => centralWall(t) === wall);
+  const read = ms === undefined ? wall + 6 * HOUR : ms;
+  return { ms: read, date: centralDate(new Date(read)) };
+};
 const READ = {
   text: (v) => (isDate(v) ? centralDate(v) : L.cellString(v)),
   time: (v) => {
-    let ms = NaN;
-    if (isDate(v)) ms = v.getTime();
-    else if (L.cellString(v)) ms = Date.parse(L.cellString(v));
-    return Number.isFinite(ms) ? { ms, date: centralDate(new Date(ms)) } : { ms: NaN, date: "" };
+    const none = { ms: NaN, date: "", clock: "" };
+    if (isDate(v)) {
+      const ms = v.getTime();
+      return Number.isFinite(ms) ? { ms, date: centralDate(v), clock: centralClock(v) } : none;
+    }
+    const clock = L.clockText(v);
+    if (clock) return { ms: NaN, date: "", clock };
+    const ms = L.cellString(v) ? Date.parse(L.cellString(v)) : NaN;
+    return Number.isFinite(ms) ? { ms, date: centralDate(new Date(ms)), clock: "" } : none;
   },
+  at: timeOnDate,
+};
+
+/**
+ * Runs fn with this process's time zone set to zone, as Apps Script runs Date.parse in
+ * the script's zone (America/Chicago), then puts the zone back.
+ */
+const inZone = (zone, fn) => {
+  const was = process.env.TZ;
+  process.env.TZ = zone;
+  try {
+    return fn();
+  } finally {
+    if (was === undefined) delete process.env.TZ;
+    else process.env.TZ = was;
+  }
 };
 
 /** A Log row under header, with the given cells by header; an undefined value is left out. */
@@ -871,26 +924,141 @@ test("logEntry reads a row under a reordered header with extra columns", () => {
   assert.deepEqual(exact, e);
 });
 
-test("logEntry: a time not on the row's Date is unreadable", () => {
+test("clockText reads a typed time of day as HH:mm", () => {
+  const cases = {
+    "9:00 AM": "09:00",
+    "9:00am": "09:00",
+    " 9:00 p.m. ": "21:00",
+    "9:00PM": "21:00",
+    "21:15": "21:15",
+    "0:05": "00:05",
+    "12:00 AM": "00:00",
+    "12:30 PM": "12:30",
+    "9:00:45": "09:00",
+    "9:00:45 pm": "21:00",
+    9: "",
+    9: "",
+    "9 AM": "",
+    "9ish": "",
+    "25:00": "",
+    "13:00 PM": "",
+    "0:30 AM": "",
+    "9:60": "",
+    "9:00:60": "",
+    "9:5": "",
+    "12/30/1899 9:00 AM": "",
+    "": "",
+    null: "",
+  };
+  for (const [text, want] of Object.entries(cases)) assert.equal(L.clockText(text), want, text);
+  assert.equal(L.clockText(null), "");
+  assert.equal(L.clockText(undefined), "");
+  assert.equal(L.clockText(0.375), "");
+  assert.equal(L.timeOnlyDate(), "1899-12-30");
+});
+
+// Sheets keeps a time typed with no date as that time on 1899-12-30.
+const typedTime = (hhmm) => new Date(timeOnDate("1899-12-30", hhmm).ms);
+
+test("logEntry reads a time with no date as that time on the row's Date", () => {
   const cols = L.logColumns(LOG_HEADERS);
-  // A time typed without a date is stored on 1899-12-30.
-  const timeOnly = new Date("1899-12-30T15:00:00Z");
   const cells = closedRow(LOG_HEADERS, {
-    "Check-In Stated (user)": timeOnly,
-    "Check-Out Stated (user)": T("09:30").getTime() + 24 * HOUR,
-    "Check-Out Recorded (timestamp)": new Date(T("10:00").getTime() + 24 * HOUR),
-    "Check-In Recorded (timestamp)": "",
+    // Read to the minute: the seconds are dropped.
+    "Check-In Recorded (timestamp)": new Date(typedTime("08:00").getTime() + 45000),
+    "Check-In Stated (user)": "9:00 AM",
+    "Check-Out Stated (user)": "2:30 PM",
+    "Check-Out Recorded (timestamp)": typedTime("14:45"),
   });
+  assert.equal(READ.time(typedTime("09:00")).date, "1899-12-30");
+  assert.equal(READ.time(typedTime("09:00")).clock, "09:00");
   const e = L.logEntry(cells, 3, cols, READ);
-  assert.ok(Number.isNaN(e.statedInMs));
-  assert.ok(Number.isNaN(e.statedOutMs));
-  assert.ok(Number.isNaN(e.recordedOutMs));
-  assert.ok(Number.isNaN(e.recordedInMs));
-  assert.ok(Number.isNaN(L.shiftStartMs(e)));
-  assert.equal(L.hasReadableStart(e), false);
-  // With no readable Date, no time on the row is readable.
-  const noDate = L.logEntry(closedRow(LOG_HEADERS, { Date: "soon" }), 3, cols, READ);
+  assert.equal(e.recordedInMs, T("08:00").getTime());
+  assert.equal(e.statedInMs, T("09:00").getTime());
+  assert.equal(e.statedOutMs, T("14:30").getTime());
+  assert.equal(e.recordedOutMs, T("14:45").getTime());
+  assert.equal(L.hasReadableStart(e), true);
+  // A full date-time on the row's Date is kept as before, seconds and all.
+  const kept = L.logEntry(
+    closedRow(LOG_HEADERS, { "Check-In Stated (user)": new Date(T("07:45").getTime() + 45000) }),
+    3,
+    cols,
+    READ,
+  );
+  assert.equal(kept.statedInMs, T("07:45").getTime() + 45000);
+});
+
+test("logEntry: a full date-time on another day, or text that isn't a time, is unreadable", () => {
+  const cols = L.logColumns(LOG_HEADERS);
+  const read = (byHeader, extra = {}) =>
+    L.logEntry(closedRow(LOG_HEADERS, { ...byHeader, ...extra }), 3, cols, READ);
+  inZone("America/Chicago", () => {
+    const e = read({
+      "Check-In Recorded (timestamp)": "9ish",
+      "Check-In Stated (user)": "12/30/1899 9:00 AM",
+      "Check-Out Recorded (timestamp)": new Date(T("10:00").getTime() + 24 * HOUR),
+      "Check-Out Stated (user)": T("09:30").getTime() + 24 * HOUR,
+    });
+    assert.ok(Number.isNaN(e.recordedInMs));
+    assert.ok(Number.isNaN(e.statedInMs));
+    assert.ok(Number.isNaN(e.recordedOutMs));
+    assert.ok(Number.isNaN(e.statedOutMs));
+    assert.equal(L.hasReadableStart(e), false);
+    // Text with a date in it is a full date-time, even on 1899-12-30: it has no clock.
+    assert.deepEqual(READ.time("12/30/1899 9:00 AM").date, "1899-12-30");
+    assert.equal(READ.time("12/30/1899 9:00 AM").clock, "");
+    // 1899-12-31 is a duration past 24 hours, not a time of day.
+    const dayOne = read({
+      "Check-In Stated (user)": new Date(typedTime("09:00").getTime() + 24 * HOUR),
+    });
+    assert.ok(Number.isNaN(dayOne.statedInMs));
+    // Bare 9, 9 AM, 25:00 and 13:00 PM aren't times of day; Date.parse puts bare 9 in 2001.
+    for (const text of ["9", "9 AM", "25:00", "13:00 PM", 0.375]) {
+      assert.ok(Number.isNaN(read({ "Check-In Stated (user)": text }).statedInMs), String(text));
+    }
+    // A date with no time: m/d/yyyy is midnight in the script's zone, on the row's Date;
+    // yyyy-MM-dd is UTC midnight, the day before in Central.
+    assert.equal(read({ "Check-In Stated (user)": "11/12/2026" }).statedInMs, T("00:00").getTime());
+    assert.ok(Number.isNaN(read({ "Check-In Stated (user)": "2026-11-12" }).statedInMs));
+  });
+  // With no readable Date, no time on the row is readable, a time with no date included.
+  const noDate = read({ "Check-In Stated (user)": typedTime("09:00"), Date: "soon" });
   assert.ok(Number.isNaN(noDate.recordedInMs));
+  assert.ok(Number.isNaN(noDate.statedInMs));
+  assert.ok(Number.isNaN(read({ "Check-In Stated (user)": "9:00 AM", Date: "soon" }).statedInMs));
+});
+
+test("logEntry: a time with no date that read.at puts on another date, or a read without at, is unreadable", () => {
+  const cols = L.logColumns(LOG_HEADERS);
+  const cells = closedRow(LOG_HEADERS, {
+    "Check-In Stated (user)": typedTime("09:00"),
+    "Check-Out Stated (user)": "9:30 AM",
+  });
+  const noAt = L.logEntry(cells, 3, cols, { text: READ.text, time: READ.time });
+  assert.ok(Number.isNaN(noAt.statedInMs));
+  assert.ok(Number.isNaN(noAt.statedOutMs));
+  assert.equal(noAt.recordedInMs, T("08:00").getTime(), "a full date-time still reads");
+  const nextDay = {
+    ...READ,
+    at: () => ({ ms: T("09:00").getTime() + 24 * HOUR, date: "2026-11-13" }),
+  };
+  assert.ok(Number.isNaN(L.logEntry(cells, 3, cols, nextDay).statedInMs));
+});
+
+test("logEntry: a time in the hour skipped when daylight time starts reads as the next valid time", () => {
+  const cols = L.logColumns(LOG_HEADERS);
+  // 2:30 AM on 2027-03-14 doesn't exist in Central; the reader takes 3:30 AM daylight time.
+  const cells = closedRow(LOG_HEADERS, { Date: "2027-03-14", "Check-In Stated (user)": "2:30 AM" });
+  const e = L.logEntry(cells, 3, cols, READ);
+  assert.equal(e.statedInMs, Date.parse("2027-03-14T03:30:00-05:00"));
+  // A summer Date gets daylight time, a winter one standard time.
+  const summer = closedRow(LOG_HEADERS, {
+    Date: "2026-06-01",
+    "Check-In Stated (user)": "9:00 AM",
+  });
+  assert.equal(
+    L.logEntry(summer, 3, cols, READ).statedInMs,
+    Date.parse("2026-06-01T09:00:00-05:00"),
+  );
 });
 
 test("logEntry: a Date object in the Date column, blank hours, and a missing Notes column", () => {
@@ -1171,22 +1339,26 @@ test("decideCheckIn accepts and flags", () => {
     volunteer: VOL,
     arrivedMs: NOW - 20 * MIN,
     flag: "arrival differs by 20 min",
+    flags: ["arrival differs by 20 min"],
   });
   assert.deepEqual(checkIn({ arrivedMs: NOW - 5 * MIN }), {
     volunteer: VOL,
     arrivedMs: NOW - 5 * MIN,
     flag: "",
+    flags: [],
   });
   assert.deepEqual(checkIn({ arrivedMs: NOW + 3 * MIN }), {
     volunteer: VOL,
     arrivedMs: NOW,
     flag: "",
+    flags: [],
   });
   // No chosen time: arrived is server time and nothing is flagged.
   assert.deepEqual(checkIn({ arrivedMs: null, arrivedDate: "" }), {
     volunteer: VOL,
     arrivedMs: NOW,
     flag: "",
+    flags: [],
   });
   assert.deepEqual(
     checkIn({ volunteers: [TWIN], digits: "0131" }).flag,
@@ -1260,6 +1432,8 @@ test("decideCheckOut closes today's open row at server time and picks the milest
       message: "Your first day making a difference. Welcome to the neighborhood!",
     },
     statedOutMs: NOW,
+    flags: [],
+    open: plain(entry(9, {})),
   });
   const history = Array.from({ length: 9 }, (_, i) =>
     entry(20 + i, { status: "closed", statedHours: 3, dateText: "2026-10-0" + (i + 1) }),
@@ -1316,12 +1490,11 @@ test("decideCheckOut on a row with no readable start closes it with blank hours 
   assert.equal(out.minutes, 0);
 });
 
-test("an open row today with both check-in times unreadable still shows as checked in and closes at check-out", () => {
-  // Staff typed a bare time into both check-in cells, which stores it on 1899-12-30.
-  const timeOnly = new Date("1899-12-30T15:00:00Z");
-  const cells = closedRow(LOG_HEADERS, {
-    "Check-In Recorded (timestamp)": timeOnly,
-    "Check-In Stated (user)": timeOnly,
+/** An open row today whose two check-in cells hold the given values. */
+const openRowWithStart = (recordedIn, statedIn) =>
+  closedRow(LOG_HEADERS, {
+    "Check-In Recorded (timestamp)": recordedIn,
+    "Check-In Stated (user)": statedIn,
     "Check-Out Recorded (timestamp)": "",
     "Check-Out Stated (user)": "",
     "Hours Served (timestamps)": "",
@@ -1331,7 +1504,37 @@ test("an open row today with both check-in times unreadable still shows as check
     Status: "open",
     "Check-Out Entered By": "",
   });
-  const open = L.logEntry(cells, 9, L.logColumns(LOG_HEADERS), READ);
+
+test("an open row today with both check-in times typed with no date shows its arrival and closes with hours", () => {
+  // Staff typed a time alone: into a date-time cell, and into a plain-text cell.
+  const open = L.logEntry(
+    openRowWithStart(typedTime("08:00"), "8:00 AM"),
+    9,
+    L.logColumns(LOG_HEADERS),
+    READ,
+  );
+  assert.equal(L.hasReadableStart(open), true);
+  const [summary] = plain(L.volunteerSummaries([VOL], [open], TODAY));
+  assert.equal(summary.checkedIn, true);
+  assert.equal(summary.openShiftArrival, T("08:00").toISOString());
+  const out = checkOut({ entries: [open] });
+  assert.equal(out.refusal, undefined);
+  assert.equal(out.row, 9);
+  assert.equal(out.cells[H.status], "closed");
+  assert.equal(out.cells[H.statedOut], NOW);
+  assert.equal(out.cells[H.statedHours], 2);
+  assert.equal(out.cells[H.recordedHours], 2);
+  assert.ok(!String(out.cells[H.alerts] ?? "").includes(L.unreadableStartAlert()));
+  // A picked check-out before that arrival is refused.
+  assert.equal(
+    checkOut({ entries: [open], outMs: T("07:30").getTime(), outDate: TODAY }).refusal,
+    "CHECKOUT_BEFORE_ARRIVAL",
+  );
+});
+
+test("an open row today with both check-in times unreadable still shows as checked in and closes at check-out", () => {
+  // Staff typed text that isn't a time into both check-in cells.
+  const open = L.logEntry(openRowWithStart("9ish", "9ish"), 9, L.logColumns(LOG_HEADERS), READ);
   assert.equal(L.hasReadableStart(open), false);
   // The list says checked in, by the same test check-in uses, with no arrival to show.
   const [summary] = plain(L.volunteerSummaries([VOL], [open], TODAY));
@@ -1721,6 +1924,54 @@ test("decideAddShift: overlap uses the other row's stated check-out time", () =>
   );
 });
 
+test("findOverlap skips a closed row whose check-out reads before its check-in", () => {
+  // A shift that ran past midnight, typed by hand: 9:00 PM in, 12:15 AM out, one Date.
+  const day = "2026-11-11";
+  const Y = (hhmm) => Date.parse(day + "T" + hhmm + ":00-06:00");
+  const cols = L.logColumns(LOG_HEADERS);
+  const pastMidnight = L.logEntry(
+    closedRow(LOG_HEADERS, {
+      Date: day,
+      "User Token": TOKEN,
+      "Check-In Recorded (timestamp)": "",
+      "Check-In Stated (user)": "9:00 PM",
+      "Check-Out Recorded (timestamp)": "",
+      "Check-Out Stated (user)": "12:15 AM",
+      "Hours Served (stated)": 3.25,
+    }),
+    6,
+    cols,
+    READ,
+  );
+  assert.equal(pastMidnight.statedInMs, Y("21:00"));
+  assert.equal(pastMidnight.statedOutMs, Y("00:15"));
+  const add = (entries, inAt, outAt) =>
+    addShift({
+      entries,
+      date: day,
+      inMs: Y(inAt),
+      inDate: day,
+      outMs: Y(outAt),
+      outDate: day,
+    });
+  assert.equal(add([pastMidnight], "13:00", "15:00").refusal, undefined);
+  // A shift covering 12:15 AM to 9:00 PM would overlap the row read as a window.
+  assert.equal(add([pastMidnight], "00:10", "21:30").refusal, undefined);
+  assert.equal(L.findOverlap([pastMidnight], TOKEN, day, Y("00:10"), Y("21:30")), null);
+  // A normal row in that window still is refused.
+  const normal = entry(7, {
+    status: "closed",
+    dateText: day,
+    statedInMs: Y("13:30"),
+    recordedInMs: Y("13:30"),
+    statedOutMs: Y("14:30"),
+    recordedOutMs: Y("14:30"),
+  });
+  const refused = add([pastMidnight, normal], "13:00", "15:00");
+  assert.equal(refused.refusal, "ADMIN_OVERLAP");
+  assert.equal(refused.conflict.row, 7);
+});
+
 test("handShiftCells throws on an empty token or Shift ID", () => {
   assert.throws(
     () => L.handShiftCells({ ...VOL, token: "" }, TODAY, at("08:00"), at("09:00"), "", "JP", "s"),
@@ -1977,4 +2228,259 @@ test("constants", () => {
   assert.equal(L.kioskTimeZone(), "America/Chicago");
   assert.equal(L.profilesCacheSeconds(), 300);
   assert.equal(L.defaultFlagMinutes(), 15);
+});
+
+// ---------------------------------------------------------------------------
+// The Flags tab
+
+const FLAG_HEADERS = [
+  "Date",
+  "Volunteer Name",
+  "Shift ID",
+  "Reason",
+  "Raised At",
+  "Reviewed",
+  "Reviewed By",
+  "Notes",
+  "Source",
+  "Log Row",
+];
+const F = plain(L.flagHeaderNames());
+
+test("flagHeaders are the eight review columns, then Source and Log Row", () => {
+  assert.deepEqual(plain(L.flagHeaders()), FLAG_HEADERS);
+  assert.deepEqual(plain(L.flagColumnKinds()), {
+    Date: "text",
+    "Volunteer Name": "text",
+    "Shift ID": "text",
+    Reason: "text",
+    "Raised At": "time",
+    Reviewed: "checkbox",
+    "Reviewed By": "text",
+    Notes: "text",
+    Source: "text",
+    "Log Row": "number",
+  });
+});
+
+test("flagColumns finds headers in any order, with staff columns between", () => {
+  const header = [
+    "log row",
+    "Staff column",
+    "REVIEWED",
+    "Source",
+    " raised  at ",
+    "Reason",
+    "Notes",
+    "Shift\nID",
+    "Volunteer Name",
+    "Date",
+    "Reviewed By",
+  ];
+  assert.deepEqual(plain(L.flagColumns(header)), {
+    Date: 9,
+    "Volunteer Name": 8,
+    "Shift ID": 7,
+    Reason: 5,
+    "Raised At": 4,
+    Reviewed: 2,
+    "Reviewed By": 10,
+    Notes: 6,
+    Source: 3,
+    "Log Row": 0,
+  });
+});
+
+test("flagColumns needs only the columns the script writes", () => {
+  const header = FLAG_HEADERS.filter((h) => h !== "Reviewed By" && h !== "Notes");
+  const cols = plain(L.flagColumns(header));
+  assert.equal(cols["Reviewed By"], -1);
+  assert.equal(cols.Notes, -1);
+  // Staff's columns may be repeated.
+  assert.doesNotThrow(() => L.flagColumns([...FLAG_HEADERS, "Notes", "Reviewed By"]));
+  assert.throws(
+    () => L.flagColumns(FLAG_HEADERS.filter((h) => h !== "Shift ID")),
+    /^Error: The Flags tab has no "shift id" column\. Run setupSheets\(\)\.$/,
+  );
+  assert.throws(
+    () => L.flagColumns([...FLAG_HEADERS, "reason"]),
+    /^Error: The Flags tab has more than one "reason" column\. Rename or remove the extra one\.$/,
+  );
+});
+
+test("flagHeaderWrites: an empty row gets every header; a short one gets what it lacks", () => {
+  const full = FLAG_HEADERS.map((header, i) => ({ col: i + 1, header }));
+  assert.deepEqual(plain(L.flagHeaderWrites([])), full);
+  assert.deepEqual(plain(L.flagHeaderWrites(["", " "])), full);
+  assert.deepEqual(plain(L.flagHeaderWrites(FLAG_HEADERS)), []);
+  const short = FLAG_HEADERS.slice(0, 8);
+  assert.deepEqual(plain(L.flagHeaderWrites([...short, "", "Staff"])), [
+    { col: 11, header: "Source" },
+    { col: 12, header: "Log Row" },
+  ]);
+  // Reviewed By and Notes are staff's and never added.
+  const noStaff = FLAG_HEADERS.filter((h) => h !== "Reviewed By" && h !== "Notes");
+  assert.deepEqual(plain(L.flagHeaderWrites(noStaff)), []);
+});
+
+const FLAG_BASE = {
+  date: TODAY,
+  name: "Sam Lee",
+  shiftId: "shift-9",
+  raisedAtMs: NOW,
+  source: "kiosk check-out",
+  logRow: 9,
+};
+
+test("flagRows: one row per reason, the same base on each, Reviewed false, no token", () => {
+  const rows = plain(
+    L.flagRows(FLAG_BASE, ["check-out differs by 30 min", L.unreadableStartAlert()]),
+  );
+  assert.equal(rows.length, 2);
+  const want = (reason) => ({
+    Date: TODAY,
+    "Volunteer Name": "Sam Lee",
+    "Shift ID": "shift-9",
+    Reason: reason,
+    "Raised At": NOW,
+    Reviewed: false,
+    Source: "kiosk check-out",
+    "Log Row": 9,
+  });
+  assert.deepEqual(rows, [want("check-out differs by 30 min"), want(L.unreadableStartAlert())]);
+  for (const row of rows) {
+    for (const value of Object.values(row)) assert.notEqual(value, TOKEN);
+    assert.ok(!Object.keys(row).some((k) => /token/i.test(k)));
+  }
+  assert.deepEqual(plain(L.flagRows(FLAG_BASE, [])), []);
+  assert.equal(L.flagRows({ ...FLAG_BASE, name: "=Sam" }, ["x"])[0]["Volunteer Name"], "'=Sam");
+});
+
+test("flagRows throws on an empty Shift ID", () => {
+  for (const shiftId of ["", "  ", undefined]) {
+    assert.throws(
+      () => L.flagRows({ ...FLAG_BASE, shiftId }, ["arrival differs by 24 min"]),
+      /without a Shift ID/,
+    );
+  }
+});
+
+test("flagRowValues puts each value under its header and blanks elsewhere", () => {
+  const header = [
+    "Staff",
+    "Log Row",
+    "Reason",
+    "Shift ID",
+    "Date",
+    "Notes",
+    "Volunteer Name",
+    "Raised At",
+    "Reviewed",
+    "Source",
+  ];
+  const cols = L.flagColumns(header);
+  const [cells] = L.flagRows(FLAG_BASE, ["check-out differs by 30 min"]);
+  assert.deepEqual(plain(L.flagRowValues(cells, cols, header.length + 1)), [
+    "",
+    9,
+    "check-out differs by 30 min",
+    "shift-9",
+    TODAY,
+    "",
+    "Sam Lee",
+    NOW,
+    false,
+    "kiosk check-out",
+    "",
+  ]);
+  assert.throws(() => L.flagRowValues({ Token: "x" }, cols, 10), /not a Flags header/);
+});
+
+test("checkOutFlags lists the check-out flag, then the unreadable start", () => {
+  const readable = entry(9, {});
+  const unreadable = entry(9, { recordedInMs: NaN, statedInMs: NaN });
+  assert.deepEqual(plain(L.checkOutFlags(readable, "")), []);
+  assert.deepEqual(plain(L.checkOutFlags(readable, "check-out differs by 30 min")), [
+    "check-out differs by 30 min",
+  ]);
+  assert.deepEqual(plain(L.checkOutFlags(unreadable, "")), [L.unreadableStartAlert()]);
+  assert.deepEqual(plain(L.checkOutFlags(unreadable, "check-out differs by 30 min")), [
+    "check-out differs by 30 min",
+    L.unreadableStartAlert(),
+  ]);
+  // checkOutCells writes Admin Alerts? as the same list added to what the cell held.
+  for (const [open, flag] of [
+    [readable, ""],
+    [readable, "check-out differs by 30 min"],
+    [{ ...unreadable, alerts: "staff text" }, ""],
+    [{ ...unreadable, alerts: "staff text" }, "check-out differs by 30 min"],
+  ]) {
+    const flags = L.checkOutFlags(open, flag);
+    const cells = plain(L.checkOutCells(open, NOW, NOW, flag));
+    const want = flags.length ? flags.reduce((t, f) => L.appendText(t, f), open.alerts) : undefined;
+    assert.equal(cells[H.alerts], want);
+  }
+});
+
+test("decideCheckIn's flags are the arrival flag Admin Alerts? gets", () => {
+  assert.deepEqual(checkIn({ arrivedMs: NOW - 5 * MIN }).flags, []);
+  assert.deepEqual(checkIn({ arrivedMs: NOW - 24 * MIN }).flags, ["arrival differs by 24 min"]);
+});
+
+test("decideCheckOut returns both flags and the open row for a picked time on an unreadable start", () => {
+  const open = entry(9, { recordedInMs: NaN, statedInMs: NaN });
+  const out = checkOut({ entries: [open], outMs: NOW - 30 * MIN, outDate: TODAY });
+  assert.deepEqual(out.flags, ["check-out differs by 30 min", L.unreadableStartAlert()]);
+  assert.equal(out.cells[H.alerts], out.flags.join("; "));
+  assert.deepEqual(out.open, plain(open));
+  assert.equal(out.open.shiftId, "shift-9");
+});
+
+test("the admin menu raises no flags", () => {
+  assert.equal(addShift({}).flags, undefined);
+  assert.equal(fixSignOut({}).flags, undefined);
+});
+
+test("flagFilterViewRequests uses the map's letters, and updates by id or adds", () => {
+  const header = [
+    "Staff",
+    "Log Row",
+    "Reason",
+    "Shift ID",
+    "Date",
+    "Volunteer Name",
+    "Raised At",
+    "Source",
+    "Reviewed",
+  ];
+  const cols = L.flagColumns(header);
+  const view = {
+    title: "Flags: Unreviewed",
+    range: { sheetId: 77 },
+    filterSpecs: [
+      {
+        columnIndex: 8,
+        filterCriteria: {
+          condition: {
+            type: "CUSTOM_FORMULA",
+            values: [{ userEnteredValue: '=AND(TRIM($D2) <> "", $I2 <> TRUE)' }],
+          },
+        },
+      },
+    ],
+    sortSpecs: [{ dimensionIndex: 6, sortOrder: "DESCENDING" }],
+  };
+  assert.deepEqual(plain(L.flagFilterViewRequests(cols, 77, null)), [
+    { addFilterView: { filter: view } },
+  ]);
+  assert.deepEqual(plain(L.flagFilterViewRequests(cols, 77, 1234)), [
+    {
+      updateFilterView: {
+        filter: { filterViewId: 1234, ...view },
+        fields: "title,range,filterSpecs,sortSpecs",
+      },
+    },
+  ]);
+  // The title doesn't start "Kiosk: ", so setupReports never takes it for its own.
+  assert.ok(!L.flagsViewTitle().startsWith(L.filterViewTitlePrefix()));
 });

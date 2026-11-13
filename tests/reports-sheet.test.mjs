@@ -375,6 +375,10 @@ function server(logRows, opts = {}) {
       formatDate: (date, tz, format) => {
         assert.equal(tz, TZ);
         if (format === "yyyy-MM-dd") return centralDate(date.getTime());
+        if (format === "HH:mm") {
+          const p = centralParts(date.getTime());
+          return p.hour + ":" + p.minute;
+        }
         if (format === "yyyy-MM-dd h:mm a") {
           return centralDate(date.getTime()) + " " + centralClock(date.getTime());
         }

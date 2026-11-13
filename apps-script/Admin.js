@@ -72,7 +72,7 @@ function adminAddShift(key, form) {
   return withLock_(() => {
     const now = new Date();
     const cols = readLogColumns_();
-    const at = (time) => adminTimeOn_(f.date, time);
+    const at = (time) => timeOnDate_(f.date, time);
     const inTime = at(f.inTime);
     const outTime = at(f.outTime);
     const decision = decideAddShift({
@@ -114,7 +114,7 @@ function adminFixSignOut(key, form) {
     const cols = readLogColumns_();
     const entries = readLog_(cols);
     const rows = openRowsById(entries, f.shiftId);
-    const outTime = adminTimeOn_(rows.length ? rowDate(rows[0].dateText) : "", f.outTime);
+    const outTime = timeOnDate_(rows.length ? rowDate(rows[0].dateText) : "", f.outTime);
     const decision = decideFixSignOut({
       entries,
       shiftId: f.shiftId,
@@ -169,15 +169,4 @@ function adminRefusal_(decision) {
 /** A Central clock time such as "9:00 AM". */
 function adminClock_(ms) {
   return Utilities.formatDate(new Date(ms), kioskTimeZone(), "h:mm a");
-}
-
-/**
- * The dialog's date and time as {ms, date}, Central: ms NaN and date '' when either
- * can't be read.
- */
-function adminTimeOn_(dateText, timeText) {
-  const text = adminDateTimeText(dateText, timeText);
-  if (!text) return { ms: NaN, date: "" };
-  const parsed = Utilities.parseDate(text, kioskTimeZone(), "yyyy-MM-dd HH:mm");
-  return { ms: parsed.getTime(), date: centralDate_(parsed) };
 }
