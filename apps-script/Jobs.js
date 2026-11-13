@@ -1,8 +1,9 @@
 /**
  * The daily jobs: functions that run on installable triggers rather than from the tablet
  * or the Kiosk admin menu. They are the weekly flags email (runFlagsEmail), which checks
- * every hour whether it is due, and the auto clock-out (runAutoClockOut), which runs once
- * a day at about 4 AM Central and closes open rows nobody checked out of.
+ * every hour whether it is due, the auto clock-out (runAutoClockOut), which runs once a
+ * day at about 4 AM Central and closes open rows nobody checked out of, and the nightly
+ * Hours refresh (runHoursRefresh) at about 5 AM.
  *
  * One account owns the triggers. Signed in as it, someone runs setupDailyJobs once from
  * the Apps Script editor; the triggers then run as that account, which sends the email and writes the Log.
@@ -14,7 +15,8 @@
  * holds every public function here to it):
  *   - setupDailyJobs and removeDailyJobs run by hand from the editor and start with
  *     requireEditorRun_, as setupSheets does.
- *   - A trigger handler (runFlagsEmail, runAutoClockOut) checks requireEditorRun_, then
+ *   - A trigger handler (runFlagsEmail, runAutoClockOut, runHoursRefresh) checks
+ *     requireEditorRun_, then
  *     requireTriggerRun_:
  *     the event's triggerUid must be one of this account's triggers for that handler. A
  *     trigger's id is never sent anywhere, so the owner's own browser calling through the
@@ -129,6 +131,29 @@ function runAutoClockOut(e) {
     autoClockOut_(new Date());
   } finally {
     lock.releaseLock();
+  }
+}
+
+/**
+ * The nightly Hours refresh, run once a day at about 5 AM Central by its trigger, an hour
+ * after the auto clock-out so the rows it closes show. It always rewrites the tables
+ * unless a newer whole table is already in, which also undoes hand edits on Hours data
+ * (refreshHours_, Reports.js). It takes the document lock, waiting up to 120 seconds, and
+ * never the script lock. When the lock is busy, the tabs are missing or the refresh fails
+ * (after its note is written), it throws, so the owner gets Google's failure email.
+ */
+function runHoursRefresh(e) {
+  requireEditorRun_();
+  requireTriggerRun_(e, "runHoursRefresh");
+  const hold = hoursHold_();
+  try {
+    const result = refreshHours_("nightly", hold);
+    console.log(hoursRunLog_("nightly", result));
+    if (result.kind !== "write" && result.kind !== "newer-in") {
+      throw new Error("Hours refresh (nightly): " + hoursMenuText_(result));
+    }
+  } finally {
+    releaseHoursLock_(hold);
   }
 }
 
