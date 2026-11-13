@@ -591,6 +591,31 @@ function readLogRow_(row, cols, read) {
 }
 
 /**
+ * One Log row as a log entry, read again just before a write by its row number: one range
+ * read of width columns (readLogTable_'s width), so it costs one round trip. Null when
+ * the read throws, as it does for a row past the tab's last grid row; the error is logged
+ * with shiftId, the Shift ID the caller expects there. A row past the last used row
+ * inside the grid reads as blanks. cols and read are as for logEntry (Logic.js).
+ */
+function readLogRowAt_(row, width, cols, read, shiftId) {
+  let cells;
+  try {
+    cells = sheet_(LOG_TAB).getRange(row, 1, 1, width).getValues()[0];
+  } catch (e) {
+    console.error(
+      "Log row " +
+        row +
+        " not read again for Shift ID " +
+        cellString(shiftId) +
+        ": " +
+        (e && e.message ? e.message : String(e)),
+    );
+    return null;
+  }
+  return logEntry(cells, row, cols, read);
+}
+
+/**
  * Log rows dated on any of dates (yyyy-MM-dd), in any row order. Reads the Date column
  * found by the header map, then only the block of rows from the first to the last of
  * those, across the full width. The kiosk list reads yesterday and today with it

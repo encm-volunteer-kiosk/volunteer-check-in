@@ -1287,7 +1287,11 @@ test("apiCheckOut reads Settings once and the Log once", () => {
   assert.deepEqual(valueReads(s.sheets.Settings), [
     "getValues 1,1," + WINDOW_SETTINGS.length + ",2",
   ]);
-  assert.deepEqual(valueReads(s.sheets.Log), ["getValues 1,1,3," + LOG_HEADER.length]);
+  // The table once, then the open row again just before the write, at the table's width.
+  assert.deepEqual(valueReads(s.sheets.Log), [
+    "getValues 1,1,3," + LOG_HEADER.length,
+    "getValues 3,1,1," + LOG_HEADER.length,
+  ]);
   assert.equal(s.sheets.Log.reads.filter((r) => r === "getLastColumn").length, 1);
   assert.equal(s.sheets.Log.rowByHeader(3).Status, "closed");
   assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
@@ -1569,4 +1573,158 @@ test("the Flags plan counts only non-blank reasons, and raiseFlags_ with no plan
   assert.equal(s.sheets.Flags.rowByHeader(4)["Shift ID"], "s-2");
   assert.ok(s.journal.includes("read Flags getNumberFormats 4,1,1," + FLAG_HEADER.length));
   assert.deepEqual(s.errors, []);
+});
+
+// ---------------------------------------------------------------------------
+// Check-out re-checks its row
+
+/**
+ * Runs change once, after the first getValues on the sheet (the Log table read). Returns
+ * a holder whose rows is the sheet as JSON just after the change: the Log as staff left it.
+ */
+const afterTableRead = (sheet, change) => {
+  const left = { rows: null };
+  sheet.afterValues = (sh) => {
+    sh.afterValues = null;
+    change(sh);
+    left.rows = JSON.stringify(sh.rows);
+  };
+  return left;
+};
+/** Deletes Log row n as Sheets does: the rows below move up and the grid loses a row. */
+const deleteRow = (sheet, n) => {
+  sheet.rows.splice(n - 1, 1);
+  sheet.maxRows -= 1;
+};
+const BUSY_TEXT = "The kiosk is busy. Please try again.";
+const ruthOpen = () => kioskOpen("s-ruth", TODAY, "08:30", RUTH.token, "Ruth Okafor");
+
+test("apiCheckOut answers BUSY and writes nothing when its row moved before the write", () => {
+  const log = [LOG_HEADER, ruthOpen(), kioskOpen("s-sam", TODAY, "08:00")];
+  const s = kiosk({ volunteers: [SAM, RUTH], log });
+  // Staff sort the Log while the call runs: Sam's row moves up, Ruth's into row 3.
+  const left = afterTableRead(
+    s.sheets.Log,
+    (sh) => ([sh.rows[1], sh.rows[2]] = [sh.rows[2], sh.rows[1]]),
+  );
+  // A flagged check-out, so the Flags plan has run too.
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30)));
+  assert.deepEqual(reply, { ok: false, refusal: "BUSY", message: BUSY_TEXT });
+  assert.equal(JSON.stringify(s.sheets.Log.rows), left.rows, "the Log is as staff left it");
+  assert.deepEqual(
+    s.journal.filter((e) => e.startsWith("write ")),
+    [],
+    "nothing written",
+  );
+  assert.equal(s.sheets.Flags.getLastRow(), 1);
+  assert.deepEqual(s.errors, [
+    "Check-out: Log row 3 no longer holds open Shift ID s-sam; answered BUSY and wrote nothing.",
+  ]);
+  assert.equal(s.sheets.Log.rowByHeader(3)["Shift ID"], "s-ruth");
+  assert.equal(s.sheets.Log.rowByHeader(3).Status, "open", "Ruth's row is not closed");
+
+  // A retry reads the Log again and closes Sam's row where it now is.
+  const retry = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30)));
+  assert.equal(retry.ok, true);
+  assert.equal(s.sheets.Log.rowByHeader(2)["Shift ID"], "s-sam");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+  assert.equal(s.sheets.Log.rowByHeader(3).Status, "open");
+  assert.equal(s.sheets.Flags.rowByHeader(2)["Log Row"], 2);
+});
+
+test("apiCheckOut answers BUSY when its row is gone past the Log's end", () => {
+  // Past the grid: Sam's row was the last grid row, and staff deleted it.
+  const log = [LOG_HEADER, ruthOpen(), kioskOpen("s-sam", TODAY, "08:00")];
+  const past = kiosk({ volunteers: [SAM, RUTH], log, logMaxRows: 3 });
+  const left = afterTableRead(past.sheets.Log, (sh) => deleteRow(sh, 3));
+  const reply = plain(past.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.deepEqual(reply, { ok: false, refusal: "BUSY", message: BUSY_TEXT });
+  assert.ok(past.journal.includes("read Log getValues 3,1,1," + LOG_HEADER.length));
+  assert.equal(JSON.stringify(past.sheets.Log.rows), left.rows);
+  assert.deepEqual(
+    past.journal.filter((e) => e.startsWith("write ")),
+    [],
+  );
+  assert.deepEqual(past.errors, [
+    "Log row 3 not read again for Shift ID s-sam: " +
+      "The coordinates of the range are outside the dimensions of the sheet.",
+    "Check-out: Log row 3 no longer holds open Shift ID s-sam; answered BUSY and wrote nothing.",
+  ]);
+
+  // Inside the grid: the row reads as blanks, which is no open row.
+  const inside = kiosk({ volunteers: [SAM, RUTH], log });
+  afterTableRead(inside.sheets.Log, (sh) => deleteRow(sh, 3));
+  assert.ok(inside.sheets.Log.maxRows >= 3);
+  const blank = plain(inside.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.deepEqual(blank, { ok: false, refusal: "BUSY", message: BUSY_TEXT });
+  assert.deepEqual(
+    inside.journal.filter((e) => e.startsWith("write ")),
+    [],
+  );
+  assert.equal(inside.sheets.Log.getLastRow(), 2);
+  assert.equal(inside.sheets.Log.rowByHeader(2).Status, "open");
+  assert.deepEqual(inside.errors, [
+    "Check-out: Log row 3 no longer holds open Shift ID s-sam; answered BUSY and wrote nothing.",
+  ]);
+});
+
+test("apiCheckOut writes as before when its row is unchanged", () => {
+  const log = [LOG_HEADER, ruthOpen(), kioskOpen("s-sam", TODAY, "08:00")];
+  const s = kiosk({ volunteers: [SAM, RUTH], log });
+  // Staff edit a column of their own, and the Notes, on the row meanwhile: still Sam's open row.
+  afterTableRead(s.sheets.Log, (sh) => {
+    sh.rows[2][LOG_HEADER.indexOf("Staff column")] = "seen";
+    sh.rows[2][LOG_HEADER.indexOf("Notes")] = "edited";
+  });
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30)));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.minutes, 90);
+  const row = s.sheets.Log.rowByHeader(3);
+  assert.equal(row["Shift ID"], "s-sam");
+  assert.equal(row.Status, "closed");
+  assert.equal(row["Check-Out Entered By"], "kiosk");
+  assert.equal(row["Admin Alerts?"], "check-out differs by 30 min");
+  assert.equal(row["Staff column"], "seen");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "open", "Ruth's row is untouched");
+  assert.deepEqual(s.errors, []);
+  // The row read again is the last read before the write, after the Flags plan.
+  const journal = s.journal.slice();
+  const { before, after } = atFirstLogWrite(journal);
+  assert.deepEqual(after.filter(isRead), []);
+  // The last cell read; updateLogRow_ still looks the tab up after it.
+  const reads = before.filter((e) => isRead(e) && !e.endsWith(" getSheetByName"));
+  assert.equal(reads[reads.length - 1], "read Log getValues 3,1,1," + LOG_HEADER.length);
+  const plan = before.indexOf("read Flags getNumberFormats 2,1,1," + FLAG_HEADER.length);
+  const reread = before.indexOf("read Log getValues 3,1,1," + LOG_HEADER.length);
+  assert.ok(plan >= 0 && plan < reread, "the Flags plan comes before the row read");
+  assert.equal(s.sheets.Flags.rowByHeader(2)["Log Row"], 3);
+});
+
+test("the row read again is null when the read throws, and a blank row past the end", () => {
+  const log = [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")];
+  const s = kiosk({ log, logMaxRows: 2 });
+  const cols = s.ctx.readLogColumns_();
+  const read = s.ctx.logRead_();
+  const width = LOG_HEADER.length;
+  const entry = plain(s.ctx.readLogRowAt_(2, width, cols, read, "s-sam"));
+  assert.deepEqual(entry, plain(s.ctx.readLog_(cols)[0]));
+  assert.equal(s.ctx.readLogRowAt_(3, width, cols, read, "s-sam"), null);
+  assert.deepEqual(s.errors, [
+    "Log row 3 not read again for Shift ID s-sam: " +
+      "The coordinates of the range are outside the dimensions of the sheet.",
+  ]);
+  // Any other Sheets error is null too, with its text.
+  s.errors.length = 0;
+  s.sheets.Log.afterValues = () => {
+    throw new Error("Service Spreadsheets timed out");
+  };
+  assert.equal(s.ctx.readLogRowAt_(2, width, cols, read, " s-x "), null);
+  assert.deepEqual(s.errors, [
+    "Log row 2 not read again for Shift ID s-x: Service Spreadsheets timed out",
+  ]);
+  // Inside the grid, past the last used row: a blank entry, which is not open.
+  const big = kiosk({ log });
+  const blank = big.ctx.readLogRowAt_(5, width, cols, read, "s-sam");
+  assert.equal(blank.row, 5);
+  assert.equal(big.ctx.autoClockOutRowUnchanged(big.ctx.readLog_(cols)[0], blank), false);
 });

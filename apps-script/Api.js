@@ -148,7 +148,9 @@ function apiCheckIn(code, id, arrivalIso, digits) {
  * the call, minutes the whole minutes of stated hours, and milestone {id, title,
  * message} or null. The open row is the one checked in less than "Auto clock-out after
  * hours" ago, so an evening shift checks out past midnight; NOT_IN when there is none. A
- * check-out whose stated hours are more than "Long shift flag hours" is flagged.
+ * check-out whose stated hours are more than "Long shift flag hours" is flagged. BUSY
+ * when the open row, read again just before the write, is no longer the row decided on
+ * (staff sorted, inserted or deleted Log rows meanwhile); nothing is written then.
  */
 function apiCheckOut(code, id, digits, checkOutIso) {
   const settings = readSettings_();
@@ -177,12 +179,27 @@ function apiCheckOut(code, id, digits, checkOutIso) {
     });
     if (decision.refusal) return refusal(decision.refusal);
     const flagPlan = planFlags_(decision.flags);
+    // Staff may sort, insert or delete Log rows while the call runs, which moves rows
+    // under their numbers. Read the row again, last before the write, and write only if
+    // it is still the open row decided on; else BUSY, and a retry reads the Log again.
+    const shiftId = decision.open.shiftId;
+    const current = readLogRowAt_(decision.row, log.width, log.cols, logRead_(), shiftId);
+    if (!autoClockOutRowUnchanged(decision.open, current)) {
+      console.error(
+        "Check-out: Log row " +
+          decision.row +
+          " no longer holds open Shift ID " +
+          cellString(shiftId) +
+          "; answered BUSY and wrote nothing.",
+      );
+      return refusal("BUSY");
+    }
     updateLogRow_(decision.row, decision.cells, log.cols);
     raiseFlags_(
       {
         date: rowDate(decision.open.dateText),
         name: decision.open.name,
-        shiftId: decision.open.shiftId,
+        shiftId,
         raisedAtMs: now.getTime(),
         source: flagSources().checkOut,
         logRow: decision.row,
