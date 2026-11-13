@@ -2814,18 +2814,30 @@ function hoursRows(entries) {
 }
 
 /**
+ * The key two Hours labels are compared by: normalizeName, then upper case, then lower case
+ * again. A pivot folds case through upper case, where "ß" becomes "SS", so it groups "Anna
+ * Straße" with "ANNA STRASSE", which normalizeName keeps apart. Labels equal under
+ * normalizeName have equal keys too, since the key is worked out from normalizeName's text.
+ * normalizeName itself stays as it is: the kiosk's name matching uses it.
+ */
+function hoursLabelKey(text) {
+  return normalizeName(normalizeName(text).toUpperCase());
+}
+
+/**
  * Each volunteer's label on the Hours tab, as Map token -> label, over the whole Log (every
- * counted row with a month). No two tokens end with labels equal under normalizeName.
+ * counted row with a month). No two tokens end with labels equal under hoursLabelKey, so
+ * no two volunteers share a line in a pivot.
  *
  * 1. A token's base label is the Volunteer Name on its latest counted row in
  *    reportRowOrder, spaced as hoursSpaced, or "(no name)" when that cell is blank.
- * 2. When two or more tokens have base labels equal under normalizeName, each gets
+ * 2. When two or more tokens have base labels equal under hoursLabelKey, each gets
  *    " · first shift yyyy-MM-dd", the Date of its first shift (firstShifts).
  * 3. Then, until no label is shared: each label not yet given a Log row that equals another
- *    token's under normalizeName gets ", Log row N", N its first shift's Log row. A token
- *    gets this at most once. N is unique to its token and ends the label, so two labels
- *    with a Log row are never equal; each pass gives at least one token its Log row, so
- *    the loop ends within one pass per token.
+ *    token's under hoursLabelKey gets ", Log row N", N its first shift's Log row. A token
+ *    gets this at most once. N is unique to its token and ends the label (the key changes
+ *    no digit), so two labels with a Log row are never equal; each pass gives at least one
+ *    token its Log row, so the loop ends within one pass per token.
  */
 function hoursLabels(entries) {
   const rows = hoursRows(entries);
@@ -2837,7 +2849,7 @@ function hoursLabels(entries) {
   const groups = () => {
     const by = new Map();
     labels.forEach((label, token) => {
-      const key = normalizeName(label);
+      const key = hoursLabelKey(label);
       if (!by.has(key)) by.set(key, []);
       by.get(key).push(token);
     });

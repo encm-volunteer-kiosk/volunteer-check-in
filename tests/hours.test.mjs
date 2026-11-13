@@ -275,9 +275,21 @@ test("an empty Log gives no rows and zero counts", () => {
 // ---------------------------------------------------------------------------
 // Volunteer labels
 
+/**
+ * No two labels share a pivot line: distinct under normalizeName, under hoursLabelKey, and
+ * under an upper-case fold, the way the live pivot grouped "Anna Straße" with "ANNA
+ * STRASSE".
+ */
 function assertDistinct(labels) {
-  const keys = Object.values(labels).map((l) => L.normalizeName(l));
-  assert.equal(new Set(keys).size, keys.length, JSON.stringify(labels));
+  const folds = [
+    (l) => L.normalizeName(l),
+    (l) => L.hoursLabelKey(l),
+    (l) => L.hoursSpaced(l).toUpperCase(),
+  ];
+  for (const fold of folds) {
+    const keys = Object.values(labels).map(fold);
+    assert.equal(new Set(keys).size, keys.length, JSON.stringify(labels));
+  }
 }
 
 test("labels: names equal under case or spacing get the first shift's date", () => {
@@ -388,10 +400,15 @@ test("labels: a counted row with no month changes no label", () => {
   assert.deepEqual(labelsOf(base), { t1: "Ann", t2: "Bo" });
 });
 
-test("labels outside ASCII: normalizeName joins Zoë and ZOË, keeps İpek and ipek, Straße and STRASSE apart", () => {
+test("labels outside ASCII: Zoë and ZOË and Straße and STRASSE get suffixes, İpek and ipek don't", () => {
+  // normalizeName itself is unchanged: the kiosk's matching uses it.
   assert.equal(L.normalizeName("Zoë"), L.normalizeName("ZOË"));
   assert.notEqual(L.normalizeName("İpek"), L.normalizeName("ipek"));
   assert.notEqual(L.normalizeName("Straße"), L.normalizeName("STRASSE"));
+  // The label key folds case through upper case, as the pivot does.
+  assert.equal(L.hoursLabelKey("Zoë"), L.hoursLabelKey("ZOË"));
+  assert.notEqual(L.hoursLabelKey("İpek"), L.hoursLabelKey("ipek"));
+  assert.equal(L.hoursLabelKey("Anna Straße"), L.hoursLabelKey("ANNA  STRASSE "));
   nextRow = 2;
   const labels = labelsOf([
     row({ token: "z1", name: "Zoë", date: "2026-11-01" }),
@@ -406,10 +423,38 @@ test("labels outside ASCII: normalizeName joins Zoë and ZOË, keeps İpek and i
     z2: "ZOË · first shift 2026-11-02",
     i1: "İpek",
     i2: "ipek",
-    s1: "Straße",
-    s2: "STRASSE",
+    s1: "Straße · first shift 2026-11-01",
+    s2: "STRASSE · first shift 2026-11-02",
   });
   assertDistinct(labels);
+});
+
+test("labels outside ASCII on the live check's pairs: the month's volunteers equal monthFigures' headcount under the pivot's grouping", () => {
+  nextRow = 2;
+  const pairs = [
+    ["Zoë Park", "ZOË PARK"],
+    ["İpek Demir", "ipek demir"],
+    ["Anna Straße", "ANNA STRASSE"],
+  ];
+  const entries = pairs.flatMap(([a, b], i) => [
+    row({ token: "a" + i, name: a, date: "2026-11-03", hours: 1.5 }),
+    row({ token: "b" + i, name: b, date: "2026-11-04", hours: 1.5 }),
+  ]);
+  const labels = labelsOf(entries);
+  assert.deepEqual(labels, {
+    a0: "Zoë Park · first shift 2026-11-03",
+    b0: "ZOË PARK · first shift 2026-11-04",
+    a1: "İpek Demir",
+    b1: "ipek demir",
+    a2: "Anna Straße · first shift 2026-11-03",
+    b2: "ANNA STRASSE · first shift 2026-11-04",
+  });
+  assertDistinct(labels);
+  const t = plain(L.hoursTable(entries, [], clock));
+  const f = plain(L.monthFigures(entries, "2026-11", L.firstShifts(entries)));
+  assert.equal(f.headcount, 6);
+  assert.equal(new Set(t.rows.map((r) => L.hoursLabelKey(r[5]))).size, f.headcount);
+  assert.equal(new Set(t.rows.map((r) => r[5].toUpperCase())).size, f.headcount);
 });
 
 test("labels stay distinct under normalizeName on a large mixed fixture", () => {
@@ -422,6 +467,8 @@ test("labels stay distinct under normalizeName on a large mixed fixture", () => 
     "",
     "Ann Lee · first shift 2026-11-01",
     "Ann Lee · first shift 2026-11-01, Log row 2",
+    "Anna Straße",
+    "ANNA STRASSE",
   ];
   const entries = [];
   for (let i = 0; i < 60; i++) {
