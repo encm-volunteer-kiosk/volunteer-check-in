@@ -3652,10 +3652,12 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
 //
 // One row per flag, for staff to tick off as reviewed. The Log row is the record: Admin
 // Alerts? keeps every kiosk flag, and a Flags row is a copy for review. The script only
-// appends Flags rows. It reads the Flags header to place its writes; only the weekly
-// flags email reads Flags rows back, and only to count and list them, so staff may sort,
-// filter or delete rows. Reviewed By and Notes are staff's; the script writes Reviewed
-// once, unticked, on the row it appends.
+// appends Flags rows, each under the last row in use (flagRowUsed). It reads the Flags
+// header to place its writes. Three things read Flags rows back: the weekly flags email
+// and the Hours refresh, to count and list them, and the Log check, to skip a problem
+// already flagged. So staff may sort, filter or delete rows; a deleted Log check row is
+// raised again on the next check. Reviewed By and Notes are staff's; the script writes
+// Reviewed once, unticked, on the row it appends.
 
 /** The Flags headers, keyed by the short names the code uses, in the order a new tab gets them. */
 function flagHeaderNames() {
@@ -3823,6 +3825,20 @@ function flagRowValues(cells, cols, width) {
     row[at] = value;
   });
   return row;
+}
+
+/**
+ * Whether a Flags row is in use, so a new flag goes below it: any cell other than Reviewed
+ * isn't blank, or Reviewed holds anything but an unticked box (blank, false or "FALSE").
+ * cells is one row of the tab, cols is flagColumns of its header. Rows that hold only an
+ * unticked box, as setupSheets leaves every row, are free.
+ */
+function flagRowUsed(cells, cols) {
+  const reviewed = cols[flagHeaderNames().reviewed];
+  return (cells || []).some((value, i) => {
+    if (i !== reviewed) return cellString(value) !== "";
+    return value !== false && cellString(value) !== "" && !/^false$/i.test(cellString(value));
+  });
 }
 
 /**
