@@ -100,29 +100,56 @@ const clock = (ms) => {
 /**
  * A sheet held as rows of cells; row and column numbers are 1-based, as in Apps Script.
  * A write past the last grid row (maxRows) fails, as it does in Sheets, so an append must
- * grow the sheet with insertRowsAfter first.
+ * grow the sheet with insertRowsAfter first. As in Sheets, a range of no rows or no
+ * columns throws, and so does a read past the last grid row. reads records each read the
+ * script makes, in order: "getLastRow", "getLastColumn", "getMaxRows", "getValues
+ * row,col,rows,cols" and "getNumberFormats row,col,rows,cols". When server() gives the
+ * sheet a journal, each read goes there too as "read <tab> <read>", and each write as
+ * "write <tab> <method> <args>", so one list holds the order across tabs. afterValues,
+ * when set, runs after each getValues has returned its cells, so a test can move rows
+ * between two reads.
  */
 class FakeSheet {
-  constructor(rows, maxRows = 1000) {
+  constructor(rows, maxRows = Math.max(1000, rows.length)) {
     this.rows = rows.map((r) => r.slice());
     this.formats = {};
     this.maxRows = maxRows;
     this.inserted = [];
     // Data validations by "row:col".
     this.validations = {};
+    this.reads = [];
+    this.name = "";
+    this.afterValues = null;
   }
-  getLastRow() {
+  noteRead(what) {
+    this.reads.push(what);
+    if (this.journal) this.journal.push("read " + this.name + " " + what);
+  }
+  noteWrite(what) {
+    if (this.journal) this.journal.push("write " + this.name + " " + what);
+  }
+  lastRow() {
     let last = this.rows.length;
     while (last > 0 && this.rows[last - 1].every((v) => v === "")) last--;
     return last;
   }
-  getLastColumn() {
+  lastColumn() {
     return Math.max(0, ...this.rows.map((r) => r.length));
   }
+  getLastRow() {
+    this.noteRead("getLastRow");
+    return this.lastRow();
+  }
+  getLastColumn() {
+    this.noteRead("getLastColumn");
+    return this.lastColumn();
+  }
   getMaxRows() {
+    this.noteRead("getMaxRows");
     return this.maxRows;
   }
   insertRowsAfter(after, count) {
+    this.noteWrite("insertRowsAfter " + after + "," + count);
     assert.equal(after, this.maxRows, "rows are only added at the end");
     this.inserted.push(count);
     this.maxRows += count;
@@ -135,27 +162,41 @@ class FakeSheet {
     r[col - 1] = value;
   }
   getDataRange() {
-    return this.getRange(1, 1, this.getLastRow(), this.getLastColumn());
+    // Sheets gives an empty tab a data range of one cell, A1.
+    return this.getRange(1, 1, Math.max(this.lastRow(), 1), Math.max(this.lastColumn(), 1));
   }
   getRange(row, col, rows = 1, cols = 1) {
+    if (!(rows >= 1)) throw new Error("The number of rows in the range must be at least 1.");
+    if (!(cols >= 1)) throw new Error("The number of columns in the range must be at least 1.");
     const sheet = this;
+    const where = [row, col, rows, cols].join(",");
     const range = {
-      getValues: () =>
-        Array.from({ length: rows }, (_, i) =>
+      getValues: () => {
+        sheet.noteRead("getValues " + where);
+        if (row + rows - 1 > sheet.maxRows) {
+          throw new Error("The coordinates of the range are outside the dimensions of the sheet.");
+        }
+        const values = Array.from({ length: rows }, (_, i) =>
           Array.from(
             { length: cols },
             (_, j) => (sheet.rows[row - 1 + i] || [])[col - 1 + j] ?? "",
           ),
-        ),
+        );
+        if (sheet.afterValues) sheet.afterValues(sheet);
+        return values;
+      },
       setNumberFormat: (format) => {
+        sheet.noteWrite("setNumberFormat " + where);
         sheet.formats[row + ":" + col] = format;
         return range;
       },
       setValue: (value) => {
+        sheet.noteWrite("setValue " + where);
         sheet.put(row, col, value);
         return range;
       },
       setValues: (values) => {
+        sheet.noteWrite("setValues " + where);
         assert.equal(values.length, rows, "setValues row count");
         values.forEach((line, i) => {
           assert.equal(line.length, cols, "setValues column count");
@@ -163,11 +204,14 @@ class FakeSheet {
         });
         return range;
       },
-      getNumberFormats: () =>
-        Array.from({ length: rows }, (_, i) =>
+      getNumberFormats: () => {
+        sheet.noteRead("getNumberFormats " + where);
+        return Array.from({ length: rows }, (_, i) =>
           Array.from({ length: cols }, (_, j) => sheet.formats[row + i + ":" + (col + j)] ?? ""),
-        ),
+        );
+      },
       setNumberFormats: (formats) => {
+        sheet.noteWrite("setNumberFormats " + where);
         assert.equal(formats.length, rows, "setNumberFormats row count");
         formats.forEach((line, i) => {
           assert.equal(line.length, cols, "setNumberFormats column count");
@@ -176,6 +220,7 @@ class FakeSheet {
         return range;
       },
       setDataValidation: (rule) => {
+        sheet.noteWrite("setDataValidation " + where);
         for (let i = 0; i < rows; i++) {
           for (let j = 0; j < cols; j++) sheet.validations[row + i + ":" + (col + j)] = rule;
         }
@@ -199,16 +244,19 @@ class FakeSheet {
  * opts: active and effective (the two Session emails), ui (false: getUi throws), log and
  * settings (rows), volunteers (the cached Profiles list), keys (dialog keys already
  * issued), flags (the Flags tab's rows, FLAG_HEADER alone by default; null for no Flags
- * tab), flagsMaxRows (its last grid row), now (a fixed server clock, in ms), onFlush
- * (run on each SpreadsheetApp.flush), triggers (this account's project triggers, as
- * [{uid, handler}]). errors collects what the server logs with console.error.
+ * tab), flagsMaxRows (its last grid row), logMaxRows (the Log's), now (a fixed server
+ * clock, in ms), onFlush (run on each SpreadsheetApp.flush), triggers (this account's
+ * project triggers, as [{uid, handler}]). errors collects what the server logs with
+ * console.error. journal lists, in order, every sheet read and write (FakeSheet), each tab
+ * the script opens ("read <tab> getSheetByName") and each flush ("flush").
  */
 function server(opts = {}) {
   const calls = [];
   const cache = new Map();
   const errors = [];
+  const journal = [];
   const sheets = {
-    Log: new FakeSheet(opts.log || [[]]),
+    Log: new FakeSheet(opts.log || [[]], opts.logMaxRows),
     Flags:
       opts.flags === null
         ? undefined
@@ -221,6 +269,12 @@ function server(opts = {}) {
       ],
     ),
   };
+  for (const [name, sheet] of Object.entries(sheets)) {
+    if (!sheet) continue;
+    sheet.name = name;
+    // Not enumerable, so a JSON copy of one sheet holds only that sheet.
+    Object.defineProperty(sheet, "journal", { value: journal });
+  }
   const shown = [];
   const menu = [];
   let uuid = 0;
@@ -281,8 +335,16 @@ function server(opts = {}) {
           showModalDialog: (output, title) => shown.push({ output, title }),
         };
       },
-      getActiveSpreadsheet: () => ({ getSheetByName: (name) => sheets[name] || null }),
-      flush: () => (opts.onFlush ? opts.onFlush() : undefined),
+      getActiveSpreadsheet: () => ({
+        getSheetByName: (name) => {
+          journal.push("read " + name + " getSheetByName");
+          return sheets[name] || null;
+        },
+      }),
+      flush: () => {
+        journal.push("flush");
+        return opts.onFlush ? opts.onFlush() : undefined;
+      },
       newDataValidation: () => {
         const b = { requireCheckbox: () => b, build: () => "checkbox" };
         return b;
@@ -302,6 +364,7 @@ function server(opts = {}) {
     }),
     Utilities: service("Utilities", {
       getUuid: () => "uuid-" + ++uuid,
+      sleep: () => undefined,
       formatDate: (date, tz, format) => {
         assert.equal(tz, TZ);
         if (format === "yyyy-MM-dd HH:mm:ss") return formatInZone(date, tz, format);
@@ -343,7 +406,8 @@ function server(opts = {}) {
   }
   for (const key of opts.keys || []) cache.set(ctx.adminKeyCacheKey(key), "1");
   calls.length = 0;
-  return { ctx, calls, cache, sheets, shown, menu, errors };
+  journal.length = 0;
+  return { ctx, calls, cache, sheets, shown, menu, errors, journal };
 }
 
 // ---------------------------------------------------------------------------
@@ -1167,4 +1231,500 @@ test("apiCheckOut flags a long shift in Admin Alerts? and on the Flags tab, afte
   t.ctx.apiCheckOut(CODE, SAM.id, null, null);
   assert.equal(t.sheets.Log.rowByHeader(2)["Admin Alerts?"], "");
   assert.equal(t.sheets.Flags.getLastRow(), 1);
+});
+
+// ---------------------------------------------------------------------------
+// Reads per kiosk call
+
+const valueReads = (sheet) => sheet.reads.filter((r) => r.startsWith("getValues"));
+const WRONG_CODE = "wrongwrongwrongwrong";
+
+/**
+ * Swaps in a script lock that notes how many times Settings had been read when the lock
+ * was taken. Returns the list it fills, one count per lock taken.
+ */
+const settingsReadsAtLock = (s) => {
+  const seen = [];
+  s.ctx.LockService = {
+    getScriptLock: () => ({
+      tryLock: () => (seen.push(valueReads(s.sheets.Settings).length), true),
+      releaseLock: () => undefined,
+    }),
+  };
+  return seen;
+};
+
+test("apiCheckIn reads Settings once and the Log once", () => {
+  const log = [LOG_HEADER, closedBy("s-old", "2026-11-03", "auto-close")];
+  const s = kiosk({ settings: WINDOW_SETTINGS, log });
+  const atLock = settingsReadsAtLock(s);
+  const reply = plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.missedSignOut, true);
+  assert.deepEqual(atLock, [1], "Settings are read before the lock is taken");
+  assert.deepEqual(valueReads(s.sheets.Settings), [
+    "getValues 1,1," + WINDOW_SETTINGS.length + ",2",
+  ]);
+  // Header and rows in one range.
+  assert.deepEqual(valueReads(s.sheets.Log), ["getValues 1,1,2," + LOG_HEADER.length]);
+  assert.equal(s.sheets.Log.reads.filter((r) => r === "getLastColumn").length, 1);
+  assert.equal(s.sheets.Log.rowByHeader(3).Status, "open");
+  assert.equal(s.sheets.Log.rowByHeader(3)["Shift ID"], reply.shiftId);
+});
+
+test("apiCheckOut reads Settings once and the Log once", () => {
+  const log = [
+    LOG_HEADER,
+    closedBy("s-old", "2026-11-03", "kiosk"),
+    kioskOpen("s-open", TODAY, "08:00"),
+  ];
+  const s = kiosk({ settings: WINDOW_SETTINGS, log });
+  const atLock = settingsReadsAtLock(s);
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.minutes, 120);
+  assert.deepEqual(atLock, [1], "Settings are read before the lock is taken");
+  assert.deepEqual(valueReads(s.sheets.Settings), [
+    "getValues 1,1," + WINDOW_SETTINGS.length + ",2",
+  ]);
+  // The table once, then the open row again just before the write, at the table's width.
+  assert.deepEqual(valueReads(s.sheets.Log), [
+    "getValues 1,1,3," + LOG_HEADER.length,
+    "getValues 3,1,1," + LOG_HEADER.length,
+  ]);
+  assert.equal(s.sheets.Log.reads.filter((r) => r === "getLastColumn").length, 1);
+  assert.equal(s.sheets.Log.rowByHeader(3).Status, "closed");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+});
+
+test("apiListVolunteers reads Settings once", () => {
+  const s = kiosk({
+    settings: WINDOW_SETTINGS,
+    log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")],
+  });
+  const [listed] = plain(s.ctx.apiListVolunteers(CODE).volunteers);
+  assert.equal(listed.checkedIn, true);
+  assert.deepEqual(valueReads(s.sheets.Settings), [
+    "getValues 1,1," + WINDOW_SETTINGS.length + ",2",
+  ]);
+});
+
+test("a wrong code refuses after one Settings read, before the lock", () => {
+  const message = plain(kiosk({}).ctx.refusalMessages()).ACCESS;
+  const refused = { ok: false, refusal: "ACCESS", message };
+  const calls = [
+    (s) => s.ctx.apiCheckIn(WRONG_CODE, SAM.id, null, null),
+    (s) => s.ctx.apiCheckOut(WRONG_CODE, SAM.id, null, null),
+    (s) => s.ctx.apiListVolunteers(WRONG_CODE),
+    (s) => s.ctx.apiCheckAccess(WRONG_CODE),
+  ];
+  for (const call of calls) {
+    const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
+    assert.deepEqual(plain(call(s)), refused);
+    assert.equal(valueReads(s.sheets.Settings).length, 1);
+    assert.ok(!s.calls.includes("LockService.getScriptLock"), "no lock taken");
+    assert.deepEqual(s.sheets.Log.reads, [], "the Log is not read");
+    assert.deepEqual(
+      s.calls.filter((c) => c === "Utilities.sleep"),
+      ["Utilities.sleep"],
+      "a wrong code waits",
+    );
+    assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+  }
+});
+
+test("the Log table read gives no entries on a header-only Log and throws the missing-column error on an empty tab", () => {
+  const s = kiosk({});
+  const table = plain(s.ctx.readLogTable_(SAM.token));
+  assert.deepEqual(table.entries, []);
+  assert.equal(table.width, LOG_HEADER.length);
+  assert.deepEqual(table.cols, plain(s.ctx.readLogColumns_()));
+  assert.deepEqual(valueReads(s.sheets.Log)[0], "getValues 1,1,1," + LOG_HEADER.length);
+
+  // An empty tab: one cell read, as Sheets refuses a range of no rows or columns.
+  const empty = kiosk({ log: [[]] });
+  const missing = (e) => /^The Log has no "[^"]+" column\. Run setupSheets\(\)\.$/.test(e.message);
+  assert.throws(() => empty.ctx.readLogTable_(SAM.token), missing);
+  assert.deepEqual(valueReads(empty.sheets.Log), ["getValues 1,1,1,1"]);
+  assert.throws(() => empty.ctx.apiCheckIn(CODE, SAM.id, null, null), missing);
+  assert.throws(() => empty.ctx.apiCheckOut(CODE, SAM.id, null, null), missing);
+});
+
+// Two of a same-name group, who must give their phone's last four.
+const ANN = {
+  ...SAM,
+  id: "cccccccccccccccc",
+  firstName: "Ann",
+  lastName: "Ruiz",
+  phoneLast4: "1111",
+  needsPhoneCheck: true,
+  token: "tok-ann",
+};
+const ANN_TOO = { ...ANN, id: "dddddddddddddddd", phoneLast4: "2222", token: "tok-ann-2" };
+
+test("a NOT_FOUND or PHONE_WRONG tap returns without reading the Log", () => {
+  const taps = [
+    ["NOT_FOUND", (s) => s.ctx.apiCheckIn(CODE, "eeeeeeeeeeeeeeee", null, null)],
+    ["NOT_FOUND", (s) => s.ctx.apiCheckOut(CODE, "eeeeeeeeeeeeeeee", null, null)],
+    ["PHONE_WRONG", (s) => s.ctx.apiCheckIn(CODE, ANN.id, null, "9999")],
+    ["PHONE_WRONG", (s) => s.ctx.apiCheckOut(CODE, ANN.id, "9999", null)],
+  ];
+  for (const [code, tap] of taps) {
+    const log = [LOG_HEADER, kioskOpen("s-ann", TODAY, "08:00", ANN.token, "Ann Ruiz")];
+    const s = kiosk({ volunteers: [SAM, ANN, ANN_TOO], log });
+    assert.equal(plain(tap(s)).refusal, code);
+    assert.deepEqual(s.sheets.Log.reads, [], code + ": the Log is not read");
+    assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+    assert.equal(s.sheets.Log.getLastRow(), 2);
+    // A Log with no header row doesn't change the refusal: the Log is never reached.
+    const broken = kiosk({ volunteers: [SAM, ANN, ANN_TOO], log: [[]] });
+    assert.equal(plain(tap(broken)).refusal, code);
+  }
+  // The other member's digits pick that member, whose rows are then read.
+  const log = [LOG_HEADER, kioskOpen("s-ann2", TODAY, "08:00", ANN_TOO.token, "Ann Ruiz")];
+  const s = kiosk({ volunteers: [SAM, ANN, ANN_TOO], log });
+  const out = plain(s.ctx.apiCheckOut(CODE, ANN.id, "2222", null));
+  assert.equal(out.ok, true);
+  assert.equal(out.id, ANN_TOO.id);
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+});
+
+test("the filtered Log read gives the same entries as the whole read filtered by token", () => {
+  // More rows than the default 1000 grid rows, so a large Log still reads.
+  const cellTokens = ["tok-sam", " tok-sam ", "TOK-SAM", "tok-ruth", "", 4321, "tok-samuel"];
+  const log = [LOG_HEADER];
+  for (let i = 0; i < 1200; i++) {
+    const row = kioskOpen("s-" + i, TODAY, "08:00");
+    row[LOG_HEADER.indexOf("User Token")] = cellTokens[i % cellTokens.length];
+    // Dates typed as text, and some that can't be read.
+    if (i % 3 === 0) row[LOG_HEADER.indexOf("Date")] = "11/" + (1 + (i % 28)) + "/2026";
+    if (i % 11 === 0) row[LOG_HEADER.indexOf("Date")] = "soon";
+    row[LOG_HEADER.indexOf("Status")] = i % 5 ? "closed" : "open";
+    if (i % 7 === 0) row[LOG_HEADER.indexOf("Date")] = at(TODAY, "00:00");
+    log.push(row);
+  }
+  const s = kiosk({ log });
+  const cols = s.ctx.readLogColumns_();
+  const whole = s.ctx.readLog_(cols);
+  assert.equal(whole.length, 1200);
+  for (const token of ["tok-sam", " tok-sam", "tok-ruth", "TOK-SAM", "4321", "nobody", "", " "]) {
+    const table = s.ctx.readLogTable_(token);
+    const want = whole.filter((e) => s.ctx.isTokenRow(e, token));
+    assert.deepEqual(plain(table.entries), plain(want), "token " + JSON.stringify(token));
+    assert.deepEqual(plain(table.cols), plain(cols));
+    assert.equal(table.width, LOG_HEADER.length);
+  }
+  // Both spellings of tok-sam with padding are Sam's rows; a blank token keeps none.
+  const sams = log.filter((r) => String(r[LOG_HEADER.indexOf("User Token")]).trim() === "tok-sam");
+  assert.ok(sams.length > 300);
+  assert.equal(s.ctx.readLogTable_("tok-sam").entries.length, sams.length);
+  assert.deepEqual(plain(s.ctx.readLogTable_("").entries), []);
+});
+
+// ---------------------------------------------------------------------------
+// Nothing read after the Log write
+
+const isRead = (entry) => entry.startsWith("read ");
+const isLogWrite = (entry) => entry.startsWith("write Log ");
+
+/**
+ * The journal split at the call's first Log write: {before, after}, after starting with
+ * that write. Fails when the call wrote nothing to the Log.
+ */
+const atFirstLogWrite = (journal) => {
+  const i = journal.findIndex(isLogWrite);
+  assert.ok(i > 0, "the call writes the Log");
+  return { before: journal.slice(0, i), after: journal.slice(i) };
+};
+
+test("a flagged check-in reads nothing after its Log write", () => {
+  const s = kiosk({});
+  const reply = plain(s.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(24), null));
+  assert.equal(reply.ok, true);
+  const { before, after } = atFirstLogWrite(s.journal.slice());
+  assert.deepEqual(after.filter(isRead), [], "no read after the Log write");
+  // Every Flags read came before it: the tab, its header, last row, grid and formats.
+  const width = FLAG_HEADER.length;
+  assert.deepEqual(
+    before.filter((e) => e.startsWith("read Flags ")),
+    [
+      "read Flags getSheetByName",
+      "read Flags getLastColumn",
+      "read Flags getValues 1,1,1," + width,
+      "read Flags getLastRow",
+      "read Flags getMaxRows",
+      "read Flags getNumberFormats 2,1,1," + width,
+    ],
+  );
+  // After it: the Log cells, a flush, the Flags row, a flush, and the lock's closing flush.
+  assert.deepEqual(
+    after.filter((e) => !isLogWrite(e)),
+    [
+      "flush",
+      "write Flags setNumberFormats 2,1,1," + width,
+      "write Flags setValues 2,1,1," + width,
+      "write Flags setDataValidation 2," + (FLAG_HEADER.indexOf("Reviewed") + 1) + ",1,1",
+      "flush",
+      "flush",
+    ],
+  );
+  assert.equal(s.sheets.Flags.rowByHeader(2).Reason, "arrival differs by 24 min");
+  assert.equal(s.sheets.Flags.rowByHeader(2)["Shift ID"], reply.shiftId);
+  assert.equal(s.sheets.Flags.rowByHeader(2)["Log Row"], 2);
+  assert.equal(s.sheets.Log.rowByHeader(2)["Admin Alerts?"], "arrival differs by 24 min");
+  assert.deepEqual(s.errors, []);
+});
+
+test("a flagged check-out reads nothing after its Log write", () => {
+  const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30)));
+  assert.equal(reply.ok, true);
+  const { before, after } = atFirstLogWrite(s.journal.slice());
+  assert.deepEqual(after.filter(isRead), [], "no read after the Log write");
+  assert.ok(before.includes("read Flags getNumberFormats 2,1,1," + FLAG_HEADER.length));
+  assert.deepEqual(
+    after.filter((e) => e.startsWith("write Flags ")).map((e) => e.split(" ")[2]),
+    ["setNumberFormats", "setValues", "setDataValidation"],
+  );
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+  const flag = s.sheets.Flags.rowByHeader(2);
+  assert.deepEqual(
+    [flag.Reason, flag["Shift ID"], flag.Source, flag["Log Row"]],
+    ["check-out differs by 30 min", "s-open", "kiosk check-out", 2],
+  );
+  assert.equal(s.sheets.Flags.getLastRow(), 2);
+  assert.deepEqual(s.errors, []);
+});
+
+test("a full Flags tab grows before the Log write and gets both flag rows", () => {
+  // Today's open row with both check-in times blank: two flags on check-out.
+  const open = logRow({
+    "Shift ID": "s-open",
+    "User Token": "tok-sam",
+    Status: "open",
+    Date: TODAY,
+    "Volunteer Name": "Sam Lee",
+    "Check-In Entered By": "kiosk",
+  });
+  const earlier = FLAG_HEADER.map((h) =>
+    h === "Shift ID" ? "s-old" : h === "Reviewed" ? true : "",
+  );
+  const s = kiosk({ log: [LOG_HEADER, open], flags: [FLAG_HEADER, earlier], flagsMaxRows: 2 });
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30)));
+  assert.equal(reply.ok, true);
+  const journal = s.journal.slice();
+  const { before, after } = atFirstLogWrite(journal);
+  assert.deepEqual(after.filter(isRead), [], "no read after the Log write");
+  const width = FLAG_HEADER.length;
+  const grown = before.indexOf("write Flags insertRowsAfter 2,50");
+  const formats = before.indexOf("read Flags getNumberFormats 3,1,2," + width);
+  assert.ok(grown >= 0, "the tab grew before the Log write");
+  assert.ok(formats > grown, "the new rows' formats are read after growing");
+  assert.deepEqual(s.sheets.Flags.inserted, [50]);
+  assert.ok(after.includes("write Flags setValues 3,1,2," + width));
+  const flags = s.sheets.Flags;
+  assert.equal(flags.getLastRow(), 4);
+  assert.deepEqual(
+    [3, 4].map((r) => flags.rowByHeader(r).Reason),
+    ["check-out differs by 30 min", "check-in time unreadable, stated hours left blank"],
+  );
+  assert.equal(flags.rowByHeader(2).Reviewed, true, "the row staff ticked is untouched");
+  assert.deepEqual(s.errors, []);
+});
+
+test("a Flags plan that no longer matches the rows built writes no Flags row and is logged", () => {
+  const s = kiosk({});
+  const flagRows = s.ctx.flagRows;
+  s.ctx.flagRows = (base, reasons) => flagRows(base, [...reasons, "one more"]);
+  const reply = plain(s.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(24), null));
+  assert.equal(reply.ok, true);
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+  assert.equal(s.sheets.Flags.getLastRow(), 1);
+  assert.deepEqual(s.errors, [
+    "Flags: not copied for Shift ID uuid-1: Flags rows planned for 1 rows, built 2.",
+  ]);
+});
+
+test("the Flags plan counts only non-blank reasons, and raiseFlags_ with no plan plans itself", () => {
+  const s = kiosk({});
+  assert.equal(s.ctx.planFlags_([]), null);
+  assert.equal(s.ctx.planFlags_(["", "  ", null]), null);
+  assert.deepEqual(s.journal, [], "no reasons, no read");
+  const base = {
+    date: TODAY,
+    name: "Sam Lee",
+    shiftId: "s-1",
+    raisedAtMs: NOW,
+    source: "kiosk check-in",
+    logRow: 2,
+  };
+  const plan = s.ctx.planFlags_(["late", " ", "early"]);
+  assert.equal(plan.formats.length, 2);
+  assert.equal(plan.first, 2);
+  s.journal.length = 0;
+  assert.equal(s.ctx.raiseFlags_(base, ["late", " ", "early"], plan), true);
+  assert.deepEqual(s.journal.filter(isRead), []);
+  assert.deepEqual(
+    [2, 3].map((r) => s.sheets.Flags.rowByHeader(r).Reason),
+    ["late", "early"],
+  );
+  // The jobs pass no plan: the reads happen here, then the write.
+  assert.equal(s.ctx.raiseFlags_({ ...base, shiftId: "s-2" }, ["again"]), true);
+  assert.equal(s.sheets.Flags.rowByHeader(4)["Shift ID"], "s-2");
+  assert.ok(s.journal.includes("read Flags getNumberFormats 4,1,1," + FLAG_HEADER.length));
+  assert.deepEqual(s.errors, []);
+});
+
+// ---------------------------------------------------------------------------
+// Check-out re-checks its row
+
+/**
+ * Runs change once, after the first getValues on the sheet (the Log table read). Returns
+ * a holder whose rows is the sheet as JSON just after the change: the Log as staff left it.
+ */
+const afterTableRead = (sheet, change) => {
+  const left = { rows: null };
+  sheet.afterValues = (sh) => {
+    sh.afterValues = null;
+    change(sh);
+    left.rows = JSON.stringify(sh.rows);
+  };
+  return left;
+};
+/** Deletes Log row n as Sheets does: the rows below move up and the grid loses a row. */
+const deleteRow = (sheet, n) => {
+  sheet.rows.splice(n - 1, 1);
+  sheet.maxRows -= 1;
+};
+const BUSY_TEXT = "The kiosk is busy. Please try again.";
+const ruthOpen = () => kioskOpen("s-ruth", TODAY, "08:30", RUTH.token, "Ruth Okafor");
+
+test("apiCheckOut answers BUSY and writes nothing when its row moved before the write", () => {
+  const log = [LOG_HEADER, ruthOpen(), kioskOpen("s-sam", TODAY, "08:00")];
+  const s = kiosk({ volunteers: [SAM, RUTH], log });
+  // Staff sort the Log while the call runs: Sam's row moves up, Ruth's into row 3.
+  const left = afterTableRead(
+    s.sheets.Log,
+    (sh) => ([sh.rows[1], sh.rows[2]] = [sh.rows[2], sh.rows[1]]),
+  );
+  // A flagged check-out, so the Flags plan has run too.
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30)));
+  assert.deepEqual(reply, { ok: false, refusal: "BUSY", message: BUSY_TEXT });
+  assert.equal(JSON.stringify(s.sheets.Log.rows), left.rows, "the Log is as staff left it");
+  assert.deepEqual(
+    s.journal.filter((e) => e.startsWith("write ")),
+    [],
+    "nothing written",
+  );
+  assert.equal(s.sheets.Flags.getLastRow(), 1);
+  assert.deepEqual(s.errors, [
+    "Check-out: Log row 3 no longer holds open Shift ID s-sam; answered BUSY and wrote nothing.",
+  ]);
+  assert.equal(s.sheets.Log.rowByHeader(3)["Shift ID"], "s-ruth");
+  assert.equal(s.sheets.Log.rowByHeader(3).Status, "open", "Ruth's row is not closed");
+
+  // A retry reads the Log again and closes Sam's row where it now is.
+  const retry = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30)));
+  assert.equal(retry.ok, true);
+  assert.equal(s.sheets.Log.rowByHeader(2)["Shift ID"], "s-sam");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+  assert.equal(s.sheets.Log.rowByHeader(3).Status, "open");
+  assert.equal(s.sheets.Flags.rowByHeader(2)["Log Row"], 2);
+});
+
+test("apiCheckOut answers BUSY when its row is gone past the Log's end", () => {
+  // Past the grid: Sam's row was the last grid row, and staff deleted it.
+  const log = [LOG_HEADER, ruthOpen(), kioskOpen("s-sam", TODAY, "08:00")];
+  const past = kiosk({ volunteers: [SAM, RUTH], log, logMaxRows: 3 });
+  const left = afterTableRead(past.sheets.Log, (sh) => deleteRow(sh, 3));
+  const reply = plain(past.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.deepEqual(reply, { ok: false, refusal: "BUSY", message: BUSY_TEXT });
+  assert.ok(past.journal.includes("read Log getValues 3,1,1," + LOG_HEADER.length));
+  assert.equal(JSON.stringify(past.sheets.Log.rows), left.rows);
+  assert.deepEqual(
+    past.journal.filter((e) => e.startsWith("write ")),
+    [],
+  );
+  assert.deepEqual(past.errors, [
+    "Log row 3 not read again for Shift ID s-sam: " +
+      "The coordinates of the range are outside the dimensions of the sheet.",
+    "Check-out: Log row 3 no longer holds open Shift ID s-sam; answered BUSY and wrote nothing.",
+  ]);
+
+  // Inside the grid: the row reads as blanks, which is no open row.
+  const inside = kiosk({ volunteers: [SAM, RUTH], log });
+  afterTableRead(inside.sheets.Log, (sh) => deleteRow(sh, 3));
+  assert.ok(inside.sheets.Log.maxRows >= 3);
+  const blank = plain(inside.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.deepEqual(blank, { ok: false, refusal: "BUSY", message: BUSY_TEXT });
+  assert.deepEqual(
+    inside.journal.filter((e) => e.startsWith("write ")),
+    [],
+  );
+  assert.equal(inside.sheets.Log.getLastRow(), 2);
+  assert.equal(inside.sheets.Log.rowByHeader(2).Status, "open");
+  assert.deepEqual(inside.errors, [
+    "Check-out: Log row 3 no longer holds open Shift ID s-sam; answered BUSY and wrote nothing.",
+  ]);
+});
+
+test("apiCheckOut writes as before when its row is unchanged", () => {
+  const log = [LOG_HEADER, ruthOpen(), kioskOpen("s-sam", TODAY, "08:00")];
+  const s = kiosk({ volunteers: [SAM, RUTH], log });
+  // Staff edit a column of their own, and the Notes, on the row meanwhile: still Sam's open row.
+  afterTableRead(s.sheets.Log, (sh) => {
+    sh.rows[2][LOG_HEADER.indexOf("Staff column")] = "seen";
+    sh.rows[2][LOG_HEADER.indexOf("Notes")] = "edited";
+  });
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30)));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.minutes, 90);
+  const row = s.sheets.Log.rowByHeader(3);
+  assert.equal(row["Shift ID"], "s-sam");
+  assert.equal(row.Status, "closed");
+  assert.equal(row["Check-Out Entered By"], "kiosk");
+  assert.equal(row["Admin Alerts?"], "check-out differs by 30 min");
+  assert.equal(row["Staff column"], "seen");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "open", "Ruth's row is untouched");
+  assert.deepEqual(s.errors, []);
+  // The row read again is the last read before the write, after the Flags plan.
+  const journal = s.journal.slice();
+  const { before, after } = atFirstLogWrite(journal);
+  assert.deepEqual(after.filter(isRead), []);
+  // The last cell read; updateLogRow_ still looks the tab up after it.
+  const reads = before.filter((e) => isRead(e) && !e.endsWith(" getSheetByName"));
+  assert.equal(reads[reads.length - 1], "read Log getValues 3,1,1," + LOG_HEADER.length);
+  const plan = before.indexOf("read Flags getNumberFormats 2,1,1," + FLAG_HEADER.length);
+  const reread = before.indexOf("read Log getValues 3,1,1," + LOG_HEADER.length);
+  assert.ok(plan >= 0 && plan < reread, "the Flags plan comes before the row read");
+  assert.equal(s.sheets.Flags.rowByHeader(2)["Log Row"], 3);
+});
+
+test("the row read again is null when the read throws, and a blank row past the end", () => {
+  const log = [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")];
+  const s = kiosk({ log, logMaxRows: 2 });
+  const cols = s.ctx.readLogColumns_();
+  const read = s.ctx.logRead_();
+  const width = LOG_HEADER.length;
+  const entry = plain(s.ctx.readLogRowAt_(2, width, cols, read, "s-sam"));
+  assert.deepEqual(entry, plain(s.ctx.readLog_(cols)[0]));
+  assert.equal(s.ctx.readLogRowAt_(3, width, cols, read, "s-sam"), null);
+  assert.deepEqual(s.errors, [
+    "Log row 3 not read again for Shift ID s-sam: " +
+      "The coordinates of the range are outside the dimensions of the sheet.",
+  ]);
+  // Any other Sheets error is null too, with its text.
+  s.errors.length = 0;
+  s.sheets.Log.afterValues = () => {
+    throw new Error("Service Spreadsheets timed out");
+  };
+  assert.equal(s.ctx.readLogRowAt_(2, width, cols, read, " s-x "), null);
+  assert.deepEqual(s.errors, [
+    "Log row 2 not read again for Shift ID s-x: Service Spreadsheets timed out",
+  ]);
+  // Inside the grid, past the last used row: a blank entry, which is not open.
+  const big = kiosk({ log });
+  const blank = big.ctx.readLogRowAt_(5, width, cols, read, "s-sam");
+  assert.equal(blank.row, 5);
+  assert.equal(big.ctx.autoClockOutRowUnchanged(big.ctx.readLog_(cols)[0], blank), false);
 });
