@@ -1564,3 +1564,54 @@ test("setupReports keeps Monthly Hours and throws when laying out Hours or writi
     checkOneHold(s.calls, c.name);
   }
 });
+
+test("setupReports keeps Monthly Hours and throws when the write completes but Hours data reads back off", () => {
+  // Each case changes one thing setupReports reads back, at the hold's last flush after M1
+  // "complete", before its own flush and read-back. Only a table still marked writing by
+  // this run is marked stopped; one that reads "complete" is left as it reads.
+  const cases = [
+    { name: "Q1 building", off: (data) => data.set(1, 17, "building " + NOW), m1: "complete" },
+    {
+      name: "Q1 another run",
+      off: (data) => data.set(1, 17, "built " + (NOW - 1)),
+      m1: "complete",
+    },
+    {
+      name: "M1 still writing",
+      off: (data) => data.set(1, 13, "writing " + NOW),
+      m1: "stopped " + NOW,
+    },
+    { name: "L1 another time", off: (data) => data.set(1, 12, String(NOW - 1)), m1: "complete" },
+    {
+      name: "the last row",
+      off: (data) => {
+        const last = data.getLastRow();
+        for (let col = 1; col <= 10; col++) data.set(last, col, "");
+      },
+      m1: "complete",
+    },
+    { name: "the sheet's rows", off: (data) => (data.maxRows += 1), m1: "complete" },
+  ];
+  for (const c of cases) {
+    let changed = false;
+    const s = server(LOG, {
+      now: NOW,
+      onFlush: () => {
+        const data = s.sheet("Hours data");
+        if (changed || !data || data.get(1, 13) !== "complete") return;
+        changed = true;
+        c.off(data);
+      },
+    });
+    s.ss.insertSheet("Monthly Hours").protect().setDescription("Monthly Hours tab: kiosk");
+    assert.throws(
+      () => s.ctx.setupReports(),
+      /^Error: Hours was not filled \(.*\); Monthly Hours was kept\. Fix that and run setupReports again\.$/,
+      c.name,
+    );
+    assert.ok(changed, c.name + ": the read-back was changed");
+    assert.ok(s.sheet("Monthly Hours"), c.name);
+    assert.equal(cellsOf(s)[1], c.m1, c.name);
+    checkOneHold(s.calls, c.name);
+  }
+});
