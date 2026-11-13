@@ -299,9 +299,9 @@ function zoneClock_(date, zone) {
  * How many milliseconds zone's wall clock runs ahead of UTC at ms, or null when this run
  * reads that time with Utilities.formatDate itself.
  *
- * Each UTC hour's offset costs one formatDate call, at the hour's start, and is kept for
- * the rest of the script run. That offset holds for the whole hour when the zone's clock
- * can only change on a whole UTC hour. America/Chicago, the kiosk's zone, does: from local
+ * Each UTC hour's offset is read once, at the hour's start (hourOffset_), and kept for the
+ * rest of the script run. That offset holds for the whole hour when the zone's clock can
+ * only change on a whole UTC hour. America/Chicago, the kiosk's zone, does: from local
  * mean time to Central at 18:00 UTC in 1883, and since then whole-hour offsets changed at
  * a whole local hour. Any other zone may change at a half hour (America/St_Johns) or at
  * an odd second (a local mean time), so its hour is used only when the next hour's start
@@ -319,24 +319,109 @@ function zoneOffset_(ms, zone) {
 const ZONE_OFFSETS_ = {};
 
 /**
- * zone's offset at the start of UTC hour, from one Utilities.formatDate call, or null when
- * its text can't be read back exactly: a year before 1583 (Apps Script dates those on the
- * Julian calendar, JavaScript on the Gregorian) or after 9999.
+ * zone's offset at the start of UTC hour, or null when formatDate's text for it can't be
+ * read back exactly. intlOffset_ reads it when it can; otherwise one Utilities.formatDate
+ * call does (formatDateOffset_).
  */
 function hourOffset_(zone, hour) {
   const offsets = ZONE_OFFSETS_[zone] || (ZONE_OFFSETS_[zone] = {});
   if (Object.prototype.hasOwnProperty.call(offsets, hour)) return offsets[hour];
   const start = hour * 3600000;
-  const text = Utilities.formatDate(new Date(start), zone, "yyyy-MM-dd HH:mm:ss");
-  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(text);
-  let offset = null;
-  if (m && +m[1] >= 1583) {
-    const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
-    const back = new Date(wall).toISOString();
-    if (back.slice(0, 10) + " " + back.slice(11, 19) === text) offset = wall - start;
-  }
+  let offset = intlOffset_(zone, start);
+  if (offset === null) offset = formatDateOffset_(zone, start);
   offsets[hour] = offset;
   return offset;
+}
+
+/**
+ * zone's offset at start from one Utilities.formatDate call, or null when its text can't
+ * be read back exactly: a year before 1583 (Apps Script dates those on the Julian
+ * calendar, JavaScript on the Gregorian) or after 9999.
+ */
+function formatDateOffset_(zone, start) {
+  const text = Utilities.formatDate(new Date(start), zone, "yyyy-MM-dd HH:mm:ss");
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(text);
+  if (!m || +m[1] < 1583) return null;
+  const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  const back = new Date(wall).toISOString();
+  return back.slice(0, 10) + " " + back.slice(11, 19) === text ? wall - start : null;
+}
+
+/**
+ * The first moment intlOffset_ reads: 1883-11-18 00:00 UTC. Before it, zones ran on local
+ * mean time, which Apps Script's formatDate and Intl don't always agree on.
+ */
+const INTL_FROM_MS_ = Date.UTC(1883, 10, 18);
+
+/**
+ * zone's offset at start from Intl.DateTimeFormat, or null to leave it to formatDate: a
+ * zone other than America/Chicago, Intl missing or refusing the zone, a time before
+ * INTL_FROM_MS_, an offset that isn't a whole minute (a mean time, again), or parts that
+ * don't read back as one exact wall-clock time.
+ *
+ * Only the kiosk's zone is read this way. Its offsets from Intl were checked against
+ * formatDate's; other zones' were not, and Intl and formatDate can carry different
+ * releases of the time zone rules, or read the years before 1900 differently.
+ */
+function intlOffset_(zone, start) {
+  if (!(start >= INTL_FROM_MS_)) return null;
+  const format = zoneFormat_(zone);
+  if (!format) return null;
+  let parts;
+  try {
+    parts = format.formatToParts(new Date(start));
+  } catch (e) {
+    return null;
+  }
+  const f = {};
+  for (let i = 0; i < parts.length; i++) {
+    const type = parts[i].type;
+    if (type === "literal") continue;
+    if (!/^(year|month|day|hour|minute|second)$/.test(type)) return null;
+    if (!/^[0-9]{1,4}$/.test(parts[i].value)) return null;
+    f[type] = +parts[i].value;
+  }
+  if (!(f.year >= 1883 && f.hour <= 23)) return null;
+  const wall = new Date(Date.UTC(f.year, f.month - 1, f.day, f.hour, f.minute, f.second));
+  if (
+    wall.getUTCFullYear() !== f.year ||
+    wall.getUTCMonth() !== f.month - 1 ||
+    wall.getUTCDate() !== f.day ||
+    wall.getUTCHours() !== f.hour ||
+    wall.getUTCMinutes() !== f.minute ||
+    wall.getUTCSeconds() !== f.second
+  ) {
+    return null;
+  }
+  const offset = wall.getTime() - start;
+  return offset % 60000 === 0 && Math.abs(offset) < 86400000 ? offset : null;
+}
+
+/** One Intl.DateTimeFormat per zone, null where it isn't used; see zoneFormat_. */
+const ZONE_FORMATS_ = {};
+
+/** An Intl.DateTimeFormat for zone's wall clock, 24-hour, or null; see intlOffset_. */
+function zoneFormat_(zone) {
+  if (Object.prototype.hasOwnProperty.call(ZONE_FORMATS_, zone)) return ZONE_FORMATS_[zone];
+  let format = null;
+  if (zone === "America/Chicago" && typeof Intl !== "undefined") {
+    try {
+      format = new Intl.DateTimeFormat("en-US", {
+        timeZone: zone,
+        hourCycle: "h23",
+        year: "numeric",
+        month: "numeric",
+        day: "numeric",
+        hour: "numeric",
+        minute: "numeric",
+        second: "numeric",
+      });
+    } catch (e) {
+      format = null;
+    }
+  }
+  ZONE_FORMATS_[zone] = format;
+  return format;
 }
 
 /** n as decimal digits, zero-padded on the left to at least width. */
