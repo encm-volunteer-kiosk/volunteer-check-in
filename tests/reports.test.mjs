@@ -775,6 +775,49 @@ test("reportRows: rectangular, formats the same shape, no token anywhere", () =>
   }
 });
 
+test("reportRows: says which row is the title, a section, a table header, blank or a plain row", () => {
+  const { values, kinds } = plain(
+    L.reportRows(sampleReport(), "2026-11", "JP", "2026-12-01 9:14 AM"),
+  );
+  assert.equal(kinds.length, values.length);
+  const allowed = ["title", "section", "header", "blank", "body"];
+  assert.ok(
+    kinds.every((k) => allowed.includes(k)),
+    JSON.stringify(kinds),
+  );
+  assert.equal(kinds[0], "title");
+  assert.equal(kinds.filter((k) => k === "title").length, 1);
+  const first = (kind) => values.filter((r, i) => kinds[i] === kind).map((r) => r[0]);
+  const sections = first("section");
+  for (const name of [
+    "Summary",
+    "Month over month",
+    "Year to date",
+    "Hours per volunteer",
+    "Hours by weekday",
+    "Milestones crossed this month",
+    "Rows to review",
+  ]) {
+    assert.ok(sections.includes(name), name);
+  }
+  assert.ok(sections.some((s) => s.startsWith("Hours by Role/Type")));
+  assert.ok(sections.some((s) => s.startsWith("Hours by Activity")));
+  // Each table's header row follows its section title.
+  kinds.forEach((k, i) => {
+    if (k === "section" && ["Hours per volunteer", "Hours by weekday"].includes(values[i][0])) {
+      assert.equal(kinds[i + 1], "header", values[i][0]);
+    }
+  });
+  assert.ok(first("header").includes("Volunteer"));
+  values.forEach((r, i) => {
+    if (kinds[i] === "blank")
+      assert.ok(
+        r.every((c) => c === ""),
+        String(i),
+      );
+  });
+});
+
 test("reportRows: first lines say what it counts, who made it, and the open shifts", () => {
   const { values, formats } = plain(
     L.reportRows(sampleReport(), "2026-11", "JP", "2026-12-01 9:14 AM"),
@@ -1210,13 +1253,35 @@ test("pickerMonth keeps a yyyy-MM text month and otherwise shows the current mon
   }
 });
 
-test("setupReportsMessage gives the counts and says to rerun after a Log column moves", () => {
-  const text = L.setupReportsMessage({
+test("setupReportsMessage gives the counts, when Hours is filled as of, Monthly Hours' fate, and the reruns", () => {
+  const base = {
     views: { added: 0, updated: 7 },
     warnings: { kept: 14, added: 0, removed: 0 },
+  };
+  const text = L.setupReportsMessage({
+    ...base,
+    hours: { asOf: "2026-11-13 9:14 AM", monthlyHours: "deleted" },
   });
+  assert.match(
+    text,
+    /The Hours and Hours data tabs are set up\. Hours is filled as of 2026-11-13 9:14 AM\./,
+  );
+  assert.match(text, /The Monthly Hours tab was deleted; the Hours tab replaces it\./);
   assert.match(text, /Filter views: 7 updated, 0 added\./);
   assert.match(text, /Kiosk column warnings: 14 kept, 0 added, 0 removed\./);
+  assert.match(text, /run setupDailyJobs once more for the nightly Hours refresh/);
   assert.match(text, /inserted, deleted or moved/);
   assert.match(text, /until setupReports runs again/);
+  assert.doesNotMatch(text, /Monthly Hours tab is written/);
+
+  const kept = L.setupReportsMessage({ ...base, hours: { asOf: "x", monthlyHours: "unmarked" } });
+  assert.match(
+    kept,
+    /A tab named Monthly Hours was left alone: it doesn't carry the kiosk's Monthly Hours protection/,
+  );
+  assert.doesNotMatch(kept, /was deleted/);
+
+  const none = L.setupReportsMessage({ ...base, hours: { asOf: "x", monthlyHours: "none" } });
+  assert.doesNotMatch(none, /Monthly Hours/);
+  assert.ok(!none.includes("\n\n"));
 });
