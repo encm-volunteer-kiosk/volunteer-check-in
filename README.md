@@ -22,8 +22,9 @@ so hours can be credited to each volunteer and reported to grantmakers.
   for 60 seconds it goes back to the welcome screen; the check-in is already saved. The
   last shift counts as missed when it is still open, or was closed by anything other than
   the volunteer's tap: the auto clock-out, Fix a sign-out, Add a shift, or a row typed by
-  hand. Only shifts dated on or after "Kiosk launch date" count, so imported history never
-  shows the notice. Nothing is stored for it: the check-in that shows the notice is the
+  hand. Only shifts dated on or after "Kiosk launch date" count, and rows from Import past
+  hours (Shift ID starting `import-`) are skipped, so a paper shift is never taken for a
+  missed check-out. Nothing is stored for it: the check-in that shows the notice is the
   shift looked at next time, so each missed check-out shows it once.
 - **Server**: Apps Script (`apps-script/`) bound to a Check-In Log spreadsheet with Log
   and Settings tabs. Each shift is one Log row. The Log uses ENCM's own column names from
@@ -148,13 +149,15 @@ The auto clock-out (see Daily jobs) writes one of these:
 - `auto clock-out skipped: check-in time unreadable`, once, on an open row it couldn't
   close because no time on it reads.
 
-Import past hours (Kiosk admin menu) writes one of these on an imported row whose name it
-couldn't match to exactly one volunteer:
+Import past hours (Kiosk admin menu) writes one of these on an imported row:
 
 - `imported: no Volunteer Profiles match for this name; correct this row on the Log, not in
-  the old sheet`
+  the old sheet`, when the name matches no volunteer.
 - `imported: name matches N Volunteer Profiles rows; correct this row on the Log, not in the
   old sheet`, when N volunteers share the name.
+- `imported: paper and kiosk shift on the same day; if both are the same shift, remove this
+  imported row with Kiosk admin > Remove a shift…`, on an imported row whose volunteer also
+  has a shift that day that didn't come from an import.
 
 Check-out adds its alert after whatever the cell holds, joined with `; `. Text staff typed
 there is kept.
@@ -258,14 +261,16 @@ don't raise it: staff typed those times, and every auto clock-out is flagged any
 
 A flag is an alert the kiosk writes to Admin Alerts? on the Log: a stated arrival or
 check-out far from the tap, a long shift, a check-in time it couldn't read, a time the
-auto clock-out guessed, or an imported name it couldn't match. Each one is also copied
-to a tab named `Flags`, one row per flag, so staff can tick it off once someone has looked
-at it. The Log row is still the record: Admin Alerts? keeps every flag. The Log check
-(see below) adds a second kind: a problem it found on a Log row. Those are on the Flags
-tab only, never in Admin Alerts?.
+auto clock-out guessed, an imported name it couldn't match, or a paper shift imported for a
+day the volunteer also has a kiosk shift. Each one is also copied to a tab named `Flags`,
+one row per flag, so staff can tick it off once someone has looked at it. The Log row is
+still the record: Admin Alerts? keeps every flag. The Log check (see below) adds a second
+kind: a problem it found on a Log row. Those are on the Flags tab only, never in Admin
+Alerts?.
 
 Only the kiosk adds Flags rows, at check-in and at check-out, the auto clock-out, one per
-row it closes or skips, Import past hours, for names it couldn't match, and the Log check.
+row it closes or skips, Import past hours, for names it couldn't match and for paper shifts
+on a day with a kiosk shift, and the Log check.
 Add a shift and Fix a sign-out add none: shifts added or closed
 with them carry the admin's initials in the Entered By columns and show in the `Kiosk:
 Admin-entered` filter view (see Reports). Editing the Log by hand adds no Flags row.
@@ -275,6 +280,12 @@ Import past hours adds one Flags row per unmatched name per run, not one per row
 rows in this import)`), and Date, Shift ID and Log Row are those of the name's first new
 row. The other rows of that name carry the alert in Admin Alerts? and show in the `Kiosk:
 Flagged` view.
+
+Import past hours also adds one Flags row per imported row whose volunteer also has a kiosk
+shift that day: Source `import`, the Reason as in Admin Alerts?, and the imported row's
+Date, Shift ID and Log Row. It goes under the last used row like every flag. If the paper
+row is the double, Remove a shift on it ticks the flag; if the kiosk row is, tick the flag
+yourself.
 
 Each Flags header carries a hover note for staff, written the same way as the Log's: only
 where the cell's note is empty or still exactly one of the kiosk's own texts, so a note
@@ -381,7 +392,7 @@ once.
 | Kiosk access code          | blank                           | The code a board member types on the tablet to open the kiosk: at least 16 letters (only letters count, and capitals are the same as small letters), and while it's blank or shorter no tablet can open.                                                                               |
 | Volunteer Profiles file ID | blank                           | Which spreadsheet the volunteer list comes from, as the long ID in its link between /d/ and /edit; while it's blank, no volunteer can be found on the tablet or in the menu.                                                                                                           |
 | Volunteer Profiles tab     | Volunteer Profiles              | The tab in that spreadsheet that holds the volunteer list; blank means a tab named Volunteer Profiles.                                                                                                                                                                                 |
-| Kiosk launch date          | the day `setupSheets` first ran | The day the kiosk started, as yyyy-mm-dd: only volunteers who started on or after it get the first-shift welcome, Import past hours brings in only shifts before it, and the nightly auto clock-out closes only shifts on or after it, so never leave it blank.                        |
+| Kiosk launch date          | the day `setupSheets` first ran | The day the kiosk started, as yyyy-mm-dd: only volunteers who started on or after it get the first-shift welcome, and the nightly auto clock-out closes only shifts on or after it, so never leave it blank.                                                                           |
 | Arrival flag minutes       | 15                              | How many minutes a volunteer's chosen arrival time can be from the moment they tapped in before the shift is flagged, as a number 0 or more; blank means 15.                                                                                                                           |
 | Check-out flag minutes     | 15                              | How many minutes a volunteer's chosen check-out time can be from the moment they tapped out before the shift is flagged, as a number 0 or more; blank means 15.                                                                                                                        |
 | Volunteer hour value       | blank                           | The dollar value of one volunteer hour, such as 34.79, used in the monthly report; while it's blank the report leaves the value out and says to set it here.                                                                                                                           |
@@ -591,7 +602,9 @@ It refuses, and says why, when:
 ### Import past hours
 
 For bringing shifts from an old hours sheet into the Log, such as ENCM's "Old Volunteer
-Hours". It can be run again at any time: it never brings in the same shift twice.
+Hours". It can be run again at any time: it brings in only rows it hasn't brought in
+before. A row changed in the old sheet after it was imported can come in a second time, so
+read "Correct an imported row on the Log" below.
 
 The window asks for the spreadsheet (paste its link or its ID), the tab, and your initials.
 The account at the sheet needs to be able to open that spreadsheet. The first time, the tab
@@ -608,23 +621,31 @@ as on the Log:
   tab, are optional. They are copied into the row's Notes.
 
 **Preview** reads the tab and writes nothing. It shows the rows read; how many it would
-import, split into names matched to Volunteer Profiles and names not matched; the
-unmatched names with their row counts, so you can fix Profiles first; how many are already
-imported; rows left out, with their row numbers and why; and the hours it would add.
+import, split into names matched to Volunteer Profiles and names not matched, and how many
+of the matched ones are on the same day as a kiosk shift; the unmatched names with their
+row counts, so you can fix Profiles first; the same-day rows, each with its name, date and
+source row; how many are already imported; rows left out, with their row numbers and why;
+and the hours it would add.
 **Import** works the list out again and writes it, then says what it did.
 
 A row is **left out** when its Date isn't a day (`yyyy-MM-dd`, `m/d/yyyy` or a date the
-sheet holds as a date), its Date is after today or on or after "Kiosk launch date", it
-has no first or last name, or its hours aren't a number above 0 and at most 24. Left-out
-rows aren't remembered: fix them in the old sheet and run the import again.
+sheet holds as a date), its Date is after today, it has no first or last name, or its
+hours aren't a number above 0 and at most 24. Left-out rows aren't remembered: fix them in
+the old sheet and run the import again.
 
 A Date the old sheet holds as a date is read in that spreadsheet's own time zone (File →
 Settings there), so its rows land on the day the sheet shows whatever zone it is set to.
 Dates typed as text are read as written.
 
-Both Preview and Import refuse while "Kiosk launch date" in Settings is blank or isn't a
-date. Shifts from the launch date on are the kiosk's own, and importing them would count
-them twice.
+**Same day as a kiosk shift.** Rows come in from any date up to today; the import doesn't
+read "Kiosk launch date". A row whose name matched a volunteer who also has a shift on the
+Log that day (open or closed, and not from an import: from the tablet, the menu, or typed
+by hand) still comes in, with the same-day alert in Admin Alerts? and a Flags row, so you
+can check it isn't the same shift counted twice. Rows on the Removed shifts tab don't
+count. Unmatched names aren't checked. The check is made only when the row is imported: a
+shift added to the Log for that day later raises no flag. Preview shows the count and the
+rows; each block of the import looks at the Log again, so Import's count can differ if the
+Log changed in between.
 
 Each imported row gets:
 
@@ -639,6 +660,8 @@ Each imported row gets:
   tab). The rows count in every report under that name, as one volunteer. When you know
   who it is, type the volunteer's real User Token over the stand-in on each row. Nothing
   changes or deletes these rows on its own.
+- When its volunteer also has a kiosk shift that day: the same-day alert in Admin Alerts?
+  and one Flags row (see Same day as a kiosk shift above).
 - In Notes, when the Log has a Notes column: `Imported by JP from Old Volunteer Hours ›
   Historical Hours row 12 (2025.12 C3)`.
 
@@ -655,10 +678,23 @@ key, so a name or date fixed in the old sheet looks like a new shift, and the ne
 would import it again beside the old row. Fix the name, User Token, date or hours on the
 Log. Only rows the preview left out are fixed in the old sheet.
 
+This matters more now that paper rows keep coming in after launch. The import can't tell
+when a row it already brought in is changed in the old sheet, and nothing warns you. A
+fixed date or name brings the shift in a second time. A fixed number of hours never
+reaches the Log. A row typed above an imported one with the same date and name makes the
+older row come in again, and the new one is skipped; sorting the tab can do the same. So
+add new rows at the bottom of the tab, and fix imported rows on the Log. If a shift comes
+in twice after a date or name was fixed, remove the extra row with Kiosk admin > Remove a
+shift…; the ledger keeps its key, so it doesn't come back. If it came in again because a
+row was typed above it, the second copy stands for the new paper shift but carries the old
+row's hours: correct that row's hours on the Log instead of removing it.
+
 Rows are written in blocks of 250, each taking the kiosk's lock for a few seconds, so the
-tablet keeps working during an import. If a run stops part way (the kiosk was busy, or
-Google's 6-minute limit was near), the window says so; whole blocks are kept, and running
-it again brings in the rest.
+tablet keeps working during an import. Each block checks the Log again for Shift IDs and
+same-day kiosk shifts, and writes one line to the execution log with its counts and how
+long it held the lock. If a run stops part way (the kiosk was busy, or Google's 6-minute
+limit was near), the window says so; whole blocks are kept, and running it again brings in
+the rest.
 
 ### What the menu won't do
 
@@ -920,7 +956,10 @@ Log cell. No report shows a User Token: tokens are read only to tell volunteers 
   - **Milestones** are counted over every counted row, so a milestone may now be crossed
     in an imported month instead of a later one. The kiosk counts imported hours toward
     milestones too, so a volunteer with years of hours isn't told at check-out that they
-    reached 50 hours for the first time.
+    reached 50 hours for the first time. The same goes for the first-shift welcome: a paper
+    shift imported before a new volunteer's first check-out at the tablet is their first
+    shift, so the welcome doesn't show at that check-out. Whether it shows depends on when
+    the import was run.
   - The **`Kiosk: Other status or source`** view shows every imported row.
 - **The Hours tab** counts exactly these rows, with their stated hours, using the monthly
   report's own code. "All time" there means every counted row with a month. A counted row

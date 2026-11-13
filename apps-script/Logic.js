@@ -101,7 +101,7 @@ function settingsDescriptions() {
     "Volunteer Profiles tab":
       "The tab in that spreadsheet that holds the volunteer list; blank means a tab named Volunteer Profiles.",
     "Kiosk launch date":
-      "The day the kiosk started, as yyyy-mm-dd: only volunteers who started on or after it get the first-shift welcome, Import past hours brings in only shifts before it, and the nightly auto clock-out closes only shifts on or after it, so never leave it blank.",
+      "The day the kiosk started, as yyyy-mm-dd: only volunteers who started on or after it get the first-shift welcome, and the nightly auto clock-out closes only shifts on or after it, so never leave it blank.",
     "Arrival flag minutes":
       "How many minutes a volunteer's chosen arrival time can be from the moment they tapped in before the shift is flagged, as a number 0 or more; blank means 15.",
     "Check-out flag minutes":
@@ -1195,14 +1195,15 @@ function volunteerSummaries(volunteers, entries, nowMs, windowMs, todayDate) {
  * row typed by hand). Read at check-in, before the new row is written, so the notice
  * shows once per missed check-out: the new row is the one looked at next time. An open
  * row found here has left the window, or the check-in would have been refused. False
- * when the launch date can't be read; rows before it, such as imported ones, never count.
+ * when the launch date can't be read; rows before it, and imported rows (Shift ID
+ * import-), never count. A paper row has no tablet check-out to miss.
  */
 function missedSignOut(entries, token, launchDate) {
   const launch = parseStartDate(launchDate);
   if (!launch) return false;
   const rows = entries.filter((e) => {
     const date = rowDate(e.dateText);
-    return isTokenRow(e, token) && date !== "" && date >= launch;
+    return isTokenRow(e, token) && !isImportShiftId(e.shiftId) && date !== "" && date >= launch;
   });
   if (!rows.length) return false;
   const last = rows.slice().sort(reportRowOrder)[rows.length - 1];
@@ -5413,11 +5414,19 @@ function flagsEmailMessage(input) {
 // shift becomes a closed Log row with its stated hours and no times. Import.js reads and
 // writes; the rules are here.
 //
+// Rows from any date up to today come in; "Kiosk launch date" is not read. A matched row
+// for a day its volunteer also has a kiosk shift on the Log (open or closed, not itself an
+// import) still comes in, with an alert in Admin Alerts? and one Flags row, so staff can
+// check it isn't the same shift counted twice.
+//
 // A source row is known by its source key: its date, its written name and its count among
 // the source rows with that date and name. Never by its position, since rows move in the
 // old sheet. The Import ledger tab keeps every key brought in, so a second run adds
 // nothing and a row staff delete from the Log stays deleted. Once imported, a row is
-// corrected on the Log, never in the source: a corrected name or date is a new key.
+// corrected on the Log, never in the source: a corrected name or date is a new key, a
+// corrected hours count never reaches the Log, and a row typed above one with the same
+// date and name moves the counts. The import never compares a source row with the Log, so
+// none of these is seen or flagged.
 
 /** The tab in the Check-In Log that remembers every source key imported. */
 function importLedgerTab() {
@@ -5500,7 +5509,6 @@ function importLeftOutReasons() {
   return {
     date: "date can't be read",
     future: "date is after today",
-    launch: 'date is on or after the "Kiosk launch date"',
     name: "no first or last name",
     hours: "hours aren't a number above 0 and at most 24",
   };
@@ -5510,9 +5518,6 @@ function importLeftOutReasons() {
 function importRefusal(code, detail) {
   const d = cellString(detail);
   const messages = {
-    IMPORT_LAUNCH_DATE:
-      'The Settings value "Kiosk launch date" is blank or isn\'t a date (yyyy-MM-dd). The import' +
-      " brings in only shifts before that date, so set it first.",
     IMPORT_FILE_ID: "Please paste the spreadsheet's link or ID.",
     IMPORT_FILE:
       "That spreadsheet can't be opened. Check the link or ID, and that this account can open it.",
@@ -5594,10 +5599,69 @@ function importShiftId(key, hashFn) {
   return "import-" + String(hashFn(key)).toLowerCase().slice(0, 16);
 }
 
-/** The launch date as yyyy-MM-dd, or the IMPORT_LAUNCH_DATE refusal as {refusal}. */
-function importLaunchDate(text) {
-  const launch = parseStartDate(text);
-  return launch ? { launch } : { refusal: importRefusal("IMPORT_LAUNCH_DATE") };
+/** True when a Shift ID is an imported row's: it starts "import-", in any capitals. */
+function isImportShiftId(shiftId) {
+  return /^import-/i.test(cellString(shiftId));
+}
+
+/** The same-day key of a date (yyyy-MM-dd) and a User Token. */
+function importDayKey(date, token) {
+  return date + "|" + cellString(token);
+}
+
+/**
+ * The day keys (importDayKey) of every kiosk shift among rows [{dateText, token, status,
+ * shiftId}], the Log's cells as text. A kiosk shift is any Log row that isn't an import
+ * (the tablet, the menu or typed by hand; a blank Shift ID counts) with Status open or
+ * closed, a User Token and a Date that reads. Built once per Log read.
+ */
+function importKioskDays(rows) {
+  const days = new Set();
+  (rows || []).forEach((r) => {
+    if (isImportShiftId(r.shiftId)) return;
+    if (!isStatus(r, "open") && !isStatus(r, "closed")) return;
+    const token = cellString(r.token);
+    const date = rowDate(r.dateText);
+    if (token === "" || date === "") return;
+    days.add(importDayKey(date, token));
+  });
+  return days;
+}
+
+/**
+ * True when an item's matched volunteer has a kiosk shift on its date. An unmatched item
+ * is never same-day: its stand-in token is on no kiosk row.
+ */
+function importSameDay(item, kioskDays) {
+  if (!item.volunteer || !kioskDays) return false;
+  return kioskDays.has(importDayKey(item.date, item.volunteer.token));
+}
+
+/** The Admin Alerts? text, and the Flags Reason, of an imported row with a same-day kiosk shift. */
+function importSameDayAlert() {
+  return "imported: paper and kiosk shift on the same day; if both are the same shift, remove this imported row with Kiosk admin > Remove a shift…";
+}
+
+/**
+ * One execution-log line for a written block: "Import block 3 of 8: 250 rows written, 4
+ * same day, 2 ledger repairs, 2840 ms under the lock". result is the block's reply.
+ */
+function importBlockLog(index, count, result, ms) {
+  return (
+    "Import block " +
+    index +
+    " of " +
+    count +
+    ": " +
+    result.written.length +
+    " rows written, " +
+    result.sameDay +
+    " same day, " +
+    result.ledgerAdded +
+    " ledger repairs, " +
+    ms +
+    " ms under the lock"
+  );
 }
 
 /** A source hours cell as a number, NaN when blank or not a number. */
@@ -5606,29 +5670,28 @@ function importHours(value) {
 }
 
 /**
- * Works out what an import would do. input is {header, rows, launchDate, todayDate,
- * volunteers, ledgerKeys, logShiftIds, hashFn}: the source header row, its data rows (data
- * row i is source row i + 2; a date cell already as yyyy-MM-dd text, hours as read), the
- * Settings launch date, today, the Profiles list, the source keys in the ledger, the Shift
- * IDs on the Log, and a SHA-256 hex function.
+ * Works out what an import would do. input is {header, rows, todayDate, volunteers,
+ * ledgerKeys, logShiftIds, kioskDays, hashFn}: the source header row, its data rows (data
+ * row i is source row i + 2; a date cell already as yyyy-MM-dd text, hours as read),
+ * today, the Profiles list, the source keys in the ledger, the Shift IDs on the Log, the
+ * Log's kiosk days (importKioskDays; missing is empty), and a SHA-256 hex function.
  *
- * A row is importable when its Date reads as a day (parseStartDate) not after today and
- * before the launch date, it has a first or last name, and its hours are a number above 0
- * and at most 24. Wholly blank rows are skipped and not counted. A key counts every row
- * whose date reads and that has a name, left out or not, so fixing one row's hours in the
- * source doesn't change its neighbours' keys.
+ * A row is importable when its Date reads as a day (parseStartDate) not after today, it
+ * has a first or last name, and its hours are a number above 0 and at most 24. Wholly
+ * blank rows are skipped and not counted. A key counts every row whose date reads and that
+ * has a name, left out or not, so fixing one row's hours in the source doesn't change its
+ * neighbours' keys.
  *
  * A name matches when exactly one Profiles volunteer has its name key. Returns {refusal}
- * (launch date or headers), or {rowsRead, toImport, alreadyImported, onLog, leftOut}: the
+ * (headers), or {rowsRead, toImport, alreadyImported, onLog, leftOut}: the
  * first three are lists of items {sourceRow, date, firstName, lastName, name, nameKey, key,
- * shiftId, hours, volunteer (null when unmatched), matches, sourceTab, sourceCell}, in
+ * shiftId, hours, volunteer (null when unmatched), matches, sourceTab, sourceCell,
+ * sameDay (importSameDay: the Preview's view; Import works it out again per block)}, in
  * source order; leftOut is [{row, reason}] with reason a code of importLeftOutReasons().
  * An item in toImport is neither in the ledger nor on the Log; one in onLog has its Shift
  * ID on the Log but no ledger line, which the run adds.
  */
 function importPlan(input) {
-  const launch = importLaunchDate(input.launchDate);
-  if (launch.refusal) return { refusal: launch.refusal };
   const columns = importColumns(input.header);
   if (columns.missing.length) {
     return {
@@ -5647,6 +5710,7 @@ function importPlan(input) {
   });
   const ledger = new Set((input.ledgerKeys || []).map(cellString));
   const onLogIds = new Set((input.logShiftIds || []).map(cellString));
+  const kioskDays = input.kioskDays || new Set();
   const counts = new Map();
   const plan = { rowsRead: 0, toImport: [], alreadyImported: [], onLog: [], leftOut: [] };
 
@@ -5670,7 +5734,6 @@ function importPlan(input) {
     let reason = "";
     if (!date) reason = "date";
     else if (date > input.todayDate) reason = "future";
-    else if (date >= launch.launch) reason = "launch";
     else if (!hasName) reason = "name";
     else if (!isFinite(hours) || hours <= 0 || hours > 24) reason = "hours";
     if (reason) {
@@ -5695,6 +5758,7 @@ function importPlan(input) {
       sourceTab: cellString(cell(c.sourceTab)),
       sourceCell: cellString(cell(c.sourceCell)),
     };
+    item.sameDay = importSameDay(item, kioskDays);
     if (ledger.has(key)) plan.alreadyImported.push(item);
     else if (onLogIds.has(shiftId)) plan.onLog.push(item);
     else plan.toImport.push(item);
@@ -5717,10 +5781,12 @@ function importUnmatchedCounts(items) {
 }
 
 /**
- * The preview's counts for a plan: {rowsRead, toImport, matched, unmatched, hours,
+ * The preview's counts for a plan: {rowsRead, toImport, matched, sameDay, unmatched, hours,
  * alreadyImported, onLog, leftOut, unmatchedNames: [{name, rows, matches}] sorted by name,
- * leftOutRows: [{reason (text), rows: [source row numbers]}] in importLeftOutReasons()
- * order}. No User Token.
+ * sameDayRows: [{name, date, row}] in source order, leftOutRows: [{reason (text), rows:
+ * [source row numbers]}] in importLeftOutReasons() order}. sameDay counts the items to
+ * import that have a kiosk shift that day, all of them matched; sameDayRows lists them
+ * under their Log name and source row. No User Token.
  */
 function importSummary(plan) {
   const unmatched = plan.toImport.filter((item) => !item.volunteer);
@@ -5733,6 +5799,13 @@ function importSummary(plan) {
     names.push({ name: item.name, rows: counts[item.nameKey], matches: item.matches });
   });
   names.sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name)));
+  const sameDayRows = plan.toImport
+    .filter((item) => item.sameDay)
+    .map((item) => ({
+      name: volunteerFullName(item.volunteer),
+      date: item.date,
+      row: item.sourceRow,
+    }));
   const reasons = importLeftOutReasons();
   const leftOutRows = Object.keys(reasons)
     .map((code) => ({
@@ -5744,12 +5817,14 @@ function importSummary(plan) {
     rowsRead: plan.rowsRead,
     toImport: plan.toImport.length,
     matched: plan.toImport.length - unmatched.length,
+    sameDay: sameDayRows.length,
     unmatched: unmatched.length,
     hours: importHoursTotal(plan.toImport),
     alreadyImported: plan.alreadyImported.length,
     onLog: plan.onLog.length,
     leftOut: plan.leftOut.length,
     unmatchedNames: names,
+    sameDayRows,
     leftOutRows,
   };
 }
@@ -5785,7 +5860,8 @@ function importNote(initials, fileName, tab, item) {
 /**
  * The cell map of an imported row. note is the Notes text, or '' to leave Notes alone
  * (when the Log has no Notes column). The four times and Hours Served (timestamps) are
- * not written: the source has no times.
+ * not written: the source has no times. Admin Alerts? holds the unmatched alert, or the
+ * same-day alert when item.sameDay; a row is never both.
  */
 function importCells(item, note) {
   const H = logHeaderNames();
@@ -5803,6 +5879,7 @@ function importCells(item, note) {
     [H.shiftId]: item.shiftId,
   };
   if (!item.volunteer) cells[H.alerts] = importAlert(item.matches);
+  else if (item.sameDay) cells[H.alerts] = importSameDayAlert();
   if (cellString(note)) cells[H.notes] = sheetText(note);
   return cells;
 }
@@ -5834,15 +5911,32 @@ function importBlocks(items, size) {
 }
 
 /**
- * The Flags rows for one written block: one per unmatched name not in flagged (the name
- * keys already flagged this run), for the name's first row in the block. written is
- * [{item, row}] with row the Log row, counts the run's unmatched rows per name key. Adds
- * the names it flags to flagged. Reason is the row's alert and the name's rows in this run.
+ * The Flags rows for one written block, in Log row order: one per unmatched name not in
+ * flagged (the name keys already flagged this run), for the name's first row in the
+ * block, and one per row with item.sameDay. written is [{item, row}] with row the Log
+ * row, counts the run's unmatched rows per name key. Adds the names it flags to flagged.
+ * An unmatched name's Reason is the row's alert and the name's rows in this run; a
+ * same-day row's is importSameDayAlert(), as in its Admin Alerts?, under its Log name.
  */
 function importFlagRows(written, counts, flagged, nowMs) {
   const rows = [];
   written.forEach(({ item, row }) => {
-    if (item.volunteer || flagged.has(item.nameKey)) return;
+    if (item.volunteer) {
+      if (!item.sameDay) return;
+      flagRows(
+        {
+          date: item.date,
+          name: volunteerFullName(item.volunteer),
+          shiftId: item.shiftId,
+          raisedAtMs: nowMs,
+          source: flagSources().import,
+          logRow: row,
+        },
+        [importSameDayAlert()],
+      ).forEach((r) => rows.push(r));
+      return;
+    }
+    if (flagged.has(item.nameKey)) return;
     flagged.add(item.nameKey);
     const n = counts[item.nameKey] || 1;
     const reason =
@@ -6814,7 +6908,7 @@ function howToSections() {
       title: "Review flags",
       lines: [
         text(
-          "A flag is something the kiosk wants a person to look at: a time far from when the volunteer tapped, a very long shift, a shift the nightly auto clock-out closed, a name Import past hours couldn't match, or a problem the morning Log check found.",
+          "A flag is something the kiosk wants a person to look at: a time far from when the volunteer tapped, a very long shift, a shift the nightly auto clock-out closed, a name Import past hours couldn't match or a paper shift it brought in for a day the volunteer also has a kiosk shift, or a problem the morning Log check found.",
         ),
         step(
           "1. Open the Flags tab, then Data > Change view > Flags: Unreviewed. It shows the flags nobody has ticked yet, newest first.",
@@ -6963,7 +7057,7 @@ function howToSections() {
           "Kiosk admin > Check the Log now runs the morning check for problems on the Log right away and says what it found. New problems go on the Flags tab.",
         ),
         text(
-          "Kiosk admin > Import past hours… brings shifts in from an old hours spreadsheet. Press Preview first; it never brings in the same shift twice.",
+          "Kiosk admin > Import past hours… brings shifts in from an old hours spreadsheet, from any date. Press Preview first. Running it again brings in only new rows, as long as rows it already brought in are left as they are in the old sheet and new rows go at the bottom of the tab. A shift on a day the volunteer also has a kiosk shift still comes in, flagged so you can check it isn't counted twice.",
         ),
       ],
     },
