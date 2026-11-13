@@ -416,6 +416,15 @@ flagged. A blank, 0, negative or unreadable value reads as 8.
 with the reports, and the rows from "Auto clock-out after hours" down with the daily jobs.
 On a spreadsheet set up before them, run `setupSheets` once to add them.
 
+When a change applies: a check-in or check-out uses a copy of Settings the kiosk keeps
+for up to 5 minutes, so it doesn't wait to read the tab. Typing in a Settings cell, or
+the kiosk writing one itself, makes the next tap read the tab again, so the change
+applies from the next tap, a second or two after the edit. Any other change, such as
+inserting, deleting or sorting rows or restoring an older version, applies within 5
+minutes, usually sooner, since the tablet's list refresh reads the tab. Until then a
+replaced access code can still check volunteers in and out. A new access code works at
+once.
+
 ## Kiosk admin menu
 
 Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with eight items: Add a

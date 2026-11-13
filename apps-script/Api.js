@@ -8,13 +8,17 @@
  * never receives a phone number, a User Token, a Profiles row, a start date, or anyone's
  * shift count or hours. Log columns are found by header on every call.
  *
- * A check-in or check-out reads Settings once, before the lock, and uses that one read
- * for the access code and for everything inside the lock: that first read pays any
- * recalculation the last write started, outside the lock, and a Settings edit made while
- * the call waits for the lock applies from the next call. Inside the lock it finds the
- * volunteer in Profiles first, so a wrong name or phone returns without reading the Log.
- * Then it reads the Log once, header and rows in one range, and parses only that
- * volunteer's rows (readLogTable_), the only rows the decisions look at.
+ * A check-in or check-out takes Settings once, before the lock, and uses them for the
+ * access code and for everything inside the lock; a Settings edit made while the call
+ * waits for the lock applies from the next call. It takes them from the script cache when
+ * the cached copy was read from the tab after the last Settings edit and less than 5
+ * minutes ago, else it reads the tab (cachedSettings_, Sheets.js). A code that doesn't
+ * match the cached copy is checked against the tab before it is refused, so a new code
+ * works at once and only a read of the tab refuses one (settingsForCode_). The volunteer
+ * list and the code check always read the tab and refresh the cached copy. Inside the
+ * lock a call finds the volunteer in Profiles first, so a wrong name or phone returns
+ * without reading the Log. Then it reads the Log once, header and rows in one range, and
+ * parses only that volunteer's rows (readLogTable_), the only rows the decisions look at.
  *
  * Each flag a check-in or check-out writes to Admin Alerts? is also copied to the Flags
  * tab (raiseFlags_), after the Log write and under the same lock. Every Flags read comes
@@ -34,7 +38,7 @@ function doGet() {
 
 /** {ok: true} or ACCESS. */
 function apiCheckAccess(code) {
-  return accessRefusal_(code) || { ok: true };
+  return accessRefusal_(code, refreshSettingsCache_()) || { ok: true };
 }
 
 /**
@@ -47,7 +51,7 @@ function apiCheckAccess(code) {
  * ID; the raw User Token never leaves the server. Reads only yesterday's and today's rows.
  */
 function apiListVolunteers(code) {
-  const settings = readSettings_();
+  const settings = refreshSettingsCache_();
   const denied = accessRefusal_(code, settings);
   if (denied) return denied;
   const now = new Date();
@@ -77,8 +81,7 @@ function apiListVolunteers(code) {
  * an open row checked in less than "Auto clock-out after hours" ago.
  */
 function apiCheckIn(code, id, arrivalIso, digits) {
-  const settings = readSettings_();
-  const denied = accessRefusal_(code, settings);
+  const { settings, denied } = settingsForCode_(code);
   if (denied) return denied;
   return withLock_(() => {
     const now = new Date();
@@ -153,8 +156,7 @@ function apiCheckIn(code, id, arrivalIso, digits) {
  * (staff sorted, inserted or deleted Log rows meanwhile); nothing is written then.
  */
 function apiCheckOut(code, id, digits, checkOutIso) {
-  const settings = readSettings_();
-  const denied = accessRefusal_(code, settings);
+  const { settings, denied } = settingsForCode_(code);
   if (denied) return denied;
   return withLock_(() => {
     const now = new Date();
@@ -230,6 +232,23 @@ function accessRefusal_(code, settings) {
   if (!checkAccessCode(code, stored)) return null;
   Utilities.sleep(1000);
   return refusal("ACCESS");
+}
+
+/**
+ * {settings} when code is the kiosk access code, else {denied: the ACCESS refusal}, for a
+ * check-in or check-out, before any lock. Settings come from cachedSettings_ (Sheets.js).
+ * A code the cached copy doesn't accept is checked again against Settings read from the
+ * tab, which also refreshes the copy: a code changed since the copy was read works at
+ * once, and a code is refused only after this call has read the tab.
+ */
+function settingsForCode_(code) {
+  const first = cachedSettings_();
+  if (!checkAccessCode(code, first.settings["Kiosk access code"])) {
+    return { settings: first.settings };
+  }
+  const settings = first.cached ? refreshSettingsCache_() : first.settings;
+  const denied = accessRefusal_(code, settings);
+  return denied ? { denied } : { settings };
 }
 
 /** Runs fn under the script lock, or returns BUSY if the lock isn't free within 10 seconds. */
