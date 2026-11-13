@@ -21,9 +21,15 @@ import { createHash } from "node:crypto";
 import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
-const SERVER_FILES = ["Logic.js", "Sheets.js", "Api.js", "Admin.js", "Reports.js", "Jobs.js"].map(
-  (f) => [f, readFileSync(new URL("apps-script/" + f, root), "utf8")],
-);
+const SERVER_FILES = [
+  "Logic.js",
+  "Sheets.js",
+  "Api.js",
+  "Admin.js",
+  "Reports.js",
+  "Jobs.js",
+  "HoursSort.js",
+].map((f) => [f, readFileSync(new URL("apps-script/" + f, root), "utf8")]);
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const TZ = "America/Chicago";
 
@@ -435,7 +441,9 @@ const FLAG_HEADER = [
  * Flags tab with its header alone (opts.flags: false for none). opts.busy makes the
  * script lock unavailable, opts.docBusy the document lock; opts.now fixes the server's
  * clock (ms); opts.ui gives a spreadsheet UI whose alerts land in alerts; opts.onFlush
- * runs at each SpreadsheetApp.flush.
+ * runs at each SpreadsheetApp.flush. The account's project triggers start as the nightly
+ * Hours refresh's alone (opts.triggers adds more, as {uid, handler, eventType}); triggers
+ * holds them as the script leaves them, and creating or deleting one is recorded.
  */
 function server(logRows, opts = {}) {
   const logs = [];
@@ -511,6 +519,16 @@ function server(logRows, opts = {}) {
     return b;
   };
   const lockCalls = [];
+  const triggers = [
+    { uid: "t-hours", handler: "runHoursRefresh", eventType: "CLOCK" },
+    ...(opts.triggers || []),
+  ];
+  let nextTrigger = 1;
+  const asTrigger = (t) => ({
+    getUniqueId: () => t.uid,
+    getHandlerFunction: () => t.handler,
+    getEventType: () => t.eventType,
+  });
   const ctx = {
     console: { log: (text) => logs.push(text) },
     Session: {
@@ -518,9 +536,32 @@ function server(logRows, opts = {}) {
       getEffectiveUser: () => ({ getEmail: () => "staff@example.org" }),
     },
     ScriptApp: {
-      getProjectTriggers: () => [
-        { getUniqueId: () => "t-hours", getHandlerFunction: () => "runHoursRefresh" },
-      ],
+      EventType: { CLOCK: "CLOCK", ON_EDIT: "ON_EDIT", ON_OPEN: "ON_OPEN" },
+      getProjectTriggers: () => triggers.map(asTrigger),
+      deleteTrigger: (t) => {
+        rec({ op: "trigger.delete", value: t.getUniqueId() });
+        triggers.splice(
+          triggers.findIndex((x) => x.uid === t.getUniqueId()),
+          1,
+        );
+      },
+      newTrigger: (handler) => ({
+        forSpreadsheet: (file) => ({
+          onEdit: () => ({
+            create: () => {
+              rec({ op: "trigger.create", value: handler });
+              const t = {
+                uid: "t-made-" + nextTrigger++,
+                handler,
+                eventType: "ON_EDIT",
+                source: file.getId(),
+              };
+              triggers.push(t);
+              return asTrigger(t);
+            },
+          }),
+        }),
+      }),
     },
     CacheService: {
       getScriptCache: () => ({ get: (k) => (k === "admin-key:k" ? "1" : null), put: () => {} }),
@@ -674,8 +715,9 @@ function server(logRows, opts = {}) {
     plain({
       sheets: ss.sheets.map((s) => s.state()),
       views: [...ss.views],
+      triggers,
     });
-  return { ctx, ss, sheet, logs, lockCalls, snapshot, calls, alerts };
+  return { ctx, ss, sheet, logs, lockCalls, snapshot, calls, alerts, triggers };
 }
 
 // ---------------------------------------------------------------------------
@@ -1970,4 +2012,95 @@ test("setupReports keeps Monthly Hours and throws when the write completes but H
     assert.equal(cellsOf(s)[1], c.m1, c.name);
     checkOneHold(s.calls, c.name);
   }
+});
+
+// ---------------------------------------------------------------------------
+// The sort boxes' trigger
+
+/** Records each console.log in the calls too, so a test can see when the message went. */
+const logInCalls = (s) => {
+  const log = s.ctx.console.log;
+  s.ctx.console.log = (text) => {
+    s.calls.push({ op: "log", value: text });
+    return log(text);
+  };
+};
+const sortTriggers = (s) => s.triggers.filter((t) => t.handler === "runHoursSort");
+
+test("setupReports installs the sort trigger once over two runs, after the hold, and logs the finish message after it", () => {
+  const s = server(LOG, { now: NOW });
+  logInCalls(s);
+  s.ctx.setupReports();
+  assert.deepEqual(plain(sortTriggers(s)), [
+    { uid: "t-made-1", handler: "runHoursSort", eventType: "ON_EDIT", source: "file-1" },
+  ]);
+  // The daily jobs' trigger is left alone.
+  assert.ok(s.triggers.some((t) => t.handler === "runHoursRefresh"));
+  const at = (op) => s.calls.findIndex((c) => c.op === op);
+  assert.ok(at("docLock.release") > 0);
+  assert.ok(at("trigger.create") > at("docLock.release"), "the trigger step is after the hold");
+  assert.ok(at("log") > at("trigger.create"), "the message is logged after the trigger step");
+  assert.equal(s.calls.filter((c) => c.op === "log").length, 1);
+  assert.match(s.logs[0], /^The sort boxes run as staff@example\.org \(trigger installed\)\.$/m);
+
+  s.calls.length = 0;
+  s.logs.length = 0;
+  s.ctx.setupReports();
+  assert.equal(sortTriggers(s).length, 1);
+  assert.equal(sortTriggers(s)[0].uid, "t-made-1");
+  assert.ok(!s.calls.some((c) => c.op === "trigger.create" || c.op === "trigger.delete"));
+  assert.match(
+    s.logs[0],
+    /^The sort boxes run as staff@example\.org \(trigger already installed\)\.$/m,
+  );
+});
+
+test("setupReports puts back one on-edit sort trigger in place of two, or of one of the wrong kind", () => {
+  for (const extra of [
+    [
+      { uid: "t-a", handler: "runHoursSort", eventType: "ON_EDIT" },
+      { uid: "t-b", handler: "runHoursSort", eventType: "ON_EDIT" },
+    ],
+    [{ uid: "t-a", handler: "runHoursSort", eventType: "CLOCK" }],
+  ]) {
+    const s = server(LOG, { now: NOW, triggers: extra });
+    s.ctx.setupReports();
+    const label = JSON.stringify(extra);
+    assert.deepEqual(
+      s.calls.filter((c) => c.op.startsWith("trigger.")).map((c) => c.op + " " + c.value),
+      [...extra.map((t) => "trigger.delete " + t.uid), "trigger.create runHoursSort"],
+      label,
+    );
+    assert.deepEqual(
+      plain(sortTriggers(s)).map((t) => t.eventType),
+      ["ON_EDIT"],
+      label,
+    );
+    assert.match(s.logs[0], /\(trigger installed\)/, label);
+  }
+});
+
+test("a trigger that can't be installed is in the finish message, and Hours stands", () => {
+  const s = server(LOG, { now: NOW });
+  logInCalls(s);
+  FAIL = (c) => c.op === "trigger.create";
+  s.ctx.setupReports();
+  assert.equal(sortTriggers(s).length, 0);
+  assert.match(
+    s.logs[0],
+    /^The sort boxes' trigger couldn't be installed: injected\. Hours is set up, but picking a sort does nothing until setupReports runs again and installs it\.$/m,
+  );
+  assert.match(s.logs[0], /Hours is filled as of 2026-11-13 9:14 AM\./);
+  const [, m1, , , , q1] = cellsOf(s);
+  assert.equal(m1, "complete");
+  assert.equal(q1, "built " + NOW);
+  checkOneHold(s.calls, "setupReports");
+});
+
+test("setupReports installs no trigger when Hours isn't filled", () => {
+  const s = server(LOG, { now: NOW });
+  FAIL = (c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1.startsWith("A2:");
+  assert.throws(() => s.ctx.setupReports(), /Hours was not filled/);
+  assert.equal(sortTriggers(s).length, 0);
+  assert.ok(!s.calls.some((c) => c.op.startsWith("trigger.")));
 });

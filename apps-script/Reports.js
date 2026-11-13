@@ -35,8 +35,10 @@
  * Makes or repairs the Hours and Hours data tabs and fills them, the Log's filter views
  * and the soft warnings on the Log's kiosk columns, from the Log's current header map.
  * Before it changes anything it throws the kiosk's message when a column the kiosk needs
- * is missing, and names a tab called Hours or Hours data that isn't the kiosk's. Runs only
- * from the Apps Script editor; the advanced Sheets service must be on (appsscript.json).
+ * is missing, and names a tab called Hours or Hours data that isn't the kiosk's. Once Hours
+ * is filled it installs the sort boxes' edit trigger for the account running it
+ * (ensureHoursSortTrigger_, HoursSort.js), once. Runs only from the Apps Script editor;
+ * the advanced Sheets service must be on (appsscript.json).
  */
 function setupReports() {
   requireEditorRun_();
@@ -47,12 +49,16 @@ function setupReports() {
   const views = setupFilterViews_(ss, log, cols);
   const warnings = setupKioskWarnings_(log, cols);
   const hold = hoursHold_();
+  let hours;
   try {
-    const hours = setupHoursTabs_(ss, found, hold);
-    console.log(setupReportsMessage({ views, warnings, hours }));
+    hours = setupHoursTabs_(ss, found, hold);
   } finally {
     releaseHoursLock_(hold);
   }
+  // The sort boxes' trigger goes in once Hours has read back built, outside the hold. Its
+  // result is part of the finish message, so the message is logged after it.
+  const trigger = ensureHoursSortTrigger_();
+  console.log(setupReportsMessage({ views, warnings, hours, trigger }));
 }
 
 // ---------------------------------------------------------------------------

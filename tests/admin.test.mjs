@@ -33,11 +33,11 @@ const SERVER_FILES = [
   "Reports.js",
   "Jobs.js",
   "Import.js",
+  "HoursSort.js",
 ].map((f) => [f, read("apps-script/" + f)]);
-const GUARDED_FILES = ["Admin.js", "Reports.js", "Jobs.js", "Import.js"].map((f) => [
-  f,
-  read("apps-script/" + f),
-]);
+const GUARDED_FILES = ["Admin.js", "Reports.js", "Jobs.js", "Import.js", "HoursSort.js"].map(
+  (f) => [f, read("apps-script/" + f)],
+);
 
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const TZ = "America/Chicago";
@@ -423,7 +423,10 @@ const isOpener = (name) => /^open\w*Dialog$/.test(name);
 // Run by hand from the editor, guarded like setupSheets: no dialog, so no key.
 const EDITOR_ONLY = ["setupReports", "setupDailyJobs", "removeDailyJobs"];
 // Run by a trigger: the trigger's id stands in for the key.
-const TRIGGER_ONLY = ["runFlagsEmail", "runAutoClockOut", "runHoursRefresh"];
+const TRIGGER_ONLY = ["runFlagsEmail", "runAutoClockOut", "runHoursRefresh", "runHoursSort"];
+// An edit trigger runs as its installer for every editor's edit, so the active user
+// is the editor, not the installer: its trigger id is its only check.
+const EDIT_TRIGGER = ["runHoursSort"];
 // A Kiosk admin menu item that opens no dialog: like an opener, it checks getUi first.
 const MENU_RUN = ["refreshHoursNow", "checkLogNow"];
 const KEYED = PUBLIC.filter(
@@ -529,7 +532,7 @@ test("every public admin function refuses a caller who isn't the person at the s
     { active: "" },
     { active: "owner@example.org", effective: "someone@example.org" },
   ];
-  for (const name of PUBLIC.filter((n) => n !== "onOpen")) {
+  for (const name of PUBLIC.filter((n) => n !== "onOpen" && !EDIT_TRIGGER.includes(n))) {
     for (const who of callers) {
       const { ctx, calls } = server({ ...who, keys: ["good"] });
       assert.throws(
@@ -538,6 +541,62 @@ test("every public admin function refuses a caller who isn't the person at the s
         name,
       );
       assert.deepEqual(onlyFrom(calls, ["Session."]), [], name);
+    }
+  }
+});
+
+test("the edit trigger is the one public function without the editor-run check, and it refuses anything but its own trigger before it reads", () => {
+  assert.deepEqual(EDIT_TRIGGER, ["runHoursSort"]);
+  for (const name of EDIT_TRIGGER) assert.ok(TRIGGER_ONLY.includes(name), name);
+  const source = GUARDED_FILES.find(([f]) => f === "HoursSort.js")[1];
+  const sortPublic = [...source.matchAll(/^function\s+([\w$]+)\s*\(/gm)]
+    .map((m) => m[1])
+    .filter((n) => !n.endsWith("_"));
+  assert.deepEqual(sortPublic, ["runHoursSort"]);
+  // This account's triggers: one for the sort, and one for something else.
+  const triggers = [
+    { uid: "own-0", handler: "runHoursSort" },
+    { uid: "own-other", handler: "someOtherFunction" },
+  ];
+  const callers = [
+    { active: "" },
+    { active: "owner@example.org" },
+    { active: "owner@example.org", effective: "someone@example.org" },
+  ];
+  const events = [
+    undefined,
+    null,
+    "own-0",
+    {},
+    { triggerUid: "" },
+    { triggerUid: "forged" },
+    // Another account's trigger: getProjectTriggers never lists it.
+    { triggerUid: "other-account-1" },
+    // This account's trigger, but for another handler.
+    { triggerUid: "own-other" },
+  ];
+  for (const name of EDIT_TRIGGER) {
+    for (const who of callers) {
+      for (const e of events) {
+        const { ctx, calls } = server({ ...who, triggers });
+        assert.throws(
+          () => ctx[name](e),
+          /runs only from its trigger/,
+          name + " " + JSON.stringify(who) + " " + JSON.stringify(e),
+        );
+        assert.deepEqual(
+          onlyFrom(calls, ["Session.", "ScriptApp.getProjectTriggers", "trigger."]),
+          [],
+          name,
+        );
+      }
+    }
+    // The editor at the sheet isn't the installer, as on every other editor's pick.
+    const { ctx } = server({ ...callers[2], triggers });
+    try {
+      ctx[name]({ triggerUid: "own-0" });
+    } catch (err) {
+      assert.doesNotMatch(err.message, /Run this from the Apps Script editor/, name);
     }
   }
 });

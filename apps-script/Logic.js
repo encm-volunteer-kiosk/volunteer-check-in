@@ -2992,14 +2992,25 @@ function ownedProtectionPlan(wanted, existing, prefix) {
  * {kept, added, removed}, hours: {asOf, monthlyHours}}: asOf is the Hours tables' time
  * (L1) as Central text, and monthlyHours what became of the old Monthly Hours tab:
  * "deleted", "unmarked" (a tab of that name without the kiosk's protection, left alone) or
- * "none". It ends with the things staff must do by hand: rerun setupDailyJobs once for the
- * nightly Hours refresh when the jobs were installed before it, and rerun setupReports
- * after a Log column moves, since the filter views name Log columns by letter.
+ * "none". trigger is ensureHoursSortTrigger_'s answer: {kind: "installed" or "kept",
+ * account} or {kind: "failed", message}; the sort boxes run as that account, and a failure
+ * doesn't undo Hours. It ends with the things staff must do by hand: rerun setupDailyJobs
+ * once for the nightly Hours refresh when the jobs were installed before it, and rerun
+ * setupReports after a Log column moves, since the filter views name Log columns by letter.
  */
 function setupReportsMessage(counts) {
   const v = counts.views;
   const w = counts.warnings;
   const h = counts.hours || {};
+  const t = counts.trigger || {};
+  const trigger = {
+    installed: "The sort boxes run as " + cellString(t.account) + " (trigger installed).",
+    kept: "The sort boxes run as " + cellString(t.account) + " (trigger already installed).",
+    failed:
+      "The sort boxes' trigger couldn't be installed: " +
+      hoursSentence(t.message) +
+      " Hours is set up, but picking a sort does nothing until setupReports runs again and installs it.",
+  }[t.kind];
   const old = monthlyHoursTabName();
   const monthly = {
     deleted: "The " + old + " tab was deleted; the " + hoursTabName() + " tab replaces it.",
@@ -3022,6 +3033,7 @@ function setupReportsMessage(counts) {
       cellString(h.asOf) +
       ".",
     monthly,
+    trigger,
     "Filter views: " + v.updated + " updated, " + v.added + " added.",
     "Kiosk column warnings: " + w.kept + " kept, " + w.added + " added, " + w.removed + " removed.",
     "If the daily jobs were installed before this version, run setupDailyJobs once more for the nightly Hours refresh.",
@@ -3556,6 +3568,98 @@ function hoursLine(state, formatTime) {
     notePart = "Not refreshed on open at " + at(n.w) + why + ": " + refresh + " for newer taps.";
   }
   return tablePart + " " + notePart;
+}
+
+/**
+ * A pivot's outer row-group sort, as text to compare: its sortOrder, then " by value k"
+ * when it sorts by a value (valueBucket.valuesIndex), or nothing when it sorts by its own
+ * labels. Sheets stores a value bucket for value 0 as {} (it leaves out a zero), so a
+ * bucket with no index reads as value 0. A pivot with no row group gives "".
+ */
+function hoursPivotSortKey(pivotTable) {
+  const group = pivotTable && pivotTable.rows && pivotTable.rows[0];
+  if (!group) return "";
+  const bucket = group.valueBucket;
+  const by = bucket ? " by value " + (Number(bucket.valuesIndex) || 0) : "";
+  return cellString(group.sortOrder) + by;
+}
+
+/**
+ * What one run of the sort boxes sends, worked out from what it read under the lock.
+ * boxes is the Hours tab's A7:N7 values; current is {hoursSheetId, dataSheetId, pivots}:
+ * the two tabs' ids and the boxed pivots' definitions as stored, one per boxed table in
+ * hoursSortChoices' order (null where no pivot was found).
+ *
+ * Each box's choice comes from hoursBoxChoices: a blank or unknown box gives its table's
+ * starting choice and a write-back of that text. The requests, for one batchUpdate, are a
+ * data validation on every box cell with its own list, as setupReports sets it, every
+ * time, since a paste can copy another cell's validation over a box or strip it; then the
+ * write-backs; then, for each pivot whose outer row-group sort (hoursPivotSortKey) differs from its choice's, the
+ * whole pivot from hoursPivots, the same plan setupReports builds, so a re-sort changes
+ * the order and nothing else. A missing pivot is left missing: setupReports makes pivots.
+ *
+ * Returns {choices (hoursBoxChoices'), requests, resorted (how many pivots are rewritten),
+ * summary ("volunteer most hours first, month oldest month first, ...", for the log)}.
+ */
+function hoursSortPlan(boxes, current) {
+  const tables = hoursSortChoices();
+  const choices = hoursBoxChoices(boxes);
+  const wanted = hoursPivots(hoursSourceRange(current.dataSheetId), choices);
+  const have = current.pivots || [];
+  const id = current.hoursSheetId;
+  const row = 6; // row 7, where the boxes are, 0-based
+  const validations = [];
+  const writeBacks = [];
+  const resorts = [];
+  tables.forEach((table, i) => {
+    const column = table.column;
+    validations.push({
+      setDataValidation: {
+        range: {
+          sheetId: id,
+          startRowIndex: row,
+          endRowIndex: row + 1,
+          startColumnIndex: column,
+          endColumnIndex: column + 1,
+        },
+        rule: {
+          condition: {
+            type: "ONE_OF_LIST",
+            values: table.choices.map((c) => ({ userEnteredValue: c.text })),
+          },
+          strict: true,
+          showCustomUi: true,
+        },
+      },
+    });
+    if (choices[i].writeBack) {
+      writeBacks.push({
+        updateCells: {
+          rows: [{ values: [{ userEnteredValue: { stringValue: choices[i].choice } }] }],
+          start: { sheetId: id, rowIndex: row, columnIndex: column },
+          fields: "userEnteredValue",
+        },
+      });
+    }
+    if (have[i] && hoursPivotSortKey(have[i]) !== hoursPivotSortKey(wanted[i])) {
+      resorts.push({
+        updateCells: {
+          rows: [{ values: [{ pivotTable: wanted[i] }] }],
+          start: { sheetId: id, rowIndex: hoursPivotRow() - 1, columnIndex: column },
+          fields: "pivotTable",
+        },
+      });
+    }
+  });
+  const summary = tables
+    .map((table, i) => table.key + " " + choices[i].choice.replace(/^Sort: /, ""))
+    .join(", ");
+  return {
+    choices,
+    requests: [].concat(validations, writeBacks, resorts),
+    resorted: resorts.length,
+    summary,
+  };
 }
 
 /** How long an open may take in all before its table write, and the lock wait counted in. */
