@@ -10,6 +10,16 @@ import {
 } from "./api";
 import logo from "./assets/encm-logo.png";
 import { appreciationMessages, isToday, type Milestone, type Volunteer } from "./data";
+import {
+  clearStoredList,
+  listStateAfterFailure,
+  markVolunteerIn,
+  readStoredList,
+  retriesList,
+  storeList,
+  type ListState,
+  type ListStorage,
+} from "./listStore";
 import { searchNames } from "./nameSearch";
 import {
   abandonSave,
@@ -42,7 +52,6 @@ type Result = SaveOwner & {
   message?: string;
   status?: StatusCode;
 };
-type ListState = "loading" | "ready" | "failed";
 type PhoneStep = "entry" | "missing" | null;
 const TZ = "America/Chicago";
 const ACCESS_CODE_KEY = "encm-kiosk-access-code";
@@ -1113,12 +1122,25 @@ function storeCode(code: string | null) {
   } catch {}
 }
 
+// localStorage, or null where reaching it throws (storage blocked).
+function listStorage(): ListStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const [code, setCode] = useState<string | null>(readStoredCode);
   const codeRef = useRef(code);
   const [setupError, setSetupError] = useState("");
-  const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
-  const [listState, setListState] = useState<ListState>("loading");
+  // A list kept from before the reload shows at once; the refresh below replaces it.
+  const [keptList] = useState(() => readStoredList(listStorage(), code, Date.now()));
+  const [volunteers, setVolunteers] = useState<Volunteer[]>(() => keptList?.volunteers ?? []);
+  const [listState, setListState] = useState<ListState>(keptList ? "stored" : "loading");
+  // When the server list on screen arrived, or null when there is none to keep.
+  const listSavedAt = useRef<number | null>(keptList?.savedAt ?? null);
   const listRequested = useRef(0);
   const listApplied = useRef(0);
   const [messageIndex, setMessageIndex] = useState(0);
@@ -1184,6 +1206,8 @@ export default function App() {
   const applyCode = (next: string | null) => {
     codeRef.current = next;
     storeCode(next);
+    clearStoredList(listStorage());
+    listSavedAt.current = null;
     setCode(next);
     setVolunteers([]);
     setListState("loading");
@@ -1207,7 +1231,7 @@ export default function App() {
     if (!requestCode) return;
     const seq = ++listRequested.current;
     const isCurrent = () => seq > listApplied.current && codeRef.current === requestCode;
-    const failed = () => setListState((state) => (state === "ready" ? state : "failed"));
+    const failed = () => setListState(listStateAfterFailure);
     api.listVolunteers(requestCode).then(
       (reply) => {
         if (!isCurrent()) return;
@@ -1217,6 +1241,7 @@ export default function App() {
           else failed();
           return;
         }
+        listSavedAt.current = Date.now();
         setVolunteers(reply.map(toVolunteer));
         setListState("ready");
       },
@@ -1234,7 +1259,7 @@ export default function App() {
   }, [code]);
 
   useEffect(() => {
-    if (!code || listState !== "failed") return;
+    if (!code || !retriesList(listState)) return;
     const timer = window.setInterval(refreshList, LIST_RETRY_MS);
     return () => clearInterval(timer);
   }, [code, listState]);
@@ -1243,12 +1268,16 @@ export default function App() {
   // next list arrives. A list asked for before the change is out of date and is dropped.
   function markVolunteer(id: string, arrival: string | null) {
     listApplied.current = listRequested.current;
-    setVolunteers((list) =>
-      list.map((v) =>
-        v.id === id ? { ...v, checkedIn: arrival !== null, currentCheckIn: arrival } : v,
-      ),
-    );
+    setVolunteers((list) => markVolunteerIn(list, id, arrival));
   }
+
+  // Keeps the list on the tablet when a server list arrives and after the page marks a
+  // volunteer. A marked list keeps its server list's savedAt, so it ages from that list.
+  useEffect(() => {
+    const savedAt = listSavedAt.current;
+    if (codeRef.current && savedAt !== null)
+      storeList(listStorage(), codeRef.current, savedAt, volunteers);
+  }, [volunteers]);
 
   // Runs again when the screen changes, so a save that ends back on confirm or checkout for
   // a volunteer who left the list meanwhile goes home instead of showing a blank screen.
