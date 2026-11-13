@@ -139,6 +139,25 @@ function refusalMessages() {
     ADMIN_BAD_ROW:
       "That row's date or check-in time can't be read, so its hours can't be worked out. Fix the row in the sheet first.",
     ADMIN_BAD_MONTH: "Please choose a month.",
+    ADMIN_REMOVE_REASON: "Please enter a reason for removing this shift.",
+    ADMIN_REMOVE_NO_ID:
+      "That row has no Shift ID, so the menu can't remove it. Delete it in the sheet by hand.",
+    ADMIN_REMOVE_NOT_FOUND:
+      "No Log row has that Shift ID any more. Close this window and find the shift again.",
+    ADMIN_REMOVE_MOVED:
+      "That row moved or changed in the Log since you found it. Find the shift again, then remove it.",
+    ADMIN_REMOVE_HEADERS:
+      "This row has a value in a column whose header is blank, repeated, or named like a Removed shifts column, so it can't be removed without losing that value. Give that column a unique header first.",
+    ADMIN_RESTORE_NOT_FOUND:
+      "That shift is no longer on the Removed shifts tab. Close this window and open Restore a shift again.",
+    ADMIN_RESTORE_MOVED:
+      "That row moved or changed on the Removed shifts tab. Close this window and open Restore a shift again.",
+    ADMIN_RESTORE_IN_LOG:
+      "A Log row already has this Shift ID, so the shift is already in the Log. Tidy the extra copy by hand.",
+    ADMIN_RESTORE_OPEN_SHIFT:
+      "This shift is open and the volunteer already has an open shift in the Log. Close that one with Fix a sign-out first.",
+    ADMIN_RESTORE_HEADERS:
+      "This row has a value in a column the Log doesn't have exactly once, or whose header is blank or repeated, so it can't go back without losing that value. Give the Log one column with that header first.",
   };
 }
 
@@ -1577,6 +1596,313 @@ function decideFixSignOut(input) {
   }
   const cells = fixSignOutCells(open, checked.ms, note, initials);
   return { open, cells, hours: cells[logHeaderNames().statedHours] };
+}
+
+// ---------------------------------------------------------------------------
+// Removed shifts
+//
+// Remove a shift… moves one Log row, found by its Shift ID, to the "Removed shifts" tab,
+// with who removed it, when and why, and ticks that row's Flags rows Reviewed. Restore a
+// shift… puts a Removed row back at the end of the Log. Both tabs are read and written by
+// header, as the Log is.
+//
+// The rule both keep: Remove then Restore gives back every non-blank cell of the row. A
+// value under a header that can't be mapped both ways (blank, repeated, or named like one
+// of the Removed tab's own three columns) is refused on the way out, and a value under a
+// header the Log no longer has is refused on the way back.
+
+/** The tab Remove a shift… moves rows to. Nothing but Restore reads it. */
+function removedTabName() {
+  return "Removed shifts";
+}
+
+/** The three columns the Removed tab has after the Log's own headers. */
+function removedExtraHeaders() {
+  return { by: "Removed by", at: "Removed at", reason: "Removed reason" };
+}
+
+/** The description of the Removed tab's one warning-only protection. */
+function removedProtectionDescription() {
+  return (
+    "Removed shifts: rows removed from the Log. Use Kiosk admin > Restore a shift… to put " +
+    "one back."
+  );
+}
+
+/** True when a header is one of the three removedExtraHeaders(), by normalizeHeader. */
+function isRemovedExtraHeader(header) {
+  const k = normalizeHeader(header);
+  const extras = removedExtraHeaders();
+  return Object.keys(extras).some((name) => normalizeHeader(extras[name]) === k);
+}
+
+/** {normalized header: how many cells of headerRow have it}; blank headers aren't counted. */
+function headerCounts(headerRow) {
+  const counts = {};
+  (headerRow || []).forEach((h) => {
+    const k = normalizeHeader(h);
+    if (k) counts[k] = (Object.prototype.hasOwnProperty.call(counts, k) ? counts[k] : 0) + 1;
+  });
+  return counts;
+}
+
+/** How a refusal names a column: its header on one line, or its letter when it has none. */
+function headerProblemText(headerRow, index) {
+  const h = cellString(headerRow[index]).replace(/\s+/g, " ");
+  return h || columnLetter(index) + " (no header)";
+}
+
+/**
+ * The header cells to write in row 1 of the Removed tab, as [{col (1-based), header}],
+ * always one run of columns. An empty tab gets the Log's header row as it is, blanks
+ * included, up to its last header, then the three extras. A tab that has a header gets,
+ * right of its last header, each Log header it lacks (in Log order, once each, leaving out
+ * a Log header named like an extra), then any extra it lacks.
+ */
+function removedHeaderWrites(logHeader, removedHeader) {
+  const extras = removedExtraHeaders();
+  const extraList = [extras.by, extras.at, extras.reason];
+  const lastOf = (row) => {
+    let last = -1;
+    (row || []).forEach((cell, i) => {
+      if (cellString(cell) !== "") last = i;
+    });
+    return last;
+  };
+  const last = lastOf(removedHeader);
+  if (last < 0) {
+    const logPart = (logHeader || []).slice(0, lastOf(logHeader) + 1).map(cellString);
+    return logPart.concat(extraList).map((header, i) => ({ col: i + 1, header }));
+  }
+  const have = headerCounts(removedHeader);
+  const wanted = [];
+  (logHeader || []).forEach((h) => {
+    const k = normalizeHeader(h);
+    if (!k || have[k] || isRemovedExtraHeader(h)) return;
+    have[k] = 1;
+    wanted.push(cellString(h));
+  });
+  extraList.forEach((h) => {
+    if (!have[normalizeHeader(h)]) wanted.push(h);
+  });
+  return wanted.map((header, i) => ({ col: last + 2 + i, header }));
+}
+
+/**
+ * A row of width cells for toHeader, each copied from the fromRow cell under the same
+ * header in fromHeader (normalizeHeader forms; the leftmost when one repeats). A header
+ * goes to its leftmost column in toHeader only. A cell with no match, or under a blank
+ * header, is null, so the caller decides what goes there.
+ */
+function headerMapCopy(fromHeader, fromRow, toHeader, width) {
+  const from = {};
+  (fromHeader || []).forEach((h, i) => {
+    const k = normalizeHeader(h);
+    if (k && !Object.prototype.hasOwnProperty.call(from, k)) from[k] = i;
+  });
+  const used = {};
+  return Array.from({ length: width }, (_, j) => {
+    const k = normalizeHeader((toHeader || [])[j]);
+    if (!k || used[k] || !Object.prototype.hasOwnProperty.call(from, k)) return null;
+    used[k] = true;
+    const value = (fromRow || [])[from[k]];
+    return value === undefined ? null : value;
+  });
+}
+
+/**
+ * The column a Log row can't be moved to Removed shifts without losing, as
+ * headerProblemText gives it, or "": the first non-blank cell under a blank or repeated Log
+ * header, or under a Log header named like one of the Removed tab's extras.
+ */
+function removeHeaderProblem(logHeader, cells) {
+  const counts = headerCounts(logHeader);
+  for (let i = 0; i < (cells || []).length; i++) {
+    if (cellString(cells[i]) === "") continue;
+    const k = normalizeHeader(logHeader[i]);
+    if (!k || counts[k] > 1 || isRemovedExtraHeader(logHeader[i])) {
+      return headerProblemText(logHeader, i);
+    }
+  }
+  return "";
+}
+
+/**
+ * The column a Removed row can't go back to the Log without losing, as headerProblemText
+ * gives it, or "": the first non-blank cell, other than the three extras, under a blank or
+ * repeated Removed header, or under a header the Log doesn't have exactly once.
+ */
+function restoreHeaderProblem(removedHeader, cells, logHeader) {
+  const removed = headerCounts(removedHeader);
+  const log = headerCounts(logHeader);
+  for (let i = 0; i < (cells || []).length; i++) {
+    if (cellString(cells[i]) === "") continue;
+    const k = normalizeHeader(removedHeader[i]);
+    if (k && isRemovedExtraHeader(removedHeader[i])) continue;
+    if (!k || removed[k] > 1 || log[k] !== 1) return headerProblemText(removedHeader, i);
+  }
+  return "";
+}
+
+/**
+ * The row a Remove or Restore acts on, from the rows that hold its Shift ID: the only one
+ * wherever it has moved, or, when the Shift ID is on several rows, the one still at row.
+ * null when none is.
+ */
+function pickShiftRow(candidates, row) {
+  const list = candidates || [];
+  if (list.length === 1) return list[0];
+  return list.find((c) => c.row === Number(row)) || null;
+}
+
+/**
+ * Checks a Remove a shift… in order: ADMIN_INITIALS, ADMIN_REMOVE_REASON (blank),
+ * ADMIN_NOTE_TOO_LONG (reason), ADMIN_REMOVE_NO_ID, ADMIN_REMOVE_NOT_FOUND (no Log row
+ * has the Shift ID), ADMIN_REMOVE_MOVED (pickShiftRow found none), ADMIN_REMOVE_HEADERS
+ * (removeHeaderProblem).
+ *
+ * Input: {candidates: [{row, values, formats, entry}] (the Log rows with the Shift ID, read
+ * under the lock), shiftId, row (the row the dialog showed), reason, initials, logHeader}.
+ *
+ * Returns {refusal}, {refusal: "ADMIN_REMOVE_HEADERS", header}, or {target, initials,
+ * reason, remaining}: remaining is how many other Log rows hold the Shift ID.
+ */
+function decideRemove(input) {
+  const initials = normalizeInitials(input.initials);
+  if (!initials) return { refusal: "ADMIN_INITIALS" };
+  const reason = cellString(input.reason);
+  if (!reason) return { refusal: "ADMIN_REMOVE_REASON" };
+  if (reason.length > adminNoteMaxLength()) return { refusal: "ADMIN_NOTE_TOO_LONG" };
+  if (!cellString(input.shiftId)) return { refusal: "ADMIN_REMOVE_NO_ID" };
+  const candidates = input.candidates || [];
+  if (!candidates.length) return { refusal: "ADMIN_REMOVE_NOT_FOUND" };
+  const target = pickShiftRow(candidates, input.row);
+  if (!target) return { refusal: "ADMIN_REMOVE_MOVED" };
+  const header = removeHeaderProblem(input.logHeader, target.values);
+  if (header) return { refusal: "ADMIN_REMOVE_HEADERS", header };
+  return { target, initials, reason, remaining: candidates.length - 1 };
+}
+
+/**
+ * Checks a Restore a shift… in order: ADMIN_INITIALS, ADMIN_RESTORE_NOT_FOUND (no Removed
+ * row has the Shift ID), ADMIN_RESTORE_MOVED (pickShiftRow found none),
+ * ADMIN_RESTORE_IN_LOG (a Log row has the Shift ID), ADMIN_RESTORE_OPEN_SHIFT (the row is
+ * open and the volunteer has an open Log row), ADMIN_RESTORE_HEADERS
+ * (restoreHeaderProblem).
+ *
+ * Input: {candidates: [{row, values, formats, entry}] (the Removed rows with the Shift
+ * ID), shiftId, row, initials, logShiftIds (every Shift ID on the Log, from one read of
+ * its Shift ID column), tokenEntries (the Log entries of the row's User Token),
+ * removedHeader, logHeader}.
+ *
+ * Returns {refusal}, {refusal: "ADMIN_RESTORE_HEADERS", header}, or {target, initials}.
+ */
+function decideRestore(input) {
+  const initials = normalizeInitials(input.initials);
+  if (!initials) return { refusal: "ADMIN_INITIALS" };
+  const shiftId = cellString(input.shiftId);
+  const candidates = shiftId ? input.candidates || [] : [];
+  if (!candidates.length) return { refusal: "ADMIN_RESTORE_NOT_FOUND" };
+  const target = pickShiftRow(candidates, input.row);
+  if (!target) return { refusal: "ADMIN_RESTORE_MOVED" };
+  if ((input.logShiftIds || []).some((id) => cellString(id) === shiftId)) {
+    return { refusal: "ADMIN_RESTORE_IN_LOG" };
+  }
+  if (
+    isStatus(target.entry, "open") &&
+    (input.tokenEntries || []).some((e) => isStatus(e, "open") && isTokenRow(e, target.entry.token))
+  ) {
+    return { refusal: "ADMIN_RESTORE_OPEN_SHIFT" };
+  }
+  const header = restoreHeaderProblem(input.removedHeader, target.values, input.logHeader);
+  if (header) return { refusal: "ADMIN_RESTORE_HEADERS", header };
+  return { target, initials };
+}
+
+/**
+ * A row as Remove and Restore list it: {label, detail}. entry is a log entry plus inBy
+ * (Check-In Entered By), and, for a Removed row, removedBy, removedAtDate (Central
+ * yyyy-MM-dd), removedAtMs and removedReason. clock(ms) gives a Central "9:00 AM". The
+ * label reads "Thu 2026-11-12 · Jordan Rivera · in 9:00 AM · closed"; the detail has one
+ * line each for the row's date, name, status, times, hours, Entered By, alerts and notes,
+ * and for a Removed row who removed it, when and why.
+ */
+function shiftChoiceLabel(entry, clock) {
+  const e = entry || {};
+  const date = rowDate(e.dateText);
+  const day = date ? weekdayName(date).slice(0, 3) + " " + date : cellString(e.dateText);
+  const time = (ms) => (isFinite(ms) ? clock(ms) : "blank or unreadable");
+  const hours = (h) => (typeof h === "number" && isFinite(h) ? h.toFixed(2) : "blank");
+  const start = hasReadableStart(e) ? "in " + clock(shiftStartMs(e)) : "check-in unreadable";
+  const label = [
+    day || "no date",
+    cellString(e.name) || "no name",
+    start,
+    cellString(e.status) || "no status",
+  ].join(" · ");
+  const lines = [
+    "Date: " + (cellString(e.dateText) || "blank"),
+    "Volunteer: " + (cellString(e.name) || "blank"),
+    "Status: " + (cellString(e.status) || "blank"),
+    "Check-in: stated " + time(e.statedInMs) + ", recorded " + time(e.recordedInMs),
+    "Check-out: stated " + time(e.statedOutMs) + ", recorded " + time(e.recordedOutMs),
+    "Hours: stated " + hours(e.statedHours) + ", timestamps " + hours(e.recordedHours),
+    "Entered by: in " +
+      (cellString(e.inBy) || "blank") +
+      ", out " +
+      (cellString(e.outBy) || "blank"),
+    "Admin Alerts?: " + (cellString(e.alerts) || "none"),
+    "Notes: " + (cellString(e.notes) || "none"),
+    "Shift ID: " + (cellString(e.shiftId) || "none"),
+  ];
+  if (e.removedBy !== undefined) {
+    const at = isFinite(e.removedAtMs)
+      ? cellString(e.removedAtDate) + " " + clock(e.removedAtMs)
+      : "unknown";
+    lines.push("Removed by: " + (cellString(e.removedBy) || "blank") + ", at " + at);
+    lines.push("Removed reason: " + (cellString(e.removedReason) || "blank"));
+  }
+  return { label, detail: lines.join("\n") };
+}
+
+/** The note Remove adds to each Flags row it ticks. today is yyyy-MM-dd. */
+function removeFlagNote(initials, reason, today) {
+  return (
+    "Log row removed by " +
+    cellString(initials) +
+    " on " +
+    cellString(today) +
+    ": " +
+    cellString(reason)
+  );
+}
+
+/** The note Restore adds to each Flags row of the Shift ID. today is yyyy-MM-dd. */
+function restoreFlagNote(initials, today) {
+  return "Log row restored by " + cellString(initials) + " on " + cellString(today) + ".";
+}
+
+/**
+ * Whether Remove ticks a Flags row that has the removed row's Shift ID. flag is {date,
+ * name, reason, source, logRow}; only is {row, date, name, remaining}: the removed row's
+ * number, Date and Volunteer Name, and how many Log rows still hold the Shift ID after the
+ * delete. With none left, every flag of the Shift ID was the removed row's. With some
+ * left, a flag is the removed row's only when its Log Row, Date and Volunteer Name are
+ * the removed row's; and the Log check's "Shift ID on more than one row" flag is ticked
+ * too when exactly one row is left, since the pair it reports is gone. Every other flag is
+ * left for the remaining copy. A stale Log Row leaves a flag unticked, the safe side.
+ */
+function removeFlagMatches(flag, only) {
+  const f = flag || {};
+  if (!only || !(only.remaining > 0)) return true;
+  const date = cellString(f.date);
+  const sameDate = date === cellString(only.date) || (date !== "" && date === rowDate(only.date));
+  const sameRow = cellString(f.logRow) !== "" && Number(f.logRow) === Number(only.row);
+  if (sameRow && sameDate && normalizeName(f.name) === normalizeName(only.name)) return true;
+  if (only.remaining !== 1) return false;
+  const source = flagSources().logCheck;
+  if (!source || cellString(f.source) !== source) return false;
+  return cellString(f.reason).indexOf(logCheckReasons()["duplicate-id"] + ":") === 0;
 }
 
 // ---------------------------------------------------------------------------
