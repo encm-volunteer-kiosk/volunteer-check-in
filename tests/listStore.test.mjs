@@ -13,6 +13,8 @@ import {
   readStoredList,
   retriesList,
   storeList,
+  WAKE_REFRESH_MIN_MS,
+  wakeRefreshDue,
 } from "../src/listStore.ts";
 
 const MINUTE = 60_000;
@@ -221,4 +223,20 @@ test("a kept list stays on a failed refresh and is retried every 30 s until a re
   assert.equal(retriesList("failed"), true);
   assert.equal(retriesList("ready"), false);
   assert.equal(retriesList("loading"), false);
+});
+
+test("coming back into view refreshes the list the first time", () => {
+  assert.equal(wakeRefreshDue(T0, null, false), true);
+});
+
+test("coming back into view never refreshes the list while a save is pending", () => {
+  assert.equal(wakeRefreshDue(T0, null, true), false);
+  assert.equal(wakeRefreshDue(T0 + 10 * MINUTE, T0, true), false);
+});
+
+test("coming back into view refreshes the list at most once every 30 s", () => {
+  assert.equal(WAKE_REFRESH_MIN_MS, 30_000);
+  assert.equal(wakeRefreshDue(T0 + 29_999, T0, false), false);
+  assert.equal(wakeRefreshDue(T0 + 30_000, T0, false), true);
+  assert.equal(wakeRefreshDue(T0 + 5 * MINUTE, T0, false), true);
 });
