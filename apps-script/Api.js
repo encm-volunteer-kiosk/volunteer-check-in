@@ -28,6 +28,7 @@ function doGet() {
   // From a file, not a template: the bundled page can contain the "<?" scriptlet marker.
   return HtmlService.createHtmlOutputFromFile("Index")
     .setTitle("Volunteer Check-In")
+    .setFaviconUrl("https://encm-repo.netlify.app/favicon-512.png")
     .addMetaTag("viewport", "width=device-width, initial-scale=1")
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
 }
