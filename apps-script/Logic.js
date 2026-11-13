@@ -1576,7 +1576,7 @@ function refusal(code) {
 // Reports
 //
 // The pure logic of the reports: which Log rows count, the month's figures, the cells of
-// a frozen report tab, and the texts setupReports writes (the Monthly Hours formulas, the
+// a frozen report tab, and the texts setupReports writes (the
 // filter views, the columns that get a soft warning). Reports read the Log and never write
 // a Log cell. No report output holds a User Token: tokens are read only to tell volunteers
 // apart.
@@ -1600,11 +1600,6 @@ function refusal(code) {
 /** The Settings row that holds the dollar value of one volunteer hour. */
 function volunteerHourValueSetting() {
   return "Volunteer hour value";
-}
-
-/** How many rows setupReports gives the Monthly Hours tab; one month's rows must fit. */
-function monthlyHoursRowCount() {
-  return 5000;
 }
 
 /** Every filter view setupReports owns has a title starting with this. */
@@ -2461,11 +2456,6 @@ function logLetter(cols, header) {
   return columnLetter(at);
 }
 
-/** A tab name quoted for a formula reference. */
-function quotedTab(name) {
-  return "'" + String(name).replace(/'/g, "''") + "'";
-}
-
 /**
  * A formula giving a Date cell's (or column's) month as "yyyy-mm", or "": a date value
  * through TEXT, a text Date only when it is exactly yyyy-MM-dd and a real day. This is
@@ -2486,210 +2476,6 @@ function monthFormula(ref) {
     t +
     ', 7), ""), ""))'
   );
-}
-
-/** A formula giving an Hours cell's whole hundredths: reportHundredths' rule. */
-function hundredthsFormula(ref) {
-  const v = "VALUE(TRIM(" + ref + "))";
-  return (
-    "IF(ISNUMBER(" +
-    ref +
-    "), IF(" +
-    ref +
-    " >= 0, ROUND(" +
-    ref +
-    " * 100), 0), IFERROR(IF(" +
-    v +
-    " >= 0, ROUND(" +
-    v +
-    " * 100), 0), 0))"
-  );
-}
-
-/**
- * Everything setupReports writes on the Monthly Hours tab except B1, built from the Log's
- * header map so every Log reference uses the map's letters. logTab is the Log's tab name.
- *
- * Returns {
- *   cells: [{a1, value}]          every cell to write, a formula when value starts "=";
- *   formats: [{range, format}]    number formats to set;
- *   picker: {a1, listRange}       B1, a dropdown over the month list in listRange;
- *   hiddenColumns: [letter]       the columns to hide;
- *   rowCount                      rows the tab gets.
- * }
- *
- * Hidden H to L hold one formula spilling the picked month's rows, ordered as the report
- * orders them (row date, then shift start, unreadable starts last, then Log row): a
- * volunteer key, Volunteer Name, Status, Hours Served (stated) and Admin Alerts?. The key
- * is the Log row of the first row holding the row's User Token, found with XMATCH (exact,
- * no wildcards, though it ignores case), so volunteers are told apart and no token is
- * written on the tab. A row with no month is never picked, even with B1 blank. Every
- * visible formula reads that spill.
- *
- * Row 4 holds the month's stated hours, shifts, volunteers, average shift, and open and
- * flagged counts. Row 7 on holds one formula for hours and shifts per volunteer, grouped by the volunteer key only and labelled with the name on the key's latest
- * row in the spill, which is the name on the volunteer's latest counted row in the month, as
- * monthReport labels it. Two volunteers with one name show as two lines with that name;
- * the frozen report adds the first-shift date.
- *
- * Hidden N holds the month list: every month with a dated Log row up to the current month,
- * plus the current month, newest first, as reportMonths lists them.
- *
- * Where the live tab can differ from the frozen report (rows with odd hours are listed for
- * review in the report, so the frozen record stays right):
- * - A check-in time on a date other than the row's Date counts as a shift start here,
- *   while the report reads it as unreadable. A time typed with no date is read on the
- *   row's Date by both, but sorts here before full date-times on that date. Either way
- *   this changes only which name labels a volunteer with two rows on one date.
- * - A text hours cell is read with VALUE, which reads texts Number doesn't: "50%" and "$5",
- *   but also date and time text, so "1/2" counts as about 46,000 hours and "2:30" as 0.10
- *   here, and 0 in the report.
- * - An hours cell holding a date value counts as its serial number here; Apps Script reads
- *   it as a Date, and the report counts 0.
- * - The table's SORT and TRIM can order and space names differently from labelOrder and
- *   cellString.
- * - TEXT and TODAY use the spreadsheet's time zone, where the report uses Central.
- */
-function monthlyHoursFormulas(cols, logTab) {
-  const H = logHeaderNames();
-  const tab = quotedTab(logTab || "Log");
-  const col = (header) => {
-    const letter = logLetter(cols, header);
-    return tab + "!" + letter + "2:" + letter;
-  };
-  const date = col(H.date);
-  const token = col(H.token);
-  const statedIn = col(H.statedIn);
-  const recordedIn = col(H.recordedIn);
-  const day =
-    "ARRAYFORMULA(IF(ISNUMBER(" +
-    date +
-    "), TEXT(" +
-    date +
-    ', "yyyy-mm-dd"), TRIM(' +
-    date +
-    ")))";
-  const start =
-    "ARRAYFORMULA(IF(ISNUMBER(" +
-    statedIn +
-    "), " +
-    statedIn +
-    ", IF(ISNUMBER(" +
-    recordedIn +
-    "), " +
-    recordedIn +
-    ", 1E+9)))";
-  const spill =
-    "=IFNA(LET(" +
-    "months, ARRAYFORMULA(" +
-    monthFormula(date) +
-    "), " +
-    'picked, ARRAYFORMULA((months <> "") * (months = $B$1) = 1), ' +
-    "allTokens, ARRAYFORMULA(TRIM(" +
-    token +
-    ")), " +
-    "rowTokens, FILTER(allTokens, picked), " +
-    'keys, ARRAYFORMULA(IF(rowTokens = "", "", XMATCH(rowTokens, allTokens) + 1)), ' +
-    "SORT({keys, FILTER({" +
-    [col(H.name), col(H.status), col(H.statedHours), col(H.alerts)].join(", ") +
-    "}, picked)}, " +
-    "FILTER(" +
-    day +
-    ", picked), TRUE, " +
-    "FILTER(" +
-    start +
-    ", picked), TRUE, " +
-    "FILTER(ARRAYFORMULA(ROW(" +
-    date +
-    ")), picked), TRUE)" +
-    '), "")';
-
-  const counted = '(LOWER(TRIM(J2:J)) = "closed") * (H2:H <> "")';
-  const hundredths = hundredthsFormula("K2:K");
-  const sumHundredths = "ARRAYFORMULA(SUM(IF(" + counted + ", " + hundredths + ", 0)))";
-  const label = (rows) =>
-    "IF(TRIM(INDEX(" +
-    rows +
-    ", ROWS(" +
-    rows +
-    '))) = "", "(no name)", TRIM(INDEX(' +
-    rows +
-    ", ROWS(" +
-    rows +
-    "))))";
-  const perVolunteer =
-    "=IFNA(LET(" +
-    "isCounted, ARRAYFORMULA(" +
-    counted +
-    " = 1), " +
-    "keys, FILTER(H2:H, isCounted), " +
-    "names, FILTER(I2:I, isCounted), " +
-    "hours, FILTER(ARRAYFORMULA(" +
-    hundredths +
-    "), isCounted), " +
-    "SORT({" +
-    "MAP(UNIQUE(keys), LAMBDA(key, " +
-    label("FILTER(names, keys = key)") +
-    ")), " +
-    "MAP(UNIQUE(keys), LAMBDA(key, ROWS(FILTER(keys, keys = key)))), " +
-    "MAP(UNIQUE(keys), LAMBDA(key, SUM(FILTER(hours, keys = key)) / 100))" +
-    '}, 1, TRUE)), "")';
-  const monthList =
-    "=LET(" +
-    "months, ARRAYFORMULA(" +
-    monthFormula(date) +
-    "), " +
-    'current, TEXT(TODAY(), "yyyy-mm"), ' +
-    'SORT(UNIQUE({current; IFNA(FILTER(months, months <> "", months <= current), current)}), 1, FALSE))';
-
-  const cells = [
-    { a1: "A1", value: "Month" },
-    {
-      a1: "C1",
-      value:
-        "Pick a month. This tab updates by itself and changes nothing in the Log. If it shows #REF!, ask the maintainer to run setupReports.",
-    },
-    { a1: "A3", value: "Stated hours" },
-    { a1: "B3", value: "Shifts" },
-    { a1: "C3", value: "Volunteers" },
-    { a1: "D3", value: "Average shift (hours)" },
-    { a1: "E3", value: "Open shifts not counted" },
-    { a1: "F3", value: "Flagged rows" },
-    { a1: "A4", value: "=" + sumHundredths + " / 100" },
-    { a1: "B4", value: "=ARRAYFORMULA(SUM(" + counted + "))" },
-    {
-      a1: "C4",
-      value: '=IFNA(COUNTUNIQUE(FILTER(H2:H, LOWER(TRIM(J2:J)) = "closed", H2:H <> "")), 0)',
-    },
-    { a1: "D4", value: '=IF(B4 = 0, "", ROUND(' + sumHundredths + " / B4) / 100)" },
-    { a1: "E4", value: '=ARRAYFORMULA(SUM((LOWER(TRIM(J2:J)) = "open") * 1))' },
-    { a1: "F4", value: '=ARRAYFORMULA(SUM((TRIM(L2:L) <> "") * 1))' },
-    { a1: "A6", value: "Volunteer" },
-    { a1: "B6", value: "Shifts" },
-    { a1: "C6", value: "Stated hours" },
-    { a1: "A7", value: perVolunteer },
-    { a1: "H1", value: "Volunteer key (first Log row of the volunteer)" },
-    { a1: "I1", value: "Volunteer Name" },
-    { a1: "J1", value: "Status" },
-    { a1: "K1", value: "Hours Served (stated)" },
-    { a1: "L1", value: "Admin Alerts?" },
-    { a1: "H2", value: spill },
-    { a1: "N1", value: monthList },
-  ];
-  return {
-    cells,
-    formats: [
-      { range: "A4", format: "0.00" },
-      { range: "B4:C4", format: "0" },
-      { range: "D4", format: "0.00" },
-      { range: "E4:F4", format: "0" },
-      { range: "B7:B", format: "0" },
-      { range: "C7:C", format: "0.00" },
-    ],
-    picker: { a1: "B1", listRange: "N1:N" },
-    hiddenColumns: ["H", "I", "J", "K", "L", "N"],
-    rowCount: monthlyHoursRowCount(),
-  };
 }
 
 /**
@@ -2790,7 +2576,10 @@ function filterViewRequests(specs, existing) {
   });
 }
 
-/** The tab setupReports builds for the live month table. */
+/**
+ * The old live month tab, which the Hours tab replaces. setupReports deletes a tab of this
+ * name once Hours reads back filled, and only when it carries the kiosk's protection.
+ */
 function monthlyHoursTabName() {
   return "Monthly Hours";
 }
@@ -2801,7 +2590,8 @@ function monthlyHoursTabName() {
  * another, so one kind is never taken for another.
  * - kioskColumn: the soft warnings on the Log's kiosk columns. setupReports keeps them in
  *   line with the header map.
- * - monthlyHours: the Monthly Hours tab's warning. setupReports keeps one.
+ * - monthlyHours: the old Monthly Hours tab's warning. setupReports deletes that tab
+ *   only when it carries this.
  * - reportTab: each report tab's warning, made once with the tab. setupReports never reads,
  *   edits or removes it.
  */
@@ -2811,14 +2601,6 @@ function reportProtectionPrefixes() {
     monthlyHours: "Monthly Hours tab:",
     reportTab: "Report tab:",
   };
-}
-
-/** The description of the Monthly Hours tab's warning-only protection. */
-function monthlyHoursDescription() {
-  return (
-    reportProtectionPrefixes().monthlyHours +
-    " setupReports writes this tab. Pick a month in B1; anything else typed here is replaced when setupReports runs again."
-  );
 }
 
 /** The description of a report tab's warning-only protection. */
@@ -2855,16 +2637,6 @@ function ownedProtectionPlan(wanted, existing, prefix) {
   });
   const add = wanted.filter((key, i) => !claimed.has(key) && wanted.indexOf(key) === i);
   return { keep, remove, add };
-}
-
-/**
- * The month the Monthly Hours picker shows after setupReports: what the cell holds when it
- * is a "yyyy-MM" month as text, else todayDate's month. A date value in the cell (typed
- * before the cell was plain text) reads as yyyy-MM-dd and is replaced.
- */
-function pickerMonth(cellText, todayDate) {
-  const s = cellString(cellText);
-  return /^\d{4}-(0[1-9]|1[0-2])$/.test(s) ? s : monthKey(todayDate);
 }
 
 /**

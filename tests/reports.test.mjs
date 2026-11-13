@@ -1056,69 +1056,6 @@ test("the reordered header's letters", () => {
   );
 });
 
-test("monthlyHoursFormulas use the map's letters on a reordered header", () => {
-  const f = plain(L.monthlyHoursFormulas(L.reportColumns(REORDERED), "Log"));
-  const cell = (a1) => f.cells.find((c) => c.a1 === a1).value;
-  const spill = cell("H2");
-  for (const h of [
-    H.date,
-    H.name,
-    H.token,
-    H.status,
-    H.statedHours,
-    H.alerts,
-    H.statedIn,
-    H.recordedIn,
-  ]) {
-    const l = letterOf(h);
-    assert.ok(spill.includes("'Log'!" + l + "2:" + l), h + " at " + l);
-  }
-  // The default layout's Date column, A, is the staff column here and is never read.
-  assert.ok(!/'Log'!A2:A/.test(JSON.stringify(f)));
-  assert.ok(cell("N1").includes("'Log'!S2:S"));
-  // Group by the volunteer key only, label by the latest row's name.
-  assert.match(cell("A7"), /UNIQUE\(keys\)/);
-  assert.match(cell("A7"), /ROWS\(FILTER\(names, keys = key\)\)/);
-  assert.ok(!/UNIQUE\(\{/.test(cell("A7")), "no grouping by token and name together");
-  // No token reaches the tab: the spill writes a row number for each token.
-  assert.match(spill, /XMATCH\(rowTokens, allTokens\) \+ 1/);
-  assert.ok(
-    spill.includes('picked, ARRAYFORMULA((months <> "") * (months = $B$1) = 1)'),
-    "an undated row is never picked",
-  );
-  assert.ok(!/\{allTokens|\{rowTokens/.test(spill));
-  for (const c of f.cells) {
-    if (c.value.startsWith("=")) {
-      const opens = (c.value.match(/\(/g) || []).length;
-      const closes = (c.value.match(/\)/g) || []).length;
-      assert.equal(opens, closes, c.a1 + " parentheses");
-    }
-  }
-  assert.deepEqual(f.picker, { a1: "B1", listRange: "N1:N" });
-  assert.deepEqual(f.hiddenColumns, ["H", "I", "J", "K", "L", "N"]);
-  assert.equal(f.rowCount, 5000);
-  assert.ok(!f.cells.some((c) => c.a1 === "B1"), "B1 is the picker, kept by setupReports");
-});
-
-test("monthlyHoursFormulas quote the tab name and refuse a missing column", () => {
-  const f = plain(L.monthlyHoursFormulas(L.reportColumns(HEADER), "Kiosk's Log"));
-  assert.ok(f.cells.find((c) => c.a1 === "H2").value.includes("'Kiosk''s Log'!A2:A"));
-  const cols = plain(L.reportColumns(HEADER));
-  cols[H.statedIn] = -1;
-  assert.throws(() => L.monthlyHoursFormulas(cols, "Log"), /no "check-in stated \(user\)" column/);
-});
-
-test("monthlyHoursFormulas blank only FILTER's no-match result, so other errors show", () => {
-  const f = plain(L.monthlyHoursFormulas(L.reportColumns(HEADER), "Log"));
-  const cell = (a1) => f.cells.find((c) => c.a1 === a1).value;
-  // FILTER with no rows gives #N/A; a deleted column (#REF!) or a bad name (#NAME?) must
-  // still reach staff, as the note in cell C1 tells them.
-  for (const a1 of ["H2", "A7", "C4"]) {
-    assert.ok(cell(a1).startsWith("=IFNA("), a1 + " starts with IFNA");
-    assert.ok(!cell(a1).startsWith("=IFERROR("), a1 + " has no outer IFERROR");
-  }
-});
-
 test("filterViewSpecs use the map's letters on a reordered header", () => {
   const specs = plain(L.filterViewSpecs(L.reportColumns(REORDERED), 77));
   assert.deepEqual(
@@ -1186,7 +1123,6 @@ test("each kind of report protection has its own marker, and no marker starts an
     reportTab: "Report tab:",
   });
   assert.ok(L.kioskWarnDescription().startsWith(p.kioskColumn));
-  assert.ok(L.monthlyHoursDescription().startsWith(p.monthlyHours));
   assert.ok(L.reportTabDescription().startsWith(p.reportTab));
   const all = Object.values(p);
   for (const a of all) {
@@ -1227,10 +1163,10 @@ test("ownedProtectionPlan keeps its own, removes stale and duplicate own ones, a
     remove: [],
     add: [],
   });
-  // The Monthly Hours tab: one sheet protection of its own, the report tab's left alone.
+  // A sheet-level protection: one of its own kept, the report tab's left alone.
   const sheetLevel = [
-    { key: "sheet", description: L.monthlyHoursDescription() },
-    { key: "sheet", description: L.monthlyHoursDescription() },
+    { key: "sheet", description: "Monthly Hours tab: kiosk" },
+    { key: "sheet", description: "Monthly Hours tab: kiosk" },
     { key: "sheet", description: L.reportTabDescription() },
   ];
   assert.deepEqual(plain(L.ownedProtectionPlan(["sheet"], sheetLevel, "Monthly Hours tab:")), {
@@ -1243,14 +1179,6 @@ test("ownedProtectionPlan keeps its own, removes stale and duplicate own ones, a
     remove: [],
     add: ["sheet"],
   });
-});
-
-test("pickerMonth keeps a yyyy-MM text month and otherwise shows the current month", () => {
-  assert.equal(L.pickerMonth("2026-09", "2026-11-12"), "2026-09");
-  assert.equal(L.pickerMonth(" 2025-12 ", "2026-11-12"), "2025-12");
-  for (const bad of ["", "2026-11-01", "2026-13", "2026-00", "Nov 2026", "2026-1"]) {
-    assert.equal(L.pickerMonth(bad, "2026-11-12"), "2026-11", bad);
-  }
 });
 
 test("setupReportsMessage gives the counts, when Hours is filled as of, Monthly Hours' fate, and the reruns", () => {
