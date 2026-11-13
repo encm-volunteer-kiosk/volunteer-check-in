@@ -3449,7 +3449,10 @@ function hoursNextState(state, run, outcome) {
   const kind = outcome && outcome.kind;
 
   if (kind === "setup-start") {
+    // B1 is rendered between the two writes too, so no moment has B1 saying the tables
+    // are whole while Q1 says building.
     set("M1", "writing " + run.mark);
+    render();
     set("Q1", "building " + run.mark);
     return end("setup-start");
   }
