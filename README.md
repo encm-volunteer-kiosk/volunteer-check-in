@@ -34,15 +34,16 @@ so hours can be credited to each volunteer and reported to grantmakers.
   to it. Volunteers who share a name confirm the last four digits of their phone, and the
   digits decide which of them is signed in or out.
 - **Kiosk admin menu**: a menu in the Check-In Log spreadsheet for staff to add a shift a
-  volunteer forgot to log, to close one they forgot to sign out of, or to make a monthly
-  report (see below).
+  volunteer forgot to log, to close one they forgot to sign out of, to make a monthly
+  report, or to refresh the Hours tab (see below).
 - **Flags tab**: each alert the kiosk writes is also copied to a Flags tab, one row per
   alert, for staff to tick off as reviewed (see Flags tab).
-- **Reports**: a Monthly Hours tab that updates by itself, a frozen monthly report with
-  CSV and PDF downloads, saved filter views on the Log, and a warning when someone edits
-  a column the kiosk fills (see Reports).
-- **Daily jobs**: a weekly email of flags to staff, and an auto clock-out at about 4 AM
-  that closes shifts nobody checked out of, with a guessed time, flagged (see Daily jobs).
+- **Reports**: the Hours tab, tables and slicers for hours over any period you pick, a
+  frozen monthly report with CSV and PDF downloads, saved filter views on the Log, and a
+  warning when someone edits a column the kiosk fills (see Reports).
+- **Daily jobs**: a weekly email of flags to staff, an auto clock-out at about 4 AM that
+  closes shifts nobody checked out of, with a guessed time, flagged, and a refresh of the
+  Hours tab at about 5 AM (see Daily jobs).
 
 Team design pages (private; ask Ethan for access):
 
@@ -297,11 +298,12 @@ the tab. Flags raised before the Flags tab was added are only in Admin Alerts?.
 
 ### Two counts of flagged
 
-"Flagged rows" on Monthly Hours and the flagged rows in the monthly report count **Log
-rows** in the month whose Admin Alerts? isn't blank, and the `Kiosk: Flagged` filter view
-shows every such Log row. The Flags tab lists **each flag**, with whether someone has
-reviewed it. A check-out can raise two flags on one row, and staff can type in Admin
-Alerts? too, so the counts differ on purpose.
+The flagged rows in the monthly report count **Log rows** in the month whose Admin
+Alerts? isn't blank. Row 3 of the Hours tab counts every such row in the whole Log, and
+the `Kiosk: Flagged` filter view shows them. The Flags tab lists **each flag**, with
+whether someone has reviewed it, and row 3 of the Hours tab counts its unreviewed rows
+too. A check-out can raise two flags on one row, and staff can type in Admin Alerts?
+too, so the counts differ on purpose.
 
 ## Settings
 
@@ -348,10 +350,10 @@ On a spreadsheet set up before them, run `setupSheets` once to add them.
 
 ## Kiosk admin menu
 
-Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with four items: Add a
-shift, Fix a sign-out, Monthly report, which is described under Reports, and Import past
-hours. Anyone
-who can edit the spreadsheet can use it. It runs as whoever has the sheet open, which at
+Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with five items: Add a
+shift, Fix a sign-out, Monthly report, Import past hours and Refresh Hours. Monthly report
+and Refresh Hours are described under Reports. Anyone who can edit the spreadsheet can use
+it. It runs as whoever has the sheet open, which at
 ENCM is the shared account, so:
 
 - that account must be able to read Volunteer Profiles, because the menu reads the roster
@@ -359,7 +361,7 @@ ENCM is the shared account, so:
 - the first time the account uses the menu, Google asks it to authorize the script. Accept
   once and the menu works from then on.
 
-Each item opens a small window. Every save asks for the admin's **initials**: 1 to 5
+Each item except Refresh Hours opens a small window. Every save asks for the admin's **initials**: 1 to 5
 letters, with spaces and dots dropped, stored in capitals (`j.p.` is stored as `JP`). The
 initials go in Check-In Entered By and Check-Out Entered By, since everyone at ENCM signs
 in as the same account. A window stops working after 30 minutes; close it and open the
@@ -529,8 +531,13 @@ called from the open spreadsheet, through a window the menu opened.
 ## Daily jobs
 
 Jobs the script runs on its own, on Google's timed triggers: the weekly flags email,
-checked every hour, and the auto clock-out, once a day at about 4 AM Central. They live in
-`apps-script/Jobs.js`.
+checked every hour, the auto clock-out, once a day at about 4 AM Central, and the Hours
+refresh, once a day at about 5 AM Central. They live in `apps-script/Jobs.js`.
+
+On a sheet whose jobs were installed before the Hours refresh was added, the account that
+owns them must run `setupDailyJobs` once more to add it (see Who runs them). Until then
+Hours is refreshed only from the menu and by `setupReports`. `setupReports`' finish
+message says so too.
 
 ### Who runs them
 
@@ -655,12 +662,27 @@ writes a row, it reads that row again; if staff have sorted, inserted, deleted o
 Log rows so the row is no longer the open one it read at the start, it leaves it alone,
 logs one line, and the next day's run picks it up where it now is.
 
+### Nightly Hours refresh
+
+Once a day, at some minute between 5 and 6 AM Central, the job refreshes the Hours tab as
+Kiosk admin > Refresh Hours does (see Hours tab). It runs an hour after the auto
+clock-out, so the rows that run closed show. It always writes the whole table again, which
+also undoes any hand edit on Hours data.
+
+It never takes the kiosk's lock, so a tap at that minute doesn't wait for it. If another
+refresh or `setupReports` is writing Hours, it waits up to 2 minutes. The run fails, and
+the owner gets Google's failure email, when it still can't start after that, when Hours
+isn't set up (run `setupReports`), or when the refresh itself fails. When it got as far
+as writing, B1 on the Hours tab says what happened. Use Refresh Hours, or let the next
+night's run catch up.
+
 ## Reports
 
 There are four tools for staff. All of them read the Log tab and none of them changes a
 Log cell. No report shows a User Token: tokens are read only to tell volunteers apart.
 
-- the **Monthly Hours** tab, a live table for the month you pick;
+- the **Hours** tab, tables of stated hours, shifts and volunteers for any period you pick
+  with its slicers, as of its last refresh;
 - **Monthly report** in the Kiosk admin menu, which writes a report tab for a month and
   gives you that tab as a CSV or PDF download;
 - saved **filter views** on the Log, for finding rows to check;
@@ -679,7 +701,8 @@ Log cell. No report shows a User Token: tokens are read only to tell volunteers 
   it counts in no month's figures and is listed for review in every report. The Day
   column is never read; the weekday comes from the Date.
 - A **volunteer** is a User Token. The report shows the Volunteer Name from that
-  volunteer's latest counted shift in the month.
+  volunteer's latest counted shift in the month; the Hours tab shows it from their latest
+  counted shift in the whole Log (see Hours tab).
 - An **open** row (Status `open`) counts nowhere: no shift, no hours, not a volunteer.
   The report lists open rows first under rows to review, and its first lines say how many
   there are: "N open shifts in this month are not counted. Close them with Fix a
@@ -708,22 +731,136 @@ Log cell. No report shows a User Token: tokens are read only to tell volunteers 
     milestones too, so a volunteer with years of hours isn't told at check-out that they
     reached 50 hours for the first time.
   - The **`Kiosk: Other status or source`** view shows every imported row.
+- **The Hours tab** counts exactly these rows, with their stated hours, using the monthly
+  report's own code. "All time" there means every counted row with a month. A counted row
+  with no month is in no period, all time included; row 3 counts them. An imported row has
+  no time, so its Start shows `no time`. The tab shows the Log as of its last refresh,
+  which B1 names.
 
-### Monthly Hours tab
+### Hours tab
 
-Pick a month in B1 from the list. The list has every month with a Log row, up to this
-month, newest first. The tab then shows that month's stated hours, shifts, volunteers,
-average shift, open shifts not counted, and flagged rows, and under them each volunteer
-with their shifts and stated hours, sorted by name.
+The Hours tab shows stated hours, shifts and volunteers for any period you pick: a year, a
+month, several months or all time, narrowed to a role, an activity or a volunteer if you
+want. `setupReports` builds it (see Setting up the reports). It replaces the old Monthly
+Hours tab, so there is no month to pick in B1 any more.
 
-The tab updates by itself as the Log changes. It changes nothing in the Log. Hidden
-columns hold the month's rows that the formulas read; leave them hidden.
+- **Row 1**: the title, and in B1 when the tables are from (below). Row 1 stays on screen
+  when you scroll.
+- **Row 2**: a short note on how to use the tab.
+- **Row 3**: counts for the whole Log that don't follow the slicers (below).
+- **Row 5**: five slicers: Year, Month, Role/Type, Activity and Volunteer.
+- **From row 8**, three tables side by side, each with a Grand Total row:
+  - **Hours by volunteer**: shifts and hours per volunteer, most hours first;
+  - **Hours by month**: shifts, hours, volunteers and average shift per month, oldest
+    first;
+  - **Shifts**: one line per shift with its date, start, volunteer, role/type, activity
+    and hours, newest first.
 
-Two volunteers with the same name show as two lines with the same name here. The monthly
-report tells them apart.
+**Picking a period.** Click a slicer and tick what you want. Every slicer filters all
+three tables. Pick a year for that year, a month for that month, or several months
+together; clear every slicer for all time. The Grand Total rows are then the period's
+stated hours, shifts, volunteers and average shift.
 
-The tab warns before any edit except the month in B1. If someone types over a formula
-anyway, or the tab shows `#REF!`, run `setupReports` to put it back.
+**Your picks are yours alone.** A pick shows only in the window you made it in: nobody
+else sees it, and it's gone when you close the tab.
+
+<!-- pick-after-refresh: start -->
+
+If Hours is refreshed while your tab is open, look at the slicers again before you read
+the totals.
+
+<!-- pick-after-refresh: end -->
+
+Don't use "Set current filters as default" in a slicer's menu. It saves the pick for
+everyone, and because a slicer saves the values it hides, months and volunteers added
+later show in that default until someone clears it. `setupReports` clears a saved default.
+
+**Sorting.** The tables have no click-a-header sort. Click a table, and in the editor that
+opens use Sort by. A sort is saved for everyone and kept through refreshes; `setupReports`
+puts each table back in its own order.
+
+**The shifts behind a number.** Double-click a number in a table and Sheets opens a new tab
+listing the Hours data rows behind it. Each double-click makes another tab, so they pile
+up; delete them when you're done. They hold no User Token.
+
+**When the tables are from.** The tables aren't live. They show the Log as of the last
+refresh, and B1 says when that was, such as "As of 2026-11-13 9:14 AM, refreshed from the
+menu." A tap made since then shows at the next refresh. Nothing on the tab is a formula
+over the Log, so a tap on the kiosk never waits for Hours, and a refresh never makes the
+kiosk wait.
+
+<!-- open-refresh: start -->
+
+**When Hours is refreshed.** From Kiosk admin > Refresh Hours, each night at about 5 AM
+(see Daily jobs), and by `setupReports`. Opening the spreadsheet doesn't refresh it, so use
+Refresh Hours when you need the latest taps.
+
+<!-- open-refresh: end -->
+
+**Refresh Hours** in the Kiosk admin menu opens no window and asks for no initials. It
+reads the Log, writes the tables again and shows what B1 now says. Other answers:
+
+- "Another refresh or setupReports is writing Hours. Try again in a minute." It waited 30
+  seconds and changed nothing.
+- "Another refresh already put in newer tables." Another refresh finished first, with
+  newer taps; this one changed nothing.
+- "This refresh failed: ..." with the reason, then what B1 now says.
+- "Run setupReports." Hours isn't set up yet, or a tab named Hours isn't the kiosk's. If
+  the kiosk's Hours tab has been copied, it names the copies to delete instead.
+
+**What else B1 can say.**
+
+- "Refreshing since ...": a refresh is writing the tables now. If this stays over 5
+  minutes, the refresh was cut off; use Refresh Hours.
+- "A refresh at ... stopped part way, so the tables may be incomplete": use Refresh Hours.
+- "The refresh ... failed before writing: ...": the tables are still the earlier, whole
+  ones. The reason says what to fix.
+- "The refresh ... failed part way: ... The tables may be incomplete": fix what it names,
+  then use Refresh Hours.
+- "Hours is being set up by setupReports since ...": wait. If this stays over 5 minutes,
+  run `setupReports` again. "Hours is not set up: run setupReports." means what it says.
+
+**Row 3** counts, at the last refresh and over the whole Log whatever the slicers show:
+
+- open shifts, which aren't counted (the Log's `Kiosk: Open shifts` view lists them);
+- Log rows with Admin Alerts? set (the `Kiosk: Flagged` view);
+- unreviewed Flags rows (the Flags tab's `Flags: Unreviewed` view), or "Run setupSheets
+  to add the Flags tab" when the Flags tab is missing or can't be read;
+- counted rows left out because their Date can't be read (the monthly report lists them
+  under rows to review).
+
+The monthly report gives open and flagged rows month by month.
+
+**Volunteers' names.** A volunteer is a User Token, shown with the Volunteer Name from
+their latest counted shift in the whole Log, or `(no name)` when that is blank. When two
+volunteers' names match, ignoring capitals and extra spaces, each gets the date of their
+first shift: "Maria Lopez · first shift 2026-03-02". If two still match, ", Log row N" is
+added, N being the Log row of that volunteer's first counted shift at that refresh. Runs
+of spaces in names, Role/Type and Activity show as one, and values that differ only in
+capitals show in one spelling, the one on the latest shift. To find a Shifts line on the
+Log, look for its Date, Start and Volunteer.
+
+**Hours data.** The tables read a hidden tab, Hours data, which the refresh writes: one row
+per counted shift with a month, as plain values, with no User Token. Leave it hidden and
+don't edit it. An edit there shows in the tables only until a refresh writes the whole
+table again, which every refresh from the menu, at night or by `setupReports` does. Its
+cells L1 to Q1 are the refresh's own record of what it wrote, and B1 is worked out from
+them; leave them alone. Neither tab warns before an edit (a warning would pop up at every
+slicer click), and `setupReports` clears the Hours tab and builds it again, so anything
+typed on it is lost.
+
+**Where Hours and the monthly report differ.** Both count with the same code, so for a
+month, with Hours refreshed since the Log last changed, they give the same hours, shifts
+and volunteers. Names can differ: Hours names a volunteer from the whole Log and the report
+from the month, so someone whose name was spelled differently that month shows under
+different names. Hours also tidies spacing and capitals as above, and adds ", Log row N"
+to any name still shared, where the report adds it only to namesakes whose first shifts
+share a date. And the refresh reads the Log without the kiosk's lock, so a row the kiosk
+was writing at that moment can be read half-written; the next refresh reads it whole. The
+report reads under the lock.
+
+**On a phone or tablet.** Use Hours in Sheets on a computer: the Sheets apps for phones and
+tablets can't edit pivot tables.
 
 ### Monthly report
 
@@ -736,6 +873,11 @@ a second report for the same month makes a new tab, `Report 2026-11 (2)`. The sc
 never changes a report tab after writing it, so each one is a record of the Log as it was
 when the report was made. Delete old report tabs by hand when you no longer need them.
 Report tabs warn before an edit.
+
+Report tabs are styled when they're written: the title, the section headings, each
+table's header row, column widths and a blue tab. The styling shows in the PDF too; what
+the report says doesn't change. Tabs made before the styling keep their old look, since
+the script never changes a report tab after writing it.
 
 The window then shows two links, **Download CSV** and **Download PDF**. Each downloads
 that report tab only, not the rest of the spreadsheet. The links work for anyone signed in
@@ -854,25 +996,61 @@ Log).
 ### Setting up the reports
 
 Run `setupReports` from the Apps Script editor, like `setupSheets`. The first time, Google
-asks to authorize the script again, for the Sheets service it uses to save filter views.
-Accept.
+asks to authorize the script again, for the Sheets service it uses to save filter views
+and build the Hours tab. Accept.
 
-It makes or repairs the Monthly Hours tab, the filter views and the warnings, from the
-Log's current columns. It keeps the month picked in B1. It changes only what it made: the
-Monthly Hours tab, the views titled `Kiosk: ` and the warnings it put on the Log. It never
-changes a Log cell, a report tab or any other tab, so running it again changes nothing. If
-the Log is missing a column the kiosk needs, it stops with the kiosk's message; run
-`setupSheets` first.
+It makes or repairs the Hours and Hours data tabs, the filter views and the warnings, from
+the Log's current columns, and fills Hours. It changes only what it made: the Hours and
+Hours data tabs, the views titled `Kiosk: ` and the warnings it put on the Log. It also
+deletes the old Monthly Hours tab (below). It never changes a Log cell, a report tab or any
+other tab.
+
+Each run builds the Hours tab again from scratch: it clears it and makes the slicers and
+tables anew, so a sort or a saved slicer default goes back to the start, and anything typed
+on the tab is lost. Otherwise running it again changes nothing.
+
+It stops before changing anything when:
+
+- the Log is missing a column the kiosk needs. It gives the kiosk's message; run
+  `setupSheets` first;
+- a tab named Hours or Hours data isn't the kiosk's (`setupReports` didn't make it).
+  Rename or delete that tab, then run it again;
+- the kiosk's Hours or Hours data tab has been copied. The copy carries the kiosk's mark,
+  and the message names both tabs. Delete the copy, then run it again.
+
+If a refresh is writing Hours and doesn't finish within a minute, it stops with "A refresh
+is writing Hours; run setupReports again in a minute." The filter views and warnings are
+done by then, and running it again is safe.
+
+**The old Monthly Hours tab.** Once Hours is filled and reads back whole, `setupReports`
+deletes the Monthly Hours tab, but only one that carries the warning before edits that
+`setupReports` put on it. A tab named Monthly Hours without that warning is left alone, and
+the finish message says so; delete it by hand when you no longer need it. If Hours can't be
+filled, `setupReports` keeps Monthly Hours and stops with "Hours was not filled (...);
+Monthly Hours was kept. Fix that and run setupReports again." The reason in the brackets is
+what B1 says.
+
+When it finishes, its log in the editor says what it did, with two reminders: run
+`setupDailyJobs` once more if the daily jobs were installed before the Hours refresh, and
+run `setupReports` again after a Log column moves.
 
 **After inserting, deleting or moving a Log column, run `setupReports` again**, so the
-filter views and the Monthly Hours formulas follow the columns.
+filter views follow the columns. Hours reads the Log by its headers and follows by itself.
+Run `setupSheets` again too, for the look's colour rules.
 
-To add the reports to a spreadsheet already in use, do these steps in this order:
+To add the reports to a spreadsheet already in use, or to move one from the Monthly Hours
+tab to the Hours tab and the new look, do these steps in this order:
 
 1. `pnpm push`. The kiosk page doesn't change, so a versioned web app deployment needs no
-   update, and the menu runs the pushed code.
-2. Run `setupSheets` from the editor. It adds the "Volunteer hour value" row to Settings.
-3. Run `setupReports` from the editor, and authorize it when asked.
+   update, and the menu runs the pushed code. Monthly Hours keeps working until step 3,
+   and Refresh Hours says "Run setupReports." until then.
+2. Run `setupSheets` from the editor. It adds any missing Settings row, such as "Volunteer
+   hour value", and applies the look.
+3. Run `setupReports` from the editor, and authorize it when asked. It builds and fills
+   Hours, then deletes Monthly Hours.
+4. If the daily jobs are installed, sign in as the account that owns them (Settings "Daily
+   jobs installed by") and run `setupDailyJobs` once more, to add the nightly Hours
+   refresh. Doing it after step 3 means the first nightly run finds Hours set up.
 
 ## Setup
 
@@ -915,8 +1093,9 @@ steps have not yet been tried on ENCM's iPad; check step 4 when you set it up.
 ### What setupSheets does
 
 `setupSheets` writes only empty cells, creates or renames tabs, and sets formats, the
-Flags tab's Reviewed tickbox and its `Flags: Unreviewed` filter view. It never changes a
-cell with text in it and never deletes a row, so running it again changes nothing.
+Flags tab's Reviewed tickbox, its `Flags: Unreviewed` filter view and the look of the Log,
+Flags and Settings tabs. It never changes a cell with text in it and never deletes a row,
+so running it again changes nothing, except that it puts its look back (below).
 
 - No Log tab: it creates one with the full header, A to R as in the table above.
 - A Log tab in the kiosk's old layout (first columns Shift ID, Volunteer ID, First name,
@@ -929,7 +1108,7 @@ cell with text in it and never deletes a row, so running it again changes nothin
   Activity are not added; they are staff's.
 - It then sets each kiosk column's format (text, date and time, or hours to 2 decimals)
   by its header, freezes row 1, and adds any missing Settings row.
-- Last, the Flags tab: it creates the tab if there is none and writes any missing header
+- Then the Flags tab: it creates the tab if there is none and writes any missing header
   after the last one (Reviewed By and Notes are not added; they are staff's). It sets each
   Flags column's format, puts the tickbox on Reviewed from row 2 to the bottom of the tab
   (only that column), freezes row 1, and adds or updates the `Flags: Unreviewed` filter
@@ -937,6 +1116,27 @@ cell with text in it and never deletes a row, so running it again changes nothin
   first run may ask you to authorize the script again. If the view can't be made,
   `setupSheets` stops with a message saying so; everything before it is done, and the
   kiosk copies flags to the tab without the view.
+- Last, the look of the Log, Flags and Settings tabs, on every run:
+  - the header row: navy for the columns the kiosk writes, teal for the columns staff fill
+    (Role/Type, Activity and Notes on the Log; Reviewed, Reviewed By and Notes on Flags;
+    Value on Settings) and teal for any column the kiosk doesn't know; white bold text,
+    wrapped, 40 px high;
+  - the width of each column it knows (a column it doesn't know keeps its width), and
+    Settings' Value column wrapped;
+  - banding in white and light blue from row 2. It first removes any other banding on
+    these tabs, so banding staff set there is lost at the next run;
+  - colour rules: on the Log, an open row pale yellow and an Admin Alerts? cell with text
+    pale red; on Flags, a row with Reviewed ticked in grey text. Each rule it makes has
+    `N("kiosk look")` in its formula, which changes nothing but lets it find its own rules
+    again. It replaces only those, keeps every rule staff made and puts staff's first, so
+    where both match a cell, staff's wins;
+  - the tab colours: Log navy, Flags yellow, Settings grey.
+
+  The rules name columns by letter, so after moving a Log or Flags column, run
+  `setupSheets` again (it must run again then anyway, for the formats). The look uses the
+  same Sheets API advanced service as the view. If it can't be applied, `setupSheets`
+  stops with "The tabs are set up, but their look could not be applied: ..."; everything
+  before it is done.
 
 ### Updating a sheet that's already in use
 
@@ -958,7 +1158,8 @@ versioned deployment, then run `setupSheets`. Until `setupSheets` has made the t
 kiosk works as before and its flags go to Admin Alerts? only; each one it couldn't copy
 is named in the executions log. `setupReports` doesn't need running again.
 
-To add the reports to a sheet in use, follow the steps under Setting up the reports.
+To add the reports to a sheet in use, or to move one from the Monthly Hours tab to the
+Hours tab and the new look, follow the steps under Setting up the reports.
 
 ## Commands
 
@@ -983,8 +1184,8 @@ src/api.ts                  the page's calls: Apps Script when served by it, els
 apps-script/Api.js          doGet and the api* functions the page calls
 apps-script/Admin.js        the Kiosk admin menu and its dialogs' server functions
 apps-script/AdminDialog.html the admin dialogs (plain HTML and JavaScript, committed source)
-apps-script/Reports.js      setupReports and the Monthly report menu item's server functions
-apps-script/Jobs.js         the daily jobs: setupDailyJobs, removeDailyJobs, the weekly flags email
+apps-script/Reports.js      setupReports, the Hours refresh and the Monthly report menu item's server functions
+apps-script/Jobs.js         the daily jobs: setupDailyJobs, removeDailyJobs, the weekly flags email, the nightly Hours refresh
 apps-script/Report.html     the Monthly report window (plain HTML and JavaScript, committed source)
 apps-script/Import.js       the Import past hours menu item: preview, write, ledger and flags
 apps-script/ImportDialog.html the Import past hours dialog (plain HTML and JavaScript, committed source)
