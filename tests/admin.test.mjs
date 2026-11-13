@@ -1,15 +1,18 @@
-// Tests for apps-script/Admin.js, the Kiosk admin menu, and the public functions of
-// apps-script/Reports.js, which the menu's Monthly report item calls. The server files are loaded into
+// Tests for apps-script/Admin.js, the Kiosk admin menu, the public functions of
+// apps-script/Reports.js, which the menu's Monthly report item calls, and the guard on the
+// public functions of apps-script/Jobs.js, the daily jobs. The server files are loaded into
 // one global scope, as Apps Script loads them, with stand-ins for the Google services
 // that record every call. Two kinds of test:
 //
-// - The guard. Every public function in Admin.js and Reports.js (a top-level function
-//   whose name doesn't end in _) can be named by the kiosk page through google.script.run.
-//   Each must check that the person at the sheet runs it, and that it holds a dialog key
-//   the spreadsheet's menu issued, before it reads or writes anything. Two kinds are
-//   exempt from the key only: the dialog openers, which make it, and setupReports, which
-//   runs from the editor as setupSheets does. The list of functions comes from the two
-//   files' source, so a public function added later is held to the same rule.
+// - The guard. Every public function in Admin.js, Reports.js and Jobs.js (a top-level
+//   function whose name doesn't end in _) can be named by the kiosk page through
+//   google.script.run. Each must check that the person at the sheet runs it, and that it
+//   holds a dialog key the spreadsheet's menu issued, before it reads or writes anything.
+//   Three kinds are exempt from the key only: the dialog openers, which make it; the
+//   functions run from the editor as setupSheets is (setupReports, setupDailyJobs,
+//   removeDailyJobs); and the trigger handlers, which check the trigger's id instead. The
+//   list of functions comes from the files' source, so a public function added later is
+//   held to the same rule.
 // - The glue: the admin functions read and write an in-memory Log through Sheets.js, and
 //   the kiosk's check-in and check-out copy their flags to an in-memory Flags tab.
 
@@ -20,11 +23,13 @@ import vm from "node:vm";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
-const SERVER_FILES = ["Logic.js", "Sheets.js", "Api.js", "Admin.js", "Reports.js"].map((f) => [
+const SERVER_FILES = ["Logic.js", "Sheets.js", "Api.js", "Admin.js", "Reports.js", "Jobs.js"].map(
+  (f) => [f, read("apps-script/" + f)],
+);
+const GUARDED_FILES = ["Admin.js", "Reports.js", "Jobs.js"].map((f) => [
   f,
   read("apps-script/" + f),
 ]);
-const GUARDED_FILES = ["Admin.js", "Reports.js"].map((f) => [f, read("apps-script/" + f)]);
 
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const TZ = "America/Chicago";
@@ -188,8 +193,8 @@ class FakeSheet {
  * settings (rows), volunteers (the cached Profiles list), keys (dialog keys already
  * issued), flags (the Flags tab's rows, FLAG_HEADER alone by default; null for no Flags
  * tab), flagsMaxRows (its last grid row), now (a fixed server clock, in ms), onFlush
- * (run on each SpreadsheetApp.flush). errors
- * collects what the server logs with console.error.
+ * (run on each SpreadsheetApp.flush), triggers (this account's project triggers, as
+ * [{uid, handler}]). errors collects what the server logs with console.error.
  */
 function server(opts = {}) {
   const calls = [];
@@ -247,6 +252,16 @@ function server(opts = {}) {
           put: (k, v) => void cache.set(k, v),
         }),
     }),
+    ScriptApp: service("ScriptApp", {
+      getProjectTriggers: () =>
+        (opts.triggers || []).map((t) =>
+          service("trigger", {
+            getUniqueId: () => t.uid,
+            getHandlerFunction: () => t.handler,
+          }),
+        ),
+    }),
+    MailApp: service("MailApp", {}),
     LockService: service("LockService", {
       getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }),
     }),
@@ -326,22 +341,30 @@ function server(opts = {}) {
 // ---------------------------------------------------------------------------
 // The guard
 
-/** Top-level function names declared in Admin.js and Reports.js. */
+/** Top-level function names declared in Admin.js, Reports.js and Jobs.js. */
 const declared = GUARDED_FILES.flatMap(([, source]) =>
   [...source.matchAll(/^function\s+([\w$]+)\s*\(/gm)].map((m) => m[1]),
 );
 const PUBLIC = declared.filter((name) => !name.endsWith("_"));
 const isOpener = (name) => /^open\w*Dialog$/.test(name);
 // Run by hand from the editor, guarded like setupSheets: no dialog, so no key.
-const EDITOR_ONLY = ["setupReports"];
+const EDITOR_ONLY = ["setupReports", "setupDailyJobs", "removeDailyJobs"];
+// Run by a trigger: the trigger's id stands in for the key.
+const TRIGGER_ONLY = ["runFlagsEmail"];
 const KEYED = PUBLIC.filter(
-  (name) => name !== "onOpen" && !isOpener(name) && !EDITOR_ONLY.includes(name),
+  (name) =>
+    name !== "onOpen" &&
+    !isOpener(name) &&
+    !EDITOR_ONLY.includes(name) &&
+    !TRIGGER_ONLY.includes(name),
 );
 const onlyFrom = (calls, allowed) =>
   calls.filter((c) => !allowed.some((a) => (a.endsWith(".") ? c.startsWith(a) : c === a)));
 
-test("Admin.js and Reports.js declare the menu's public functions, and only functions", () => {
+test("Admin.js, Reports.js and Jobs.js declare the public functions, and only functions", () => {
   for (const name of [
+    ...EDITOR_ONLY,
+    ...TRIGGER_ONLY,
     "onOpen",
     "openAddShiftDialog",
     "openFixSignOutDialog",
@@ -418,6 +441,53 @@ test("every keyed admin function refuses a missing or unknown key before it read
       assert.deepEqual(reply, plain(ctx.refusal("ADMIN_EXPIRED")), name + " " + key);
       assert.deepEqual(
         onlyFrom(calls, ["Session.", "CacheService.getScriptCache", "cache.get"]),
+        [],
+        name,
+      );
+    }
+  }
+});
+
+test("Jobs.js's public functions are the editor-run setup and the trigger handlers", () => {
+  const jobs = GUARDED_FILES.find(([f]) => f === "Jobs.js")[1];
+  const jobsPublic = [...jobs.matchAll(/^function\s+([\w$]+)\s*\(/gm)]
+    .map((m) => m[1])
+    .filter((n) => !n.endsWith("_"));
+  assert.deepEqual(jobsPublic.sort(), ["removeDailyJobs", "runFlagsEmail", "setupDailyJobs"]);
+  // Every daily job's handler is a trigger-only public function.
+  const { ctx } = server();
+  for (const job of plain(ctx.dailyJobs()))
+    assert.ok(TRIGGER_ONLY.includes(job.handler), job.handler);
+});
+
+test("every trigger handler refuses a missing, forged or another account's trigger id before it reads or writes", () => {
+  // This account's triggers: one for each handler, and one for something else.
+  const triggers = [
+    ...TRIGGER_ONLY.map((handler, i) => ({ uid: "own-" + i, handler })),
+    { uid: "own-other", handler: "someOtherFunction" },
+  ];
+  for (const name of TRIGGER_ONLY) {
+    const events = [
+      undefined,
+      null,
+      "own-0",
+      {},
+      { triggerUid: "" },
+      { triggerUid: "forged" },
+      // Another account's trigger: getProjectTriggers never lists it.
+      { triggerUid: "other-account-1" },
+      // This account's trigger, but for another handler.
+      { triggerUid: "own-other" },
+    ];
+    for (const e of events) {
+      const { ctx, calls } = server({ triggers });
+      assert.throws(
+        () => ctx[name](e),
+        /runs only from its trigger/,
+        name + " " + JSON.stringify(e),
+      );
+      assert.deepEqual(
+        onlyFrom(calls, ["Session.", "ScriptApp.getProjectTriggers", "trigger."]),
         [],
         name,
       );
