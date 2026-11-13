@@ -15,6 +15,7 @@ export type Screen =
   | "notice"
   | "success-in"
   | "success-out"
+  | "status"
   | "unconfirmed";
 
 export type SaveKind = "in" | "out";
@@ -124,4 +125,30 @@ export function inactivityMs(screen: Screen): number | null {
   if (screen === "notice") return NOTICE_INACTIVITY_MS;
   if (screen === "unconfirmed") return UNCONFIRMED_INACTIVITY_MS;
   return INACTIVITY_MS;
+}
+
+// The refusals that say the volunteer's state differs from what the screen showed. Each
+// ends on the status screen, which says one thing and goes home.
+export type StatusCode = "ALREADY_IN" | "NOT_IN";
+
+/**
+ * Where a refusal of a check-in or check-out leads: the setup screen for a refused code,
+ * the status screen when the volunteer is already checked in or not checked in, the phone
+ * step for a phone refusal, and otherwise back to the confirm screen with the message.
+ */
+export function refusalOutcome(
+  code: string,
+): "lock" | "status" | "phone-entry" | "phone-missing" | "message" {
+  if (code === "ACCESS") return "lock";
+  if (code === "ALREADY_IN" || code === "NOT_IN") return "status";
+  if (code === "PHONE_WRONG" || code === "PHONE_NEEDED") return "phone-entry";
+  if (code === "PHONE_MISSING") return "phone-missing";
+  return "message";
+}
+
+/** How long a result screen stays before going home on its own, or null when it waits. */
+export function autoHomeMs(screen: Screen): number | null {
+  if (screen === "success-in") return 5_000;
+  if (screen === "success-out" || screen === "status") return 7_000;
+  return null;
 }

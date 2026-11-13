@@ -7,10 +7,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   abandonSave,
+  autoHomeMs,
   goesHomeWhenListLosesVolunteer,
   inactivityMs,
   msUntil,
   noSaves,
+  refusalOutcome,
   rendersFrom,
   resultOf,
   slowLineShows,
@@ -30,9 +32,10 @@ const screens = [
   "notice",
   "success-in",
   "success-out",
+  "status",
   "unconfirmed",
 ];
-const resultScreens = ["notice", "success-in", "success-out", "unconfirmed"];
+const resultScreens = ["notice", "success-in", "success-out", "status", "unconfirmed"];
 
 test("a reply for the pending save is applied", () => {
   const { flow, record } = startSave(noSaves, ana);
@@ -160,7 +163,45 @@ test("each screen but welcome and saving goes home when untouched", () => {
   assert.equal(inactivityMs("welcome"), null);
   assert.equal(inactivityMs("notice"), 60_000);
   assert.equal(inactivityMs("unconfirmed"), 15_000);
-  for (const screen of ["confirm", "checkout", "success-in", "success-out"]) {
+  for (const screen of ["confirm", "checkout", "success-in", "success-out", "status"]) {
     assert.equal(inactivityMs(screen), 90_000, screen);
+  }
+});
+
+test("ALREADY_IN and NOT_IN open the status screen, phone refusals the phone step, the rest stay on the confirm screen", () => {
+  assert.equal(refusalOutcome("ALREADY_IN"), "status");
+  assert.equal(refusalOutcome("NOT_IN"), "status");
+  assert.equal(refusalOutcome("PHONE_WRONG"), "phone-entry");
+  assert.equal(refusalOutcome("PHONE_NEEDED"), "phone-entry");
+  assert.equal(refusalOutcome("PHONE_MISSING"), "phone-missing");
+  assert.equal(refusalOutcome("ACCESS"), "lock");
+  for (const code of [
+    "NOT_FOUND",
+    "BUSY",
+    "ARRIVAL_FUTURE",
+    "ARRIVAL_OTHER_DAY",
+    "CHECKOUT_FUTURE",
+    "CHECKOUT_OTHER_DAY",
+    "CHECKOUT_BEFORE_ARRIVAL",
+    "SOMETHING_NEW",
+  ]) {
+    assert.equal(refusalOutcome(code), "message", code);
+  }
+});
+
+test("the status screen renders from the save's copy and goes home after 7 s", () => {
+  const { flow, record } = startSave(noSaves, ben);
+  const taken = takeReply(flow, record.seq);
+  assert.deepEqual(resultOf(taken.save, { status: "NOT_IN" }), {
+    firstName: "Ben",
+    kind: "out",
+    status: "NOT_IN",
+  });
+  assert.equal(rendersFrom("status"), "result");
+  assert.equal(autoHomeMs("status"), 7_000);
+  assert.equal(autoHomeMs("success-in"), 5_000);
+  assert.equal(autoHomeMs("success-out"), 7_000);
+  for (const screen of ["welcome", "confirm", "checkout", "saving", "notice", "unconfirmed"]) {
+    assert.equal(autoHomeMs(screen), null, screen);
   }
 });

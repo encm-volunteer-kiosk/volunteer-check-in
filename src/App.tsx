@@ -13,10 +13,12 @@ import { appreciationMessages, isToday, type Milestone, type Volunteer } from ".
 import { searchNames } from "./nameSearch";
 import {
   abandonSave,
+  autoHomeMs,
   goesHomeWhenListLosesVolunteer,
   inactivityMs,
   msUntil,
   noSaves,
+  refusalOutcome,
   resultOf,
   SLOW_LINE_MS,
   slowLineShows,
@@ -29,6 +31,7 @@ import {
   type SaveOwner,
   type SaveRecord,
   type Screen,
+  type StatusCode,
 } from "./saveFlow";
 
 // What the result screens show. The first name and kind come from the save, not the list.
@@ -37,6 +40,7 @@ type Result = SaveOwner & {
   duration?: number;
   milestone?: Milestone | null;
   message?: string;
+  status?: StatusCode;
 };
 type ListState = "loading" | "ready" | "failed";
 type PhoneStep = "entry" | "missing" | null;
@@ -813,6 +817,31 @@ function SavingScreen({ save }: { save: SaveRecord }) {
   );
 }
 
+/**
+ * The server says the volunteer is already checked in, or not checked in. Not checked in is
+ * never called checked out: it also covers a shift that aged out, which staff fix.
+ */
+function StatusScreen({ result, onDone }: { result: Result; onDone: () => void }) {
+  const already = result.status === "ALREADY_IN";
+  return (
+    <main className="center-screen screen-enter">
+      <section className="panel confirmation-panel" aria-live="polite">
+        <h1>
+          {result.firstName}, {already ? "you're already checked in." : "you're not checked in."}
+        </h1>
+        <p>
+          {already
+            ? "Don't forget to check out before you leave."
+            : "If you just checked out, you're all set. If not, please see a board member."}
+        </p>
+        <div className="button-stack">
+          <Button onClick={onDone}>Done</Button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 /** A save given up by its watchdog. The server may still finish it; the list will show it. */
 function Unconfirmed({ firstName, onDone }: { firstName: string; onDone: () => void }) {
   return (
@@ -1244,8 +1273,9 @@ export default function App() {
   }, [screen]);
 
   useEffect(() => {
-    if (screen !== "success-in" && screen !== "success-out") return;
-    const timer = window.setTimeout(goHome, screen === "success-in" ? 5000 : 7000);
+    const ms = autoHomeMs(screen);
+    if (ms === null) return;
+    const timer = window.setTimeout(goHome, ms);
     return () => clearTimeout(timer);
   }, [screen]);
 
@@ -1286,17 +1316,24 @@ export default function App() {
     return appreciationMessages[messageIndex % appreciationMessages.length];
   }
 
-  // Back to the screen the save came from, with the server's reason.
-  function showRefusal(reply: Refusal, from: SaveFrom) {
-    if (reply.refusal === "ACCESS") {
+  // A refusal of the save: the status screen when the volunteer's state differs from the
+  // screen's, else back to the screen the save came from with the server's reason.
+  function showRefusal(reply: Refusal, save: SaveRecord) {
+    const outcome = refusalOutcome(reply.refusal);
+    if (outcome === "lock") {
       lockKiosk(reply.message);
       return;
     }
-    setScreen(from);
-    if (reply.refusal === "PHONE_WRONG" || reply.refusal === "PHONE_NEEDED") {
+    if (outcome === "status") {
+      setResult(resultOf(save, { status: reply.refusal as StatusCode }));
+      setScreen("status");
+      return;
+    }
+    setScreen(save.from);
+    if (outcome === "phone-entry") {
       setPhoneDigits("");
       setPhoneStep("entry");
-    } else if (reply.refusal === "PHONE_MISSING") {
+    } else if (outcome === "phone-missing") {
       setPhoneDigits("");
       setPhoneStep("missing");
     }
@@ -1364,7 +1401,7 @@ export default function App() {
           "We couldn't save your check-in. Please try again or ask a volunteer coordinator for help.",
         );
       } else if (isRefusal(reply)) {
-        showRefusal(reply, ended.from);
+        showRefusal(reply, ended);
       } else {
         // In a same-name group the server picks the member by the digits, so the entry it
         // acted on can be another one than the entry tapped; that is the one marked.
@@ -1417,7 +1454,7 @@ export default function App() {
           "We couldn't save your check-out. Please try again or ask a volunteer coordinator for help.",
         );
       } else if (isRefusal(reply)) {
-        showRefusal(reply, ended.from);
+        showRefusal(reply, ended);
       } else {
         markVolunteer(reply.id, null);
         setResult(
@@ -1515,6 +1552,7 @@ export default function App() {
       {code && screen === "success-out" && result && (
         <Success type="out" result={result} onDone={goHome} />
       )}
+      {code && screen === "status" && result && <StatusScreen result={result} onDone={goHome} />}
       {code && screen === "unconfirmed" && result && (
         <Unconfirmed firstName={result.firstName} onDone={goHome} />
       )}
