@@ -11,8 +11,10 @@
  * A check-in or check-out reads Settings once, before the lock, and uses that one read
  * for the access code and for everything inside the lock: that first read pays any
  * recalculation the last write started, outside the lock, and a Settings edit made while
- * the call waits for the lock applies from the next call. Inside the lock it reads the
- * Log once, header and rows in one range (readLogTable_).
+ * the call waits for the lock applies from the next call. Inside the lock it finds the
+ * volunteer in Profiles first, so a wrong name or phone returns without reading the Log.
+ * Then it reads the Log once, header and rows in one range, and parses only that
+ * volunteer's rows (readLogTable_), the only rows the decisions look at.
  *
  * Each flag a check-in or check-out writes to Admin Alerts? is also copied to the Flags
  * tab (raiseFlags_), after the Log write and under the same lock. The Log row is the
@@ -70,7 +72,7 @@ function apiListVolunteers(code) {
  * volunteer checked in. missedSignOut is true when the volunteer's last check-out was one
  * they didn't make (missedSignOut, Logic.js), so the page can remind them; it is about
  * the volunteer just checked in and says nothing else. ALREADY_IN while the volunteer has
- * an open row checked in less than "Auto clock-out after hours" ago. Reads the whole Log.
+ * an open row checked in less than "Auto clock-out after hours" ago.
  */
 function apiCheckIn(code, id, arrivalIso, digits) {
   const settings = readSettings_();
@@ -79,10 +81,13 @@ function apiCheckIn(code, id, arrivalIso, digits) {
   return withLock_(() => {
     const now = new Date();
     const today = centralDate_(now);
-    const log = readLogTable_();
+    const volunteers = getProfiles_(settings);
+    const who = resolveVolunteer(volunteers, id, digits);
+    if (who.refusal) return refusal(who.refusal);
+    const log = readLogTable_(who.volunteer.token);
     const arrivedMs = arrivalMsFromIso(arrivalIso);
     const decision = decideCheckIn({
-      volunteers: getProfiles_(settings),
+      volunteers,
       id,
       digits,
       entries: log.entries,
@@ -147,10 +152,13 @@ function apiCheckOut(code, id, digits, checkOutIso) {
   if (denied) return denied;
   return withLock_(() => {
     const now = new Date();
-    const log = readLogTable_();
+    const volunteers = getProfiles_(settings);
+    const who = resolveVolunteer(volunteers, id, digits);
+    if (who.refusal) return refusal(who.refusal);
+    const log = readLogTable_(who.volunteer.token);
     const outMs = arrivalMsFromIso(checkOutIso);
     const decision = decideCheckOut({
-      volunteers: getProfiles_(settings),
+      volunteers,
       id,
       digits,
       entries: log.entries,

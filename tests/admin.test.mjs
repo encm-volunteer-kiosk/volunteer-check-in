@@ -1287,7 +1287,7 @@ test("a wrong code refuses after one Settings read, before the lock", () => {
 
 test("the Log table read gives no entries on a header-only Log and throws the missing-column error on an empty tab", () => {
   const s = kiosk({});
-  const table = plain(s.ctx.readLogTable_());
+  const table = plain(s.ctx.readLogTable_(SAM.token));
   assert.deepEqual(table.entries, []);
   assert.equal(table.width, LOG_HEADER.length);
   assert.deepEqual(table.cols, plain(s.ctx.readLogColumns_()));
@@ -1296,8 +1296,79 @@ test("the Log table read gives no entries on a header-only Log and throws the mi
   // An empty tab: one cell read, as Sheets refuses a range of no rows or columns.
   const empty = kiosk({ log: [[]] });
   const missing = (e) => /^The Log has no "[^"]+" column\. Run setupSheets\(\)\.$/.test(e.message);
-  assert.throws(() => empty.ctx.readLogTable_(), missing);
+  assert.throws(() => empty.ctx.readLogTable_(SAM.token), missing);
   assert.deepEqual(valueReads(empty.sheets.Log), ["getValues 1,1,1,1"]);
   assert.throws(() => empty.ctx.apiCheckIn(CODE, SAM.id, null, null), missing);
   assert.throws(() => empty.ctx.apiCheckOut(CODE, SAM.id, null, null), missing);
+});
+
+// Two of a same-name group, who must give their phone's last four.
+const ANN = {
+  ...SAM,
+  id: "cccccccccccccccc",
+  firstName: "Ann",
+  lastName: "Ruiz",
+  phoneLast4: "1111",
+  needsPhoneCheck: true,
+  token: "tok-ann",
+};
+const ANN_TOO = { ...ANN, id: "dddddddddddddddd", phoneLast4: "2222", token: "tok-ann-2" };
+
+test("a NOT_FOUND or PHONE_WRONG tap returns without reading the Log", () => {
+  const taps = [
+    ["NOT_FOUND", (s) => s.ctx.apiCheckIn(CODE, "eeeeeeeeeeeeeeee", null, null)],
+    ["NOT_FOUND", (s) => s.ctx.apiCheckOut(CODE, "eeeeeeeeeeeeeeee", null, null)],
+    ["PHONE_WRONG", (s) => s.ctx.apiCheckIn(CODE, ANN.id, null, "9999")],
+    ["PHONE_WRONG", (s) => s.ctx.apiCheckOut(CODE, ANN.id, "9999", null)],
+  ];
+  for (const [code, tap] of taps) {
+    const log = [LOG_HEADER, kioskOpen("s-ann", TODAY, "08:00", ANN.token, "Ann Ruiz")];
+    const s = kiosk({ volunteers: [SAM, ANN, ANN_TOO], log });
+    assert.equal(plain(tap(s)).refusal, code);
+    assert.deepEqual(s.sheets.Log.reads, [], code + ": the Log is not read");
+    assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+    assert.equal(s.sheets.Log.getLastRow(), 2);
+    // A Log with no header row doesn't change the refusal: the Log is never reached.
+    const broken = kiosk({ volunteers: [SAM, ANN, ANN_TOO], log: [[]] });
+    assert.equal(plain(tap(broken)).refusal, code);
+  }
+  // The other member's digits pick that member, whose rows are then read.
+  const log = [LOG_HEADER, kioskOpen("s-ann2", TODAY, "08:00", ANN_TOO.token, "Ann Ruiz")];
+  const s = kiosk({ volunteers: [SAM, ANN, ANN_TOO], log });
+  const out = plain(s.ctx.apiCheckOut(CODE, ANN.id, "2222", null));
+  assert.equal(out.ok, true);
+  assert.equal(out.id, ANN_TOO.id);
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+});
+
+test("the filtered Log read gives the same entries as the whole read filtered by token", () => {
+  // More rows than the default 1000 grid rows, so a large Log still reads.
+  const cellTokens = ["tok-sam", " tok-sam ", "TOK-SAM", "tok-ruth", "", 4321, "tok-samuel"];
+  const log = [LOG_HEADER];
+  for (let i = 0; i < 1200; i++) {
+    const row = kioskOpen("s-" + i, TODAY, "08:00");
+    row[LOG_HEADER.indexOf("User Token")] = cellTokens[i % cellTokens.length];
+    // Dates typed as text, and some that can't be read.
+    if (i % 3 === 0) row[LOG_HEADER.indexOf("Date")] = "11/" + (1 + (i % 28)) + "/2026";
+    if (i % 11 === 0) row[LOG_HEADER.indexOf("Date")] = "soon";
+    row[LOG_HEADER.indexOf("Status")] = i % 5 ? "closed" : "open";
+    if (i % 7 === 0) row[LOG_HEADER.indexOf("Date")] = at(TODAY, "00:00");
+    log.push(row);
+  }
+  const s = kiosk({ log });
+  const cols = s.ctx.readLogColumns_();
+  const whole = s.ctx.readLog_(cols);
+  assert.equal(whole.length, 1200);
+  for (const token of ["tok-sam", " tok-sam", "tok-ruth", "TOK-SAM", "4321", "nobody", "", " "]) {
+    const table = s.ctx.readLogTable_(token);
+    const want = whole.filter((e) => s.ctx.isTokenRow(e, token));
+    assert.deepEqual(plain(table.entries), plain(want), "token " + JSON.stringify(token));
+    assert.deepEqual(plain(table.cols), plain(cols));
+    assert.equal(table.width, LOG_HEADER.length);
+  }
+  // Both spellings of tok-sam with padding are Sam's rows; a blank token keeps none.
+  const sams = log.filter((r) => String(r[LOG_HEADER.indexOf("User Token")]).trim() === "tok-sam");
+  assert.ok(sams.length > 300);
+  assert.equal(s.ctx.readLogTable_("tok-sam").entries.length, sams.length);
+  assert.deepEqual(plain(s.ctx.readLogTable_("").entries), []);
 });

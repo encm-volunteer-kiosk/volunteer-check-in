@@ -556,21 +556,26 @@ function readLog_(cols) {
 }
 
 /**
- * The Log's header map and rows from one range read, so both come from one snapshot:
- * {cols, entries, width}. cols is logColumns (Logic.js) of row 1, entries every row below
- * it as a log entry, with its row number, and width the number of columns read. The
- * kiosk's check-in and check-out read the Log with this; the admin menu, the jobs and the
- * reports use readLogColumns_ and readLog_. Throws when a column the kiosk needs is
- * missing or repeated, so an empty tab throws the missing-column error.
+ * The Log's header map and one volunteer's rows from one range read, so both come from
+ * one snapshot: {cols, entries, width}. cols is logColumns (Logic.js) of row 1, entries
+ * the rows below it whose User Token is token (logRowHasToken), each as a log entry with
+ * its row number, and width the number of columns read. Only those rows are parsed; a
+ * blank token gives no entries. The kiosk's check-in and check-out read the Log with
+ * this; the admin menu, the jobs and the reports use readLogColumns_ and readLog_.
+ * Throws when a column the kiosk needs is missing or repeated, so an empty tab throws the
+ * missing-column error.
  */
-function readLogTable_() {
+function readLogTable_(token) {
   const sheet = sheet_(LOG_TAB);
   const last = Math.max(sheet.getLastRow(), 1);
   const width = Math.max(sheet.getLastColumn(), 1);
   const values = sheet.getRange(1, 1, last, width).getValues();
   const cols = logColumns(values[0].map(cellText_));
   const read = logRead_();
-  const entries = values.slice(1).map((cells, i) => logEntry(cells, i + 2, cols, read));
+  const entries = [];
+  values.slice(1).forEach((cells, i) => {
+    if (logRowHasToken(cells, cols, token, read)) entries.push(logEntry(cells, i + 2, cols, read));
+  });
   return { cols, entries, width };
 }
 
