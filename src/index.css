@@ -59,7 +59,7 @@
   min-height: 100dvh;
   height: 100dvh;
   position: relative;
-  overflow: none;
+  overflow: visible;
   overscroll-behavior: none;
   isolation: isolate;
   background: #fcf4e5;
@@ -244,8 +244,7 @@
   font-size: 16px;
 }
 .name-search-field > button,
-.volunteer-card,
-.app-keyboard button {
+.volunteer-card {
   touch-action: manipulation;
 }
 .match-prompt {
@@ -304,94 +303,6 @@
   color: var(--navy);
   font-size: 17px;
   font-weight: 900;
-}
-.app-keyboard {
-  position: fixed;
-  z-index: 10;
-  width: 100vw;
-  max-width: none;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 12px max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-bottom))
-    max(12px, env(safe-area-inset-right));
-  border: 0;
-  border-top: 1px solid rgba(82, 94, 104, 0.32);
-  border-radius: 0;
-  background: rgba(202, 207, 213, 0.97);
-  box-shadow: 0 -8px 30px rgba(8, 47, 88, 0.14);
-  backdrop-filter: blur(16px);
-  user-select: none;
-}
-.keyboard-row {
-  width: 100%;
-  margin: 0 auto;
-  display: flex;
-  justify-content: center;
-  gap: 10px;
-}
-.app-keyboard button {
-  min-width: 0;
-  height: 64px;
-  border: 0;
-  border-radius: 9px;
-  background: #fff;
-  color: #17212b;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.72) inset,
-    0 2px 0 rgba(53, 62, 70, 0.3);
-  font-size: 23px;
-  font-weight: 800;
-  transition:
-    transform 80ms ease,
-    background 80ms ease,
-    box-shadow 80ms ease;
-}
-.app-keyboard button:hover:not(:disabled) {
-  background: #f8fafb;
-}
-.app-keyboard button:active:not(:disabled) {
-  transform: translateY(2px);
-  box-shadow: none;
-}
-.app-keyboard button:disabled {
-  cursor: default;
-  opacity: 0.42;
-}
-.keyboard-action {
-  flex: 1.4 1 0;
-  background: #aeb6be !important;
-  color: #102231 !important;
-  font-size: 15px !important;
-}
-.time-keyboard .time-key {
-  flex: 1 1 0;
-  font-size: 20px;
-}
-.time-keyboard button.is-selected {
-  background: var(--navy) !important;
-  color: white !important;
-  box-shadow:
-    0 0 0 3px #8fc7dc inset,
-    0 2px 0 rgba(2, 24, 45, 0.5);
-}
-.time-action-row .period-key {
-  flex: 1 1 0;
-  font-size: 20px !important;
-}
-.time-action-row .keyboard-button-stack {
-  flex: 3 1 0;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin: 0;
-}
-.time-action-row .keyboard-button-stack .button {
-  min-height: 64px;
-  height: 64px;
-  font-size: 18px;
 }
 .hero {
   text-align: center;
@@ -767,20 +678,6 @@
   font-size: 26px;
   font-weight: 900;
 }
-.arrival-time output {
-  width: 100%;
-  min-height: 58px;
-  padding: 4px 14px;
-  border: 2px solid #6ba8c2;
-  border-radius: 12px;
-  background: white;
-  color: var(--navy);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 29px;
-  font-weight: 900;
-}
 .arrival-time small {
   color: var(--muted);
   font-size: 14px;
@@ -849,10 +746,6 @@
 .checkin-details .arrival-time {
   padding: 9px 13px;
   gap: 4px;
-}
-.checkin-details .arrival-time output {
-  min-height: 46px;
-  font-size: 25px;
 }
 .checkin-details .arrival-time small {
   font-size: 12px;
@@ -963,6 +856,25 @@
   vertical-align: -3px;
   margin-right: 8px;
   animation: spin 0.7s linear infinite;
+}
+.saving-panel {
+  display: grid;
+  justify-items: center;
+  gap: 22px;
+}
+.save-spinner {
+  width: 64px;
+  height: 64px;
+  border: 6px solid var(--light-blue);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.saving-panel .slow-line {
+  margin: 0;
+  color: var(--muted);
+  font-size: 19px;
+  font-weight: 700;
 }
 
 .spark {
@@ -1384,21 +1296,6 @@
   .name-search-field input {
     font-size: 20px;
   }
-  .app-keyboard {
-    gap: 5px;
-    padding: 8px 5px max(8px, env(safe-area-inset-bottom));
-  }
-  .keyboard-row {
-    gap: 3px;
-  }
-  .app-keyboard button {
-    height: 56px;
-    border-radius: 7px;
-    font-size: 15px;
-  }
-  .keyboard-action {
-    font-size: 10px !important;
-  }
   .profile-screen {
     place-items: start center;
     padding: 78px 14px 24px;
@@ -1445,15 +1342,6 @@
   }
   .confirmation-panel.with-keyboard .button-stack {
     grid-template-columns: 1fr;
-  }
-  .time-keyboard {
-    position: static;
-  }
-  .time-keyboard .keyboard-row:not(.time-action-row) {
-    flex-wrap: wrap;
-  }
-  .time-keyboard .time-key {
-    flex: 1 1 calc(16.6667% - 3px);
   }
   .back-button {
     top: 17px;
@@ -1524,6 +1412,16 @@
   }
   .success-content > .button {
     margin-top: 14px;
+  }
+}
+
+/* While a name is typed on a landscape tablet, the header and greeting give up their room so
+   the results sit above the on-screen keyboard. Layout only, no scrolling. Clearing the box
+   or leaving the screen brings them back. */
+@media (orientation: landscape) and (max-height: 900px) {
+  .app-shell.has-query .header,
+  .app-shell.has-query .name-entry-hero {
+    display: none;
   }
 }
 

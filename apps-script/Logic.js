@@ -965,6 +965,18 @@ function isTokenRow(entry, token) {
 }
 
 /**
+ * isTokenRow on a row's raw cells, before logEntry: the User Token cell is read exactly as
+ * logEntry reads it, so this keeps exactly the rows whose entries isTokenRow keeps. A
+ * blank token keeps no row. read is as for logEntry. It lets the kiosk parse only the
+ * tapped volunteer's rows, which is all the check-in and check-out decisions look at.
+ */
+function logRowHasToken(cells, cols, token, read) {
+  const at = cols[logHeaderNames().token];
+  const cell = typeof at === "number" && at >= 0 ? cells[at] : "";
+  return isTokenRow({ token: cellString(read.text(cell)) }, token);
+}
+
+/**
  * When the shift started: Check-In Stated, or Check-In Recorded when the stated time is
  * unreadable. NaN when both are.
  */
@@ -1200,8 +1212,9 @@ function checkOutCells(open, nowMs, statedOutMs, flag, longFlag) {
 /**
  * Checks a check-in in order: NOT_FOUND, phone, ALREADY_IN (an open row still in the
  * window, findOpenShift), ARRIVAL_FUTURE, ARRIVAL_OTHER_DAY. Input: {volunteers, id (the
- * tapped entry), digits, entries (the whole Log), todayDate, nowMs, windowMs, arrivedMs
- * (null for server time), arrivedDate, flagMinutes, launchDate}. Returns {refusal} or
+ * tapped entry), digits, entries (the Log), todayDate, nowMs, windowMs, arrivedMs (null
+ * for server time), arrivedDate, flagMinutes, launchDate}. Only the resolved volunteer's
+ * rows (isTokenRow) are looked at, so entries may be those rows alone. Returns {refusal} or
  * {volunteer, arrivedMs, flag, flags, missedSignOut}; volunteer is the one
  * resolveVolunteer found, flag the arrival flag or '', flags the list the Flags tab gets:
  * [flag], or [] when nothing is flagged, and missedSignOut whether the volunteer's last
@@ -1229,9 +1242,10 @@ function decideCheckIn(input) {
 /**
  * Checks a check-out in order: NOT_FOUND, phone, NOT_IN (no open row in the window,
  * findOpenShift), then the stated check-out time (validateCheckOut). Input: {volunteers, id
- * (the tapped entry), digits, entries (the whole Log), todayDate, nowMs, windowMs, outMs
+ * (the tapped entry), digits, entries (the Log), todayDate, nowMs, windowMs, outMs
  * (null for server time), outDate, flagMinutes, longShiftHours (parseLongShiftHours),
- * launchDate}.
+ * launchDate}. Only the resolved volunteer's rows (isTokenRow) are looked at, so entries
+ * may be those rows alone.
  *
  * Returns {refusal} or {volunteer, row, cells, minutes, milestone, statedOutMs, flags,
  * open}: volunteer is the one resolveVolunteer found, row the open row, cells its

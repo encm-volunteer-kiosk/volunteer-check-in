@@ -785,28 +785,27 @@ const H = plain(L.logHeaderNames());
 const norm = (h) => L.normalizeHeader(h);
 
 /** Read functions like Sheets.js's: a Date as its Central date, a time as {ms, date}. */
-const centralDate = (d) =>
-  new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Chicago",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(d);
+const CENTRAL_DAY = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+const centralDate = (d) => CENTRAL_DAY.format(d);
 const isDate = (v) => Object.prototype.toString.call(v) === "[object Date]";
 /** A Central wall-clock time as milliseconds read as UTC, to compare wall clocks. */
+const CENTRAL_MINUTE = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 const centralWall = (ms) => {
   const p = {};
-  new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Chicago",
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  })
-    .formatToParts(new Date(ms))
-    .forEach((x) => (p[x.type] = x.value));
+  CENTRAL_MINUTE.formatToParts(new Date(ms)).forEach((x) => (p[x.type] = x.value));
   return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute);
 };
 /** A date's Central "HH:mm", as Utilities.formatDate(value, zone, "HH:mm") gives it. */
@@ -3173,4 +3172,289 @@ test("dailyJobs lists the hourly email, the 4 AM auto clock-out and the 5 AM Hou
   assert.equal(L.weekdayFromText("TUE"), "Tuesday");
   assert.equal(L.weekdayFromText("Tues"), "");
   assert.equal(L.parseWeekdaySetting("Tues"), "Monday");
+});
+
+// ---------------------------------------------------------------------------
+// Deciding on the tapped volunteer's rows alone
+
+/** A seeded generator (mulberry32), so a failing case can be run again from its seed. */
+const seeded = (seed) => {
+  let state = seed >>> 0;
+  const rnd = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const pick = (list) => list[Math.floor(rnd() * list.length)];
+  return { rnd, pick };
+};
+/** JSON that keeps NaN and Infinity apart from null, for comparing decisions. */
+const exact = (x) =>
+  JSON.stringify(x, (_, v) => (typeof v === "number" && !Number.isFinite(v) ? String(v) : v));
+
+test("the token filter keeps exactly the rows isTokenRow keeps", () => {
+  const SEED = 4211;
+  const { rnd, pick } = seeded(SEED);
+  const cells = [
+    "tok-1",
+    " tok-1",
+    "tok-1 ",
+    "TOK-1",
+    "tok-2",
+    "",
+    "   ",
+    null,
+    undefined,
+    1234,
+    0,
+    false,
+    T("08:00"),
+    "2026-11-12",
+  ];
+  const tokens = [
+    "tok-1",
+    " tok-1 ",
+    "TOK-1",
+    "tok-2",
+    "",
+    "  ",
+    null,
+    undefined,
+    "1234",
+    1234,
+    "0",
+  ];
+  for (const header of [LOG_HEADERS, SHUFFLED]) {
+    const cols = L.logColumns(header);
+    for (let k = 0; k < 500; k++) {
+      const row = closedRow(header, { "User Token": pick(cells) });
+      if (rnd() < 0.3) row[cols[H.status]] = pick(["open", "", "Closed "]);
+      const token = pick(tokens);
+      const entry = L.logEntry(row, 2, cols, READ);
+      assert.equal(
+        L.logRowHasToken(row, cols, token, READ),
+        L.isTokenRow(entry, token),
+        "seed " +
+          SEED +
+          ", case " +
+          k +
+          ": cell " +
+          String(row[cols[H.token]]) +
+          ", token " +
+          token,
+      );
+    }
+  }
+  // A blank token keeps no row, a blank token cell included.
+  const cols = L.logColumns(LOG_HEADERS);
+  for (const token of ["", " ", null, undefined]) {
+    assert.equal(
+      L.logRowHasToken(closedRow(LOG_HEADERS, { "User Token": "" }), cols, token, READ),
+      false,
+    );
+    assert.equal(L.logRowHasToken(closedRow(LOG_HEADERS), cols, token, READ), false);
+  }
+  // A padded cell matches its trimmed token, as logEntry trims it; case still counts.
+  assert.equal(
+    L.logRowHasToken(closedRow(LOG_HEADERS, { "User Token": " tok-1 " }), cols, "tok-1", READ),
+    true,
+  );
+  assert.equal(L.logRowHasToken(closedRow(LOG_HEADERS), cols, "TOK-1", READ), false);
+});
+
+test("decisions on the volunteer's own rows equal decisions on the whole Log", () => {
+  const SEED = 20261113;
+  const CASES = 3000;
+  const { rnd, pick } = seeded(SEED);
+  const DAY_MS = 24 * HOUR;
+  const vol = (id, first, last, phone, start, check, token) => ({
+    id,
+    firstName: first,
+    lastName: last,
+    phoneLast4: phone,
+    startDate: start,
+    needsPhoneCheck: check,
+    token,
+    row: 2,
+  });
+  // A same-name group of three (one with no usable phone), a padded token, a token that is
+  // another's lower-cased, a blank token, and a volunteer who started after launch.
+  const volunteers = [
+    vol("a", "Ann", "Lee", "1111", "2026-01-01", true, "TOK-A"),
+    vol("b", "Ann", "Lee", "2222", "2026-12-01", true, "TOK-B"),
+    vol("b2", "ann", "LEE", "", "2026-03-01", true, "TOK-B2"),
+    vol("c", "Bo", "Ng", "", "", false, "TOK-C"),
+    vol("d", "Cy", "Ox", "", "2025-05-05", false, " TOK-D "),
+    vol("e", "Di", "Po", "", "2026-11-01", false, "tok-a"),
+    vol("f", "Ed", "Qu", "", "2026-02-02", false, ""),
+    vol("g", "Fay", "Ruiz", "", "2026-11-12", false, "TOK-G"),
+  ];
+  const rowTokens = [
+    "TOK-A",
+    "TOK-A",
+    "TOK-B",
+    "TOK-B2",
+    "TOK-C",
+    "TOK-D",
+    " TOK-D",
+    "TOK-A ",
+    "tok-a",
+    "TOK-G",
+    "",
+    "OTHER",
+    4321,
+  ];
+  const mdy = (date) => {
+    const [y, m, d] = date.split("-");
+    return +m + "/" + +d + "/" + y;
+  };
+  const layouts = [LOG_HEADERS, SHUFFLED].map((header) => ({
+    header,
+    cols: L.logColumns(header),
+  }));
+  // "7:30 AM" typed into a cell: Sheets keeps it on 1899-12-30.
+  const TYPED = typedTime("07:30");
+  const tally = {};
+  const count = (key) => (tally[key] = (tally[key] || 0) + 1);
+
+  for (let k = 0; k < CASES; k++) {
+    const { header, cols } = pick(layouts);
+    const fill = (byKey) => {
+      const cells = header.map(() => "");
+      for (const [key, value] of Object.entries(byKey)) cells[cols[key]] = value;
+      return cells;
+    };
+    const nowMs = pick([NOW, NOW, NOW + 15 * HOUR, NOW - 9 * HOUR]);
+    const today = centralDate(new Date(nowMs));
+    const tapped = rnd() < 0.05 ? "nobody" : pick(volunteers).id;
+    const digits = pick([null, null, "", "1111", "2222", "9999", "22-22"]);
+    // The tapped volunteer's token, often, so they have rows to decide on.
+    const own = (volunteers.find((v) => v.id === tapped) || {}).token;
+    const n = rnd() < 0.05 ? 0 : 1 + Math.floor(rnd() * 60);
+    const rows = [];
+    for (let i = 0; i < n; i++) {
+      const daysBack = rnd() < 0.5 ? Math.floor(rnd() * 3) : Math.floor(rnd() * 60);
+      const inMs =
+        nowMs - daysBack * DAY_MS - Math.floor(rnd() * 16) * HOUR - Math.floor(rnd() * 60) * MIN;
+      const date = centralDate(new Date(inMs));
+      const status = pick(["open", "open", "closed", "closed", "Closed ", "OPEN", "", "void"]);
+      const closed = !/open/i.test(status);
+      rows.push(
+        fill({
+          [H.shiftId]: "s" + i,
+          [H.token]: rnd() < 0.3 && own !== undefined ? own : pick(rowTokens),
+          [H.status]: status,
+          [H.date]: pick([date, date, date, mdy(date), new Date(inMs), "", "bad"]),
+          [H.name]: "Name " + i,
+          [H.recordedIn]: pick([new Date(inMs), new Date(inMs), "", "9:15 AM"]),
+          [H.statedIn]: pick([
+            new Date(inMs - 10 * MIN),
+            new Date(inMs - 10 * MIN),
+            "",
+            "8:00",
+            TYPED,
+            new Date(inMs - 30 * HOUR),
+          ]),
+          [H.statedOut]: closed ? pick([new Date(inMs + 3 * HOUR), ""]) : "",
+          [H.statedHours]: closed ? pick([3, 3, "2.5", 0.25, 9, "", -1, "abc"]) : "",
+          [H.alerts]: pick(["", "", "staff note"]),
+          [H.inBy]: "kiosk",
+          [H.outBy]: closed ? pick(["kiosk", "kiosk", "auto-close", "", "JP", "Kiosk"]) : "",
+        }),
+      );
+    }
+    const all = rows.map((cells, i) => L.logEntry(cells, i + 2, cols, READ));
+    const base = {
+      volunteers,
+      id: tapped,
+      digits,
+      todayDate: today,
+      nowMs,
+      windowMs: pick([1, 10, 12, 12, 24]) * HOUR,
+      flagMinutes: pick([15, 5]),
+      launchDate: pick(["2026-10-01", "2026-11-11", today, "", "bad", "11/01/2026"]),
+    };
+    const arrivedMs = pick([
+      null,
+      null,
+      nowMs - HOUR,
+      nowMs - 20 * MIN,
+      nowMs + HOUR,
+      nowMs - 30 * HOUR,
+    ]);
+    const outMs = pick([
+      null,
+      null,
+      nowMs - 30 * MIN,
+      nowMs - 2 * HOUR,
+      nowMs + HOUR,
+      nowMs - 20 * HOUR,
+    ]);
+    const inArgs = {
+      ...base,
+      arrivedMs,
+      arrivedDate: arrivedMs === null ? "" : centralDate(new Date(arrivedMs)),
+    };
+    const outArgs = {
+      ...base,
+      outMs,
+      outDate: outMs === null ? "" : centralDate(new Date(outMs)),
+      longShiftHours: pick([8, 2]),
+    };
+    const where =
+      "seed " +
+      SEED +
+      ", case " +
+      k +
+      ": " +
+      exact({
+        tapped,
+        digits,
+        rows: n,
+        nowMs,
+        windowMs: base.windowMs,
+        launch: base.launchDate,
+        arrivedMs,
+        outMs,
+      });
+
+    const wholeIn = L.decideCheckIn({ ...inArgs, entries: all });
+    const wholeOut = L.decideCheckOut({ ...outArgs, entries: all });
+    const who = L.resolveVolunteer(volunteers, tapped, digits);
+    if (who.refusal) {
+      // The kiosk returns this refusal before it reads the Log.
+      assert.equal(exact(wholeIn), exact({ refusal: who.refusal }), where);
+      assert.equal(exact(wholeOut), exact({ refusal: who.refusal }), where);
+      count(who.refusal);
+      continue;
+    }
+    const token = who.volunteer.token;
+    const own_ = all.filter((_, i) => L.logRowHasToken(rows[i], cols, token, READ));
+    assert.equal(exact(own_), exact(all.filter((e) => L.isTokenRow(e, token))), where);
+    assert.equal(exact(L.decideCheckIn({ ...inArgs, entries: own_ })), exact(wholeIn), where);
+    assert.equal(exact(L.decideCheckOut({ ...outArgs, entries: own_ })), exact(wholeOut), where);
+    if (who.volunteer.id !== tapped) count("another member");
+    count("in: " + (wholeIn.refusal || (wholeIn.missedSignOut ? "ok, missed sign-out" : "ok")));
+    count("out: " + (wholeOut.refusal || (wholeOut.milestone ? "ok, milestone" : "ok")));
+  }
+  // The cases reach every path the decisions have.
+  for (const key of [
+    "NOT_FOUND",
+    "PHONE_NEEDED",
+    "PHONE_WRONG",
+    "PHONE_MISSING",
+    "another member",
+    "in: ok",
+    "in: ok, missed sign-out",
+    "in: ALREADY_IN",
+    "in: ARRIVAL_FUTURE",
+    "in: ARRIVAL_OTHER_DAY",
+    "out: ok",
+    "out: ok, milestone",
+    "out: NOT_IN",
+  ]) {
+    assert.ok(tally[key] > 0, "no case reached " + key + ": " + exact(tally));
+  }
 });
