@@ -783,13 +783,11 @@ menu." A tap made since then shows at the next refresh. Nothing on the tab is a 
 over the Log, so a tap on the kiosk never waits for Hours, and a refresh never makes the
 kiosk wait.
 
-<!-- open-refresh: start -->
-
 **When Hours is refreshed.** From Kiosk admin > Refresh Hours, each night at about 5 AM
-(see Daily jobs), and by `setupReports`. Opening the spreadsheet doesn't refresh it, so use
-Refresh Hours when you need the latest taps.
-
-<!-- open-refresh: end -->
+(see Daily jobs), and by `setupReports`. Opening the spreadsheet doesn't refresh it; B1
+then says "Not refreshed on open at ...: use Kiosk admin > Refresh Hours for newer taps."
+(If a refresh is writing Hours at that moment, opening leaves B1 as it is.) Use Refresh
+Hours when you need the latest taps.
 
 **Refresh Hours** in the Kiosk admin menu opens no window and asks for no initials. It
 reads the Log, writes the tables again and shows what B1 now says. Other answers:
