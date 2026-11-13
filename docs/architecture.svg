@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3b5b6e"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#082f58" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <rect width="1400" height="760" fill="#fcf8f1"/>
+
+  <text x="60" y="70" font-size="34" font-weight="700" fill="#0b2e4f">ENCM Volunteer Kiosk — Architecture</text>
+  <text x="60" y="102" font-size="17" fill="#4f6f80">Fully Google-hosted: React front end · Google Apps Script back end · Google Sheets as the database</text>
+
+  <!-- Column headers -->
+  <text x="60" y="160" font-size="14" font-weight="800" fill="#2a8c8c" letter-spacing="1.5">CLIENT</text>
+  <text x="520" y="160" font-size="14" font-weight="800" fill="#2a8c8c" letter-spacing="1.5">GOOGLE APPS SCRIPT</text>
+  <text x="1010" y="160" font-size="14" font-weight="800" fill="#2a8c8c" letter-spacing="1.5">GOOGLE DRIVE</text>
+
+  <!-- Client: kiosk -->
+  <g filter="url(#shadow)">
+    <rect x="60" y="175" width="340" height="250" rx="22" fill="#ffffff" stroke="#b9d4e2" stroke-width="1.5"/>
+  </g>
+  <text x="84" y="214" font-size="21" font-weight="700" fill="#0b2e4f">iPad / browser kiosk</text>
+  <text x="84" y="240" font-size="15" fill="#4f6f80">React 19 + Tailwind, bundled into</text>
+  <text x="84" y="260" font-size="15" fill="#4f6f80">one self-contained Index.html</text>
+  <g font-size="15" fill="#1a1a1a">
+    <text x="84" y="296">• Name search &amp; check-in / out</text>
+    <text x="84" y="320">• Time picker, checked-in sidebar</text>
+    <text x="84" y="344">• Day's list cached on device</text>
+    <text x="84" y="368">• Save flow with watchdog timeouts</text>
+    <text x="84" y="392">• Access code kept in local storage</text>
+  </g>
+
+  <!-- Client: staff -->
+  <g filter="url(#shadow)">
+    <rect x="60" y="480" width="340" height="150" rx="22" fill="#ffffff" stroke="#b9d4e2" stroke-width="1.5"/>
+  </g>
+  <text x="84" y="519" font-size="21" font-weight="700" fill="#0b2e4f">Staff in the spreadsheet</text>
+  <g font-size="15" fill="#1a1a1a">
+    <text x="84" y="552">• Kiosk admin menu &amp; dialogs</text>
+    <text x="84" y="576">• Add / fix shifts, import, reports</text>
+    <text x="84" y="600">• Weekly flags email to inbox</text>
+  </g>
+
+  <!-- Apps Script -->
+  <g filter="url(#shadow)">
+    <rect x="520" y="175" width="390" height="455" rx="22" fill="#ffffff" stroke="#4f9cbd" stroke-width="2"/>
+  </g>
+  <g>
+    <rect x="544" y="198" width="342" height="76" rx="14" fill="#eaf5fa"/>
+    <text x="562" y="228" font-size="18" font-weight="700" fill="#0b2e4f">Api.js — web app</text>
+    <text x="562" y="252" font-size="14" fill="#3b5b6e">doGet · check access · list · check in / out</text>
+    <text x="562" y="268" font-size="13" fill="#4f6f80">access-code check · script lock · typed refusals</text>
+
+    <rect x="544" y="286" width="342" height="62" rx="14" fill="#eaf5fa"/>
+    <text x="562" y="314" font-size="18" font-weight="700" fill="#0b2e4f">Logic.js — business rules</text>
+    <text x="562" y="336" font-size="14" fill="#3b5b6e">pure functions: times, flags, hours, reports</text>
+
+    <rect x="544" y="360" width="342" height="62" rx="14" fill="#eaf5fa"/>
+    <text x="562" y="388" font-size="18" font-weight="700" fill="#0b2e4f">Sheets.js — data access</text>
+    <text x="562" y="410" font-size="14" fill="#3b5b6e">read / write rows · setupSheets layout</text>
+
+    <rect x="544" y="434" width="342" height="62" rx="14" fill="#eaf5fa"/>
+    <text x="562" y="462" font-size="18" font-weight="700" fill="#0b2e4f">Jobs.js — scheduled triggers</text>
+    <text x="562" y="484" font-size="14" fill="#3b5b6e">auto clock-out · Hours refresh · flags email</text>
+
+    <rect x="544" y="508" width="342" height="98" rx="14" fill="#eaf5fa"/>
+    <text x="562" y="536" font-size="18" font-weight="700" fill="#0b2e4f">Admin · Reports · Import</text>
+    <text x="562" y="558" font-size="14" fill="#3b5b6e">Kiosk admin menu + HTML dialogs</text>
+    <text x="562" y="578" font-size="14" fill="#3b5b6e">short-lived admin sessions</text>
+    <text x="562" y="598" font-size="14" fill="#3b5b6e">monthly reports · past-hours import</text>
+  </g>
+
+  <!-- Drive: Check-In Log -->
+  <g filter="url(#shadow)">
+    <rect x="1010" y="175" width="330" height="300" rx="22" fill="#ffffff" stroke="#b9d4e2" stroke-width="1.5"/>
+  </g>
+  <text x="1034" y="214" font-size="21" font-weight="700" fill="#0b2e4f">Check-In Log sheet</text>
+  <g font-size="15">
+    <rect x="1034" y="232" width="282" height="40" rx="10" fill="#f3f8fa"/>
+    <text x="1050" y="257" fill="#1a1a1a"><tspan font-weight="700">Log</tspan> — one row per shift</text>
+    <rect x="1034" y="280" width="282" height="40" rx="10" fill="#fbe3e2"/>
+    <text x="1050" y="305" fill="#1a1a1a"><tspan font-weight="700">Flags</tspan> — review queue</text>
+    <rect x="1034" y="328" width="282" height="40" rx="10" fill="#f3f8fa"/>
+    <text x="1050" y="353" fill="#1a1a1a"><tspan font-weight="700">Hours</tspan> &amp; monthly reports</text>
+    <rect x="1034" y="376" width="282" height="40" rx="10" fill="#f3f8fa"/>
+    <text x="1050" y="401" fill="#1a1a1a"><tspan font-weight="700">Settings</tspan> — code, thresholds</text>
+  </g>
+  <text x="1034" y="448" font-size="13" fill="#4f6f80">recorded vs. stated times · Admin Alerts?</text>
+
+  <!-- Drive: Profiles -->
+  <g filter="url(#shadow)">
+    <rect x="1010" y="510" width="330" height="120" rx="22" fill="#ffffff" stroke="#b9d4e2" stroke-width="1.5"/>
+  </g>
+  <text x="1034" y="549" font-size="21" font-weight="700" fill="#0b2e4f">Volunteer Profiles</text>
+  <text x="1034" y="576" font-size="15" fill="#1a1a1a">Roster spreadsheet</text>
+  <text x="1034" y="600" font-size="15" fill="#4f6f80">read-only to the app</text>
+
+  <!-- Arrows: kiosk <-> Api -->
+  <line x1="402" y1="250" x2="514" y2="250" stroke="#3b5b6e" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="514" y1="282" x2="402" y2="282" stroke="#3b5b6e" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="458" y="238" font-size="13" font-weight="700" fill="#3b5b6e" text-anchor="middle">google.script.run</text>
+  <text x="458" y="304" font-size="13" fill="#4f6f80" text-anchor="middle">JSON / refusal</text>
+
+  <!-- staff -> admin -->
+  <line x1="402" y1="556" x2="514" y2="556" stroke="#3b5b6e" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="420" y="545" font-size="13" font-weight="700" fill="#3b5b6e">menu calls</text>
+
+  <!-- Apps Script <-> Log -->
+  <line x1="912" y1="300" x2="1004" y2="300" stroke="#3b5b6e" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="1004" y1="330" x2="912" y2="330" stroke="#3b5b6e" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="958" y="288" font-size="13" font-weight="700" fill="#3b5b6e" text-anchor="middle">read / write</text>
+
+  <!-- Apps Script -> Profiles -->
+  <line x1="1004" y1="570" x2="912" y2="570" stroke="#3b5b6e" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="930" y="560" font-size="13" font-weight="700" fill="#3b5b6e">roster</text>
+
+  <!-- Footer: dev pipeline -->
+  <rect x="60" y="672" width="1280" height="56" rx="16" fill="#0b2e4f"/>
+  <text x="84" y="706" font-size="16" fill="#ffffff"><tspan font-weight="700">Dev pipeline:</tspan>  pnpm test (≈510 Node tests)  →  pnpm push (Vite build + clasp push)  →  clasp deploy (versioned /exec URL for the iPad)</text>
+</svg>
