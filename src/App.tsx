@@ -17,6 +17,7 @@ import {
   readStoredList,
   retriesList,
   storeList,
+  wakeRefreshDue,
   type ListState,
   type ListStorage,
 } from "./listStore";
@@ -1146,6 +1147,30 @@ export default function App() {
     const timer = window.setInterval(refreshList, LIST_RETRY_MS);
     return () => clearInterval(timer);
   }, [code, listState]);
+
+  // Timers stop while the iPad sleeps or the page is hidden, so the list can be minutes old when
+  // it comes back into view. Refresh it then, but not during a save and not more than once every
+  // 30 s.
+  useEffect(() => {
+    if (!code) return;
+    let lastWake: number | null = null;
+    const onWake = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (!wakeRefreshDue(now, lastWake, saveFlow.current.pending !== null)) return;
+      lastWake = now;
+      refreshList();
+    };
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) onWake();
+    };
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("pageshow", onPageShow);
+    };
+  }, [code]);
 
   // After its own check-in or check-out the page shows the volunteer's new state until the
   // next list arrives. A list asked for before the change is out of date and is dropped.

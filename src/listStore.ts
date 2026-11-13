@@ -185,3 +185,20 @@ export function listStateAfterFailure(state: ListState): ListState {
 export function retriesList(state: ListState): boolean {
   return state === "failed" || state === "stored";
 }
+
+/** The shortest time between two refreshes asked for by the page coming back into view. */
+export const WAKE_REFRESH_MIN_MS = 30_000;
+
+/**
+ * Whether the page coming back into view (the iPad waking, the tab shown again) refreshes the
+ * list: not while a check-in or check-out is being saved, and at most once every
+ * WAKE_REFRESH_MIN_MS. lastWakeMs is when the last such refresh started, or null for none yet.
+ */
+export function wakeRefreshDue(
+  nowMs: number,
+  lastWakeMs: number | null,
+  savePending: boolean,
+): boolean {
+  if (savePending) return false;
+  return lastWakeMs === null || nowMs - lastWakeMs >= WAKE_REFRESH_MIN_MS;
+}
