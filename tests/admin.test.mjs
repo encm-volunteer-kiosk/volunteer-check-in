@@ -358,7 +358,7 @@ const isOpener = (name) => /^open\w*Dialog$/.test(name);
 // Run by hand from the editor, guarded like setupSheets: no dialog, so no key.
 const EDITOR_ONLY = ["setupReports", "setupDailyJobs", "removeDailyJobs"];
 // Run by a trigger: the trigger's id stands in for the key.
-const TRIGGER_ONLY = ["runFlagsEmail", "runAutoClockOut"];
+const TRIGGER_ONLY = ["runFlagsEmail", "runAutoClockOut", "runHoursRefresh"];
 const KEYED = PUBLIC.filter(
   (name) =>
     name !== "onOpen" &&
@@ -484,6 +484,7 @@ test("Jobs.js's public functions are the editor-run setup and the trigger handle
     "removeDailyJobs",
     "runAutoClockOut",
     "runFlagsEmail",
+    "runHoursRefresh",
     "setupDailyJobs",
   ]);
   // Every daily job's handler is a trigger-only public function.

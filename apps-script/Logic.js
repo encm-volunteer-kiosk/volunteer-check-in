@@ -4045,12 +4045,14 @@ function flagFilterViewRequests(cols, sheetId, existingViewId) {
 /**
  * The jobs setupDailyJobs installs, one trigger each, and nothing else. handler is the
  * public Jobs.js function the trigger calls. A job runs either every everyHours hours or
- * once a day at atHour (Central).
+ * once a day at atHour (Central). The Hours refresh runs an hour after the auto clock-out,
+ * so the rows it closes show.
  */
 function dailyJobs() {
   return [
     { handler: "runFlagsEmail", everyHours: 1 },
     { handler: "runAutoClockOut", atHour: 4 },
+    { handler: "runHoursRefresh", atHour: 5 },
   ];
 }
 

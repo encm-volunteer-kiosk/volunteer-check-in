@@ -3163,10 +3163,11 @@ test("autoClockOutCells close the row with the guess, blank recorded cells and t
   });
 });
 
-test("dailyJobs lists the hourly email and the 4 AM auto clock-out", () => {
+test("dailyJobs lists the hourly email, the 4 AM auto clock-out and the 5 AM Hours refresh", () => {
   assert.deepEqual(plain(L.dailyJobs()), [
     { handler: "runFlagsEmail", everyHours: 1 },
     { handler: "runAutoClockOut", atHour: 4 },
+    { handler: "runHoursRefresh", atHour: 5 },
   ]);
   assert.equal(L.flagSources().autoClose, "auto-close");
   assert.equal(L.weekdayFromText("TUE"), "Tuesday");
