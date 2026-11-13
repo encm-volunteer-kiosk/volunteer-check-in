@@ -391,10 +391,12 @@ On a spreadsheet set up before them, run `setupSheets` once to add them.
 
 ## Kiosk admin menu
 
-Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with five items: Add a
-shift, Fix a sign-out, Monthly report, Import past hours and Refresh Hours. Monthly report
-and Refresh Hours are described under Reports. Anyone who can edit the spreadsheet can use
-it. It runs as whoever has the sheet open, which at
+Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with eight items: Add a
+shift, Fix a sign-out, Remove a shift, Restore a shift, Monthly report, Import past hours,
+Refresh Hours and Check the Log now. Monthly report and Refresh Hours are described under
+Reports. Check the Log now runs the Log check that otherwise runs at about 5 AM (see Daily
+jobs) and says what it found and how many new Flags rows it added. Anyone who can edit the
+spreadsheet can use it. It runs as whoever has the sheet open, which at
 ENCM is the shared account, so:
 
 - that account must be able to read Volunteer Profiles, because the menu reads the roster
@@ -410,14 +412,15 @@ ENCM is the shared account, so:
 > an incognito/private window signed into only the shared account, or give that account its
 > own browser profile.
 
-Each item except Refresh Hours opens a small window. Every save asks for the admin's **initials**: 1 to 5
-letters, with spaces and dots dropped, stored in capitals (`j.p.` is stored as `JP`). The
+Each item except Refresh Hours and Check the Log now opens a small window. Every save asks
+for the admin's **initials**: 1 to 5 letters, with spaces and dots dropped, stored in capitals (`j.p.` is stored as `JP`). The
 initials go in Check-In Entered By and Check-Out Entered By, since everyone at ENCM signs
 in as the same account. A window stops working after 30 minutes; close it and open the
 menu again. If a save is refused, the window says why and keeps what was typed.
 
-The "type to search" box in Add a shift and Fix a sign-out ignores accents, apostrophes,
-periods, hyphens, capitals and extra spaces, the same as the kiosk's name box. Every word
+The "type to search" box in Add a shift, Fix a sign-out, Remove a shift and Restore a
+shift ignores accents, apostrophes, periods, hyphens, capitals and extra spaces, the same
+as the kiosk's name box. Every word
 typed must appear in an entry, in any order.
 
 ### Add a shift
@@ -487,6 +490,75 @@ The row gets Check-Out Stated, Hours Served (stated), Status `closed` and your i
 Check-Out Entered By. A note is added after whatever Notes holds. Check-Out Recorded and
 Hours Served (timestamps) stay blank. Any open row can be fixed, today's included; the
 tablet shows the volunteer as not checked in at its next refresh.
+
+### Remove a shift
+
+For a Log row that shouldn't be there: a shift typed twice, a test row, a row for the
+wrong volunteer. The row isn't lost: it moves to a tab named `Removed shifts`, and Restore
+a shift puts it back.
+
+Find the row by pasting its **Shift ID**, or by choosing the **volunteer** and the
+**date** (today unless you change it), then press Find. Pick the row from the list; the
+window shows its date, name, status, stated and recorded times, both hours, both Entered
+By, alerts and notes, so you can check it is the right one. Then give a **reason** (up to
+500 characters) and your initials, and save.
+
+Only rows with a Shift ID can be removed. A row with no Shift ID isn't listed: delete it
+in the sheet by hand (the Log check flags such rows as "No Shift ID").
+
+On save, the row is copied to `Removed shifts`, column by column under the same headers,
+with three more columns: **Removed by** (your initials), **Removed at** and **Removed
+reason**. Then it is deleted from the Log, so the rows below it move up. Its Flags rows
+are ticked Reviewed, get your initials in Reviewed By when that is blank, and get
+`Log row removed by JP on 2026-11-13: <reason>` added to their Notes. When another Log row
+still has the same Shift ID (a copied row), only the removed row's own flags are ticked:
+those whose Log Row, Date and Volunteer Name match it. The Log check's "Shift ID on more
+than one row" flag is ticked too once only one row is left. The rest stay for the row that
+remains, and the window says how many it left. A flag whose Log Row is out of date, because
+the Log was sorted, is left unticked; tick it by hand.
+
+Hours and the reports drop the row at their next read. The Hours tab shows it after its
+next refresh, at about 5 AM, or Kiosk admin > Refresh Hours.
+
+It refuses, and says why, when:
+
+- the initials are missing, or the reason is missing or over 500 characters.
+- no Log row has that Shift ID any more, or the row moved since you found it (for
+  example the Log was sorted while two rows share the Shift ID). Find the shift again.
+- the row has a value in a column whose header is blank, repeated, or named Removed by,
+  Removed at or Removed reason. The value couldn't be moved and brought back, so the
+  message names the column: give it a unique header first.
+- the window has been open more than 30 minutes. Close it and open the menu again.
+
+**The `Removed shifts` tab** is made by the first Remove, with the Log's header row as it
+is then, then the three columns above. A later Remove adds any new Log header at the
+right. Row 1 is frozen, and the tab warns before anyone edits it. Nothing else reads it:
+not Hours, the reports, the Log check or the email. If a Remove is cut off part way, the
+row can be on both tabs; Restore then refuses it, and staff delete the extra copy by hand.
+
+### Restore a shift
+
+Puts a removed row back. The window lists the rows on `Removed shifts`, newest first, with
+who removed each, when and why. Search the list, pick a row, enter your initials and save.
+The row is written below the Log's last row, column by column under the same headers (the
+three Removed columns aren't copied back), and deleted from `Removed shifts`. Its Flags
+rows get `Log row restored by JP on 2026-11-13.` added to their Notes and otherwise stay
+as Remove left them, ticked; untick one if you want it looked at again. The Hours tab
+shows the row after its next refresh.
+
+An open row that comes back is the tablet's again while it is younger than "Auto clock-out
+after hours"; otherwise the next auto clock-out closes it.
+
+It refuses, and says why, when:
+
+- the initials are missing.
+- the row is no longer on `Removed shifts`, or moved there since the list was made. Close
+  the window and open Restore a shift again.
+- a Log row already has that Shift ID.
+- the row is open and the volunteer already has an open row in the Log. Close that one
+  with Fix a sign-out first.
+- the row has a value in a column the Log no longer has, or has twice. The message names
+  the column: give the Log one column with that header first.
 
 ### Import past hours
 
@@ -562,8 +634,9 @@ it again brings in the rest.
 
 ### What the menu won't do
 
-It doesn't edit a closed row, change a check-in time, or delete a row. Staff change those
-cells by hand in the sheet.
+It doesn't edit a closed row or change a check-in time; staff change those cells by hand
+in the sheet. It removes a row only through Remove a shift, which keeps a copy on
+`Removed shifts`, and only a row that has a Shift ID.
 
 It can't close an open row whose Date or check-in time can't be read. Fix that cell by
 hand first, then use Fix a sign-out. If the row is dated today, the volunteer can still

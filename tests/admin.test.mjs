@@ -445,10 +445,16 @@ test("Admin.js, Reports.js and Jobs.js declare the public functions, and only fu
     "onOpen",
     "openAddShiftDialog",
     "openFixSignOutDialog",
+    "openRemoveShiftDialog",
+    "openRestoreShiftDialog",
     "adminRoster",
     "adminOpenShifts",
     "adminAddShift",
     "adminFixSignOut",
+    "adminFindShifts",
+    "adminRemoveShift",
+    "adminRemovedShifts",
+    "adminRestoreShift",
     "setupReports",
     "openMonthlyReportDialog",
     "adminReportMonths",
@@ -456,7 +462,14 @@ test("Admin.js, Reports.js and Jobs.js declare the public functions, and only fu
   ]) {
     assert.ok(PUBLIC.includes(name), name);
   }
-  for (const name of ["adminReportMonths", "adminMonthlyReport"]) {
+  for (const name of [
+    "adminReportMonths",
+    "adminMonthlyReport",
+    "adminFindShifts",
+    "adminRemoveShift",
+    "adminRemovedShifts",
+    "adminRestoreShift",
+  ]) {
     assert.ok(KEYED.includes(name), name);
   }
   const { ctx, calls } = server();
@@ -618,7 +631,7 @@ test("the menu items that open no dialog read nothing outside the spreadsheet's 
   }
 });
 
-test("onOpen adds the menu first, and its items name the openers and Refresh Hours", () => {
+test("onOpen adds the menu first, and its items name the openers, Refresh Hours and Check the Log now", () => {
   const { ctx, calls, menu } = server({ active: "" });
   const logs = [];
   ctx.console.log = (...args) => logs.push(args.join(" "));
@@ -636,9 +649,12 @@ test("onOpen adds the menu first, and its items name the openers and Refresh Hou
     "Kiosk admin",
     ["Add a shift…", "openAddShiftDialog"],
     ["Fix a sign-out…", "openFixSignOutDialog"],
+    ["Remove a shift…", "openRemoveShiftDialog"],
+    ["Restore a shift…", "openRestoreShiftDialog"],
     ["Monthly report…", "openMonthlyReportDialog"],
     ["Import past hours…", "openImportDialog"],
     ["Refresh Hours", "refreshHoursNow"],
+    ["Check the Log now", "checkLogNow"],
   ]);
   for (const [, fn] of menu.slice(1)) {
     assert.ok(PUBLIC.filter(isOpener).includes(fn) || MENU_RUN.includes(fn), fn);
@@ -664,6 +680,20 @@ test("an opener puts a fresh key only into the dialog's HTML, and the key then w
   s.ctx.openFixSignOutDialog();
   assert.equal(s.shown[1].output.template.mode, "fix");
   assert.notEqual(s.shown[1].output.template.key, template.key);
+
+  s.ctx.openRemoveShiftDialog();
+  assert.equal(s.shown[2].title, "Remove a shift");
+  assert.equal(s.shown[2].output.template.mode, "remove");
+  s.ctx.openRestoreShiftDialog();
+  assert.equal(s.shown[3].title, "Restore a shift");
+  assert.equal(s.shown[3].output.template.mode, "restore");
+  const keys = new Set(s.shown.map((d) => d.output.template.key));
+  assert.equal(keys.size, 4);
+  // An empty spreadsheet has no Removed shifts tab, so the Restore list is empty.
+  assert.deepEqual(plain(s.ctx.adminRemovedShifts(s.shown[3].output.template.key)), {
+    ok: true,
+    shifts: [],
+  });
 });
 
 test("the Monthly report opener serves Report.html with a fresh key, and the key then works", () => {
@@ -1845,4 +1875,25 @@ test("the row read again is null when the read throws, and a blank row past the 
   const blank = big.ctx.readLogRowAt_(5, width, cols, read, "s-sam");
   assert.equal(blank.row, 5);
   assert.equal(big.ctx.autoClockOutRowUnchanged(big.ctx.readLog_(cols)[0], blank), false);
+});
+
+// ---------------------------------------------------------------------------
+// The admin dialog's calls
+
+test("AdminDialog.html calls only keyed functions, each through call()", () => {
+  const html = read("apps-script/AdminDialog.html");
+  const called = [...html.matchAll(/call\("(\w+)"/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(called)].sort(), [
+    "adminAddShift",
+    "adminFindShifts",
+    "adminFixSignOut",
+    "adminOpenShifts",
+    "adminRemoveShift",
+    "adminRemovedShifts",
+    "adminRestoreShift",
+    "adminRoster",
+  ]);
+  for (const name of called) assert.ok(KEYED.includes(name), name);
+  assert.equal(html.match(/google\.script\.run/g).length, 1);
+  assert.match(html, /\[name\]\(KEY, \.\.\.args\)/);
 });

@@ -5,7 +5,8 @@
     <meta charset="utf-8" />
     <!--
       The Kiosk admin dialogs, served by openAdminDialog_ (Admin.js) as a template. The
-      server puts the dialog key and the mode ("add" or "fix") into the body's data
+      server puts the dialog key and the mode ("add", "fix", "remove" or "restore") into the
+      body's data
       attributes; nothing else on the page is filled in by the server. Plain HTML and
       JavaScript, no build step. Every limit shown here is checked again on the server.
     -->
@@ -96,6 +97,24 @@
         display: block;
         background: #f1f3f4;
       }
+      .detail {
+        white-space: pre-wrap;
+        font: inherit;
+        font-size: 13px;
+        background: #f8f9fa;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        padding: 6px 8px;
+        margin: 8px 0 0;
+      }
+      .detail:empty {
+        display: none;
+      }
+      .find {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 8px;
+      }
       [hidden] {
         display: none !important;
       }
@@ -134,10 +153,43 @@
       <input id="fix-out" type="time" required />
     </form>
 
+    <form id="remove" hidden>
+      <label for="remove-id"
+        >Shift ID
+        <span class="hint">(paste it, or find the shift by volunteer and date)</span></label
+      >
+      <input id="remove-id" type="text" autocomplete="off" />
+      <label for="remove-search">Volunteer <span class="hint">(type to search)</span></label>
+      <input id="remove-search" type="search" autocomplete="off" />
+      <select id="remove-volunteer" size="4" aria-label="Volunteer"></select>
+      <div class="row">
+        <div>
+          <label for="remove-date">Date</label>
+          <input id="remove-date" type="date" />
+        </div>
+      </div>
+      <div class="find"><button type="button" id="remove-find">Find</button></div>
+
+      <label for="remove-shift">Shift to remove</label>
+      <select id="remove-shift" size="4" aria-label="Shift to remove"></select>
+      <div class="detail" id="remove-detail"></div>
+    </form>
+
+    <form id="restore" hidden>
+      <label for="restore-search">Removed shift <span class="hint">(type to search)</span></label>
+      <input id="restore-search" type="search" autocomplete="off" />
+      <select id="restore-shift" size="6" aria-label="Removed shift"></select>
+      <div class="detail" id="restore-detail"></div>
+    </form>
+
     <div id="common" hidden>
-      <label for="note">Note <span class="hint">(optional, goes in the Notes column)</span></label>
-      <textarea id="note" rows="3" maxlength="500"></textarea>
-      <div class="hint" id="note-count">0 / 500</div>
+      <div id="note-block">
+        <label for="note" id="note-label"
+          >Note <span class="hint">(optional, goes in the Notes column)</span></label
+        >
+        <textarea id="note" rows="3" maxlength="500"></textarea>
+        <div class="hint" id="note-count">0 / 500</div>
+      </div>
 
       <label for="initials">Your initials</label>
       <input id="initials" class="initials" type="text" maxlength="10" autocomplete="off" />
@@ -152,9 +204,15 @@
 
     <script>
       const KEY = document.body.dataset.key;
-      const MODE = document.body.dataset.mode === "fix" ? "fix" : "add";
+      const MODES = ["add", "fix", "remove", "restore"];
+      const MODE = MODES.includes(document.body.dataset.mode) ? document.body.dataset.mode : "add";
       const $ = (id) => document.getElementById(id);
+      const REFRESH_TEXT =
+        " Hours shows this after its next refresh (about 5 AM, or Kiosk admin > Refresh Hours).";
+      // add and remove: the volunteer roster. fix: the open shifts. restore: the Removed rows.
       let choices = [];
+      // remove: the rows Find returned.
+      let found = [];
       let busy = false;
 
       function show(text, kind) {
@@ -217,7 +275,61 @@
 
       function refill() {
         if (MODE === "add") fillList($("add-volunteer"), $("add-search"), choices, "id");
-        else fillList($("fix-shift"), $("fix-search"), choices, "shiftId");
+        else if (MODE === "fix") fillList($("fix-shift"), $("fix-search"), choices, "shiftId");
+        else if (MODE === "remove") {
+          fillList($("remove-volunteer"), $("remove-search"), choices, "id");
+        } else {
+          fillList($("restore-shift"), $("restore-search"), choices, "key");
+          showDetail();
+        }
+      }
+
+      // Remove and Restore list rows by Shift ID and Log row, since a Shift ID can be on two
+      // rows.
+      function keyed(shifts) {
+        return shifts.map((s) => ({ ...s, key: s.shiftId + "|" + s.row }));
+      }
+
+      function picked() {
+        const list = MODE === "remove" ? found : choices;
+        const key = $(MODE + "-shift").value;
+        return list.find((s) => s.key === key) || null;
+      }
+
+      function showDetail() {
+        const shift = picked();
+        $(MODE + "-detail").textContent = shift ? shift.detail : "";
+      }
+
+      function setFound(shifts) {
+        found = keyed(shifts);
+        const select = $("remove-shift");
+        select.textContent = "";
+        found.forEach((s) => select.add(new Option(s.label, s.key)));
+        if (found.length === 1) select.selectedIndex = 0;
+        showDetail();
+      }
+
+      function find() {
+        if (busy) return;
+        const shiftId = $("remove-id").value.trim();
+        let query;
+        if (shiftId) query = { shiftId };
+        else {
+          query = { id: $("remove-volunteer").value, date: $("remove-date").value };
+          if (!query.id)
+            return show("Paste a Shift ID, or choose a volunteer and a date.", "error");
+          if (!query.date) return show("Please enter the date.", "error");
+        }
+        show("Looking…", "info");
+        call("adminFindShifts", [query], (reply) => {
+          setFound(reply.shifts);
+          show(reply.shifts.length ? "" : "No Log row with a Shift ID matches.", "info");
+        });
+      }
+
+      function whose(reply) {
+        return reply.name ? reply.name + "'s shift" : "The shift";
       }
 
       function call(name, args, onOk) {
@@ -249,13 +361,46 @@
             refill();
             show("", "");
           });
-        } else {
+        } else if (MODE === "fix") {
           call("adminOpenShifts", [], (reply) => {
             choices = reply.shifts;
             refill();
             show(choices.length ? "" : "There are no open shifts to fix.", "info");
           });
+        } else if (MODE === "remove") {
+          call("adminRoster", [], (reply) => {
+            choices = reply.volunteers;
+            $("remove-date").value = reply.today;
+            $("remove-date").max = reply.today;
+            refill();
+            show("", "");
+          });
+        } else {
+          loadRemoved("");
         }
+      }
+
+      function loadRemoved(done) {
+        call("adminRemovedShifts", [], (reply) => {
+          choices = keyed(reply.shifts);
+          refill();
+          if (done) show(done, "ok");
+          else show(choices.length ? "" : "There are no removed shifts to restore.", "info");
+        });
+      }
+
+      function flagsText(reply) {
+        if (reply.flagsFailed) {
+          return " Its Flags rows couldn't be ticked; tick them by hand on the Flags tab.";
+        }
+        let text = " " + reply.flagsMarked + " Flags row(s) ticked Reviewed.";
+        if (reply.flagsLeft) {
+          text +=
+            " " +
+            reply.flagsLeft +
+            " left unticked, for the other Log row that still has this Shift ID.";
+        }
+        return text;
       }
 
       function hoursText(hours) {
@@ -293,6 +438,46 @@
             $("note").value = "";
             updateCount();
           });
+        } else if (MODE === "remove") {
+          const shift = picked();
+          if (!shift) return show("Please find and choose the shift to remove.", "error");
+          const form = {
+            shiftId: shift.shiftId,
+            row: shift.row,
+            reason: common.note,
+            initials: common.initials,
+          };
+          if (!form.reason.trim()) return show("Please enter a reason.", "error");
+          call("adminRemoveShift", [form], (reply) => {
+            show(
+              whose(reply) +
+                " on " +
+                (reply.date || "no date") +
+                " is on the Removed shifts tab now." +
+                flagsText(reply) +
+                REFRESH_TEXT,
+              "ok",
+            );
+            setFound([]);
+            $("note").value = "";
+            updateCount();
+          });
+        } else if (MODE === "restore") {
+          const shift = picked();
+          if (!shift) return show("Please choose a removed shift.", "error");
+          const form = { shiftId: shift.shiftId, row: shift.row, initials: common.initials };
+          call("adminRestoreShift", [form], (reply) => {
+            const done =
+              whose(reply) +
+              " on " +
+              (reply.date || "no date") +
+              " is back on Log row " +
+              reply.logRow +
+              "." +
+              (reply.flagsFailed ? " Its Flags rows didn't get the restore note." : "") +
+              REFRESH_TEXT;
+            loadRemoved(done);
+          });
         } else {
           const form = { shiftId: $("fix-shift").value, outTime: $("fix-out").value, ...common };
           if (!form.shiftId) return show("Please choose an open shift.", "error");
@@ -324,8 +509,18 @@
 
       $(MODE).hidden = false;
       $("common").hidden = false;
+      if (MODE === "remove") {
+        $("note-label").innerHTML =
+          'Reason <span class="hint">(required, kept on the Removed shifts tab)</span>';
+      }
+      if (MODE === "restore") $("note-block").hidden = true;
       $("add-search").addEventListener("input", refill);
       $("fix-search").addEventListener("input", refill);
+      $("remove-search").addEventListener("input", refill);
+      $("restore-search").addEventListener("input", refill);
+      $("remove-find").addEventListener("click", find);
+      $("remove-shift").addEventListener("change", showDetail);
+      $("restore-shift").addEventListener("change", showDetail);
       $("note").addEventListener("input", updateCount);
       $("save").addEventListener("click", save);
       $("close").addEventListener("click", () => google.script.host.close());
