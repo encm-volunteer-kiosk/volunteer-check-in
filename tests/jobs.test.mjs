@@ -1618,3 +1618,14 @@ test("Check the Log now reads the Log once, flags under the lock and shows what 
   ]);
   assert.equal(busy.sheets.Flags.getLastRow(), 1);
 });
+
+test("flagsEmailMessage: the review path names Data > Change view in the text and the HTML", () => {
+  const msg = L.flagsEmailMessage({
+    summary: { recent: [], unreviewed: 2 },
+    autoClockOut: { stale: false, lastRun: "2026-11-16 04:02" },
+    flagsUrl: "u",
+  });
+  assert.match(msg.body, /\(Data > Change view > Flags: Unreviewed\)/);
+  assert.match(msg.htmlBody, /\(Data &gt; Change view &gt; Flags: Unreviewed\)/);
+  assert.doesNotMatch(msg.body + msg.htmlBody, /Filter views/);
+});
