@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import vm from "node:vm";
+import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -325,6 +326,7 @@ function server(opts = {}) {
       getUuid: () => "uuid-" + ++uuid,
       formatDate: (date, tz, format) => {
         assert.ok([TZ, opts.sourceZone].includes(tz), "unexpected time zone " + tz);
+        if (format === "yyyy-MM-dd HH:mm:ss") return formatInZone(date, tz, format);
         const p = zoneParts(date.getTime(), tz);
         if (format === "yyyy-MM-dd") return p.year + "-" + p.month + "-" + p.day;
         if (format === "HH:mm") {

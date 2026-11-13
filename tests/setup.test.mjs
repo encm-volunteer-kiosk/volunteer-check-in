@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -276,6 +277,7 @@ function server(ss, opts = {}) {
     },
     Utilities: {
       formatDate: (date, tz, format) => {
+        if (format === "yyyy-MM-dd HH:mm:ss") return formatInZone(date, tz, format);
         assert.equal(format, "yyyy-MM-dd");
         return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(date);
       },

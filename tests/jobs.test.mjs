@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -305,6 +306,7 @@ function server(opts = {}) {
       },
       formatDate: (date, tz, format) => {
         assert.equal(tz, TZ);
+        if (format === "yyyy-MM-dd HH:mm:ss") return formatInZone(date, tz, format);
         const text = centralText(date.getTime());
         if (format === "yyyy-MM-dd") return text.slice(0, 10);
         if (format === "HH:mm") return text.slice(11);
