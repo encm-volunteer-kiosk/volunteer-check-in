@@ -1129,13 +1129,35 @@ test("pickerMonth keeps a yyyy-MM text month and otherwise shows the current mon
   }
 });
 
-test("setupReportsMessage gives the counts and says to rerun after a Log column moves", () => {
-  const text = L.setupReportsMessage({
+test("setupReportsMessage gives the counts, when Hours is filled as of, Monthly Hours' fate, and the reruns", () => {
+  const base = {
     views: { added: 0, updated: 7 },
     warnings: { kept: 14, added: 0, removed: 0 },
+  };
+  const text = L.setupReportsMessage({
+    ...base,
+    hours: { asOf: "2026-11-13 9:14 AM", monthlyHours: "deleted" },
   });
+  assert.match(
+    text,
+    /The Hours and Hours data tabs are set up\. Hours is filled as of 2026-11-13 9:14 AM\./,
+  );
+  assert.match(text, /The Monthly Hours tab was deleted; the Hours tab replaces it\./);
   assert.match(text, /Filter views: 7 updated, 0 added\./);
   assert.match(text, /Kiosk column warnings: 14 kept, 0 added, 0 removed\./);
+  assert.match(text, /run setupDailyJobs once more for the nightly Hours refresh/);
   assert.match(text, /inserted, deleted or moved/);
   assert.match(text, /until setupReports runs again/);
+  assert.doesNotMatch(text, /Monthly Hours tab is written/);
+
+  const kept = L.setupReportsMessage({ ...base, hours: { asOf: "x", monthlyHours: "unmarked" } });
+  assert.match(
+    kept,
+    /A tab named Monthly Hours was left alone: it doesn't carry the kiosk's Monthly Hours protection/,
+  );
+  assert.doesNotMatch(kept, /was deleted/);
+
+  const none = L.setupReportsMessage({ ...base, hours: { asOf: "x", monthlyHours: "none" } });
+  assert.doesNotMatch(none, /Monthly Hours/);
+  assert.ok(!none.includes("\n\n"));
 });

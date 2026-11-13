@@ -2857,20 +2857,953 @@ function pickerMonth(cellText, todayDate) {
 
 /**
  * What setupReports logs when it finishes. counts is {views: {added, updated}, warnings:
- * {kept, added, removed}}. It ends with the one thing staff must do by hand: the filter
- * views name Log columns by letter, so after a Log column is inserted, deleted or moved they
- * look at the wrong column until setupReports runs again.
+ * {kept, added, removed}, hours: {asOf, monthlyHours}}: asOf is the Hours tables' time
+ * (L1) as Central text, and monthlyHours what became of the old Monthly Hours tab:
+ * "deleted", "unmarked" (a tab of that name without the kiosk's protection, left alone) or
+ * "none". It ends with the things staff must do by hand: rerun setupDailyJobs once for the
+ * nightly Hours refresh when the jobs were installed before it, and rerun setupReports
+ * after a Log column moves, since the filter views name Log columns by letter.
  */
 function setupReportsMessage(counts) {
   const v = counts.views;
   const w = counts.warnings;
+  const h = counts.hours || {};
+  const old = monthlyHoursTabName();
+  const monthly = {
+    deleted: "The " + old + " tab was deleted; the " + hoursTabName() + " tab replaces it.",
+    unmarked:
+      "A tab named " +
+      old +
+      " was left alone: it doesn't carry the kiosk's " +
+      old +
+      " protection, so it isn't the kiosk's. Delete it by hand when it's no longer needed.",
+  }[h.monthlyHours];
   return [
     "setupReports finished.",
-    "The " + monthlyHoursTabName() + " tab is written.",
+    "The " +
+      hoursTabName() +
+      " and " +
+      hoursDataTabName() +
+      " tabs are set up. " +
+      hoursTabName() +
+      " is filled as of " +
+      cellString(h.asOf) +
+      ".",
+    monthly,
     "Filter views: " + v.updated + " updated, " + v.added + " added.",
     "Kiosk column warnings: " + w.kept + " kept, " + w.added + " added, " + w.removed + " removed.",
+    "If the daily jobs were installed before this version, run setupDailyJobs once more for the nightly Hours refresh.",
     "The filter views name Log columns by letter. After a Log column is inserted, deleted or moved, they look at the wrong column until setupReports runs again, so run it again then.",
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// The Hours tab
+//
+// Hours data is a hidden tab of plain values the script writes: one row per counted shift
+// with a month, worked out here by the monthly report's own counting code, so the Hours
+// tab and the report count the same rows the same way. The Hours tab holds three pivot
+// tables and five slicers over it. Nothing on either tab is a formula over the Log, so a
+// kiosk tap starts no recalculation there; the tables are as of the last refresh.
+//
+// Hours data's row 1 also holds the refresh's state cells, L1 to Q1, outside the pivots'
+// columns A to J. Every time in them is epoch milliseconds written as digits:
+//   L1 table time   "<ms>": when the read behind the table in place started
+//   M1 table state  "complete", "writing <ms>" or "stopped <ms>" (or "stopped")
+//   N1 last event   "<kind>|<cause>|<T ms>|<W ms>|<message>"
+//   O1 last write   "<read ms>|<work ms>|<write ms>|<rows>"
+//   P1 digest       "sha256:<hex>" of the table and row 3's counts last written
+//   Q1 build state  "building <ms>" or "built <ms>", written by setupReports only
+// The tables are whole when M1 is "complete" and L1 is known. Every state cell, and the
+// Hours tab's B1, is written only while the execution holds the document lock, and B1 is
+// always hoursLine of the cells, so it never says the tables are whole when the cells
+// don't. hoursNextState lists, for one hold, the writes the rule allows and their order.
+
+/** The tab setupReports builds for the pivot tables and slicers. */
+function hoursTabName() {
+  return "Hours";
+}
+
+/** The hidden tab the refresh writes, the pivots' and slicers' source. */
+function hoursDataTabName() {
+  return "Hours data";
+}
+
+/**
+ * The developer metadata setupReports puts on each tab it makes. A tab named Hours or
+ * Hours data without its mark isn't the kiosk's: setupReports stops before changing
+ * anything and the refresh writes nothing to it.
+ */
+function hoursTabMark() {
+  return { key: "kiosk-tab", hours: "hours", data: "hours-data" };
+}
+
+/** Hours data's headers, columns A to J. */
+function hoursDataHeaders() {
+  return [
+    "Date",
+    "Year",
+    "Month",
+    "Weekday",
+    "Start",
+    "Volunteer",
+    "Shifts",
+    "Hours",
+    "Role/Type",
+    "Activity",
+  ];
+}
+
+/**
+ * Hours data's number formats, columns A to J: plain text for every text column, so
+ * "2026-11" and "2026" are not read as a date or a number, "0" for Shifts and "0.00" for
+ * Hours.
+ */
+function hoursDataFormats() {
+  return ["@", "@", "@", "@", "@", "@", "0", "0.00", "@", "@"];
+}
+
+/** The state cells on Hours data, in order, and their range. */
+function hoursStateCells() {
+  return ["L1", "M1", "N1", "O1", "P1", "Q1"];
+}
+
+function hoursStateRange() {
+  return "L1:Q1";
+}
+
+/**
+ * The one range every pivot and slicer on the Hours tab reads: Hours data from row 1 with
+ * no end row, columns A to J. Built here once so every spec holds an equal value.
+ */
+function hoursSourceRange(dataSheetId) {
+  return { sheetId: dataSheetId, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 10 };
+}
+
+/** What Start holds when a row's start can't be read (an imported row has none). */
+function hoursNoTime() {
+  return "no time";
+}
+
+/** What Role/Type or Activity holds when blank or when the Log has no such column. */
+function hoursNotSet() {
+  return "(not set)";
+}
+
+/**
+ * Text written into a Hours data text cell. A leading '=' gets sheetText's apostrophe, so
+ * the cell holds the name and not a formula; the cells are plain text ("@") as well.
+ */
+function hoursCellText(text) {
+  return sheetText(text);
+}
+
+/** Trimmed, with every run of spaces (newlines and tabs too) as one space. */
+function hoursSpaced(text) {
+  return cellString(text).replace(/\s+/g, " ");
+}
+
+/** The counted rows with a month, the rows Hours data lists, in reportRowOrder. */
+function hoursRows(entries) {
+  return (entries || [])
+    .filter((e) => isCountedRow(e) && monthKey(e.dateText))
+    .sort(reportRowOrder);
+}
+
+/**
+ * Each volunteer's label on the Hours tab, as Map token -> label, over the whole Log (every
+ * counted row with a month). No two tokens end with labels equal under normalizeName.
+ *
+ * 1. A token's base label is the Volunteer Name on its latest counted row in
+ *    reportRowOrder, spaced as hoursSpaced, or "(no name)" when that cell is blank.
+ * 2. When two or more tokens have base labels equal under normalizeName, each gets
+ *    " · first shift yyyy-MM-dd", the Date of its first shift (firstShifts).
+ * 3. Then, until no label is shared: each label not yet given a Log row that equals another
+ *    token's under normalizeName gets ", Log row N", N its first shift's Log row. A token
+ *    gets this at most once. N is unique to its token and ends the label, so two labels
+ *    with a Log row are never equal; each pass gives at least one token its Log row, so
+ *    the loop ends within one pass per token.
+ */
+function hoursLabels(entries) {
+  const rows = hoursRows(entries);
+  const first = firstShifts(entries);
+  const latest = new Map();
+  rows.forEach((e) => latest.set(cellString(e.token), e));
+  const labels = new Map();
+  latest.forEach((e, token) => labels.set(token, hoursSpaced(e.name) || "(no name)"));
+  const groups = () => {
+    const by = new Map();
+    labels.forEach((label, token) => {
+      const key = normalizeName(label);
+      if (!by.has(key)) by.set(key, []);
+      by.get(key).push(token);
+    });
+    return Array.from(by.values()).filter((tokens) => tokens.length > 1);
+  };
+  groups().forEach((tokens) =>
+    tokens.forEach((t) =>
+      labels.set(t, labels.get(t) + " · first shift " + cellString(first.get(t).dateText)),
+    ),
+  );
+  const withRow = new Set();
+  for (let pass = 0; pass <= labels.size; pass++) {
+    const shared = groups();
+    if (!shared.length) break;
+    shared.forEach((tokens) =>
+      tokens.forEach((t) => {
+        if (withRow.has(t)) return;
+        withRow.add(t);
+        labels.set(t, labels.get(t) + ", Log row " + first.get(t).row);
+      }),
+    );
+  }
+  return labels;
+}
+
+/**
+ * One spelling per group for a Role/Type or Activity field: Map normalizeName key ->
+ * spelling, the value (spaced as hoursSpaced) on the group's latest row in rows, which are
+ * in reportRowOrder. A pivot and a slicer merge values that differ only in case, and label
+ * the group with whichever spelling survives a filter, so the table writes one.
+ */
+function hoursSpellings(rows, field) {
+  const spelling = new Map();
+  rows.forEach((e) => {
+    const s = hoursSpaced(e[field]);
+    if (s) spelling.set(normalizeName(s), s);
+  });
+  return spelling;
+}
+
+/**
+ * Everything the refresh writes, from one read of the Log. entries are reportEntry rows
+ * (readReportLog_); flags is readFlags_'s rows, or null when the Flags tab is missing or
+ * its read threw; clock(ms) gives a Central "HH:mm".
+ *
+ * Returns {
+ *   header        hoursDataHeaders();
+ *   rows          Hours data's rows 2 down, one per counted row with a month, in
+ *                 reportRowOrder: Date, Year, Month, Weekday, Start ("HH:mm" or "no
+ *                 time"), Volunteer (hoursLabels), 1, Hours (reportHundredths of the stated
+ *                 hours over 100), Role/Type and Activity (one spelling per group, or "(not
+ *                 set)"). Text through hoursCellText; no User Token anywhere;
+ *   counts        {open, alerts, unreviewedFlags (null without a Flags read), undatable}
+ *                 over the whole Log: open rows, non-blank rows with Admin Alerts? set,
+ *                 unreviewed Flags rows with a Volunteer Name or Shift ID, and counted rows
+ *                 left out because their Date isn't yyyy-MM-dd;
+ *   countsLine    the Hours tab's row 3, hoursCountsLine(counts);
+ *   digestText    the text whose SHA-256 is P1: the rows and row 3 together.
+ * }
+ */
+function hoursTable(entries, flags, clock) {
+  const list = entries || [];
+  const rows = hoursRows(list);
+  const labels = hoursLabels(list);
+  const roles = hoursSpellings(rows, "roleType");
+  const activities = hoursSpellings(rows, "activity");
+  const group = (spelling, value) =>
+    hoursCellText(spelling.get(normalizeName(value)) || hoursNotSet());
+  const table = rows.map((e) => {
+    const date = cellString(e.dateText);
+    const start = shiftStartMs(e);
+    return [
+      date,
+      date.slice(0, 4),
+      monthKey(date),
+      weekdayName(date),
+      isFinite(start) ? clock(start) : hoursNoTime(),
+      hoursCellText(labels.get(cellString(e.token))),
+      1,
+      reportHundredths(e.statedHoursCell) / 100,
+      group(roles, e.roleType),
+      group(activities, e.activity),
+    ];
+  });
+  const counts = {
+    open: list.filter((e) => isStatus(e, "open")).length,
+    alerts: list.filter((e) => !isBlankLogRow(e) && cellString(e.alerts) !== "").length,
+    unreviewedFlags: flags
+      ? flags.filter((f) => (cellString(f.name) || cellString(f.shiftId)) && !f.reviewed).length
+      : null,
+    undatable: list.filter((e) => isCountedRow(e) && !monthKey(e.dateText)).length,
+  };
+  const countsLine = hoursCountsLine(counts);
+  return {
+    header: hoursDataHeaders(),
+    rows: table,
+    counts,
+    countsLine,
+    digestText: JSON.stringify({ rows: table, countsLine }),
+  };
+}
+
+/**
+ * The Hours tab's row 3: counts that don't follow the slicers, each with where to look, as
+ * of the last refresh. counts as hoursTable's; null before the first refresh.
+ */
+function hoursCountsLine(counts) {
+  if (!counts) return "Counts at the last refresh show here once Hours is refreshed.";
+  const flags =
+    counts.unreviewedFlags === null || counts.unreviewedFlags === undefined
+      ? "unreviewed Flags rows: Run setupSheets to add the Flags tab"
+      : plural(counts.unreviewedFlags, "unreviewed Flags row", "unreviewed Flags rows") +
+        " (see the Flags tab's " +
+        flagsViewTitle() +
+        " view)";
+  return (
+    "At the last refresh: " +
+    [
+      plural(counts.open, "open shift", "open shifts") +
+        ", not counted (see the Log's " +
+        filterViewTitlePrefix() +
+        "Open shifts view)",
+      plural(counts.alerts, "Log row", "Log rows") +
+        " with Admin Alerts? set (see the Log's " +
+        filterViewTitlePrefix() +
+        "Flagged view)",
+      flags,
+      plural(counts.undatable, "counted row", "counted rows") +
+        " left out because the Date can't be read (see the monthly report's rows to review)",
+    ].join("; ") +
+    "."
+  );
+}
+
+/** "sha256:<hex>", the digest cell P1 holds, from the hex of hoursTable's digestText. */
+function hoursDigestCell(hex) {
+  return "sha256:" + String(hex).toLowerCase();
+}
+
+/** The four causes of a refresh, as N1 holds them, and how B1 says each. */
+function hoursCauses() {
+  return {
+    open: "on open",
+    menu: "from the menu",
+    nightly: "nightly",
+    setupReports: "by setupReports",
+  };
+}
+
+/** The N1 kinds, and the messages an open-skipped note carries. */
+function hoursNoteKinds() {
+  return ["refreshed", "failed-read", "failed-write", "open-skipped"];
+}
+
+function hoursSkipReasons() {
+  return ["note-only", "too-big", "no-timing"];
+}
+
+/**
+ * N1's text: "<kind>|<cause>|<T>|<W>|<message>". A message has every run of spaces made
+ * one space and every "|" made "/", and is cut to 100 characters.
+ */
+function hoursNoteCell(kind, cause, t, w, message) {
+  const m = hoursSpaced(message).replace(/\|/g, "/").slice(0, 100);
+  return [kind, cause, Math.round(t), Math.round(w), m].join("|");
+}
+
+/** O1's text from {readMs, workMs, writeMs, rows}. */
+function hoursTimingCell(timing) {
+  return [timing.readMs, timing.workMs, timing.writeMs, timing.rows]
+    .map((n) => Math.max(0, Math.round(Number(n) || 0)))
+    .join("|");
+}
+
+/** Digits as a number, from a text or a number cell; null for anything else. */
+function hoursMs(value) {
+  if (typeof value === "number")
+    return isFinite(value) && value >= 0 && value % 1 === 0 ? value : null;
+  const s = cellString(value);
+  return /^\d{1,16}$/.test(s) ? Number(s) : null;
+}
+
+/**
+ * The state cells read back: cells is [L1, M1, N1, O1, P1, Q1] as getValues gives them.
+ * A cell that doesn't match its form reads as null (unknown); digits read as digits
+ * whether the cell holds text or a number.
+ *
+ * Returns {
+ *   tableTime   L1's ms, or null;
+ *   table       {kind: "complete"}, {kind: "writing", ms} or {kind: "stopped", ms (null
+ *               for a bare "stopped")}, or null;
+ *   note        {kind, cause, t, w, message}, or null;
+ *   lastWrite   {readMs, workMs, writeMs, rows}, or null;
+ *   digest      "sha256:<hex>", or null;
+ *   build       {kind: "building" or "built", ms}, or null.
+ * }
+ */
+function hoursState(cells) {
+  const c = cells || [];
+  const text = (i) => cellString(c[i]);
+  const tableTime = hoursMs(c[0]);
+  let table = null;
+  const m = text(1);
+  if (m === "complete") table = { kind: "complete" };
+  else if (m === "stopped") table = { kind: "stopped", ms: null };
+  else {
+    const hit = /^(writing|stopped) (\d{1,16})$/.exec(m);
+    if (hit) table = { kind: hit[1], ms: Number(hit[2]) };
+  }
+  let note = null;
+  const n = text(2).split("|");
+  if (
+    n.length === 5 &&
+    hoursNoteKinds().indexOf(n[0]) >= 0 &&
+    Object.prototype.hasOwnProperty.call(hoursCauses(), n[1]) &&
+    hoursMs(n[2]) !== null &&
+    hoursMs(n[3]) !== null &&
+    (n[0] !== "open-skipped" || (n[1] === "open" && hoursSkipReasons().indexOf(n[4]) >= 0)) &&
+    (n[0] !== "refreshed" || n[4] === "")
+  ) {
+    note = { kind: n[0], cause: n[1], t: Number(n[2]), w: Number(n[3]), message: n[4] };
+  }
+  let lastWrite = null;
+  const o = text(3).split("|");
+  if (o.length === 4 && o.every((x) => hoursMs(x) !== null)) {
+    const [readMs, workMs, writeMs, rows] = o.map(Number);
+    lastWrite = { readMs, workMs, writeMs, rows };
+  }
+  const p = text(4);
+  const digest = /^sha256:[0-9a-f]{64}$/.test(p) ? p : null;
+  let build = null;
+  const q = /^(building|built) (\d{1,16})$/.exec(text(5));
+  if (q) build = { kind: q[1], ms: Number(q[2]) };
+  return { tableTime, table, note, lastWrite, digest, build };
+}
+
+/** True when the table in place is whole: M1 "complete" and L1 known. */
+function hoursWhole(state) {
+  return Boolean(
+    state && state.table && state.table.kind === "complete" && state.tableTime !== null,
+  );
+}
+
+/** "<message>." with no second full stop. */
+function hoursSentence(text) {
+  const s = hoursSpaced(text);
+  return /[.!?]$/.test(s) ? s : s + ".";
+}
+
+/**
+ * B1's line, a pure function of the state cells: a table part from Q1, M1 and L1, then a
+ * note part from N1, joined. formatTime(ms) gives a Central "yyyy-MM-dd h:mm a".
+ */
+function hoursLine(state, formatTime) {
+  const s = state || hoursState([]);
+  const at = (ms) => formatTime(ms);
+  const refresh = "use Kiosk admin > Refresh Hours";
+  const causes = hoursCauses();
+  let tablePart;
+  let stoppedAt = null;
+  let whole = false;
+  if (!s.build || s.build.kind === "building") {
+    tablePart = s.build
+      ? "Hours is being set up by setupReports since " +
+        at(s.build.ms) +
+        "; if this stays over 5 minutes, run setupReports again."
+      : "Hours is not set up: run setupReports.";
+  } else if (s.table && s.table.kind === "writing") {
+    tablePart =
+      "Refreshing since " + at(s.table.ms) + ". If this stays over 5 minutes, " + refresh + ".";
+  } else if (!hoursWhole(s)) {
+    stoppedAt = s.table && s.table.kind === "stopped" ? s.table.ms : null;
+    tablePart =
+      (stoppedAt === null
+        ? "A refresh stopped part way"
+        : "A refresh at " + at(stoppedAt) + " stopped part way") +
+      ", so the tables may be incomplete: " +
+      refresh +
+      ".";
+  } else {
+    whole = true;
+    tablePart = "As of " + at(s.tableTime) + ".";
+  }
+  const n = s.note;
+  if (!n) return tablePart;
+  const cause = causes[n.cause];
+  const failure = (what) =>
+    "The refresh " +
+    cause +
+    " at " +
+    at(n.t) +
+    " " +
+    what +
+    (n.message ? ": " + hoursSentence(n.message) : ".");
+  if (whole && n.kind === "refreshed" && n.t === s.tableTime) {
+    return "As of " + at(s.tableTime) + ", refreshed " + cause + ".";
+  }
+  if (stoppedAt !== null && n.kind === "failed-write" && n.t === stoppedAt) {
+    return failure("failed part way") + " The tables may be incomplete: " + refresh + ".";
+  }
+  let notePart;
+  if (n.kind === "refreshed") notePart = "Refreshed " + cause + " at " + at(n.t) + ".";
+  else if (n.kind === "failed-read") notePart = failure("failed before writing");
+  else if (n.kind === "failed-write") notePart = failure("failed part way");
+  else {
+    const why = {
+      "note-only": "",
+      "too-big": " (the Log is too big to refresh on open now)",
+      "no-timing": " (no write timing yet)",
+    }[n.message];
+    notePart = "Not refreshed on open at " + at(n.w) + why + ": " + refresh + " for newer taps.";
+  }
+  return tablePart + " " + notePart;
+}
+
+/** How long an open may take in all before its table write, and the lock wait counted in. */
+function hoursOpenBudgetMs() {
+  return 20000;
+}
+
+function hoursOpenLockWaitMs() {
+  return 2000;
+}
+
+/**
+ * The on-open budget check: "ok", "too-big" when the time since onOpen began, plus the
+ * lock wait, plus O1's write time scaled by rowsNow over O1's rows (at least 1), is over
+ * the budget, or "no-timing" when O1 is unknown. state is hoursState's.
+ */
+function hoursBudget(sinceOpenMs, state, rowsNow) {
+  const o = state && state.lastWrite;
+  if (!o) return "no-timing";
+  const scale = Math.max(1, (Number(rowsNow) || 0) / Math.max(1, o.rows));
+  const estimate = Number(sinceOpenMs) + hoursOpenLockWaitMs() + o.writeMs * scale;
+  return estimate > hoursOpenBudgetMs() ? "too-big" : "ok";
+}
+
+/**
+ * The state-cell writes one hold may make, in order, as {decision, steps}. Reports.js runs
+ * the steps as listed; the model test plays the same list.
+ *
+ * state is hoursState of the cells read back after taking the lock (or again in a catch).
+ * run is {cause ("open", "menu", "nightly" or "setupReports"), t (when this run's read of
+ * the Log started), w (now, for a note), mark (the time this execution puts in M1's
+ * "writing": t for a refresh, setupReports' start S), held (true when this hold has already
+ * settled, so it isn't settled again), markWritten (true once this execution has written
+ * its mark in this hold), digest (P1's text for the table read), rows (how many rows it
+ * holds), budget (hoursBudget's answer, open only)}. outcome is one of:
+ *   {kind: "read"}            the read worked: 4 a, b, c or d;
+ *   {kind: "failed", message} a throw: step 5's note, or no state cell;
+ *   {kind: "note-only"}       an open that only notes it didn't refresh;
+ *   {kind: "setup-start"}     setupReports' step 4: M1 "writing S", Q1 "building S";
+ *   {kind: "setup-built"}     setupReports' step 5 end: Q1 "built S".
+ *
+ * Each step is {op: "set", cell, value}, {op: "set", cell: "O1", timing: true} (the
+ * caller writes hoursTimingCell of its measured times), {op: "render"} (B1 from the cells
+ * read back), {op: "flush"}, or a table change: "grow" (add rows if the tab is short, with
+ * formats on the new rows), "values" (one setValues of the rows), "clear" (A2:J2, only
+ * when there are no rows), "trim" (delete the rows below the last one kept), "counts"
+ * (row 3 on the Hours tab).
+ *
+ * The rule, clause by clause:
+ * - Settle on entry: unless held, the first write is M1 "writing t" to "stopped t", or an
+ *   unknown M1 to "stopped". Only the lock holder writes a table and it marks it complete
+ *   in the same hold, so a "writing" a new holder sees belongs to a run that is gone.
+ * - Ordered by read time: when the table in place is whole and L1 is t or later, the run
+ *   writes no state cell (decision "a", or "quiet" for a failure). setupReports is never
+ *   stopped by this: its own "writing S" is in M1.
+ * - Whole only after flush: M1 "writing <mark>", render, flush; the table changes, flush;
+ *   L1, P1, O1, N1; M1 "complete" last; render; flush.
+ * - One note per run, replacing N1 with no comparison.
+ * - Every hold renders B1 after its state writes and ends with a render and a flush.
+ */
+function hoursNextState(state, run, outcome) {
+  const steps = [];
+  const set = (cell, value) => steps.push({ op: "set", cell, value });
+  const render = () => steps.push({ op: "render" });
+  const flush = () => steps.push({ op: "flush" });
+  const end = (decision) => {
+    render();
+    flush();
+    return { decision, steps };
+  };
+  let s = state || hoursState([]);
+  if (!run.held) {
+    if (s.table && s.table.kind === "writing") {
+      set("M1", "stopped " + s.table.ms);
+      s = Object.assign({}, s, { table: { kind: "stopped", ms: s.table.ms } });
+    } else if (!s.table) {
+      set("M1", "stopped");
+      s = Object.assign({}, s, { table: { kind: "stopped", ms: null } });
+    }
+  }
+  const ownMark =
+    run.markWritten && s.table && s.table.kind === "writing" && s.table.ms === run.mark;
+  const newerIn = run.cause !== "setupReports" && hoursWhole(s) && s.tableTime >= run.t;
+  const note = (kind, t, message) => set("N1", hoursNoteCell(kind, run.cause, t, run.w, message));
+  const kind = outcome && outcome.kind;
+
+  if (kind === "setup-start") {
+    set("M1", "writing " + run.mark);
+    set("Q1", "building " + run.mark);
+    return end("setup-start");
+  }
+  if (kind === "setup-built") {
+    set("Q1", "built " + run.mark);
+    return end("setup-built");
+  }
+  if (kind === "note-only") {
+    set("N1", hoursNoteCell("open-skipped", "open", run.w, run.w, "note-only"));
+    return end("note-only");
+  }
+  if (kind === "failed") {
+    if (ownMark) {
+      set("M1", "stopped " + run.mark);
+      note("failed-write", run.mark, outcome.message);
+      return end("failed-write");
+    }
+    if (run.cause === "setupReports" || newerIn) return end("quiet");
+    note("failed-read", run.t, outcome.message);
+    return end("failed-read");
+  }
+  if (newerIn) return end("a");
+  if (run.cause === "open" && run.budget && run.budget !== "ok") {
+    note("open-skipped", run.t, run.budget);
+    return end("b");
+  }
+  if (run.cause === "open" && hoursWhole(s) && run.digest && run.digest === s.digest) {
+    set("L1", String(run.t));
+    note("refreshed", run.t, "");
+    return end("c");
+  }
+  if (!ownMark) set("M1", "writing " + run.mark);
+  render();
+  flush();
+  steps.push({ op: "grow" }, { op: "values" });
+  if (!run.rows) steps.push({ op: "clear" });
+  steps.push({ op: "trim" }, { op: "counts" });
+  flush();
+  set("L1", String(run.t));
+  set("P1", run.digest);
+  steps.push({ op: "set", cell: "O1", timing: true });
+  note("refreshed", run.t, "");
+  set("M1", "complete");
+  return end("d");
+}
+
+/**
+ * The Hours tab's row 2: how to use it. openPath is the on-open path built: "i" or "iii"
+ * (open refreshes), "ii" (open only notes) or "iv" (open writes nothing).
+ */
+function hoursUsageText(openPath) {
+  const refreshes = openPath === "i" || openPath === "iii";
+  const first =
+    openPath === "iv"
+      ? "The tables show the Log as of the time in B1, the last refresh from the menu, at night or by setupReports."
+      : "The tables show the Log as of the time in B1. Newer taps show at the next refresh: " +
+        (refreshes ? "when the sheet is opened, " : "") +
+        "from Kiosk admin > Refresh Hours, and each night.";
+  return (
+    first +
+    " Click a slicer to pick a year, month, role, activity or volunteer; clear them all for all time." +
+    " Your picks are yours alone: nobody else sees them, and they're gone when you close the tab." +
+    " To sort a table, click it and use Sort by in the editor that opens. setupReports resets sorts."
+  );
+}
+
+/** "#062f5a" as the Sheets API's {red, green, blue}, each 0 to 1. */
+function hoursRgb(hex) {
+  const h = String(hex).replace("#", "");
+  const part = (i) => parseInt(h.slice(i, i + 2), 16) / 255;
+  return { red: part(0), green: part(2), blue: part(4) };
+}
+
+/**
+ * Everything setupReports puts on the Hours tab, and the look of Hours data, as plain data
+ * and Sheets API requests. hoursSheetId and dataSheetId are the two tabs' sheet IDs;
+ * openPath as hoursUsageText's.
+ *
+ * Returns {
+ *   cells: [{a1, value}]   A1's title, row 2's text, row 3's line before the first refresh
+ *                          (B1 is written only by the render);
+ *   frozenRows             1;
+ *   source                 hoursSourceRange(dataSheetId);
+ *   formats, widths, heights, rules, pivots, slicers: Sheets API requests, by kind;
+ *   requests               all of them in the order to send: formats, widths, heights,
+ *                          rules (the three Grand Total rules first), pivots, slicers;
+ *   data: {headers, formats, stateRange, tabColor}   Hours data's look;
+ *   tabColor               the Hours tab's colour.
+ * }
+ *
+ * Layout: row 1 the title and the refresh line in B1, not wrapped, overflowing C1:P1; row
+ * 2 one merged cell A2:P2, wrapped, top-aligned, 66 px; row 3 one merged cell A3:P3 with
+ * the counts; row 5 the slicers for Year, Month, Role/Type, Activity and Volunteer, left
+ * to right from column A; from row 8 the pivots Hours by volunteer (A8), Hours by month
+ * (E8) and Shifts (K8), each filtered to Shifts = 1, a column no slicer uses. Stripes and
+ * Grand Total rows come from rules keyed on each pivot's first column, so they follow the
+ * pivot as it grows and shrinks; every body row gets its fill from a rule, so the pivot's
+ * own grey band never shows. Widths are fixed pixels, not fitted to content.
+ */
+function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
+  const navy = "#062f5a";
+  const white = "#ffffff";
+  const band = "#eef7fc";
+  const section = "#dff3fb";
+  const teal = "#168c86";
+  const grey = "#52687b";
+  const id = hoursSheetId;
+  const source = hoursSourceRange(dataSheetId);
+  const range = (r0, r1, c0, c1) => {
+    const g = { sheetId: id, startRowIndex: r0, startColumnIndex: c0, endColumnIndex: c1 };
+    if (r1 !== null) g.endRowIndex = r1;
+    return g;
+  };
+  const repeat = (gridRange, format, fields) => ({
+    repeatCell: { range: gridRange, cell: { userEnteredFormat: format }, fields },
+  });
+  const color = (hex) => ({ rgbColor: hoursRgb(hex) });
+
+  const formats = [
+    { unmergeCells: { range: range(0, 3, 0, 16) } },
+    { mergeCells: { range: range(1, 2, 0, 16), mergeType: "MERGE_ALL" } },
+    { mergeCells: { range: range(2, 3, 0, 16), mergeType: "MERGE_ALL" } },
+    repeat(
+      range(0, 3, 0, 16),
+      { numberFormat: { type: "TEXT", pattern: "@" } },
+      "userEnteredFormat.numberFormat",
+    ),
+    repeat(
+      range(0, 1, 0, 1),
+      { textFormat: { foregroundColorStyle: color(navy), fontSize: 14, bold: true } },
+      "userEnteredFormat.textFormat",
+    ),
+    repeat(range(0, 1, 1, 2), { wrapStrategy: "OVERFLOW_CELL" }, "userEnteredFormat.wrapStrategy"),
+    repeat(
+      range(1, 2, 0, 16),
+      { wrapStrategy: "WRAP", verticalAlignment: "TOP" },
+      "userEnteredFormat(wrapStrategy,verticalAlignment)",
+    ),
+    repeat(
+      range(2, 3, 0, 16),
+      {
+        wrapStrategy: "WRAP",
+        verticalAlignment: "TOP",
+        backgroundColorStyle: color(section),
+        textFormat: { foregroundColorStyle: color(navy) },
+      },
+      "userEnteredFormat(wrapStrategy,verticalAlignment,backgroundColorStyle,textFormat)",
+    ),
+  ];
+  [
+    [0, 3],
+    [4, 9],
+    [10, 16],
+  ].forEach(([c0, c1]) =>
+    formats.push(
+      repeat(
+        range(7, 8, c0, c1),
+        {
+          backgroundColorStyle: color(navy),
+          textFormat: { foregroundColorStyle: color(white), bold: true },
+          wrapStrategy: "WRAP",
+        },
+        "userEnteredFormat(backgroundColorStyle,textFormat,wrapStrategy)",
+      ),
+    ),
+  );
+  [
+    [2, "0.00"],
+    [6, "0.00"],
+    [8, "0.00"],
+    [15, "0.00"],
+    [1, "0"],
+    [5, "0"],
+    [7, "0"],
+  ].forEach(([c, pattern]) =>
+    formats.push(
+      repeat(
+        range(8, null, c, c + 1),
+        { numberFormat: { type: "NUMBER", pattern } },
+        "userEnteredFormat.numberFormat",
+      ),
+    ),
+  );
+
+  const widths = [
+    [0, 220],
+    [1, 90],
+    [2, 90],
+    [3, 24],
+    [4, 110],
+    [5, 90],
+    [6, 90],
+    [7, 90],
+    [8, 110],
+    [9, 24],
+    [10, 110],
+    [11, 70],
+    [12, 220],
+    [13, 140],
+    [14, 140],
+    [15, 90],
+  ].map(([c, pixelSize]) => ({
+    updateDimensionProperties: {
+      range: { sheetId: id, dimension: "COLUMNS", startIndex: c, endIndex: c + 1 },
+      properties: { pixelSize },
+      fields: "pixelSize",
+    },
+  }));
+  const heights = [
+    [1, 66],
+    [2, 44],
+  ].map(([r, pixelSize]) => ({
+    updateDimensionProperties: {
+      range: { sheetId: id, dimension: "ROWS", startIndex: r, endIndex: r + 1 },
+      properties: { pixelSize },
+      fields: "pixelSize",
+    },
+  }));
+
+  const pivotsAt = [
+    ["A", 0, 3],
+    ["E", 4, 9],
+    ["K", 10, 16],
+  ];
+  const rule = (c0, c1, formula, format) => ({
+    ranges: [range(8, null, c0, c1)],
+    booleanRule: {
+      condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: formula }] },
+      format,
+    },
+  });
+  const ruleList = [];
+  pivotsAt.forEach(([col, c0, c1]) =>
+    ruleList.push(
+      rule(c0, c1, "=$" + col + '9 = "Grand Total"', {
+        backgroundColorStyle: color(section),
+        textFormat: { bold: true },
+      }),
+    ),
+  );
+  [
+    ["ISEVEN", band],
+    ["ISODD", white],
+  ].forEach(([parity, fill]) =>
+    pivotsAt.forEach(([col, c0, c1]) =>
+      ruleList.push(
+        rule(
+          c0,
+          c1,
+          "=AND($" + col + '9 <> "", $' + col + '9 <> "Grand Total", ' + parity + "(ROW()))",
+          { backgroundColorStyle: color(fill) },
+        ),
+      ),
+    ),
+  );
+  const rules = ruleList.map((r, index) => ({ addConditionalFormatRule: { index, rule: r } }));
+
+  const counted = [
+    {
+      columnOffsetIndex: 6,
+      filterCriteria: {
+        condition: { type: "NUMBER_EQ", values: [{ userEnteredValue: "1" }] },
+        visibleByDefault: true,
+      },
+    },
+  ];
+  const byVolunteer = {
+    source,
+    rows: [
+      {
+        sourceColumnOffset: 5,
+        showTotals: true,
+        sortOrder: "DESCENDING",
+        valueBucket: { valuesIndex: 1 },
+        label: "Volunteer",
+      },
+    ],
+    values: [
+      { sourceColumnOffset: 6, summarizeFunction: "SUM", name: "Shifts" },
+      { sourceColumnOffset: 7, summarizeFunction: "SUM", name: "Hours" },
+    ],
+    filterSpecs: counted,
+  };
+  const byMonth = {
+    source,
+    rows: [{ sourceColumnOffset: 2, showTotals: true, sortOrder: "ASCENDING", label: "Month" }],
+    values: [
+      { sourceColumnOffset: 6, summarizeFunction: "SUM", name: "Shifts" },
+      { sourceColumnOffset: 7, summarizeFunction: "SUM", name: "Hours" },
+      { sourceColumnOffset: 5, summarizeFunction: "COUNTUNIQUE", name: "Volunteers" },
+      { summarizeFunction: "CUSTOM", formula: "=SUM(Hours)/SUM(Shifts)", name: "Average shift" },
+    ],
+    filterSpecs: counted,
+  };
+  const shifts = {
+    source,
+    rows: [
+      [0, "Date"],
+      [4, "Start"],
+      [5, "Volunteer"],
+      [8, "Role/Type"],
+      [9, "Activity"],
+    ].map(([offset, label], i) => ({
+      sourceColumnOffset: offset,
+      showTotals: i === 0,
+      sortOrder: i === 0 ? "DESCENDING" : "ASCENDING",
+      repeatHeadings: true,
+      label,
+    })),
+    values: [{ sourceColumnOffset: 7, summarizeFunction: "SUM", name: "Hours" }],
+    filterSpecs: counted,
+  };
+  const pivots = [byVolunteer, byMonth, shifts].map((pivotTable, i) => ({
+    updateCells: {
+      rows: [{ values: [{ pivotTable }] }],
+      start: { sheetId: id, rowIndex: 7, columnIndex: pivotsAt[i][1] },
+      fields: "pivotTable",
+    },
+  }));
+
+  const slicers = [
+    [1, "Year"],
+    [2, "Month"],
+    [8, "Role/Type"],
+    [9, "Activity"],
+    [5, "Volunteer"],
+  ].map(([columnIndex, title], i) => ({
+    addSlicer: {
+      slicer: {
+        spec: { dataRange: source, columnIndex, title, applyToPivotTables: true },
+        position: {
+          overlayPosition: {
+            anchorCell: { sheetId: id, rowIndex: 4, columnIndex: 0 },
+            offsetXPixels: i * 175,
+            offsetYPixels: 2,
+            widthPixels: 165,
+            heightPixels: 32,
+          },
+        },
+      },
+    },
+  }));
+
+  return {
+    cells: [
+      { a1: "A1", value: "Volunteer hours" },
+      { a1: "A2", value: hoursUsageText(openPath) },
+      { a1: "A3", value: hoursCountsLine(null) },
+    ],
+    frozenRows: 1,
+    source,
+    formats,
+    widths,
+    heights,
+    rules,
+    pivots,
+    slicers,
+    requests: [].concat(formats, widths, heights, rules, pivots, slicers),
+    data: {
+      headers: hoursDataHeaders(),
+      formats: hoursDataFormats(),
+      stateRange: hoursStateRange(),
+      tabColor: grey,
+    },
+    tabColor: teal,
+  };
 }
 
 // ---------------------------------------------------------------------------
