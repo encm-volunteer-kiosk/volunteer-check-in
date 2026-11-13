@@ -3811,7 +3811,7 @@ function hoursNextState(state, run, outcome) {
  * full size, rounded up to the next 5 seconds; set it here when that is measured.
  */
 function hoursSortSeconds() {
-  return 30;
+  return 20;
 }
 
 /**
