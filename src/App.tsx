@@ -10,20 +10,54 @@ import {
 } from "./api";
 import logo from "./assets/encm-logo.png";
 import { appreciationMessages, isToday, type Milestone, type Volunteer } from "./data";
+import {
+  clearStoredList,
+  listStateAfterFailure,
+  markVolunteerIn,
+  readStoredList,
+  retriesList,
+  storeList,
+  type ListState,
+  type ListStorage,
+} from "./listStore";
 import { searchNames } from "./nameSearch";
+import { QuickPicks } from "./QuickPicks";
+import {
+  abandonSave,
+  autoHomeMs,
+  goesHomeWhenListLosesVolunteer,
+  inactivityMs,
+  msUntil,
+  noSaves,
+  refusalOutcome,
+  resultOf,
+  SLOW_LINE_MS,
+  slowLineShows,
+  startSave,
+  takeReply,
+  takeWatchdog,
+  WATCHDOG_MS,
+  type SaveFrom,
+  type SaveKind,
+  type SaveOwner,
+  type SaveRecord,
+  type Screen,
+  type StatusCode,
+} from "./saveFlow";
 
-type Screen = "welcome" | "confirm" | "checkout" | "notice" | "success-in" | "success-out";
-type Result = { time: string; duration?: number; milestone?: Milestone | null; message: string };
-type ListState = "loading" | "ready" | "failed";
+// What the result screens show. The first name and kind come from the save, not the list.
+type Result = SaveOwner & {
+  time?: string;
+  duration?: number;
+  milestone?: Milestone | null;
+  message?: string;
+  status?: StatusCode;
+};
 type PhoneStep = "entry" | "missing" | null;
 const TZ = "America/Chicago";
 const ACCESS_CODE_KEY = "encm-kiosk-access-code";
 const LIST_REFRESH_MS = 5 * 60_000;
 const LIST_RETRY_MS = 30_000;
-// Back to the welcome screen after this long untouched; the missed check-out notice is
-// shorter, so a volunteer who walked away doesn't hold up the next one.
-const INACTIVITY_MS = 90_000;
-const NOTICE_INACTIVITY_MS = 60_000;
 
 const Icon = ({ name, size = 24 }: { name: string; size?: number }) => {
   const paths: Record<string, React.ReactNode> = {
@@ -173,128 +207,17 @@ function VolunteerCard({ volunteer, onClick }: { volunteer: Volunteer; onClick: 
   );
 }
 
-const minuteOptions = [0, 15, 30, 45];
-
-function TimeKeyboard({
-  value,
-  minMinutes = 0,
-  label,
-  confirmText,
-  saving,
-  onChange,
-  onConfirm,
-  onBack,
-}: {
-  value: string;
-  // The earliest time that can be chosen, in Central minutes since midnight (fractions
-  // allowed): 0 for arrival, the stated arrival for check-out.
-  minMinutes?: number;
-  label: string;
-  confirmText: string;
-  saving: boolean;
-  onChange: (time: string) => void;
-  onConfirm: () => void;
-  onBack: () => void;
-}) {
-  const [hourValue, minuteValue] = value.split(":").map(Number);
-  const hour12 = hourValue % 12 || 12;
-  const period = hourValue >= 12 ? "PM" : "AM";
-
-  // Minutes since midnight, Central. The choices are the quarter hours from the lower
-  // bound up to now; nothing later than now can be chosen.
-  const latest = floorQuarter(minutesOfDay(centralTimeValue()));
-  const earliest = Math.ceil(minMinutes / 15) * 15;
-  const toMinutes = (hour: number, minute: number, nextPeriod: "AM" | "PM") =>
-    ((hour % 12) + (nextPeriod === "PM" ? 12 : 0)) * 60 + minute;
-  const inRange = (total: number) => total >= earliest && total <= latest;
-  const hourInRange = (hour: number, nextPeriod: "AM" | "PM") =>
-    minuteOptions.some((minute) => inRange(toMinutes(hour, minute, nextPeriod)));
-  const periodInRange = (nextPeriod: "AM" | "PM") => {
-    const first = nextPeriod === "PM" ? 12 * 60 : 0;
-    return Math.max(earliest, first) <= Math.min(latest, first + 11 * 60 + 45);
-  };
-
-  const updateTime = (hour: number, minute: number, nextPeriod: "AM" | "PM") => {
-    // A new hour or period keeps the chosen minutes when they are in range; otherwise it
-    // takes the nearest quarter hour that is.
-    const total = Math.min(Math.max(toMinutes(hour, minute, nextPeriod), earliest), latest);
-    onChange(
-      `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`,
-    );
-  };
-
-  return (
-    <div className="app-keyboard time-keyboard" aria-label={label}>
-      <div className="keyboard-row" aria-label="Choose an hour">
-        {Array.from({ length: 12 }, (_, index) => index + 1).map((hour) => (
-          <button
-            type="button"
-            className={`time-key${hour === hour12 ? " is-selected" : ""}`}
-            key={hour}
-            onClick={() => updateTime(hour, minuteValue, period)}
-            disabled={!hourInRange(hour, period)}
-            aria-label={`${hour} o'clock`}
-            aria-pressed={hour === hour12}
-          >
-            {hour}
-          </button>
-        ))}
-      </div>
-      <div className="keyboard-row" aria-label="Choose minutes">
-        {minuteOptions.map((minute) => (
-          <button
-            type="button"
-            className={`time-key${minute === minuteValue ? " is-selected" : ""}`}
-            key={minute}
-            onClick={() => updateTime(hour12, minute, period)}
-            disabled={!inRange(toMinutes(hour12, minute, period))}
-            aria-label={`${minute} minutes past the hour`}
-            aria-pressed={minute === minuteValue}
-          >
-            :{String(minute).padStart(2, "0")}
-          </button>
-        ))}
-      </div>
-      <div className="keyboard-row time-action-row">
-        {(["AM", "PM"] as const).map((option) => (
-          <button
-            type="button"
-            className={`keyboard-action period-key${option === period ? " is-selected" : ""}`}
-            key={option}
-            onClick={() => updateTime(hour12, minuteValue, option)}
-            disabled={!periodInRange(option)}
-            aria-pressed={option === period}
-          >
-            {option}
-          </button>
-        ))}
-        <div className="button-stack keyboard-button-stack">
-          <Button variant="secondary" onClick={onBack} disabled={saving}>
-            Go back
-          </Button>
-          <Button onClick={onConfirm} disabled={saving}>
-            {saving ? (
-              <>
-                <span className="spinner" /> Saving…
-              </>
-            ) : (
-              confirmText
-            )}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function Welcome({
   volunteers,
   listState,
   onSelect,
+  onHasQuery,
 }: {
   volunteers: Volunteer[];
   listState: ListState;
   onSelect: (v: Volunteer) => void;
+  // Told whether the name box holds any text, and false when the screen closes.
+  onHasQuery: (hasQuery: boolean) => void;
 }) {
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -309,11 +232,8 @@ function Welcome({
   const normalizedQuery = query.trim().toLowerCase();
   const results = useMemo(() => searchNames(volunteers, query), [query, volunteers]);
 
-  const cardRef = useRef<HTMLElement>(null);
-  // Set once the name box gets focus: room below the card, so the page can scroll the box
-  // and its results above the tablet keyboard. Never unset, so a tap on a result can't
-  // shift the layout under the finger.
-  const [typing, setTyping] = useState(false);
+  useEffect(() => onHasQuery(query !== ""), [query]);
+  useEffect(() => () => onHasQuery(false), []);
 
   const updateQuery = (next: string) => {
     setQuery(next);
@@ -321,7 +241,7 @@ function Welcome({
   };
 
   return (
-    <main className={`welcome name-entry screen-enter${typing ? " is-typing" : ""}`}>
+    <main className="welcome name-entry screen-enter">
       <section className="hero name-entry-hero">
         <div className="spark spark-hero">
           <i />
@@ -335,7 +255,7 @@ function Welcome({
         <p>Tap the box below and type your name.</p>
       </section>
 
-      <section className="name-search-card" aria-label="Find your volunteer profile" ref={cardRef}>
+      <section className="name-search-card" aria-label="Find your volunteer profile">
         <label className="search-field name-search-field">
           <Icon name="search" size={29} />
           <span className="sr-only">Type your first and last name</span>
@@ -344,7 +264,10 @@ function Welcome({
             autoFocus
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            onFocus={() => setTyping(true)}
+            // The tablet's Search key closes the keyboard, so results under it show.
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
             placeholder="Enter your name"
             maxLength={60}
             autoComplete="off"
@@ -588,12 +511,7 @@ function Confirmation({
                   <Icon name="clock" size={21} />
                   {checkout ? "What time did you leave?" : "What time did you arrive?"}
                 </span>
-                <output aria-live="polite">{formatTimeValue(time!)}</output>
-                <small>
-                  {checkout
-                    ? "Tap to adjust your check-out time."
-                    : "Tap to adjust your arrival time."}
-                </small>
+                <small>Tap a time below, or use −15 and +15 to adjust it.</small>
               </div>
             </div>
           )}
@@ -633,10 +551,10 @@ function Confirmation({
         </section>
       </main>
       {showTimeKeyboard && (
-        <TimeKeyboard
+        <QuickPicks
           value={time!}
           minMinutes={minMinutes}
-          label={checkout ? "Check-out time keyboard" : "Arrival time keyboard"}
+          label={checkout ? "Check-out time picker" : "Arrival time picker"}
           confirmText={checkout ? "Check Out" : "Check In"}
           saving={saving}
           onChange={onTimeChange!}
@@ -684,7 +602,7 @@ function ShiftThanks({ checkedInAt }: { checkedInAt: string }) {
  * It never says what time was recorded. The check-in is already saved; Got it leads to the
  * checked-in screen.
  */
-function MissedCheckOutNotice({ volunteer, onDone }: { volunteer: Volunteer; onDone: () => void }) {
+function MissedCheckOutNotice({ firstName, onDone }: { firstName: string; onDone: () => void }) {
   return (
     <main className="center-screen screen-enter">
       <section className="panel confirmation-panel" aria-live="polite">
@@ -693,7 +611,7 @@ function MissedCheckOutNotice({ volunteer, onDone }: { volunteer: Volunteer; onD
           <i />
           <i />
         </div>
-        <h1>Welcome back, {volunteer.firstName}!</h1>
+        <h1>Welcome back, {firstName}!</h1>
         <p>
           Last time you didn&apos;t check out. Please tap <strong>Check Out</strong> before you
           leave today.
@@ -708,12 +626,10 @@ function MissedCheckOutNotice({ volunteer, onDone }: { volunteer: Volunteer; onD
 
 function Success({
   type,
-  volunteer,
   result,
   onDone,
 }: {
   type: "in" | "out";
-  volunteer: Volunteer;
   result: Result;
   onDone: () => void;
 }) {
@@ -735,14 +651,14 @@ function Success({
         </div>
         <h1>
           {type === "in"
-            ? `${volunteer.firstName}, we're glad you're here!`
-            : `You made a difference today, ${volunteer.firstName}!`}
+            ? `${result.firstName}, we're glad you're here!`
+            : `You made a difference today, ${result.firstName}!`}
         </h1>
         {type === "in" ? (
           <>
             <p className="success-label">You&apos;re checked in.</p>
             <div className="time-metric">
-              <Icon name="clock" size={29} /> {formatTime(result.time)}
+              <Icon name="clock" size={29} /> {result.time && formatTime(result.time)}
             </div>
             <p className="appreciation">{result.message}</p>
             <p className="reminder">Don&apos;t forget to check out before you leave.</p>
@@ -763,6 +679,74 @@ function Success({
         )}
         <Button onClick={onDone}>Done</Button>
       </div>
+    </main>
+  );
+}
+
+/**
+ * Shown for the whole of a check-in or check-out call. It has no way back: only the call's
+ * reply or its watchdog leaves it.
+ */
+function SavingScreen({ save }: { save: SaveRecord }) {
+  const [slow, setSlow] = useState(() => slowLineShows(Date.now() - save.startedAt));
+  useEffect(() => {
+    if (slow) return;
+    const timer = window.setTimeout(
+      () => setSlow(true),
+      msUntil(SLOW_LINE_MS, Date.now() - save.startedAt),
+    );
+    return () => clearTimeout(timer);
+  }, [slow, save.startedAt]);
+
+  return (
+    <main className="center-screen screen-enter">
+      <section className="panel confirmation-panel saving-panel" aria-live="polite">
+        <span className="save-spinner" aria-hidden="true" />
+        <h1>
+          {save.kind === "in" ? "Checking you in" : "Checking you out"}, {save.firstName}…
+        </h1>
+        {slow && <p className="slow-line">Still saving. Please don&apos;t tap again.</p>}
+      </section>
+    </main>
+  );
+}
+
+/**
+ * The server says the volunteer is already checked in, or not checked in. Not checked in is
+ * never called checked out: it also covers a shift that aged out, which staff fix.
+ */
+function StatusScreen({ result, onDone }: { result: Result; onDone: () => void }) {
+  const already = result.status === "ALREADY_IN";
+  return (
+    <main className="center-screen screen-enter">
+      <section className="panel confirmation-panel" aria-live="polite">
+        <h1>
+          {result.firstName}, {already ? "you're already checked in." : "you're not checked in."}
+        </h1>
+        <p>
+          {already
+            ? "Don't forget to check out before you leave."
+            : "If you just checked out, you're all set. If not, please see a board member."}
+        </p>
+        <div className="button-stack">
+          <Button onClick={onDone}>Done</Button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+/** A save given up by its watchdog. The server may still finish it; the list will show it. */
+function Unconfirmed({ firstName, onDone }: { firstName: string; onDone: () => void }) {
+  return (
+    <main className="center-screen screen-enter">
+      <section className="panel confirmation-panel" aria-live="polite">
+        <h1>This is taking too long, {firstName}.</h1>
+        <p>Please try again in a minute, or see a board member.</p>
+        <div className="button-stack">
+          <Button onClick={onDone}>Done</Button>
+        </div>
+      </section>
     </main>
   );
 }
@@ -937,11 +921,6 @@ function checkOutLowerBound(volunteer: Volunteer, volunteers: Volunteer[]) {
   return arrivals.length ? Math.min(...arrivals) : null;
 }
 
-function formatTimeValue(value: string) {
-  const [hour, minute] = value.split(":").map(Number);
-  return `${hour % 12 || 12}:${String(minute).padStart(2, "0")} ${hour >= 12 ? "PM" : "AM"}`;
-}
-
 function centralTimeToIso(time: string) {
   const [hour, minute] = time.split(":").map(Number);
   const dateParts = new Intl.DateTimeFormat("en-US", {
@@ -1023,18 +1002,39 @@ function storeCode(code: string | null) {
   } catch {}
 }
 
+// localStorage, or null where reaching it throws (storage blocked).
+function listStorage(): ListStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const [code, setCode] = useState<string | null>(readStoredCode);
   const codeRef = useRef(code);
   const [setupError, setSetupError] = useState("");
-  const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
-  const [listState, setListState] = useState<ListState>("loading");
+  // A list kept from before the reload shows at once; the refresh below replaces it.
+  const [keptList] = useState(() => readStoredList(listStorage(), code, Date.now()));
+  const [volunteers, setVolunteers] = useState<Volunteer[]>(() => keptList?.volunteers ?? []);
+  const [listState, setListState] = useState<ListState>(keptList ? "stored" : "loading");
+  // When the server list on screen arrived, or null when there is none to keep.
+  const listSavedAt = useRef<number | null>(keptList?.savedAt ?? null);
   const listRequested = useRef(0);
   const listApplied = useRef(0);
   const [messageIndex, setMessageIndex] = useState(0);
+  // The welcome screen's name box holds text: on a landscape tablet the header and greeting
+  // hide so the results sit above the keyboard (index.css).
+  const [hasQuery, setHasQuery] = useState(false);
   const [screen, setScreen] = useState<Screen>("welcome");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The setup screen's code check only. A check-in or check-out is a save, below.
   const [saving, setSaving] = useState(false);
+  // The pending check-in or check-out, if any: in state for the screens, and in a ref so a
+  // reply or the watchdog reads the current one, not the one of the render that started it.
+  const [save, setSave] = useState<SaveRecord | null>(null);
+  const saveFlow = useRef(noSaves);
   const [error, setError] = useState("");
   const [result, setResult] = useState<Result | null>(null);
   const [arrivalTime, setArrivalTime] = useState(() => centralTimeValue());
@@ -1089,12 +1089,20 @@ export default function App() {
   const applyCode = (next: string | null) => {
     codeRef.current = next;
     storeCode(next);
+    clearStoredList(listStorage());
+    listSavedAt.current = null;
     setCode(next);
     setVolunteers([]);
     setListState("loading");
   };
-  // The server refused the stored code: back to the setup screen.
+  const setSaveFlow = (next: typeof noSaves) => {
+    saveFlow.current = next;
+    setSave(next.pending);
+  };
+  // The server refused the stored code: back to the setup screen. A pending save is given
+  // up, so its reply can't change the screen.
   const lockKiosk = (message: string) => {
+    setSaveFlow(abandonSave(saveFlow.current));
     applyCode(null);
     setSetupError(message);
     goHome();
@@ -1106,7 +1114,7 @@ export default function App() {
     if (!requestCode) return;
     const seq = ++listRequested.current;
     const isCurrent = () => seq > listApplied.current && codeRef.current === requestCode;
-    const failed = () => setListState((state) => (state === "ready" ? state : "failed"));
+    const failed = () => setListState(listStateAfterFailure);
     api.listVolunteers(requestCode).then(
       (reply) => {
         if (!isCurrent()) return;
@@ -1116,6 +1124,7 @@ export default function App() {
           else failed();
           return;
         }
+        listSavedAt.current = Date.now();
         setVolunteers(reply.map(toVolunteer));
         setListState("ready");
       },
@@ -1133,7 +1142,7 @@ export default function App() {
   }, [code]);
 
   useEffect(() => {
-    if (!code || listState !== "failed") return;
+    if (!code || !retriesList(listState)) return;
     const timer = window.setInterval(refreshList, LIST_RETRY_MS);
     return () => clearInterval(timer);
   }, [code, listState]);
@@ -1142,25 +1151,29 @@ export default function App() {
   // next list arrives. A list asked for before the change is out of date and is dropped.
   function markVolunteer(id: string, arrival: string | null) {
     listApplied.current = listRequested.current;
-    setVolunteers((list) =>
-      list.map((v) =>
-        v.id === id ? { ...v, checkedIn: arrival !== null, currentCheckIn: arrival } : v,
-      ),
-    );
+    setVolunteers((list) => markVolunteerIn(list, id, arrival));
   }
 
+  // Keeps the list on the tablet when a server list arrives and after the page marks a
+  // volunteer. A marked list keeps its server list's savedAt, so it ages from that list.
   useEffect(() => {
-    if (selectedId && listState === "ready" && !selected) goHome();
+    const savedAt = listSavedAt.current;
+    if (codeRef.current && savedAt !== null)
+      storeList(listStorage(), codeRef.current, savedAt, volunteers);
   }, [volunteers]);
 
+  // Runs again when the screen changes, so a save that ends back on confirm or checkout for
+  // a volunteer who left the list meanwhile goes home instead of showing a blank screen.
   useEffect(() => {
-    if (screen === "welcome") return;
+    if (goesHomeWhenListLosesVolunteer(screen, listState, selectedId, selected !== null)) goHome();
+  }, [volunteers, screen]);
+
+  useEffect(() => {
+    const ms = inactivityMs(screen);
+    if (ms === null) return;
     const resetTimer = () => {
       if (inactivityRef.current) clearTimeout(inactivityRef.current);
-      inactivityRef.current = window.setTimeout(
-        goHome,
-        screen === "notice" ? NOTICE_INACTIVITY_MS : INACTIVITY_MS,
-      );
+      inactivityRef.current = window.setTimeout(goHome, ms);
     };
     const events = ["pointerdown", "keydown", "input"];
     events.forEach((name) => window.addEventListener(name, resetTimer));
@@ -1172,10 +1185,31 @@ export default function App() {
   }, [screen]);
 
   useEffect(() => {
-    if (screen !== "success-in" && screen !== "success-out") return;
-    const timer = window.setTimeout(goHome, screen === "success-in" ? 5000 : 7000);
+    const ms = autoHomeMs(screen);
+    if (ms === null) return;
+    const timer = window.setTimeout(goHome, ms);
     return () => clearTimeout(timer);
   }, [screen]);
+
+  // The watchdog: a save still pending 45 s after it started is given up. The list refreshes
+  // so the volunteer's real state shows, and the page says it couldn't confirm.
+  useEffect(() => {
+    if (!save) return;
+    const { seq, startedAt } = save;
+    const timer = window.setTimeout(
+      () => {
+        const taken = takeWatchdog(saveFlow.current, seq);
+        if (!taken.save) return;
+        setSaveFlow(taken.flow);
+        setError("");
+        setResult(resultOf(taken.save, {}));
+        setScreen("unconfirmed");
+        refreshList();
+      },
+      msUntil(WATCHDOG_MS, Date.now() - startedAt),
+    );
+    return () => clearTimeout(timer);
+  }, [save?.seq]);
 
   async function handleSaveCode(candidate: string) {
     if (saving) return;
@@ -1197,32 +1231,62 @@ export default function App() {
     return appreciationMessages[messageIndex % appreciationMessages.length];
   }
 
-  function showRefusal(reply: Refusal) {
-    if (reply.refusal === "ACCESS") {
+  // A refusal of the save: the status screen when the volunteer's state differs from the
+  // screen's, else back to the screen the save came from with the server's reason.
+  function showRefusal(reply: Refusal, save: SaveRecord) {
+    const outcome = refusalOutcome(reply.refusal);
+    if (outcome === "lock") {
       lockKiosk(reply.message);
       return;
     }
-    if (reply.refusal === "PHONE_WRONG" || reply.refusal === "PHONE_NEEDED") {
+    if (outcome === "status") {
+      setResult(resultOf(save, { status: reply.refusal as StatusCode }));
+      setScreen("status");
+      return;
+    }
+    setScreen(save.from);
+    if (outcome === "phone-entry") {
       setPhoneDigits("");
       setPhoneStep("entry");
-    } else if (reply.refusal === "PHONE_MISSING") {
+    } else if (outcome === "phone-missing") {
       setPhoneDigits("");
       setPhoneStep("missing");
     }
     setError(reply.message);
   }
 
-  // In a same-name group the server picks the member by the digits, so the volunteer it
-  // acted on can be another entry than the one tapped. Screens after a success use that one.
-  function selectActedOn(id: string) {
-    if (volunteers.some((v) => v.id === id)) setSelectedId(id);
-  }
-
   // A same-name volunteer's call always carries exactly four digits.
   const digitsMissing = () => Boolean(selected?.needsPhoneCheck) && phoneDigits.length !== 4;
 
+  /** Shows the save screen for a check-in or check-out of the selected volunteer. */
+  function beginSave(kind: SaveKind, volunteer: Volunteer, from: SaveFrom) {
+    closeTabletKeyboard();
+    const started = startSave(saveFlow.current, {
+      kind,
+      volunteerId: volunteer.id,
+      firstName: volunteer.firstName,
+      from,
+      startedAt: Date.now(),
+    });
+    setSaveFlow(started.flow);
+    setScreen("saving");
+    return started.record.seq;
+  }
+
+  /**
+   * The save a reply belongs to, when it is still the pending one; the record clears. null
+   * for a late reply. The caller refreshes the list after every reply, current or late, and
+   * does nothing else for a late one. The refresh goes after the volunteer is marked, or the
+   * mark would drop it as out of date.
+   */
+  function endSave(seq: number) {
+    const taken = takeReply(saveFlow.current, seq);
+    if (taken.save) setSaveFlow(taken.flow);
+    return taken.save;
+  }
+
   async function handleConfirm() {
-    if (!selected || saving || !code) return;
+    if (!selected || saveFlow.current.pending || !code) return;
     if (digitsMissing()) {
       setPhoneStep("entry");
       return;
@@ -1233,34 +1297,40 @@ export default function App() {
       setError("Your arrival time cannot be in the future. Please choose an earlier time.");
       return;
     }
-    setSaving(true);
+    const seq = beginSave("in", selected, "confirm");
+    let reply: Awaited<ReturnType<typeof api.checkIn>> | null = null;
     try {
-      const reply = await api.checkIn(
+      reply = await api.checkIn(
         code,
         selected.id,
         timestamp,
         selected.needsPhoneCheck ? phoneDigits : null,
       );
-      if (isRefusal(reply)) {
-        showRefusal(reply);
-        return;
+    } catch {}
+    const ended = endSave(seq);
+    try {
+      if (!ended) return;
+      if (!reply) {
+        setScreen(ended.from);
+        setError(
+          "We couldn't save your check-in. Please try again or ask a volunteer coordinator for help.",
+        );
+      } else if (isRefusal(reply)) {
+        showRefusal(reply, ended);
+      } else {
+        // In a same-name group the server picks the member by the digits, so the entry it
+        // acted on can be another one than the entry tapped; that is the one marked.
+        markVolunteer(reply.id, reply.arrivedAt);
+        setResult(resultOf(ended, { time: reply.arrivedAt, message: nextMessage() }));
+        setScreen(reply.missedSignOut ? "notice" : "success-in");
       }
-      selectActedOn(reply.id);
-      markVolunteer(reply.id, reply.arrivedAt);
-      setResult({ time: reply.arrivedAt, message: nextMessage() });
-      setScreen(reply.missedSignOut ? "notice" : "success-in");
-    } catch {
-      setError(
-        "We couldn't save your check-in. Please try again or ask a volunteer coordinator for help.",
-      );
     } finally {
-      setSaving(false);
       refreshList();
     }
   }
 
   async function handleCheckout() {
-    if (!selected || saving || !code) return;
+    if (!selected || saveFlow.current.pending || !code) return;
     if (digitsMissing()) {
       setPhoneStep("entry");
       return;
@@ -1280,33 +1350,39 @@ export default function App() {
         return;
       }
     }
-    setSaving(true);
+    const seq = beginSave("out", selected, "checkout");
+    let reply: Awaited<ReturnType<typeof api.checkOut>> | null = null;
     try {
-      const reply = await api.checkOut(
+      reply = await api.checkOut(
         code,
         selected.id,
         selected.needsPhoneCheck ? phoneDigits : null,
         timestamp,
       );
-      if (isRefusal(reply)) {
-        showRefusal(reply);
-        return;
+    } catch {}
+    const ended = endSave(seq);
+    try {
+      if (!ended) return;
+      if (!reply) {
+        setScreen(ended.from);
+        setError(
+          "We couldn't save your check-out. Please try again or ask a volunteer coordinator for help.",
+        );
+      } else if (isRefusal(reply)) {
+        showRefusal(reply, ended);
+      } else {
+        markVolunteer(reply.id, null);
+        setResult(
+          resultOf(ended, {
+            time: reply.signedOutAt,
+            duration: reply.minutes,
+            milestone: reply.milestone,
+            message: nextMessage(),
+          }),
+        );
+        setScreen("success-out");
       }
-      selectActedOn(reply.id);
-      markVolunteer(reply.id, null);
-      setResult({
-        time: reply.signedOutAt,
-        duration: reply.minutes,
-        milestone: reply.milestone,
-        message: nextMessage(),
-      });
-      setScreen("success-out");
-    } catch {
-      setError(
-        "We couldn't save your check-out. Please try again or ask a volunteer coordinator for help.",
-      );
     } finally {
-      setSaving(false);
       refreshList();
     }
   }
@@ -1324,7 +1400,7 @@ export default function App() {
   };
 
   return (
-    <div className={`app-shell screen-${code ? screen : "welcome"}`}>
+    <div className={`app-shell screen-${code ? screen : "welcome"}${hasQuery ? " has-query" : ""}`}>
       {!code && (
         <>
           <Header />
@@ -1334,7 +1410,12 @@ export default function App() {
       {code && screen === "welcome" && (
         <>
           <Header />
-          <Welcome volunteers={volunteers} listState={listState} onSelect={select} />
+          <Welcome
+            volunteers={volunteers}
+            listState={listState}
+            onSelect={select}
+            onHasQuery={setHasQuery}
+          />
           <CheckedInSidebar volunteers={volunteers} onSelect={select} />
         </>
       )}
@@ -1350,7 +1431,7 @@ export default function App() {
             setArrivalPicker(true);
           }}
           {...phoneProps}
-          saving={saving}
+          saving={save !== null}
           error={error}
           onTimeChange={setArrivalTime}
           onConfirm={handleConfirm}
@@ -1374,26 +1455,32 @@ export default function App() {
               : undefined
           }
           {...phoneProps}
-          saving={saving}
+          saving={save !== null}
           error={error}
           onTimeChange={setCheckOutTime}
           onConfirm={handleCheckout}
           onBack={goHome}
         />
       )}
-      {code && screen === "notice" && selected && (
-        <MissedCheckOutNotice volunteer={selected} onDone={() => setScreen("success-in")} />
+      {code && screen === "saving" && save && <SavingScreen key={save.seq} save={save} />}
+      {code && screen === "notice" && result && (
+        <MissedCheckOutNotice firstName={result.firstName} onDone={() => setScreen("success-in")} />
       )}
-      {code && screen === "success-in" && selected && result && (
-        <Success type="in" volunteer={selected} result={result} onDone={goHome} />
+      {code && screen === "success-in" && result && (
+        <Success type="in" result={result} onDone={goHome} />
       )}
-      {code && screen === "success-out" && selected && result && (
-        <Success type="out" volunteer={selected} result={result} onDone={goHome} />
+      {code && screen === "success-out" && result && (
+        <Success type="out" result={result} onDone={goHome} />
+      )}
+      {code && screen === "status" && result && <StatusScreen result={result} onDone={goHome} />}
+      {code && screen === "unconfirmed" && result && (
+        <Unconfirmed firstName={result.firstName} onDone={goHome} />
       )}
       {usingLocalApi && (
         <DevTools
           onReset={() => {
             localApi.reset();
+            setSaveFlow(abandonSave(saveFlow.current));
             goHome();
             refreshList();
           }}

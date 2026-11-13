@@ -556,6 +556,30 @@ function readLog_(cols) {
 }
 
 /**
+ * The Log's header map and one volunteer's rows from one range read, so both come from
+ * one snapshot: {cols, entries, width}. cols is logColumns (Logic.js) of row 1, entries
+ * the rows below it whose User Token is token (logRowHasToken), each as a log entry with
+ * its row number, and width the number of columns read. Only those rows are parsed; a
+ * blank token gives no entries. The kiosk's check-in and check-out read the Log with
+ * this; the admin menu, the jobs and the reports use readLogColumns_ and readLog_.
+ * Throws when a column the kiosk needs is missing or repeated, so an empty tab throws the
+ * missing-column error.
+ */
+function readLogTable_(token) {
+  const sheet = sheet_(LOG_TAB);
+  const last = Math.max(sheet.getLastRow(), 1);
+  const width = Math.max(sheet.getLastColumn(), 1);
+  const values = sheet.getRange(1, 1, last, width).getValues();
+  const cols = logColumns(values[0].map(cellText_));
+  const read = logRead_();
+  const entries = [];
+  values.slice(1).forEach((cells, i) => {
+    if (logRowHasToken(cells, cols, token, read)) entries.push(logEntry(cells, i + 2, cols, read));
+  });
+  return { cols, entries, width };
+}
+
+/**
  * One Log row as a log entry, read across the Log's full width in one range read, or null
  * when row is past the Log's last row. read is logRead_().
  */
@@ -563,6 +587,31 @@ function readLogRow_(row, cols, read) {
   const sheet = sheet_(LOG_TAB);
   if (row < 2 || row > sheet.getLastRow()) return null;
   const cells = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+  return logEntry(cells, row, cols, read);
+}
+
+/**
+ * One Log row as a log entry, read again just before a write by its row number: one range
+ * read of width columns (readLogTable_'s width), so it costs one round trip. Null when
+ * the read throws, as it does for a row past the tab's last grid row; the error is logged
+ * with shiftId, the Shift ID the caller expects there. A row past the last used row
+ * inside the grid reads as blanks. cols and read are as for logEntry (Logic.js).
+ */
+function readLogRowAt_(row, width, cols, read, shiftId) {
+  let cells;
+  try {
+    cells = sheet_(LOG_TAB).getRange(row, 1, 1, width).getValues()[0];
+  } catch (e) {
+    console.error(
+      "Log row " +
+        row +
+        " not read again for Shift ID " +
+        cellString(shiftId) +
+        ": " +
+        (e && e.message ? e.message : String(e)),
+    );
+    return null;
+  }
   return logEntry(cells, row, cols, read);
 }
 
@@ -669,28 +718,48 @@ function appendLogRows_(cellMaps, cols) {
 // Flags
 
 /**
- * Appends Flags rows (flagRows, Logic.js) below the tab's last row. Reads the header once
- * and places each value by flagColumns, so columns may be in any order. Grows the tab
- * first when the rows would pass its last grid row. Then one setNumberFormats and one
- * setValues across the full width, and the checkbox on the new Reviewed cells, so the
- * tickbox doesn't depend on what inserting rows copied. Throws when the tab or a header it
- * needs is missing.
+ * Appends Flags rows (flagRows, Logic.js) below the tab's last row: planFlagRows_ for the
+ * reads, then writeFlagRows_. Jobs.js and Import.js call this. Throws when the tab or a
+ * header it needs is missing.
  */
 function appendFlagRows_(rows) {
   if (!rows.length) return;
+  writeFlagRows_(planFlagRows_(rows.length), rows);
+}
+
+/**
+ * Every Flags read an append of count rows needs, so the write that follows reads
+ * nothing: the tab, its header (placed by flagColumns, so columns may be in any order),
+ * its last row and last grid row. Grows the tab first when the rows would pass its last
+ * grid row, then reads the new range's number formats. Returns {sheet, cols, width,
+ * first, formats}: first is the first new row, formats one line per row. A check-in or
+ * check-out plans before its Log write, so it reads nothing after that write. Throws when
+ * the tab or a header it needs is missing.
+ */
+function planFlagRows_(count) {
   const sheet = sheet_(FLAGS_TAB);
   const header = logHeaderRow_(sheet);
   const cols = flagColumns(header);
   const width = header.length;
   const first = sheet.getLastRow() + 1;
-  const last = first + rows.length - 1;
+  const last = first + count - 1;
   if (last > sheet.getMaxRows()) {
     sheet.insertRowsAfter(sheet.getMaxRows(), Math.max(50, last - sheet.getMaxRows()));
   }
+  const formats = sheet.getRange(first, 1, count, width).getNumberFormats();
+  return { sheet, cols, width, first, formats };
+}
+
+/**
+ * Writes Flags rows where plan (planFlagRows_, for as many rows) says, with no reads: one
+ * setNumberFormats and one setValues across the full width, and the checkbox on the new
+ * Reviewed cells, so the tickbox doesn't depend on what inserting rows copied.
+ */
+function writeFlagRows_(plan, rows) {
+  const { sheet, cols, width, first } = plan;
   const kinds = flagColumnKinds();
-  const range = sheet.getRange(first, 1, rows.length, width);
   // Staff's columns keep the format they have; the script's get theirs.
-  const formats = range.getNumberFormats();
+  const formats = plan.formats.map((line) => line.slice());
   Object.keys(cols).forEach((h) => {
     const format = flagFormat_(kinds[h]);
     if (cols[h] >= 0 && format) formats.forEach((line) => (line[cols[h]] = format));
@@ -701,6 +770,7 @@ function appendFlagRows_(rows) {
     if (typeof line[raisedAt] === "number") line[raisedAt] = new Date(line[raisedAt]);
     return line;
   });
+  const range = sheet.getRange(first, 1, rows.length, width);
   range.setNumberFormats(formats);
   range.setValues(values);
   sheet
@@ -709,19 +779,44 @@ function appendFlagRows_(rows) {
 }
 
 /**
- * Copies a call's flags to the Flags tab, after the call's Log write and under the same
- * lock. base is as for flagRows (Logic.js) and reasons the texts. With no reasons it does
- * nothing and returns true. Otherwise it flushes first, outside the try, so a Log write
- * that fails still fails the call. Then, in one try: build the rows, append them, and
- * flush, so a failed Flags write fails here and not at the lock's closing flush. Returns
- * true, or false after logging the Shift ID and the error. The Log row is the record: a
- * failed copy never undoes or retries it.
+ * The Flags plan for a call's flag reasons, made before its Log write: planFlagRows_ for
+ * the rows flagRows (Logic.js) will make, one per non-blank reason. null when there are
+ * none. A plan that fails gives {error}, kept for raiseFlags_ to report after the Log
+ * write, so a broken Flags tab never stops a check-in or check-out.
  */
-function raiseFlags_(base, reasons) {
+function planFlags_(reasons) {
+  const count = (reasons || []).filter((reason) => cellString(reason) !== "").length;
+  if (!count) return null;
+  try {
+    return planFlagRows_(count);
+  } catch (e) {
+    return { error: e };
+  }
+}
+
+/**
+ * Copies a call's flags to the Flags tab, after the call's Log write and under the same
+ * lock. base is as for flagRows (Logic.js), reasons the texts and plan the call's
+ * planFlags_, made before the Log write; with no plan it plans here, as the jobs do.
+ * With no reasons it does nothing and returns true. Otherwise it flushes first, outside
+ * the try, so a Log write that fails still fails the call. Then, in one try: a failed plan
+ * is rethrown; the rows are built, checked against the plan's count, written and flushed,
+ * so a failed Flags write fails here and not at the lock's closing flush. Returns true, or
+ * false after logging the Shift ID and the error. The Log row is the record: a failed
+ * copy never undoes or retries it.
+ */
+function raiseFlags_(base, reasons, plan) {
   if (!reasons || !reasons.length) return true;
   SpreadsheetApp.flush();
   try {
-    appendFlagRows_(flagRows(base, reasons));
+    if (plan && plan.error) throw plan.error;
+    const rows = flagRows(base, reasons);
+    if (plan && plan.formats.length !== rows.length) {
+      throw new Error(
+        "Flags rows planned for " + plan.formats.length + " rows, built " + rows.length + ".",
+      );
+    }
+    if (rows.length) writeFlagRows_(plan || planFlagRows_(rows.length), rows);
     SpreadsheetApp.flush();
     return true;
   } catch (e) {
