@@ -6,11 +6,11 @@
 // prefix. The test plays every path alone and every interleaving of two of them, with a
 // kill after any one step, and checks (a read inside another path's hold is played just
 // after that hold: it writes nothing and compares the same against every table time):
-//   I1 after every step: B1 says the tables are whole ("As of <time>") only when Q1 is
-//      built and Hours data and row 3 hold exactly the table read at that time;
-//   I2 at the end of every hold that finishes: B1 is hoursLine of the cells and N1 is the
-//      last note written under the lock;
-//   I3 at every table write: a whole table is never replaced by one read earlier.
+//   after every step, that B1 says the tables are whole ("As of <time>") only when Q1 is
+//     built and Hours data and row 3 hold exactly the table read at that time;
+//   at the end of every hold that finishes, that B1 is hoursLine of the cells and N1 is
+//     the last note written under the lock;
+//   at every table write, that a whole table is never replaced by one read earlier.
 // The Reports.js write path runs the same step lists; its own stand-in tests check that.
 
 import { test } from "node:test";
@@ -105,7 +105,7 @@ function apply(env, run, step) {
   else if (step.op === "values") {
     if (run.displaced !== undefined && run.t < run.displaced) {
       throw new Error(
-        "I3: a whole table read at " + run.displaced + " was replaced by one read at " + run.t,
+        "a whole table read at " + run.displaced + " was replaced by one read at " + run.t,
       );
     }
     sheet.data.digest = run.digest;
@@ -130,7 +130,7 @@ function* play(env, run, outcome, failAt) {
   run.held = true;
 }
 
-/** A refresh by the menu, nightly or on open (path i). opts: fail, budget, noteOnly. */
+/** A refresh by the menu, nightly or on open (a full refresh). opts: fail, budget, noteOnly. */
 function refresh(cause, opts = {}) {
   return function* (env, run) {
     run.cause = cause;
@@ -153,7 +153,7 @@ function refresh(cause, opts = {}) {
   };
 }
 
-/** setupReports, steps 1 to 8. opts.fail: "step5" or "values". */
+/** setupReports from its checks to its read-back. opts.fail: "layout" or "values". */
 function setup(opts = {}) {
   return function* (env, run) {
     run.cause = "setupReports";
@@ -170,7 +170,7 @@ function setup(opts = {}) {
       yield "clear Hours";
       env.render();
       yield "render";
-      if (opts.fail === "step5") throw INJECTED;
+      if (opts.fail === "layout") throw INJECTED;
       yield "layout";
       yield* play(env, run, { kind: "setup-built" });
       run.t = env.tick();
@@ -187,10 +187,13 @@ function setup(opts = {}) {
         s.tableTime === run.t
       ) {
         // Destroy only after proof: the table read back whole at this run's own read.
-        assert.ok(d.digest === run.digest && d.trimmed && d.row3 === run.digest, "S7");
+        assert.ok(
+          d.digest === run.digest && d.trimmed && d.row3 === run.digest,
+          "Monthly Hours is deleted only after the table reads back whole",
+        );
         env.sheet.monthly = "deleted";
       } else throw INJECTED;
-      yield "step 7";
+      yield "read back";
     } catch (e) {
       if (e !== INJECTED) throw e;
       yield* play(env, run, { kind: "failed", message: "setup failed" });
@@ -198,8 +201,8 @@ function setup(opts = {}) {
   };
 }
 
-/** I1, on the sheet as it stands. */
-function checkI1(env, where) {
+/** B1 calls the tables whole only when they are, on the sheet as it stands. */
+function checkWholeClaim(env, where) {
   const m = /^As of T(\d+)[.,]/.exec(env.sheet.B1);
   if (!m) return;
   const x = Number(m[1]);
@@ -208,13 +211,26 @@ function checkI1(env, where) {
   const want = env.dig(x);
   assert.ok(
     s.build && s.build.kind === "built" && d.digest === want && d.trimmed && d.row3 === want,
-    "I1 at " + where + ": " + env.sheet.B1 + " " + JSON.stringify([env.sheet.cells, d]),
+    "B1 calls the tables whole when they are not, at " +
+      where +
+      ": " +
+      env.sheet.B1 +
+      " " +
+      JSON.stringify([env.sheet.cells, d]),
   );
 }
 
-function checkI2(env, where) {
-  assert.equal(env.sheet.B1, L.hoursLine(env.state(), fmt), "I2 B1 at " + where);
-  assert.equal(env.sheet.cells.N1, env.lastNote, "I2 N1 at " + where);
+function checkHoldEnd(env, where) {
+  assert.equal(
+    env.sheet.B1,
+    L.hoursLine(env.state(), fmt),
+    "B1 is not current at the end of a hold, at " + where,
+  );
+  assert.equal(
+    env.sheet.cells.N1,
+    env.lastNote,
+    "N1 is not the last note at the end of a hold, at " + where,
+  );
 }
 
 /**
@@ -256,11 +272,11 @@ function playOnce(startName, dig, paths, choose, kills) {
     s.started = true;
     const r = gens[i].next();
     const where = startName + " " + trace.join(",");
-    checkI1(env, where);
+    checkWholeClaim(env, where);
     if (r.done) {
       s.done = true;
       if (holder === i) {
-        checkI2(env, where);
+        checkHoldEnd(env, where);
         holder = -1;
       }
     } else s.last = r.value;
@@ -298,7 +314,7 @@ function explore(startName, dig, paths, kills) {
 
 const PATHS = {
   setup: setup(),
-  "setup fails in step 5": setup({ fail: "step5" }),
+  "setup fails laying out Hours": setup({ fail: "layout" }),
   "setup fails at setValues": setup({ fail: "values" }),
   menu: refresh("menu"),
   "menu read fails": refresh("menu", { fail: "read" }),
@@ -322,7 +338,7 @@ test("every path alone, from every starting sheet, with a kill after any step", 
         runs += explore(start, dig, [path], 1);
         // The path run whole leaves B1 rendered from the cells.
         const { env } = playOnce(start, dig, [path], () => 0, 0);
-        checkI2(env, digName + " " + start + " " + name);
+        checkHoldEnd(env, digName + " " + start + " " + name);
       }
     }
   }
@@ -372,7 +388,7 @@ test("named: an open note written during a menu refresh's read; the menu's table
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
   );
   assert.deepEqual(runs[1].decisions, ["note-only"]);
-  assert.deepEqual(runs[0].decisions, ["d"]);
+  assert.deepEqual(runs[0].decisions, ["write"]);
   assert.equal(env.sheet.B1, "As of T1001, refreshed from the menu.");
   // An open after that writes its note last: the tables are still as of the menu's read.
   const after = playOnce(
@@ -396,7 +412,7 @@ test("named: an older refresh whose read fails after a newer table landed writes
     [refresh("menu", { fail: "read" }), refresh("nightly")],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   );
-  assert.deepEqual(runs[1].decisions, ["d"]);
+  assert.deepEqual(runs[1].decisions, ["write"]);
   assert.deepEqual(runs[0].decisions, ["quiet"]);
   assert.equal(env.sheet.B1, "As of T1002, refreshed nightly.");
 });
@@ -414,7 +430,7 @@ test("named: an open note made after a refresh landed keeps the refresh's time a
   );
 });
 
-test("named: setupReports killed in step 5, then a menu refresh: B1 still says Hours isn't fully set up", () => {
+test("named: setupReports killed while laying out Hours, then a menu refresh: B1 still says Hours isn't fully set up", () => {
   // Kill setupReports right after its "clear Hours" step.
   let steps = 0;
   const killAfter = 1 + 1 + 4 + 1 + 1 + 1; // check, lock, setup-start's four steps, header, clear
@@ -438,9 +454,9 @@ test("named: setupReports killed in step 5, then a menu refresh: B1 still says H
   const env = first.env;
   const run = { decisions: [], held: false, markWritten: false };
   const gen = refresh("menu")(env, run);
-  for (let r = gen.next(); !r.done; r = gen.next()) checkI1(env, "after setup kill");
-  checkI2(env, "after setup kill");
-  assert.deepEqual(run.decisions, ["d"]);
+  for (let r = gen.next(); !r.done; r = gen.next()) checkWholeClaim(env, "after setup kill");
+  checkHoldEnd(env, "after setup kill");
+  assert.deepEqual(run.decisions, ["write"]);
   assert.equal(env.sheet.cells.M1, "complete");
   assert.match(
     env.sheet.B1,
@@ -448,8 +464,8 @@ test("named: setupReports killed in step 5, then a menu refresh: B1 still says H
   );
 });
 
-test("named: setupReports fails in step 5 or at its setValues and keeps Monthly Hours", () => {
-  const five = playOnce("whole", digests.taps, [setup({ fail: "step5" })], () => 0, 0);
+test("named: setupReports fails laying out Hours or at its setValues and keeps Monthly Hours", () => {
+  const five = playOnce("whole", digests.taps, [setup({ fail: "layout" })], () => 0, 0);
   assert.equal(five.env.sheet.monthly, "kept");
   assert.equal(five.env.sheet.cells.Q1, "building 1001");
   assert.equal(five.env.sheet.cells.M1, "stopped 1001");
@@ -468,7 +484,7 @@ test("named: setupReports fails in step 5 or at its setValues and keeps Monthly 
 
 test("named: an open with no new taps moves L1 forward past a whole table with no table change", () => {
   const { env, runs } = playOnce("whole", digests.still, [refresh("open")], () => 0, 0);
-  assert.deepEqual(runs[0].decisions, ["c"]);
+  assert.deepEqual(runs[0].decisions, ["unchanged"]);
   assert.equal(env.sheet.B1, "As of T1001, refreshed on open.");
   assert.equal(env.sheet.cells.M1, "complete");
 });

@@ -634,7 +634,7 @@ const next = (o, run, outcome) =>
 test("settle on entry: writing t becomes stopped t, an unknown M1 stopped, first; a held hold isn't settled again", () => {
   const r = next({ M: "writing 55", L: T0 });
   assert.deepEqual(r.steps[0], { op: "set", cell: "M1", value: "stopped 55" });
-  assert.equal(r.decision, "d");
+  assert.equal(r.decision, "write");
   const u = next({ M: "garbage", L: T0 });
   assert.deepEqual(u.steps[0], { op: "set", cell: "M1", value: "stopped" });
   for (const outcome of [
@@ -665,7 +665,7 @@ test("settle on entry: writing t becomes stopped t, an unknown M1 stopped, first
 test("ordered by read time: a whole table at L1 >= T means no state cell, for a success and a failure alike", () => {
   for (const L1 of [T1, T1 + 1]) {
     const a = next({ M: "complete", L: L1 });
-    assert.equal(a.decision, "a");
+    assert.equal(a.decision, "newer-in");
     assert.deepEqual(sets(a), []);
     assert.deepEqual(ops(a), ["render", "flush"]);
     const f = next({ M: "complete", L: L1 }, {}, { kind: "failed", message: "boom" });
@@ -674,10 +674,10 @@ test("ordered by read time: a whole table at L1 >= T means no state cell, for a 
     assert.deepEqual(ops(f), ["render", "flush"]);
   }
   // A whole table read earlier is replaced.
-  assert.equal(next({ M: "complete", L: T1 - 1 }).decision, "d");
+  assert.equal(next({ M: "complete", L: T1 - 1 }).decision, "write");
   // M1 not complete: any table replaces it, older or newer.
   for (const M of ["stopped " + (T1 + 9), "stopped", "writing " + (T1 + 9), ""]) {
-    assert.equal(next({ M, L: T1 + 5 }).decision, "d", M);
+    assert.equal(next({ M, L: T1 + 5 }).decision, "write", M);
     assert.equal(
       next({ M, L: T1 + 5 }, {}, { kind: "failed", message: "x" }).decision,
       "failed-read",
@@ -685,17 +685,17 @@ test("ordered by read time: a whole table at L1 >= T means no state cell, for a 
     );
   }
   // L1 unknown: not whole.
-  assert.equal(next({ M: "complete", L: "" }).decision, "d");
+  assert.equal(next({ M: "complete", L: "" }).decision, "write");
   // setupReports is never stopped by a newer table.
   assert.equal(
     next({ M: "complete", L: T1 + 5 }, { cause: "setupReports", held: true }).decision,
-    "d",
+    "write",
   );
 });
 
 test("whole only after flush: writing and its flush come before the first table change, complete last after the next flush", () => {
   const r = next({ M: "complete", L: T0, N: "refreshed|nightly|1|2|" });
-  assert.equal(r.decision, "d");
+  assert.equal(r.decision, "write");
   assert.deepEqual(ops(r), [
     "set M1",
     "render",
@@ -809,33 +809,36 @@ test("one note per run, replacing N1 with no comparison", () => {
   }
 });
 
-test("on open: 4 b when the budget says so, 4 c when the digest is unchanged, and never c from the menu or nightly", () => {
+test("on open: a note only when over budget, L1 moved when the digest is unchanged, and never that from the menu or nightly", () => {
   const b = next({ M: "complete", L: T0 }, { cause: "open", budget: "too-big" });
-  assert.equal(b.decision, "b");
+  assert.equal(b.decision, "skipped");
   assert.deepEqual(sets(b), ["N1=open-skipped|open|" + T1 + "|" + W + "|too-big"]);
   assert.equal(
     next({ M: "complete", L: T0 }, { cause: "open", budget: "no-timing" }).decision,
-    "b",
+    "skipped",
   );
-  // 4 a comes before 4 b.
-  assert.equal(next({ M: "complete", L: T1 }, { cause: "open", budget: "too-big" }).decision, "a");
+  // A newer table in comes before the budget.
+  assert.equal(
+    next({ M: "complete", L: T1 }, { cause: "open", budget: "too-big" }).decision,
+    "newer-in",
+  );
   const c = next({ M: "complete", L: T0, P: DIGEST }, { cause: "open", budget: "ok" });
-  assert.equal(c.decision, "c");
+  assert.equal(c.decision, "unchanged");
   assert.deepEqual(sets(c), ["L1=" + T1, "N1=refreshed|open|" + T1 + "|" + W + "|"]);
   assert.deepEqual(ops(c), ["set L1", "set N1", "render", "flush"]);
   // Digest equal but the table isn't whole: a full write.
   assert.equal(
     next({ M: "stopped 3", L: T0, P: DIGEST }, { cause: "open", budget: "ok" }).decision,
-    "d",
+    "write",
   );
   // A changed digest: a full write.
   assert.equal(
     next({ M: "complete", L: T0, P: "sha256:" + "b".repeat(64) }, { cause: "open", budget: "ok" })
       .decision,
-    "d",
+    "write",
   );
   for (const cause of ["menu", "nightly"]) {
-    assert.equal(next({ M: "complete", L: T0, P: DIGEST }, { cause }).decision, "d", cause);
+    assert.equal(next({ M: "complete", L: T0, P: DIGEST }, { cause }).decision, "write", cause);
   }
   const n = next({ M: "writing 4", L: T1 + 50 }, { cause: "open" }, { kind: "note-only" });
   assert.deepEqual(sets(n), ["M1=stopped 4", "N1=open-skipped|open|" + W + "|" + W + "|note-only"]);
@@ -918,7 +921,7 @@ test("the open budget: too big over 20 s with O1's write time scaled by rows, no
 // The Hours tab's plan
 
 test("one GridRange for every pivot and every slicer: Hours data from row 1, no end row, A to J", () => {
-  const plan = plain(L.hoursTabPlan(11, 22, "i"));
+  const plan = plain(L.hoursTabPlan(11, 22, "refresh"));
   const source = { sheetId: 22, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 10 };
   assert.deepEqual(plain(L.hoursSourceRange(22)), source);
   assert.equal(plan.pivots.length, 3);
@@ -950,7 +953,7 @@ test("one GridRange for every pivot and every slicer: Hours data from row 1, no 
 });
 
 test("the three pivots: where they sit, their rows and values", () => {
-  const plan = plain(L.hoursTabPlan(11, 22, "i"));
+  const plan = plain(L.hoursTabPlan(11, 22, "refresh"));
   const headers = plain(L.hoursDataHeaders());
   const at = plan.pivots.map((p) => [
     p.updateCells.start.sheetId,
@@ -1007,7 +1010,7 @@ test("the three pivots: where they sit, their rows and values", () => {
 });
 
 test("the Grand Total rules come before the stripe rules, and every body row gets a fill", () => {
-  const plan = plain(L.hoursTabPlan(11, 22, "i"));
+  const plan = plain(L.hoursTabPlan(11, 22, "refresh"));
   const rules = plan.rules.map((r) => r.addConditionalFormatRule);
   assert.deepEqual(
     rules.map((r) => r.index),
@@ -1039,7 +1042,7 @@ test("the Grand Total rules come before the stripe rules, and every body row get
 });
 
 test("widths are fixed pixels for every column A to P, and rows 2 and 3 have their heights", () => {
-  const plan = plain(L.hoursTabPlan(11, 22, "i"));
+  const plan = plain(L.hoursTabPlan(11, 22, "refresh"));
   const px = {};
   plan.widths.forEach((w) => {
     const r = w.updateDimensionProperties.range;
@@ -1084,21 +1087,21 @@ test("widths are fixed pixels for every column A to P, and rows 2 and 3 have the
 });
 
 test("row 2 names the open refresh only when the open path refreshes", () => {
-  for (const path of ["i", "iii"]) {
+  for (const path of ["refresh"]) {
     assert.match(
       L.hoursUsageText(path),
       /Newer taps show at the next refresh: when the sheet is opened, from Kiosk admin > Refresh Hours, and each night\./,
     );
   }
   assert.match(
-    L.hoursUsageText("ii"),
+    L.hoursUsageText("note"),
     /Newer taps show at the next refresh: from Kiosk admin > Refresh Hours, and each night\./,
   );
   assert.match(
-    L.hoursUsageText("iv"),
+    L.hoursUsageText("none"),
     /^The tables show the Log as of the time in B1, the last refresh from the menu, at night or by setupReports\./,
   );
-  for (const path of ["i", "ii", "iii", "iv"]) {
+  for (const path of ["refresh", "note", "none"]) {
     const t = L.hoursUsageText(path);
     assert.match(
       t,

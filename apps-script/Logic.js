@@ -3397,11 +3397,17 @@ function hoursBudget(sinceOpenMs, state, rowsNow) {
  * settled, so it isn't settled again), markWritten (true once this execution has written
  * its mark in this hold), digest (P1's text for the table read), rows (how many rows it
  * holds), budget (hoursBudget's answer, open only)}. outcome is one of:
- *   {kind: "read"}            the read worked: 4 a, b, c or d;
- *   {kind: "failed", message} a throw: step 5's note, or no state cell;
+ *   {kind: "read"}            the read worked: "newer-in" (a newer whole
+ *                             table is in: no state cell), "skipped" (an open over its
+ *                             budget: a note only), "unchanged" (an open whose table is
+ *                             unchanged: L1 and a note only) or "write" (the full write);
+ *   {kind: "failed", message} a throw: "failed-write" (this run's mark
+ *                             is in M1), "failed-read", or "quiet" (no state cell);
  *   {kind: "note-only"}       an open that only notes it didn't refresh;
- *   {kind: "setup-start"}     setupReports' step 4: M1 "writing S", Q1 "building S";
- *   {kind: "setup-built"}     setupReports' step 5 end: Q1 "built S".
+ *   {kind: "setup-start"}     setupReports before it changes either tab:
+ *                             M1 "writing S", Q1 "building S";
+ *   {kind: "setup-built"}     setupReports once the Hours tab is laid
+ *                             out: Q1 "built S".
  *
  * Each step is {op: "set", cell, value}, {op: "set", cell: "O1", timing: true} (the
  * caller writes hoursTimingCell of its measured times), {op: "render"} (B1 from the cells
@@ -3415,7 +3421,7 @@ function hoursBudget(sinceOpenMs, state, rowsNow) {
  *   unknown M1 to "stopped". Only the lock holder writes a table and it marks it complete
  *   in the same hold, so a "writing" a new holder sees belongs to a run that is gone.
  * - Ordered by read time: when the table in place is whole and L1 is t or later, the run
- *   writes no state cell (decision "a", or "quiet" for a failure). setupReports is never
+ *   writes no state cell ("newer-in", or "quiet" for a failure). setupReports is never
  *   stopped by this: its own "writing S" is in M1.
  * - Whole only after flush: M1 "writing <mark>", render, flush; the table changes, flush;
  *   L1, P1, O1, N1; M1 "complete" last; render; flush.
@@ -3474,15 +3480,15 @@ function hoursNextState(state, run, outcome) {
     note("failed-read", run.t, outcome.message);
     return end("failed-read");
   }
-  if (newerIn) return end("a");
+  if (newerIn) return end("newer-in");
   if (run.cause === "open" && run.budget && run.budget !== "ok") {
     note("open-skipped", run.t, run.budget);
-    return end("b");
+    return end("skipped");
   }
   if (run.cause === "open" && hoursWhole(s) && run.digest && run.digest === s.digest) {
     set("L1", String(run.t));
     note("refreshed", run.t, "");
-    return end("c");
+    return end("unchanged");
   }
   if (!ownMark) set("M1", "writing " + run.mark);
   render();
@@ -3496,17 +3502,17 @@ function hoursNextState(state, run, outcome) {
   steps.push({ op: "set", cell: "O1", timing: true });
   note("refreshed", run.t, "");
   set("M1", "complete");
-  return end("d");
+  return end("write");
 }
 
 /**
- * The Hours tab's row 2: how to use it. openPath is the on-open path built: "i" or "iii"
- * (open refreshes), "ii" (open only notes) or "iv" (open writes nothing).
+ * The Hours tab's row 2: how to use it. openPath is what opening the sheet does:
+ * "refresh" (it refreshes), "note" (it only notes it didn't) or "none" (it writes nothing).
  */
 function hoursUsageText(openPath) {
-  const refreshes = openPath === "i" || openPath === "iii";
+  const refreshes = openPath === "refresh";
   const first =
-    openPath === "iv"
+    openPath === "none"
       ? "The tables show the Log as of the time in B1, the last refresh from the menu, at night or by setupReports."
       : "The tables show the Log as of the time in B1. Newer taps show at the next refresh: " +
         (refreshes ? "when the sheet is opened, " : "") +
