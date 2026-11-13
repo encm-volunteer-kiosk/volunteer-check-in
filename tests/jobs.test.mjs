@@ -1612,7 +1612,7 @@ test("Check the Log now reads the Log once, flags under the lock and shows what 
   // A clean Log, and a busy lock.
   const clean = nightly({ log: checkLog().slice(0, 2) });
   clean.ctx.checkLogNow();
-  assert.deepEqual(clean.alerts, ["Checked 1 Log rows: no problems found."]);
+  assert.deepEqual(clean.alerts, ["Checked 1 Log row: no problems found."]);
   const busy = nightly({ log: checkLog(), lockFree: false });
   busy.ctx.checkLogNow();
   assert.deepEqual(busy.alerts, [
