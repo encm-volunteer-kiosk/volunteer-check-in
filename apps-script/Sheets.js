@@ -1275,8 +1275,10 @@ function findHowToTabs_(ss) {
  *   Otherwise a new tab is inserted first in the tab bar and marked. So a deleted How to
  *   comes back at the next run.
  * Then: one warning-only protection on the tab (protectOnce_), the tab cleared, column A
- * as plain text, howToRows (Logic.js) in one setValues with howToStyles' formats, column A
- * 820 px and wrapped, row 1 frozen and the tab colour.
+ * as plain text, howToRows (Logic.js) in one setValues with howToStyles' formats, then
+ * each row with a formula (the Kiosk contact line) set to the General format and given
+ * its formula, column A 820 px and wrapped, row 1 frozen and the tab colour. The clear at
+ * the start removes the last run's formula, so a second run gives the same tab.
  */
 function setupHowTo_(ss) {
   let sheet = findHowToTabs_(ss);
@@ -1315,8 +1317,26 @@ function setupHowTo_(ss) {
     .setFontColors(pick("colour"))
     .setBackgrounds(pick("background"))
     .setFontStyles(pick("style"));
+  rows.forEach((r, i) => {
+    if (!r.formula) return;
+    sheet.getRange(i + 1, 1).setNumberFormat("General").setFormula(r.formula);
+  });
   sheet.setColumnWidth(1, 820);
   sheet.getRange("A:A").setWrap(true);
   sheet.setFrozenRows(1);
   sheet.setTabColor(lookTabColours().howTo);
+}
+
+/**
+ * The Settings value "Kiosk contact" as readSettings_ reads it, or "" when the read throws
+ * (logged), so a missing Settings tab never stops a Kiosk admin window opening or an
+ * alert showing. Read from the tab on every call, never from a cache.
+ */
+function kioskContact_() {
+  try {
+    return readSettings_()[kioskContactSetting()] || "";
+  } catch (err) {
+    console.log("Kiosk contact not read: " + ((err && err.message) || String(err)));
+    return "";
+  }
 }

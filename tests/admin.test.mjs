@@ -262,13 +262,16 @@ function server(opts = {}) {
       opts.flags === null
         ? undefined
         : new FakeSheet(opts.flags || [FLAG_HEADER], opts.flagsMaxRows ?? 1000),
-    Settings: new FakeSheet(
-      opts.settings || [
-        ["Setting", "Value"],
-        ["Volunteer Profiles file ID", "file-1"],
-        ["Volunteer Profiles tab", "Volunteer Profiles"],
-      ],
-    ),
+    Settings:
+      opts.settings === null
+        ? undefined
+        : new FakeSheet(
+            opts.settings || [
+              ["Setting", "Value"],
+              ["Volunteer Profiles file ID", "file-1"],
+              ["Volunteer Profiles tab", "Volunteer Profiles"],
+            ],
+          ),
   };
   for (const [name, sheet] of Object.entries(sheets)) {
     if (!sheet) continue;
@@ -767,6 +770,79 @@ test("the Monthly report opener serves Report.html with a fresh key, and the key
   const reply = plain(s.ctx.adminReportMonths(template.key));
   assert.equal(reply.ok, true);
   assert.equal(reply.months[0].month, centralDate(Date.now()).slice(0, 7));
+});
+
+const CONTACT_OPENERS = [
+  "openAddShiftDialog",
+  "openFixSignOutDialog",
+  "openRemoveShiftDialog",
+  "openRestoreShiftDialog",
+  "openMonthlyReportDialog",
+];
+
+test("the admin and Monthly report openers put the Kiosk contact line into the window", () => {
+  const settings = [
+    ["Setting", "Value"],
+    ["Volunteer Profiles file ID", "file-1"],
+    ["Kiosk contact", " Pat Example\n pat@example.org \n"],
+  ];
+  for (const name of CONTACT_OPENERS) {
+    const s = server({ settings, log: [LOG_HEADER] });
+    s.ctx[name]();
+    assert.equal(
+      s.shown[0].output.template.contactNote,
+      "If this keeps happening, contact: Pat Example, pat@example.org",
+      name,
+    );
+    // A blank contact adds nothing.
+    const blank = server({ settings: [...settings.slice(0, 2), ["Kiosk contact", " \n "]] });
+    blank.ctx[name]();
+    assert.equal(blank.shown[0].output.template.contactNote, "", name);
+    // With no Settings tab the window still opens, with no contact line.
+    const none = server({ settings: null });
+    const logs = [];
+    none.ctx.console.log = (...a) => logs.push(a.join(" "));
+    assert.equal(none.ctx[name](), undefined, name);
+    assert.equal(none.shown.length, 1, name);
+    assert.equal(none.shown[0].output.template.contactNote, "", name);
+    assert.ok(none.shown[0].output.template.key, name);
+    assert.match(logs.join("\n"), /^Kiosk contact not read: The "Settings" tab is missing/, name);
+  }
+});
+
+test("each window shows the contact only after an error, never after a refusal, and prints it escaped", () => {
+  for (const file of ["AdminDialog", "Report", "ImportDialog"]) {
+    const html = read("apps-script/" + file + ".html");
+    // HtmlService's <?= ?> escapes the value; <?!= would not.
+    assert.match(html, /<body\b(?:[^<>]|<\?= \w+ \?>)*\sdata-contact="<\?= contactNote \?>"/, file);
+    assert.ok(!html.includes("<?!="), file);
+    // Every scriptlet is an escaping print of one name, comments included.
+    (html.match(/<\?[\s\S]*?\?>/g) || []).forEach((t) =>
+      assert.match(t, /^<\?= \w+ \?>$/, file + ": " + t),
+    );
+    assert.ok(html.includes('const CONTACT = document.body.dataset.contact || "";'), file);
+    assert.match(
+      html,
+      /function failed\(text\) \{\s+show\(CONTACT \? text \+ " " \+ CONTACT : text, "error"\);\s+\}/,
+      file,
+    );
+    // CONTACT is read nowhere else, so only failed() can show it.
+    assert.equal(html.match(/CONTACT/g).length, 3, file);
+    // The failure handler and a reply with no message go through failed(); a refusal's
+    // message is shown as it is.
+    assert.match(
+      html,
+      /\.withFailureHandler\(\(error\) => \{[^}]*failed\(\(error && error\.message\) \|\| String\(error\)\);\s+\}\)/,
+      file,
+    );
+    assert.ok(
+      html.includes('else if (reply && reply.message) show(reply.message, "error");'),
+      file,
+    );
+    assert.ok(html.includes('else failed("Something went wrong. Please try again.");'), file);
+    assert.equal(html.match(/failed\(/g).length, 3, file);
+    assert.ok(!/show\([^;\n]*error\.message/.test(html), file);
+  }
 });
 
 // ---------------------------------------------------------------------------

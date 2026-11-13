@@ -5,9 +5,9 @@
     <meta charset="utf-8" />
     <!--
       The Import past hours dialog, served by openImportDialog (Import.js) as a template.
-      The server puts the dialog key and the Settings prefill into the body's data
-      attributes; nothing else on the page is filled in by the server. Plain HTML and
-      JavaScript, no build step. Preview writes nothing; Import works the list out again on
+      The server puts the dialog key, the Settings prefill and the Kiosk contact line into
+      the body's data attributes, through the escaping print scriptlet; nothing else on the
+      page is filled in by the server. Plain HTML and JavaScript, no build step. Preview writes nothing; Import works the list out again on
       the server and checks the initials there.
     -->
     <style>
@@ -115,7 +115,12 @@
       }
     </style>
   </head>
-  <body data-key="<?= key ?>" data-file="<?= fileId ?>" data-tab="<?= tab ?>">
+  <body
+    data-key="<?= key ?>"
+    data-file="<?= fileId ?>"
+    data-tab="<?= tab ?>"
+    data-contact="<?= contactNote ?>"
+  >
     <form id="form">
       <label for="file">Spreadsheet</label>
       <input id="file" type="text" autocomplete="off" />
@@ -150,6 +155,9 @@
 
     <script>
       const KEY = document.body.dataset.key;
+      // Who to ask, added to an error: whatever reaches the failure handler and a reply
+      // with no message. A refusal's own message is shown as it is.
+      const CONTACT = document.body.dataset.contact || "";
       const $ = (id) => document.getElementById(id);
       let busy = false;
       // The file and tab the last preview read; Import is offered only for those.
@@ -162,6 +170,10 @@
         const box = $("message");
         box.textContent = text;
         box.className = "message " + (text ? kind : "");
+      }
+
+      function failed(text) {
+        show(CONTACT ? text + " " + CONTACT : text, "error");
       }
 
       function sameAsPreviewed() {
@@ -184,12 +196,12 @@
           .withSuccessHandler((reply) => {
             setBusy(false);
             if (reply && reply.ok) onOk(reply);
-            else
-              show((reply && reply.message) || "Something went wrong. Please try again.", "error");
+            else if (reply && reply.message) show(reply.message, "error");
+            else failed("Something went wrong. Please try again.");
           })
           .withFailureHandler((error) => {
             setBusy(false);
-            show((error && error.message) || String(error), "error");
+            failed((error && error.message) || String(error));
           })
           [name](KEY, ...args);
       }

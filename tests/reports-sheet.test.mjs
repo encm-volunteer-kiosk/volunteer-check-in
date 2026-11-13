@@ -1676,6 +1676,53 @@ test("every Hours write falls inside one hold of the document lock, released las
   assert.match(write.alerts[0], /^The refresh from the menu at .* failed part way: injected\./);
 });
 
+test("Refresh Hours names the Kiosk contact after an error, never after a refresh or a busy lock", () => {
+  const CONTACT = " If this keeps happening, contact: Pat Example, 555-0100";
+  const withContact = (s) => {
+    s.sheet("Settings").set(3, 1, "Kiosk contact");
+    s.sheet("Settings").set(3, 2, "Pat Example\n555-0100");
+    return s;
+  };
+  // A throw in the read: the alert is the failure, then the contact.
+  const read = withContact(built());
+  read.o.at = NOW + 60000;
+  read.sheet("Log").set(1, HEADER.indexOf("User Token") + 1, "Renamed");
+  read.ctx.refreshHoursNow();
+  assert.equal(read.alerts.length, 1);
+  assert.ok(read.alerts[0].endsWith(CONTACT), read.alerts[0]);
+  // A throw in the write.
+  const write = withContact(built());
+  write.o.at = NOW + 60000;
+  FAIL = (c) => c.sheet === "Hours data" && c.op === "setValues";
+  write.ctx.refreshHoursNow();
+  FAIL = null;
+  assert.match(
+    write.alerts[0],
+    /failed part way: injected\..* If this keeps happening, contact: Pat Example, 555-0100$/,
+  );
+  // No Hours tabs: the tabs the refresh needs are missing.
+  const none = withContact(server(LOG, { now: NOW, ui: true }));
+  none.ctx.refreshHoursNow();
+  assert.deepEqual(none.alerts, ["Run setupReports." + CONTACT]);
+  // A refresh that worked, and a busy lock: as they were.
+  const ok = withContact(built());
+  ok.o.at = NOW + 60000;
+  ok.ctx.refreshHoursNow();
+  assert.match(ok.alerts[0], /^As of .*, refreshed from the menu\.$/);
+  const busy = withContact(built());
+  busy.o.docBusy = true;
+  busy.ctx.refreshHoursNow();
+  assert.deepEqual(busy.alerts, [
+    "Another refresh or setupReports is writing Hours. Try again in a minute.",
+  ]);
+  // A blank contact: the error alone.
+  const blank = built();
+  blank.o.at = NOW + 60000;
+  blank.sheet("Log").set(1, HEADER.indexOf("User Token") + 1, "Renamed");
+  blank.ctx.refreshHoursNow();
+  assert.ok(!blank.alerts[0].includes("contact:"), blank.alerts[0]);
+});
+
 test("a busy document lock writes nothing: the menu says so, setupReports and nightly throw, open logs", () => {
   const busy = "Another refresh or setupReports is writing Hours. Try again in a minute.";
   const s = built();

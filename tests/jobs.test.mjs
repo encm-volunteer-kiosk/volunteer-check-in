@@ -1619,6 +1619,29 @@ test("Check the Log now reads the Log once, flags under the lock and shows what 
   assert.equal(busy.sheets.Flags.getLastRow(), 1);
 });
 
+test("Check the Log now names the Kiosk contact after a failed run only", () => {
+  const settings = { "Kiosk contact": "Pat Example, pat@example.org" };
+  const failed = nightly({ log: checkLog(), flags: null, settings });
+  failed.ctx.checkLogNow();
+  assert.deepEqual(failed.alerts, [
+    'The Log check failed: The "Flags" tab is missing. Run setupSheets(). If this keeps happening, contact: Pat Example, pat@example.org',
+  ]);
+  const done = nightly({ log: checkLog().slice(0, 2), settings });
+  done.ctx.checkLogNow();
+  assert.deepEqual(done.alerts, ["Checked 1 Log row: no problems found."]);
+  const busy = nightly({ log: checkLog(), lockFree: false, settings });
+  busy.ctx.checkLogNow();
+  assert.deepEqual(busy.alerts, [
+    "The kiosk was busy, so nothing was flagged. Try again in a minute.",
+  ]);
+  // A blank contact: the failure alone.
+  const blank = nightly({ log: checkLog(), flags: null });
+  blank.ctx.checkLogNow();
+  assert.deepEqual(blank.alerts, [
+    'The Log check failed: The "Flags" tab is missing. Run setupSheets().',
+  ]);
+});
+
 test("flagsEmailMessage: the review path names Data > Change view in the text and the HTML", () => {
   const msg = L.flagsEmailMessage({
     summary: { recent: [], unreviewed: 2 },
