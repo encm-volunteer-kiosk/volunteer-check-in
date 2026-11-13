@@ -132,7 +132,10 @@
       <input id="initials" class="initials" type="text" maxlength="10" autocomplete="off" />
       <div class="hint">
         Preview first: it writes nothing. Import adds the rows to the Log and can be run again; it
-        never brings in the same shift twice. Fix an imported row on the Log, not in the old sheet.
+        brings in only new rows, as long as rows already imported are left as they are in the old
+        sheet and new rows go at the bottom. Rows from any date come in. A row for a day the
+        volunteer also has a kiosk shift comes in flagged, so you can check it isn't counted twice.
+        Fix an imported row on the Log, not in the old sheet.
       </div>
     </form>
 
@@ -230,6 +233,7 @@
             ["Rows read", s.rowsRead],
             ["To import", s.toImport],
             ["  matched to Volunteer Profiles", s.matched],
+            ["    of these, same day as a kiosk shift (imported and flagged)", s.sameDay],
             ["  not matched (imported and flagged)", s.unmatched],
             ["Hours to add", hoursText(s.hours)],
             ["Already imported (in the Import ledger)", s.alreadyImported],
@@ -243,6 +247,14 @@
           s.unmatchedNames.forEach((n) => {
             const why = n.matches > 1 ? ", matches " + n.matches + " Profiles rows" : "";
             list.append(el("li", n.name + " (" + plural(n.rows, "row", "rows") + why + ")"));
+          });
+          box.append(list);
+        }
+        if (s.sameDayRows.length) {
+          box.append(el("h3", "Same day as a kiosk shift (imported and flagged)"));
+          const list = el("ul");
+          s.sameDayRows.forEach((r) => {
+            list.append(el("li", r.name + ", " + r.date + " (source row " + r.row + ")"));
           });
           box.append(list);
         }
@@ -307,6 +319,11 @@
             " not matched), " +
             hoursText(reply.hours) +
             " hours.";
+          if (reply.sameDay > 0)
+            text +=
+              " " +
+              plural(reply.sameDay, "row is", "rows are") +
+              " on the same day as a kiosk shift and flagged.";
           if (reply.ledgerAdded)
             text +=
               " Added " +
