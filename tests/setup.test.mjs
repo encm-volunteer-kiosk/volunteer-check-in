@@ -725,7 +725,7 @@ test("setupSheets stamps the Settings cache after its Settings rows reach the sh
   const before = Date.now() - 1000;
   cache.set(S.settingsCacheKey(), S.settingsCacheValue({ "Kiosk access code": "x" }, before));
   S.setupSheets();
-  assert.deepEqual(atFlush, [{ stamped: false, rows: 20 }]);
+  assert.deepEqual(atFlush, [{ stamped: false, rows: 21 }]);
   const stamp = cache.get(S.settingsStampKey());
   assert.match(stamp, /^\d+$/);
   assert.ok(Number(stamp) >= before + 1000);
