@@ -217,8 +217,8 @@ test("settingsDefaults", () => {
   assert.equal(defaults["Check-out flag minutes"], "15");
   assert.equal(defaults["Volunteer hour value"], "");
   assert.equal(defaults["Profiles problems"], "");
-  assert.equal(defaults["Closing time Monday"], "17:00");
-  assert.equal(defaults["Closing time Sunday"], "17:00");
+  assert.equal(defaults["Closing time Monday"], undefined);
+  assert.equal(defaults["Closing time Sunday"], undefined);
   assert.equal(defaults["Auto clock-out after hours"], "12");
   assert.equal(defaults["Auto clock-out last run"], "");
   assert.equal(defaults["Long shift flag hours"], "8");
@@ -230,15 +230,12 @@ test("settingsDefaults", () => {
   assert.equal(defaults["Daily jobs installed by"], "");
   assert.equal(defaults["Past hours file ID"], "");
   assert.equal(defaults["Past hours tab"], "Historical Hours");
-  assert.equal(rows.length, 26);
+  assert.equal(rows.length, 19);
   const names = rows.map((r) => r[0]);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
   // The new rows come after every row a sheet set up earlier already has.
-  assert.equal(
-    names.indexOf("Auto clock-out after hours"),
-    names.indexOf("Closing time Sunday") + 1,
-  );
+  assert.equal(names.indexOf("Auto clock-out after hours"), names.indexOf("Profiles problems") + 1);
   // Each default reads back as itself.
   assert.equal(L.parseAutoClockOutHours(defaults["Auto clock-out after hours"]), 12);
   assert.equal(L.parseLongShiftHours(defaults["Long shift flag hours"]), 8);
@@ -2303,6 +2300,25 @@ test("refusal gives each code its exact message", () => {
     ADMIN_BAD_ROW:
       "That row's date or check-in time can't be read, so its hours can't be worked out. Fix the row in the sheet first.",
     ADMIN_BAD_MONTH: "Please choose a month.",
+    ADMIN_REMOVE_REASON: "Please enter a reason for removing this shift.",
+    ADMIN_REMOVE_NO_ID:
+      "That row has no Shift ID, so the menu can't remove it. Delete it in the sheet by hand.",
+    ADMIN_REMOVE_NOT_FOUND:
+      "No Log row has that Shift ID any more. Close this window and find the shift again.",
+    ADMIN_REMOVE_MOVED:
+      "That row moved or changed in the Log since you found it. Find the shift again, then remove it.",
+    ADMIN_REMOVE_HEADERS:
+      "This row has a value in a column whose header is blank, repeated, or named like a Removed shifts column, so it can't be removed without losing that value. Give that column a unique header first.",
+    ADMIN_RESTORE_NOT_FOUND:
+      "That shift is no longer on the Removed shifts tab. Close this window and open Restore a shift again.",
+    ADMIN_RESTORE_MOVED:
+      "That row moved or changed on the Removed shifts tab. Close this window and open Restore a shift again.",
+    ADMIN_RESTORE_IN_LOG:
+      "A Log row already has this Shift ID, so the shift is already in the Log. Tidy the extra copy by hand.",
+    ADMIN_RESTORE_OPEN_SHIFT:
+      "This shift is open and the volunteer already has an open shift in the Log. Close that one with Fix a sign-out first.",
+    ADMIN_RESTORE_HEADERS:
+      "This row has a value in a column the Log doesn't have exactly once, or whose header is blank or repeated, so it can't go back without losing that value. Give the Log one column with that header first.",
   };
   for (const [code, message] of Object.entries(expected)) {
     assert.deepEqual(plain(L.refusal(code)), { ok: false, refusal: code, message });

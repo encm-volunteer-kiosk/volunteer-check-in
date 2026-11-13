@@ -9,11 +9,11 @@
 //   google.script.run. Each must check that the person at the sheet runs it, and that it
 //   holds a dialog key the spreadsheet's menu issued, before it reads or writes anything.
 //   Four kinds are exempt from the key only: the dialog openers, which make it; the menu
-//   items that open no dialog (refreshHoursNow), which check getUi as the openers do; the
-//   functions run from the editor as setupSheets is (setupReports, setupDailyJobs,
-//   removeDailyJobs); and the trigger handlers, which check the trigger's id instead. The
-//   list of functions comes from the files' source, so a public function added later is
-//   held to the same rule.
+//   items that open no dialog (refreshHoursNow, checkLogNow), which check getUi as the
+//   openers do; the functions run from the editor as setupSheets is (setupReports,
+//   setupDailyJobs, removeDailyJobs); and the trigger handlers, which check the trigger's
+//   id instead. The list of functions comes from the files' source, so a public function
+//   added later is held to the same rule.
 // - The glue: the admin functions read and write an in-memory Log through Sheets.js, and
 //   the kiosk's check-in and check-out copy their flags to an in-memory Flags tab.
 
@@ -425,7 +425,7 @@ const EDITOR_ONLY = ["setupReports", "setupDailyJobs", "removeDailyJobs"];
 // Run by a trigger: the trigger's id stands in for the key.
 const TRIGGER_ONLY = ["runFlagsEmail", "runAutoClockOut", "runHoursRefresh"];
 // A Kiosk admin menu item that opens no dialog: like an opener, it checks getUi first.
-const MENU_RUN = ["refreshHoursNow"];
+const MENU_RUN = ["refreshHoursNow", "checkLogNow"];
 const KEYED = PUBLIC.filter(
   (name) =>
     name !== "onOpen" &&
@@ -445,10 +445,16 @@ test("Admin.js, Reports.js and Jobs.js declare the public functions, and only fu
     "onOpen",
     "openAddShiftDialog",
     "openFixSignOutDialog",
+    "openRemoveShiftDialog",
+    "openRestoreShiftDialog",
     "adminRoster",
     "adminOpenShifts",
     "adminAddShift",
     "adminFixSignOut",
+    "adminFindShifts",
+    "adminRemoveShift",
+    "adminRemovedShifts",
+    "adminRestoreShift",
     "setupReports",
     "openMonthlyReportDialog",
     "adminReportMonths",
@@ -456,7 +462,14 @@ test("Admin.js, Reports.js and Jobs.js declare the public functions, and only fu
   ]) {
     assert.ok(PUBLIC.includes(name), name);
   }
-  for (const name of ["adminReportMonths", "adminMonthlyReport"]) {
+  for (const name of [
+    "adminReportMonths",
+    "adminMonthlyReport",
+    "adminFindShifts",
+    "adminRemoveShift",
+    "adminRemovedShifts",
+    "adminRestoreShift",
+  ]) {
     assert.ok(KEYED.includes(name), name);
   }
   const { ctx, calls } = server();
@@ -545,12 +558,13 @@ test("every keyed admin function refuses a missing or unknown key before it read
   }
 });
 
-test("Jobs.js's public functions are the editor-run setup and the trigger handlers", () => {
+test("Jobs.js's public functions are the editor-run setup, the trigger handlers and Check the Log now", () => {
   const jobs = GUARDED_FILES.find(([f]) => f === "Jobs.js")[1];
   const jobsPublic = [...jobs.matchAll(/^function\s+([\w$]+)\s*\(/gm)]
     .map((m) => m[1])
     .filter((n) => !n.endsWith("_"));
   assert.deepEqual(jobsPublic.sort(), [
+    "checkLogNow",
     "removeDailyJobs",
     "runAutoClockOut",
     "runFlagsEmail",
@@ -561,6 +575,8 @@ test("Jobs.js's public functions are the editor-run setup and the trigger handle
   const { ctx } = server();
   for (const job of plain(ctx.dailyJobs()))
     assert.ok(TRIGGER_ONLY.includes(job.handler), job.handler);
+  // The one other is a menu item that opens no dialog.
+  assert.ok(MENU_RUN.includes("checkLogNow"));
 });
 
 test("every trigger handler refuses a missing, forged or another account's trigger id before it reads or writes", () => {
@@ -615,7 +631,7 @@ test("the menu items that open no dialog read nothing outside the spreadsheet's 
   }
 });
 
-test("onOpen adds the menu first, and its items name the openers and Refresh Hours", () => {
+test("onOpen adds the menu first, and its items name the openers, Refresh Hours and Check the Log now", () => {
   const { ctx, calls, menu } = server({ active: "" });
   const logs = [];
   ctx.console.log = (...args) => logs.push(args.join(" "));
@@ -633,9 +649,12 @@ test("onOpen adds the menu first, and its items name the openers and Refresh Hou
     "Kiosk admin",
     ["Add a shift…", "openAddShiftDialog"],
     ["Fix a sign-out…", "openFixSignOutDialog"],
+    ["Remove a shift…", "openRemoveShiftDialog"],
+    ["Restore a shift…", "openRestoreShiftDialog"],
     ["Monthly report…", "openMonthlyReportDialog"],
     ["Import past hours…", "openImportDialog"],
     ["Refresh Hours", "refreshHoursNow"],
+    ["Check the Log now", "checkLogNow"],
   ]);
   for (const [, fn] of menu.slice(1)) {
     assert.ok(PUBLIC.filter(isOpener).includes(fn) || MENU_RUN.includes(fn), fn);
@@ -661,6 +680,20 @@ test("an opener puts a fresh key only into the dialog's HTML, and the key then w
   s.ctx.openFixSignOutDialog();
   assert.equal(s.shown[1].output.template.mode, "fix");
   assert.notEqual(s.shown[1].output.template.key, template.key);
+
+  s.ctx.openRemoveShiftDialog();
+  assert.equal(s.shown[2].title, "Remove a shift");
+  assert.equal(s.shown[2].output.template.mode, "remove");
+  s.ctx.openRestoreShiftDialog();
+  assert.equal(s.shown[3].title, "Restore a shift");
+  assert.equal(s.shown[3].output.template.mode, "restore");
+  const keys = new Set(s.shown.map((d) => d.output.template.key));
+  assert.equal(keys.size, 4);
+  // An empty spreadsheet has no Removed shifts tab, so the Restore list is empty.
+  assert.deepEqual(plain(s.ctx.adminRemovedShifts(s.shown[3].output.template.key)), {
+    ok: true,
+    shifts: [],
+  });
 });
 
 test("the Monthly report opener serves Report.html with a fresh key, and the key then works", () => {
@@ -997,6 +1030,89 @@ test("apiCheckIn with an arrival flag appends one Flags row with the Log's text"
   const quiet = kiosk({});
   assert.equal(plain(quiet.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
   assert.equal(quiet.sheets.Flags.getLastRow(), 1);
+});
+
+/** A Flags tab as setupSheets leaves it: an unticked box on every row to rows, then flags at the given rows. */
+const boxedFlags = (rows, flagged = {}) => {
+  const reviewed = FLAG_HEADER.indexOf("Reviewed");
+  const out = [FLAG_HEADER];
+  for (let r = 2; r <= rows; r++) {
+    const line = FLAG_HEADER.map((_, i) => (i === reviewed ? false : ""));
+    Object.assign(line, flagged[r] || {});
+    out.push(line);
+  }
+  return out;
+};
+const flagCells = (byHeader) => {
+  const line = {};
+  for (const [h, v] of Object.entries(byHeader)) line[FLAG_HEADER.indexOf(h)] = v;
+  return line;
+};
+
+test("flagRowUsed: a row holding only an unticked box is free; anything else is in use", () => {
+  const L = server().ctx;
+  const cols = plain(L.flagColumns(FLAG_HEADER));
+  const reviewed = FLAG_HEADER.indexOf("Reviewed");
+  const line = (at, value) => FLAG_HEADER.map((_, i) => (i === at ? value : ""));
+  for (const value of [false, "", "FALSE", "false", null, undefined]) {
+    assert.equal(L.flagRowUsed(line(reviewed, value), cols), false, String(value));
+  }
+  for (const value of [true, "TRUE", "x"]) {
+    assert.equal(L.flagRowUsed(line(reviewed, value), cols), true, String(value));
+  }
+  // Any other cell, staff's columns too, holding anything: a Shift ID, a note, a 0, a false.
+  for (const h of ["Shift ID", "Notes", "Staff column", "Log Row", "Source"]) {
+    for (const value of ["s-1", 0, false]) {
+      const cells = line(reviewed, false);
+      cells[FLAG_HEADER.indexOf(h)] = value;
+      assert.equal(L.flagRowUsed(cells, cols), true, h + " " + value);
+    }
+  }
+  assert.equal(L.flagRowUsed(line(-1, ""), cols), false);
+  assert.equal(L.flagRowUsed(line(FLAG_HEADER.indexOf("Notes"), "  "), cols), false);
+});
+
+test("a new flag goes right under the last row in use, not under the tab's unticked boxes", () => {
+  const width = FLAG_HEADER.length;
+  // ENCM's tab: boxes to row 1150, three flags at the top, and staff's note further down.
+  const flag = (id) => flagCells({ "Shift ID": id, Reason: "late", Source: "kiosk check-in" });
+  const s = kiosk({
+    flags: boxedFlags(1150, { 2: flag("s-a"), 3: flag("s-b"), 4: flag("s-c") }),
+    flagsMaxRows: 1150,
+  });
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(24), null)).ok, true);
+  const flags = s.sheets.Flags;
+  assert.equal(flags.rowByHeader(5).Reason, "arrival differs by 24 min");
+  assert.equal(flags.rowByHeader(5).Reviewed, false);
+  assert.equal(flags.rowByHeader(6).Reason, "");
+  assert.deepEqual(flags.inserted, []);
+  // The tab's rows are read once, before the Log write, to find the last one in use.
+  const { before } = atFirstLogWrite(s.journal.slice());
+  assert.ok(before.includes("read Flags getValues 2,1,1149," + width));
+  assert.ok(before.includes("read Flags getNumberFormats 5,1,1," + width));
+  assert.deepEqual(s.errors, []);
+
+  // Rows that hold anything else count: a ticked box, or a note with no flag.
+  const reviewed = { Reviewed: true };
+  for (const [what, cells] of [
+    ["a ticked box", reviewed],
+    ["a note", { Notes: "kept for later" }],
+  ]) {
+    const t = kiosk({ flags: boxedFlags(40, { 2: flag("s-a"), 9: flagCells(cells) }) });
+    assert.equal(plain(t.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(24), null)).ok, true);
+    assert.equal(t.sheets.Flags.rowByHeader(10).Reason, "arrival differs by 24 min", what);
+  }
+
+  // Only boxes: the first flag goes on row 2.
+  const empty = kiosk({ flags: boxedFlags(1150), flagsMaxRows: 1150 });
+  assert.equal(plain(empty.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(24), null)).ok, true);
+  assert.equal(empty.sheets.Flags.rowByHeader(2).Reason, "arrival differs by 24 min");
+
+  // The last row in use on the last grid row: the tab grows, as before.
+  const full = kiosk({ flags: boxedFlags(30, { 30: flag("s-z") }), flagsMaxRows: 30 });
+  assert.equal(plain(full.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(24), null)).ok, true);
+  assert.deepEqual(full.sheets.Flags.inserted, [50]);
+  assert.equal(full.sheets.Flags.rowByHeader(31).Reason, "arrival differs by 24 min");
 });
 
 test("apiCheckIn with the Flags tab missing still writes the Log row and logs the Shift ID", () => {
@@ -1471,7 +1587,8 @@ test("a flagged check-in reads nothing after its Log write", () => {
   assert.equal(reply.ok, true);
   const { before, after } = atFirstLogWrite(s.journal.slice());
   assert.deepEqual(after.filter(isRead), [], "no read after the Log write");
-  // Every Flags read came before it: the tab, its header, last row, grid and formats.
+  // Every Flags read came before it: the tab, its header, last row, grid and formats. A
+  // tab with no rows below the header has no rows to read for the last one in use.
   const width = FLAG_HEADER.length;
   assert.deepEqual(
     before.filter((e) => e.startsWith("read Flags ")),
@@ -1546,6 +1663,9 @@ test("a full Flags tab grows before the Log write and gets both flag rows", () =
   const width = FLAG_HEADER.length;
   const grown = before.indexOf("write Flags insertRowsAfter 2,50");
   const formats = before.indexOf("read Flags getNumberFormats 3,1,2," + width);
+  // The rows are read to find the last one in use, then the tab grows.
+  const rows = before.indexOf("read Flags getValues 2,1,1," + width);
+  assert.ok(rows >= 0 && rows < grown, "the rows were read before growing");
   assert.ok(grown >= 0, "the tab grew before the Log write");
   assert.ok(formats > grown, "the new rows' formats are read after growing");
   assert.deepEqual(s.sheets.Flags.inserted, [50]);
@@ -1755,4 +1875,25 @@ test("the row read again is null when the read throws, and a blank row past the 
   const blank = big.ctx.readLogRowAt_(5, width, cols, read, "s-sam");
   assert.equal(blank.row, 5);
   assert.equal(big.ctx.autoClockOutRowUnchanged(big.ctx.readLog_(cols)[0], blank), false);
+});
+
+// ---------------------------------------------------------------------------
+// The admin dialog's calls
+
+test("AdminDialog.html calls only keyed functions, each through call()", () => {
+  const html = read("apps-script/AdminDialog.html");
+  const called = [...html.matchAll(/call\("(\w+)"/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(called)].sort(), [
+    "adminAddShift",
+    "adminFindShifts",
+    "adminFixSignOut",
+    "adminOpenShifts",
+    "adminRemoveShift",
+    "adminRemovedShifts",
+    "adminRestoreShift",
+    "adminRoster",
+  ]);
+  for (const name of called) assert.ok(KEYED.includes(name), name);
+  assert.equal(html.match(/google\.script\.run/g).length, 1);
+  assert.match(html, /\[name\]\(KEY, \.\.\.args\)/);
 });

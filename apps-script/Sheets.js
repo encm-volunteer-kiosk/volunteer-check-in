@@ -766,7 +766,7 @@ function appendLogRows_(cellMaps, cols) {
 // Flags
 
 /**
- * Appends Flags rows (flagRows, Logic.js) below the tab's last row: planFlagRows_ for the
+ * Appends Flags rows (flagRows, Logic.js) below the last row in use: planFlagRows_ for the
  * reads, then writeFlagRows_. Jobs.js and Import.js call this. Throws when the tab or a
  * header it needs is missing.
  */
@@ -776,20 +776,37 @@ function appendFlagRows_(rows) {
 }
 
 /**
+ * The last Flags row in use (flagRowUsed, Logic.js), or 1 when no row below the header
+ * is. One read of rows 2 to the last row across width. setupSheets puts an unticked box on
+ * every row, so the tab's last row is often far below the last flag; a new flag goes
+ * right under the last one instead.
+ */
+function lastFlagRow_(sheet, cols, width) {
+  const last = sheet.getLastRow();
+  if (last < 2) return 1;
+  const values = sheet.getRange(2, 1, last - 1, width).getValues();
+  for (let i = values.length - 1; i >= 0; i--) {
+    if (flagRowUsed(values[i], cols)) return i + 2;
+  }
+  return 1;
+}
+
+/**
  * Every Flags read an append of count rows needs, so the write that follows reads
  * nothing: the tab, its header (placed by flagColumns, so columns may be in any order),
- * its last row and last grid row. Grows the tab first when the rows would pass its last
- * grid row, then reads the new range's number formats. Returns {sheet, cols, width,
- * first, formats}: first is the first new row, formats one line per row. A check-in or
- * check-out plans before its Log write, so it reads nothing after that write. Throws when
- * the tab or a header it needs is missing.
+ * its rows (lastFlagRow_) and last grid row. The new rows start right under the last row
+ * in use. Grows the tab first when the rows would pass its last grid row, then reads the
+ * new range's number formats. Returns {sheet, cols, width, first, formats}: first is the
+ * first new row, formats one line per row. A check-in or check-out plans before its Log
+ * write, so it reads nothing after that write. Throws when the tab or a header it needs
+ * is missing.
  */
 function planFlagRows_(count) {
   const sheet = sheet_(FLAGS_TAB);
   const header = logHeaderRow_(sheet);
   const cols = flagColumns(header);
   const width = header.length;
-  const first = sheet.getLastRow() + 1;
+  const first = lastFlagRow_(sheet, cols, width) + 1;
   const last = first + count - 1;
   if (last > sheet.getMaxRows()) {
     sheet.insertRowsAfter(sheet.getMaxRows(), Math.max(50, last - sheet.getMaxRows()));
@@ -876,4 +893,270 @@ function raiseFlags_(base, reasons, plan) {
     );
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Removed shifts
+//
+// The reads and writes of Remove a shift… and Restore a shift… (Admin.js), made under the
+// kiosk's lock: the Log rows that hold a Shift ID, the "Removed shifts" tab, and the
+// Flags rows of a removed or restored row. The rules are in Logic.js ("Removed shifts").
+// Both tabs are read and written by header.
+
+/** The Log's Shift ID column as text, one item per row from row 2, in one column read. */
+function readLogShiftIds_(cols) {
+  const sheet = sheet_(LOG_TAB);
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  return sheet
+    .getRange(2, cols[logHeaderNames().shiftId] + 1, last - 1, 1)
+    .getValues()
+    .map((cells) => cellText_(cells[0]));
+}
+
+/** The numbers of the Log rows whose Shift ID is shiftId, from one read of that column. */
+function logShiftIdRows_(cols, shiftId) {
+  const wanted = cellString(shiftId);
+  if (!wanted) return [];
+  const rows = [];
+  readLogShiftIds_(cols).forEach((id, i) => {
+    if (id === wanted) rows.push(i + 2);
+  });
+  return rows;
+}
+
+/** A log entry (Logic.js) plus inBy, the Check-In Entered By text, which the lists show. */
+function shiftEntry_(cells, row, cols, read) {
+  const entry = logEntry(cells, row, cols, read);
+  const at = cols[logHeaderNames().inBy];
+  entry.inBy = typeof at === "number" && at >= 0 ? cellText_(cells[at]) : "";
+  return entry;
+}
+
+/**
+ * Log rows read one at a time across the Log's full width, values and number formats, as
+ * [{row, values, formats, entry}] with entry from shiftEntry_. Rows past the Log's last
+ * row are left out.
+ */
+function readShiftRows_(rows, cols) {
+  const sheet = sheet_(LOG_TAB);
+  const last = sheet.getLastRow();
+  const width = Math.max(sheet.getLastColumn(), 1);
+  const read = logRead_();
+  return (rows || [])
+    .filter((row) => row >= 2 && row <= last)
+    .map((row) => {
+      const range = sheet.getRange(row, 1, 1, width);
+      const values = range.getValues()[0];
+      const formats = range.getNumberFormats()[0];
+      return { row, values, formats, entry: shiftEntry_(values, row, cols, read) };
+    });
+}
+
+/**
+ * The Removed shifts tab as {sheet, header}, made on the first Remove: the Log's header
+ * row as it is, then Removed by, Removed at and Removed reason, row 1 frozen, and one
+ * warning-only protection. An existing tab gets any Log header it lacks to the right
+ * (removedHeaderWrites, Logic.js). logHeader is the Log's row 1 as text.
+ */
+function removedSheet_(logHeader) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(removedTabName());
+  const created = !sheet;
+  if (created) sheet = ss.insertSheet(removedTabName());
+  const writes = removedHeaderWrites(logHeader, created ? [] : logHeaderRow_(sheet));
+  if (writes.length) {
+    const first = writes[0].col;
+    const last = writes[writes.length - 1].col;
+    if (last > sheet.getMaxColumns()) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), last - sheet.getMaxColumns());
+    }
+    sheet
+      .getRange(1, first, 1, writes.length)
+      .setNumberFormat("@")
+      .setValues([writes.map((w) => w.header)]);
+  }
+  if (created) {
+    sheet.setFrozenRows(1);
+    sheet.protect().setDescription(removedProtectionDescription()).setWarningOnly(true);
+  }
+  return { sheet, header: logHeaderRow_(sheet) };
+}
+
+/**
+ * Appends a Log row to the Removed tab (removed is removedSheet_'s {sheet, header}), in
+ * one setNumberFormats and one setValues: each cell under the Removed header that matches
+ * its Log header (headerMapCopy, Logic.js), with the Log cell's format, then Removed by =
+ * initials, Removed at = nowMs as a date-time and Removed reason. Columns with no match
+ * are left blank with the format they have. Returns the new row's number.
+ */
+function appendRemovedRow_(removed, logHeader, values, formats, initials, reason, nowMs) {
+  const { sheet, header } = removed;
+  const width = header.length;
+  const row = sheet.getLastRow() + 1;
+  if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 50);
+  const range = sheet.getRange(row, 1, 1, width);
+  const kept = range.getNumberFormats()[0];
+  const line = headerMapCopy(logHeader, values, header, width).map(cellBack_);
+  const lineFormats = headerMapCopy(logHeader, formats, header, width).map((f, j) =>
+    f === null || f === "" ? kept[j] : f,
+  );
+  const X = removedExtraHeaders();
+  const put = (name, value, format) => {
+    const at = logHeaderIndexes(header, name)[0];
+    line[at] = value;
+    lineFormats[at] = format;
+  };
+  put(X.by, sheetText(initials), "@");
+  put(X.at, new Date(nowMs), DATE_TIME_FORMAT);
+  put(X.reason, sheetText(reason), "@");
+  range.setNumberFormats([lineFormats]);
+  range.setValues([line]);
+  return row;
+}
+
+/** Deletes one Log row; the rows below it move up. */
+function deleteLogRow_(row) {
+  sheet_(LOG_TAB).deleteRow(row);
+}
+
+/**
+ * The Removed shifts tab as {sheet, header, rows}, or null when there is no such tab.
+ * Each row is {row, values, formats, entry}: entry is shiftEntry_ through a column map
+ * built from the tab's own header (each Log header's leftmost column, -1 when missing),
+ * plus removedBy, removedAtMs, removedAtDate (Central yyyy-MM-dd) and removedReason.
+ * One read of the values and one of the formats.
+ */
+function readRemoved_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(removedTabName());
+  if (!sheet) return null;
+  const header = logHeaderRow_(sheet);
+  const last = sheet.getLastRow();
+  if (last < 2) return { sheet, header, rows: [] };
+  const range = sheet.getRange(2, 1, last - 1, header.length);
+  const values = range.getValues();
+  const formats = range.getNumberFormats();
+  const cols = {};
+  logHeaders().forEach((h) => {
+    const found = logHeaderIndexes(header, h);
+    cols[h] = found.length ? found[0] : -1;
+  });
+  const X = removedExtraHeaders();
+  const extra = (cells, name) => {
+    const at = logHeaderIndexes(header, name);
+    return at.length ? cells[at[0]] : "";
+  };
+  const read = logRead_();
+  const rows = values.map((cells, i) => {
+    const entry = shiftEntry_(cells, i + 2, cols, read);
+    const when = cellTime_(extra(cells, X.at));
+    entry.removedBy = cellText_(extra(cells, X.by));
+    entry.removedAtMs = when.ms;
+    entry.removedAtDate = when.date;
+    entry.removedReason = cellText_(extra(cells, X.reason));
+    return { row: i + 2, values: cells, formats: formats[i], entry };
+  });
+  return { sheet, header, rows };
+}
+
+/**
+ * Writes a restored row on the row after the Log's last, growing the tab by 50 when it is
+ * full, as appendLogRow_ does, in one setNumberFormats and one setValues. values and
+ * formats are one Log-width line each, already mapped to the Log's header (headerMapCopy,
+ * Logic.js), with null where nothing maps. Kiosk columns (cols, logColumns) get their
+ * kind's format; staff columns get the copied one, or keep theirs where none was copied.
+ * Returns the new row's number.
+ */
+function appendLogValues_(values, formats, cols) {
+  const sheet = sheet_(LOG_TAB);
+  const width = values.length;
+  const row = sheet.getLastRow() + 1;
+  if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 50);
+  const range = sheet.getRange(row, 1, 1, width);
+  const kept = range.getNumberFormats()[0];
+  const lineFormats = formats.map((f, j) => (f === null || f === "" ? kept[j] : f));
+  const kinds = logColumnKinds();
+  Object.keys(cols).forEach((h) => {
+    const c = cols[h];
+    if (c < 0 || c >= width) return;
+    const format = logFormat_(kinds[h]);
+    // A real date in a text column (pasted in by hand) keeps the format it came with, so
+    // it still reads as that date rather than as a serial number under plain text.
+    if (format === "@" && isDateValue_(values[c]) && lineFormats[c] !== kept[c]) return;
+    lineFormats[c] = format;
+  });
+  range.setNumberFormats([lineFormats]);
+  range.setValues([values.map(cellBack_)]);
+  return row;
+}
+
+/** True when v is a Date, from any script context. */
+function isDateValue_(v) {
+  return Object.prototype.toString.call(v) === "[object Date]";
+}
+
+/**
+ * A cell value read with getValues, as it is written back by setValues so the cell reads
+ * the same: null is blank, text goes through sheetText (so text starting with "=" or an
+ * apostrophe stays text), and numbers, booleans and dates are written as they are. A
+ * formula is not kept: its value is written.
+ */
+function cellBack_(v) {
+  if (v === null) return "";
+  return typeof v === "string" ? sheetText(v) : v;
+}
+
+/**
+ * Acts on the Flags rows whose Shift ID is shiftId, after one read of the tab. opts is
+ * {tick, initials, note, only}. When only is given, a row is acted on only when
+ * removeFlagMatches (Logic.js) says it belongs to the removed row; the rest are counted as
+ * left. Each row acted on gets, with tick, Reviewed ticked and Reviewed By set to initials
+ * when it is blank; and note added after its Notes (appendText) when the tab has a Notes
+ * column. Returns {marked, left}. No Flags tab, or a blank Shift ID, marks nothing.
+ */
+function markShiftFlags_(shiftId, opts) {
+  const o = opts || {};
+  const out = { marked: 0, left: 0 };
+  const wanted = cellString(shiftId);
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(FLAGS_TAB);
+  if (!wanted || !sheet) return out;
+  const header = logHeaderRow_(sheet);
+  const cols = flagColumns(header);
+  const F = flagHeaderNames();
+  const last = sheet.getLastRow();
+  if (last < 2) return out;
+  const values = sheet.getRange(2, 1, last - 1, header.length).getValues();
+  const cell = (cells, name) => (cols[name] >= 0 ? cells[cols[name]] : "");
+  values.forEach((cells, i) => {
+    if (cellText_(cell(cells, F.shiftId)) !== wanted) return;
+    const flag = {
+      date: cellText_(cell(cells, F.date)),
+      name: cellText_(cell(cells, F.name)),
+      reason: cellText_(cell(cells, F.reason)),
+      source: cellText_(cell(cells, F.source)),
+      logRow: cell(cells, F.logRow),
+    };
+    if (o.only && !removeFlagMatches(flag, o.only)) {
+      out.left++;
+      return;
+    }
+    out.marked++;
+    const row = i + 2;
+    if (o.tick) {
+      sheet.getRange(row, cols[F.reviewed] + 1).setValue(true);
+      if (
+        cols[F.reviewedBy] >= 0 &&
+        cellString(o.initials) &&
+        cellText_(cell(cells, F.reviewedBy)) === ""
+      ) {
+        sheet.getRange(row, cols[F.reviewedBy] + 1).setValue(sheetText(o.initials));
+      }
+    }
+    if (cols[F.notes] >= 0 && cellString(o.note)) {
+      sheet
+        .getRange(row, cols[F.notes] + 1)
+        .setValue(sheetText(appendText(cell(cells, F.notes), o.note)));
+    }
+  });
+  return out;
 }

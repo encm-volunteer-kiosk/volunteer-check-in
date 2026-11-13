@@ -3,7 +3,8 @@
  * or the Kiosk admin menu. They are the weekly flags email (runFlagsEmail), which checks
  * every hour whether it is due, the auto clock-out (runAutoClockOut), which runs once a
  * day at about 4 AM Central and closes open rows nobody checked out of, and the nightly
- * Hours refresh (runHoursRefresh) at about 5 AM.
+ * Hours refresh (runHoursRefresh) at about 5 AM, which then runs the Log check. The Log
+ * check also runs from the Kiosk admin menu (checkLogNow).
  *
  * One account owns the triggers. Signed in as it, someone runs setupDailyJobs once from
  * the Apps Script editor; the triggers then run as that account, which sends the email and writes the Log.
@@ -15,6 +16,9 @@
  * holds every public function here to it):
  *   - setupDailyJobs and removeDailyJobs run by hand from the editor and start with
  *     requireEditorRun_, as setupSheets does.
+ *   - checkLogNow is a Kiosk admin menu item that opens no dialog, like refreshHoursNow:
+ *     it checks requireEditorRun_ and SpreadsheetApp.getUi() (it throws anywhere but the
+ *     spreadsheet's own UI) before it reads anything.
  *   - A trigger handler (runFlagsEmail, runAutoClockOut, runHoursRefresh) checks
  *     requireEditorRun_, then
  *     requireTriggerRun_:
@@ -25,8 +29,8 @@
  * Everything else ends in _, so google.script.run can't call it.
  *
  * The rules are in Logic.js (dailyJobs, flagsEmailDue, flagsSummary, flagsEmailMessage,
- * and the Auto clock-out section); this file reads and writes Settings, the Log, the
- * Shifts tab and the Flags tab through Sheets.js.
+ * and the Auto clock-out and Log check sections); this file reads and writes Settings, the
+ * Log, the Shifts tab and the Flags tab through Sheets.js.
  */
 
 // ---------------------------------------------------------------------------
@@ -136,25 +140,154 @@ function runAutoClockOut(e) {
 
 /**
  * The nightly Hours refresh, run once a day at about 5 AM Central by its trigger, an hour
- * after the auto clock-out so the rows it closes show. It always rewrites the tables
- * unless a newer whole table is already in, which also undoes hand edits on Hours data
- * (refreshHours_, Reports.js). It takes the document lock, waiting up to 120 seconds, and
- * never the script lock. When the lock is busy, the tabs are missing or the refresh fails
- * (after its note is written), it throws, so the owner gets Google's failure email.
+ * after the auto clock-out so the rows it closes show, and then the Log check.
+ *
+ * The refresh always rewrites the tables unless a newer whole table is already in, which
+ * also undoes hand edits on Hours data (refreshHours_, Reports.js). It takes the document
+ * lock, waiting up to 120 seconds, and releases it before anything else happens.
+ *
+ * Then the Log check (logCheck_) runs on the Log the refresh read, or reads the Log
+ * itself when the refresh never read it (no Hours tabs, or the read threw). It asks for
+ * the script lock only after the document lock is released, so this run never holds
+ * both. It logs one line.
+ *
+ * Then the throws, so the owner gets Google's failure email. The refresh's outcome comes
+ * first and is thrown exactly as it would be with no Log check: when the lock was busy,
+ * the tabs are missing or the refresh failed (after its note is written), and also when
+ * the refresh itself threw. Only when the refresh didn't throw does a busy or failed Log
+ * check throw "Log check (nightly): ...".
  */
 function runHoursRefresh(e) {
   requireEditorRun_();
   requireTriggerRun_(e, "runHoursRefresh");
   const hold = hoursHold_();
+  const out = {};
+  let hoursError = null;
   try {
-    const result = refreshHours_("nightly", hold);
+    const result = refreshHours_("nightly", hold, undefined, out);
     console.log(hoursRunLog_("nightly", result));
     if (result.kind !== "write" && result.kind !== "newer-in") {
-      throw new Error("Hours refresh (nightly): " + hoursMenuText_(result));
+      hoursError = new Error("Hours refresh (nightly): " + hoursMenuText_(result));
     }
+  } catch (err) {
+    hoursError = err;
   } finally {
     releaseHoursLock_(hold);
   }
+  let check;
+  try {
+    check = logCheck_(out.log ? out.log.entries : null, new Date());
+    console.log(logCheckRunLog_("nightly", check));
+  } finally {
+    // Thrown from the finally, so nothing the Log check does can hide it.
+    if (hoursError) throw hoursError;
+  }
+  if (check.kind !== "done") {
+    throw new Error("Log check (nightly): " + logCheckMessage(check));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The Log check
+
+/**
+ * Kiosk admin > Check the Log now: runs the Log check (logCheck_) on a fresh read of the
+ * Log and shows what it found in an alert. Opens no dialog.
+ */
+function checkLogNow() {
+  requireEditorRun_();
+  const ui = SpreadsheetApp.getUi();
+  const result = logCheck_(null, new Date());
+  console.log(logCheckRunLog_("menu", result));
+  ui.alert(logCheckMessage(result));
+}
+
+/**
+ * One run of the Log check at now. It reports and fixes nothing: each problem the rules
+ * find (logCheckProblems, Logic.js) gets one Flags row, Source "log check", unless a row
+ * for it is already on the Flags tab, Reviewed or not.
+ *
+ * entries is the Log as readReportLog_ gives it; null reads it here. The read and the
+ * rules take no lock. Then, under the script lock (30 s wait), it reads the whole Flags
+ * tab, keeps the problems not already there (logCheckPlan), at most logCheckMaxNewFlags
+ * of them, and appends them. Reading the Flags tab under the lock is what keeps two runs
+ * from flagging one problem twice. Problems past the cap are flagged by the next run.
+ *
+ * Never throws. Returns the Result logCheckMessage reads: {kind: "done" | "busy" |
+ * "failed", checked, found, already, flagged, left, byLabel, ms, message}. A missing Log
+ * or Flags tab, or any other throw, is "failed" with its message.
+ */
+function logCheck_(entries, now) {
+  const start = Date.now();
+  let checked = 0;
+  let counted = {};
+  const result = (kind, counts, message) => ({
+    kind,
+    checked,
+    found: counts.found || 0,
+    already: counts.already || 0,
+    flagged: counts.flagged || 0,
+    left: counts.left || 0,
+    byLabel: counts.byLabel || {},
+    ms: Date.now() - start,
+    message: message || "",
+  });
+  try {
+    const rows = entries || readReportLog_().entries;
+    checked = logCheckRowCount(rows);
+    const problems = logCheckProblems(rows, adminClock_);
+    const found = logCheckPlan(problems, [], 0, 0);
+    counted = { found: found.found, byLabel: found.byLabel };
+    const lock = LockService.getScriptLock();
+    if (!lock.tryLock(30000)) return result("busy", counted);
+    try {
+      const plan = logCheckPlan(problems, readFlags_().rows, now.getTime(), logCheckMaxNewFlags());
+      appendFlagRows_(plan.newRows);
+      SpreadsheetApp.flush();
+      return result("done", plan);
+    } finally {
+      lock.releaseLock();
+    }
+  } catch (err) {
+    return result("failed", counted, cellString(err && err.message) || String(err));
+  }
+}
+
+/**
+ * One log line for a Log check run from cause ("nightly" or "menu"): "Log check
+ * (nightly): done; checked 1200 rows, found 3, already flagged 2, flagged 1 new, 0 left
+ * for the next run; 850 ms." then the count per label in logCheckReasons order, and the
+ * message of a failed run.
+ */
+function logCheckRunLog_(cause, result) {
+  const byLabel = result.byLabel || {};
+  const reasons = logCheckReasons();
+  const order = Object.keys(reasons).map((code) => reasons[code]);
+  const labels = order
+    .concat(Object.keys(byLabel).filter((label) => order.indexOf(label) < 0))
+    .filter((label) => byLabel[label] > 0)
+    .map((label) => label + " " + byLabel[label]);
+  return (
+    "Log check (" +
+    cause +
+    "): " +
+    result.kind +
+    "; checked " +
+    result.checked +
+    " rows, found " +
+    result.found +
+    ", already flagged " +
+    result.already +
+    ", flagged " +
+    result.flagged +
+    " new, " +
+    result.left +
+    " left for the next run; " +
+    Math.round(result.ms) +
+    " ms." +
+    (labels.length ? " " + labels.join("; ") + "." : "") +
+    (result.message ? " " + result.message : "")
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -270,10 +403,11 @@ function sendFlagsEmailIfDue_(now) {
 }
 
 /**
- * The Flags tab's rows as {rows: [{date, name, shiftId, reason, raisedAtMs, reviewed}],
- * url}, url being the spreadsheet's link opened at the Flags tab. Throws when the tab or a
- * header the script writes is missing, so a broken tab fails the run instead of sending a
- * wrong count.
+ * The Flags tab's rows as {rows: [{date, name, shiftId, reason, raisedAtMs, reviewed,
+ * source}], url}, url being the spreadsheet's link opened at the Flags tab. Every row from
+ * 2 to the tab's last row is read, so the Log check sees every flag it ever wrote. Throws
+ * when the tab or a header the script writes is missing, so a broken tab fails the run
+ * instead of sending a wrong count or flagging a problem twice.
  */
 function readFlags_() {
   const sheet = sheet_(FLAGS_TAB);
@@ -289,6 +423,7 @@ function readFlags_() {
     reason: cellText_(cells[cols[F.reason]]),
     raisedAtMs: cellTime_(cells[cols[F.raisedAt]]).ms,
     reviewed: isTicked(cells[cols[F.reviewed]]),
+    source: cellText_(cells[cols[F.source]]),
   }));
   const url = SpreadsheetApp.getActiveSpreadsheet().getUrl() + "#gid=" + sheet.getSheetId();
   return { rows, url };

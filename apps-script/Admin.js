@@ -1,12 +1,14 @@
 /**
  * The Kiosk admin menu in the Check-In Log spreadsheet: Add a shift for a volunteer who
- * forgot to check in and out, and Fix a sign-out for an open row whose volunteer forgot
- * to check out. Each item opens a dialog from AdminDialog.html, which calls the admin*
- * functions below through google.script.run. The menu's third item, Monthly report, is in
- * Reports.js, its fourth, Import past hours, in Import.js, and its fifth, Refresh Hours
- * (refreshHoursNow), in Reports.js; all follow the same rule. Refresh Hours opens no
- * dialog, so it needs no key: it checks requireEditorRun_ and SpreadsheetApp.getUi()
- * before it reads anything.
+ * forgot to check in and out, Fix a sign-out for an open row whose volunteer forgot to
+ * check out, Remove a shift to move one Log row, found by its Shift ID, to the Removed
+ * shifts tab, and Restore a shift to put one back. Each item opens a dialog from
+ * AdminDialog.html, which calls the admin* functions below through google.script.run. The
+ * menu's other items follow the same rule: Monthly report (Reports.js), Import past hours
+ * (Import.js), Refresh Hours (refreshHoursNow, Reports.js) and Check the Log now
+ * (checkLogNow, Jobs.js). Refresh Hours and Check the Log now open no dialog, so they need
+ * no key: they check requireEditorRun_ and SpreadsheetApp.getUi() before they read
+ * anything.
  *
  * The menu and google.script.run can only call public names (no trailing _), so the
  * kiosk page could name these functions too. Every public function here therefore checks
@@ -27,8 +29,9 @@
  * (noteHoursOnOpen_ in Reports.js: one hold of the document lock, N1 and B1 only, no Log
  * read), and releases the lock in its own finally.
  *
- * The rules themselves are in Logic.js (decideAddShift, decideFixSignOut); this file reads
- * and writes the Log through Sheets.js, under the kiosk's lock.
+ * The rules themselves are in Logic.js (decideAddShift, decideFixSignOut, decideRemove,
+ * decideRestore); this file reads and writes the Log, the Removed shifts tab and the Flags
+ * tab through Sheets.js, under the kiosk's lock.
  */
 
 /**
@@ -40,9 +43,12 @@ function onOpen() {
     .createMenu("Kiosk admin")
     .addItem("Add a shift…", "openAddShiftDialog")
     .addItem("Fix a sign-out…", "openFixSignOutDialog")
+    .addItem("Remove a shift…", "openRemoveShiftDialog")
+    .addItem("Restore a shift…", "openRestoreShiftDialog")
     .addItem("Monthly report…", "openMonthlyReportDialog")
     .addItem("Import past hours…", "openImportDialog")
     .addItem("Refresh Hours", "refreshHoursNow")
+    .addItem("Check the Log now", "checkLogNow")
     .addToUi();
   const hold = hoursHold_();
   try {
@@ -60,6 +66,14 @@ function openAddShiftDialog() {
 
 function openFixSignOutDialog() {
   openAdminDialog_("fix", "Fix a sign-out");
+}
+
+function openRemoveShiftDialog() {
+  openAdminDialog_("remove", "Remove a shift");
+}
+
+function openRestoreShiftDialog() {
+  openAdminDialog_("restore", "Restore a shift");
 }
 
 /** {ok: true, today, volunteers: [{id, label}]} for the volunteer picker, or a refusal. */
@@ -156,6 +170,199 @@ function adminFixSignOut(key, form) {
 }
 
 /**
+ * Remove a shift's list of rows: {ok: true, shifts: [{shiftId, row, label, detail}]}, or a
+ * refusal. query is {shiftId} (the rows with that Shift ID) or {id, date} (that
+ * volunteer's rows on that yyyy-MM-dd Date). Rows with no Shift ID aren't listed: the menu
+ * acts by Shift ID, so staff delete such a row by hand. Reads only, and takes no lock.
+ */
+function adminFindShifts(key, query) {
+  const denied = adminGuard_(key);
+  if (denied) return denied;
+  const q = query || {};
+  const cols = readLogColumns_();
+  const shiftId = cellString(q.shiftId);
+  let rows;
+  if (shiftId) {
+    rows = logShiftIdRows_(cols, shiftId);
+  } else {
+    const volunteer = findVolunteer(getProfiles_(readSettings_()), q.id);
+    if (!volunteer) return refusal("ADMIN_NOT_FOUND");
+    const date = cellString(q.date);
+    if (!date || parseStartDate(date) !== date) return refusal("ADMIN_BAD_TIME");
+    rows = readLogTable_(volunteer.token)
+      .entries.filter((e) => rowDate(e.dateText) === date && cellString(e.shiftId))
+      .map((e) => e.row);
+  }
+  return { ok: true, shifts: shiftChoices_(readShiftRows_(rows, cols)) };
+}
+
+/**
+ * Moves one Log row to the Removed shifts tab. form is {shiftId, row, reason, initials}:
+ * row is the Log row the dialog showed, which picks among rows that share the Shift ID.
+ * The row's Flags rows are ticked Reviewed (markShiftFlags_). {ok: true, name, date,
+ * flagsMarked, flagsLeft, flagsFailed} or a refusal: flagsLeft counts the flags left for
+ * another row that still has the Shift ID, and flagsFailed is true when the Flags step
+ * threw after the row was moved, which is logged.
+ */
+function adminRemoveShift(key, form) {
+  const denied = adminGuard_(key);
+  if (denied) return denied;
+  const f = form || {};
+  return withLock_(() => {
+    const now = new Date();
+    const shiftId = cellString(f.shiftId);
+    const log = sheet_(LOG_TAB);
+    const logHeader = logHeaderRow_(log);
+    const cols = logColumns(logHeader);
+    const candidates = shiftId ? readShiftRows_(logShiftIdRows_(cols, shiftId), cols) : [];
+    const decision = decideRemove({
+      candidates,
+      shiftId,
+      row: f.row,
+      reason: f.reason,
+      initials: f.initials,
+      logHeader,
+    });
+    if (decision.refusal) return adminRefusal_(decision);
+    const target = decision.target;
+    const removed = removedSheet_(logHeader);
+    const removedRow = appendRemovedRow_(
+      removed,
+      logHeader,
+      target.values,
+      target.formats,
+      decision.initials,
+      decision.reason,
+      now.getTime(),
+    );
+    SpreadsheetApp.flush();
+    const idCell = log.getRange(target.row, cols[logHeaderNames().shiftId] + 1).getValues();
+    if (cellText_(idCell[0][0]) !== shiftId) {
+      removed.sheet.deleteRow(removedRow);
+      return refusal("ADMIN_REMOVE_MOVED");
+    }
+    deleteLogRow_(target.row);
+    const flags = markFlagsSafely_(shiftId, {
+      tick: true,
+      initials: decision.initials,
+      note: removeFlagNote(decision.initials, decision.reason, centralDate_(now)),
+      only: {
+        row: target.row,
+        date: target.entry.dateText,
+        name: target.entry.name,
+        remaining: decision.remaining,
+      },
+    });
+    return {
+      ok: true,
+      name: target.entry.name,
+      date: rowDate(target.entry.dateText) || target.entry.dateText,
+      flagsMarked: flags.marked,
+      flagsLeft: flags.left,
+      flagsFailed: flags.failed,
+    };
+  });
+}
+
+/**
+ * Restore a shift's list: {ok: true, shifts: [{shiftId, row, label, detail}]}, the
+ * Removed shifts rows that have a Shift ID, newest Removed at first. No tab lists none.
+ */
+function adminRemovedShifts(key) {
+  const denied = adminGuard_(key);
+  if (denied) return denied;
+  const removed = readRemoved_();
+  if (!removed) return { ok: true, shifts: [] };
+  const at = (r) => (isFinite(r.entry.removedAtMs) ? r.entry.removedAtMs : -Infinity);
+  const rows = removed.rows
+    .filter((r) => cellString(r.entry.shiftId))
+    .sort((a, b) => at(b) - at(a) || b.row - a.row);
+  return { ok: true, shifts: shiftChoices_(rows) };
+}
+
+/**
+ * Puts a Removed shifts row back at the end of the Log, mapped by header, and deletes it
+ * from the Removed tab. form is {shiftId, row, initials}. The Shift ID's Flags rows get a
+ * note and are otherwise left as they are. {ok: true, name, date, logRow, flagsFailed} or
+ * a refusal.
+ */
+function adminRestoreShift(key, form) {
+  const denied = adminGuard_(key);
+  if (denied) return denied;
+  const f = form || {};
+  return withLock_(() => {
+    const now = new Date();
+    const shiftId = cellString(f.shiftId);
+    const removed = readRemoved_();
+    const logHeader = logHeaderRow_(sheet_(LOG_TAB));
+    const cols = logColumns(logHeader);
+    const candidates =
+      removed && shiftId ? removed.rows.filter((r) => cellString(r.entry.shiftId) === shiftId) : [];
+    const picked = pickShiftRow(candidates, f.row);
+    const tokenEntries =
+      picked && isStatus(picked.entry, "open") ? readLogTable_(picked.entry.token).entries : [];
+    const decision = decideRestore({
+      candidates,
+      shiftId,
+      row: f.row,
+      initials: f.initials,
+      logShiftIds: readLogShiftIds_(cols),
+      tokenEntries,
+      removedHeader: removed ? removed.header : [],
+      logHeader,
+    });
+    if (decision.refusal) return adminRefusal_(decision);
+    const target = decision.target;
+    const idAt = logHeaderIndexes(removed.header, logHeaderNames().shiftId)[0];
+    const idCell = removed.sheet.getRange(target.row, idAt + 1).getValues();
+    if (cellText_(idCell[0][0]) !== shiftId) return refusal("ADMIN_RESTORE_MOVED");
+    const fromHeader = removed.header.map((h) => (isRemovedExtraHeader(h) ? "" : h));
+    const width = logHeader.length;
+    const logRow = appendLogValues_(
+      headerMapCopy(fromHeader, target.values, logHeader, width),
+      headerMapCopy(fromHeader, target.formats, logHeader, width),
+      cols,
+    );
+    removed.sheet.deleteRow(target.row);
+    const flags = markFlagsSafely_(shiftId, {
+      tick: false,
+      note: restoreFlagNote(decision.initials, centralDate_(now)),
+    });
+    return {
+      ok: true,
+      name: target.entry.name,
+      date: rowDate(target.entry.dateText) || target.entry.dateText,
+      logRow,
+      flagsFailed: flags.failed,
+    };
+  });
+}
+
+/** The list items Remove and Restore show, [{shiftId, row, label, detail}], from rows. */
+function shiftChoices_(rows) {
+  return rows.map((r) => {
+    const shown = shiftChoiceLabel(r.entry, adminClock_);
+    return { shiftId: r.entry.shiftId, row: r.row, label: shown.label, detail: shown.detail };
+  });
+}
+
+/**
+ * markShiftFlags_ after the Log write, as {marked, left, failed}. The row has already
+ * moved, so a Flags step that throws is logged with the Shift ID and doesn't undo it.
+ */
+function markFlagsSafely_(shiftId, opts) {
+  try {
+    const done = markShiftFlags_(shiftId, opts);
+    return { marked: done.marked, left: done.left, failed: false };
+  } catch (e) {
+    console.error(
+      "Flags: not marked for Shift ID " + shiftId + ": " + (e && e.message ? e.message : String(e)),
+    );
+    return { marked: 0, left: 0, failed: true };
+  }
+}
+
+/**
  * The two checks every admin* function makes before anything else: null when both pass,
  * else the ADMIN_EXPIRED refusal. Throws when the caller isn't the person at the sheet.
  */
@@ -168,7 +375,10 @@ function adminGuard_(key) {
   return null;
 }
 
-/** Opens a dialog from AdminDialog.html with a new key in it. mode is "add" or "fix". */
+/**
+ * Opens a dialog from AdminDialog.html with a new key in it. mode is "add", "fix",
+ * "remove" or "restore".
+ */
 function openAdminDialog_(mode, title) {
   requireEditorRun_();
   const ui = SpreadsheetApp.getUi();
@@ -180,8 +390,19 @@ function openAdminDialog_(mode, title) {
   ui.showModalDialog(page.evaluate().setWidth(480).setHeight(600), title);
 }
 
-/** A refusal reply; an overlap names the row it conflicts with. */
+/**
+ * A refusal reply; an overlap names the row it conflicts with, and a header refusal the
+ * column it can't move.
+ */
 function adminRefusal_(decision) {
+  if (decision.header) {
+    const r = refusal(decision.refusal);
+    return {
+      ok: false,
+      refusal: r.refusal,
+      message: r.message + ' Column: "' + decision.header + '".',
+    };
+  }
   if (decision.refusal !== "ADMIN_OVERLAP") return refusal(decision.refusal);
   return overlapRefusal(decision.conflict, adminClock_, decision.openStartMs);
 }

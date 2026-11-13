@@ -65,9 +65,6 @@ function settingsDefaults(todayDate) {
     [volunteerHourValueSetting(), ""],
     ["Profiles problems", ""],
   ];
-  ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].forEach((day) =>
-    rows.push(["Closing time " + day, "17:00"]),
-  );
   rows.push(
     ["Auto clock-out after hours", String(defaultAutoClockOutHours())],
     ["Auto clock-out last run", ""],
@@ -139,6 +136,25 @@ function refusalMessages() {
     ADMIN_BAD_ROW:
       "That row's date or check-in time can't be read, so its hours can't be worked out. Fix the row in the sheet first.",
     ADMIN_BAD_MONTH: "Please choose a month.",
+    ADMIN_REMOVE_REASON: "Please enter a reason for removing this shift.",
+    ADMIN_REMOVE_NO_ID:
+      "That row has no Shift ID, so the menu can't remove it. Delete it in the sheet by hand.",
+    ADMIN_REMOVE_NOT_FOUND:
+      "No Log row has that Shift ID any more. Close this window and find the shift again.",
+    ADMIN_REMOVE_MOVED:
+      "That row moved or changed in the Log since you found it. Find the shift again, then remove it.",
+    ADMIN_REMOVE_HEADERS:
+      "This row has a value in a column whose header is blank, repeated, or named like a Removed shifts column, so it can't be removed without losing that value. Give that column a unique header first.",
+    ADMIN_RESTORE_NOT_FOUND:
+      "That shift is no longer on the Removed shifts tab. Close this window and open Restore a shift again.",
+    ADMIN_RESTORE_MOVED:
+      "That row moved or changed on the Removed shifts tab. Close this window and open Restore a shift again.",
+    ADMIN_RESTORE_IN_LOG:
+      "A Log row already has this Shift ID, so the shift is already in the Log. Tidy the extra copy by hand.",
+    ADMIN_RESTORE_OPEN_SHIFT:
+      "This shift is open and the volunteer already has an open shift in the Log. Close that one with Fix a sign-out first.",
+    ADMIN_RESTORE_HEADERS:
+      "This row has a value in a column the Log doesn't have exactly once, or whose header is blank or repeated, so it can't go back without losing that value. Give the Log one column with that header first.",
   };
 }
 
@@ -1580,6 +1596,313 @@ function decideFixSignOut(input) {
 }
 
 // ---------------------------------------------------------------------------
+// Removed shifts
+//
+// Remove a shift… moves one Log row, found by its Shift ID, to the "Removed shifts" tab,
+// with who removed it, when and why, and ticks that row's Flags rows Reviewed. Restore a
+// shift… puts a Removed row back at the end of the Log. Both tabs are read and written by
+// header, as the Log is.
+//
+// The rule both keep: Remove then Restore gives back every non-blank cell of the row. A
+// value under a header that can't be mapped both ways (blank, repeated, or named like one
+// of the Removed tab's own three columns) is refused on the way out, and a value under a
+// header the Log no longer has is refused on the way back.
+
+/** The tab Remove a shift… moves rows to. Nothing but Restore reads it. */
+function removedTabName() {
+  return "Removed shifts";
+}
+
+/** The three columns the Removed tab has after the Log's own headers. */
+function removedExtraHeaders() {
+  return { by: "Removed by", at: "Removed at", reason: "Removed reason" };
+}
+
+/** The description of the Removed tab's one warning-only protection. */
+function removedProtectionDescription() {
+  return (
+    "Removed shifts: rows removed from the Log. Use Kiosk admin > Restore a shift… to put " +
+    "one back."
+  );
+}
+
+/** True when a header is one of the three removedExtraHeaders(), by normalizeHeader. */
+function isRemovedExtraHeader(header) {
+  const k = normalizeHeader(header);
+  const extras = removedExtraHeaders();
+  return Object.keys(extras).some((name) => normalizeHeader(extras[name]) === k);
+}
+
+/** {normalized header: how many cells of headerRow have it}; blank headers aren't counted. */
+function headerCounts(headerRow) {
+  const counts = {};
+  (headerRow || []).forEach((h) => {
+    const k = normalizeHeader(h);
+    if (k) counts[k] = (Object.prototype.hasOwnProperty.call(counts, k) ? counts[k] : 0) + 1;
+  });
+  return counts;
+}
+
+/** How a refusal names a column: its header on one line, or its letter when it has none. */
+function headerProblemText(headerRow, index) {
+  const h = cellString(headerRow[index]).replace(/\s+/g, " ");
+  return h || columnLetter(index) + " (no header)";
+}
+
+/**
+ * The header cells to write in row 1 of the Removed tab, as [{col (1-based), header}],
+ * always one run of columns. An empty tab gets the Log's header row as it is, blanks
+ * included, up to its last header, then the three extras. A tab that has a header gets,
+ * right of its last header, each Log header it lacks (in Log order, once each, leaving out
+ * a Log header named like an extra), then any extra it lacks.
+ */
+function removedHeaderWrites(logHeader, removedHeader) {
+  const extras = removedExtraHeaders();
+  const extraList = [extras.by, extras.at, extras.reason];
+  const lastOf = (row) => {
+    let last = -1;
+    (row || []).forEach((cell, i) => {
+      if (cellString(cell) !== "") last = i;
+    });
+    return last;
+  };
+  const last = lastOf(removedHeader);
+  if (last < 0) {
+    const logPart = (logHeader || []).slice(0, lastOf(logHeader) + 1).map(cellString);
+    return logPart.concat(extraList).map((header, i) => ({ col: i + 1, header }));
+  }
+  const have = headerCounts(removedHeader);
+  const wanted = [];
+  (logHeader || []).forEach((h) => {
+    const k = normalizeHeader(h);
+    if (!k || have[k] || isRemovedExtraHeader(h)) return;
+    have[k] = 1;
+    wanted.push(cellString(h));
+  });
+  extraList.forEach((h) => {
+    if (!have[normalizeHeader(h)]) wanted.push(h);
+  });
+  return wanted.map((header, i) => ({ col: last + 2 + i, header }));
+}
+
+/**
+ * A row of width cells for toHeader, each copied from the fromRow cell under the same
+ * header in fromHeader (normalizeHeader forms; the leftmost when one repeats). A header
+ * goes to its leftmost column in toHeader only. A cell with no match, or under a blank
+ * header, is null, so the caller decides what goes there.
+ */
+function headerMapCopy(fromHeader, fromRow, toHeader, width) {
+  const from = {};
+  (fromHeader || []).forEach((h, i) => {
+    const k = normalizeHeader(h);
+    if (k && !Object.prototype.hasOwnProperty.call(from, k)) from[k] = i;
+  });
+  const used = {};
+  return Array.from({ length: width }, (_, j) => {
+    const k = normalizeHeader((toHeader || [])[j]);
+    if (!k || used[k] || !Object.prototype.hasOwnProperty.call(from, k)) return null;
+    used[k] = true;
+    const value = (fromRow || [])[from[k]];
+    return value === undefined ? null : value;
+  });
+}
+
+/**
+ * The column a Log row can't be moved to Removed shifts without losing, as
+ * headerProblemText gives it, or "": the first non-blank cell under a blank or repeated Log
+ * header, or under a Log header named like one of the Removed tab's extras.
+ */
+function removeHeaderProblem(logHeader, cells) {
+  const counts = headerCounts(logHeader);
+  for (let i = 0; i < (cells || []).length; i++) {
+    if (cellString(cells[i]) === "") continue;
+    const k = normalizeHeader(logHeader[i]);
+    if (!k || counts[k] > 1 || isRemovedExtraHeader(logHeader[i])) {
+      return headerProblemText(logHeader, i);
+    }
+  }
+  return "";
+}
+
+/**
+ * The column a Removed row can't go back to the Log without losing, as headerProblemText
+ * gives it, or "": the first non-blank cell, other than the three extras, under a blank or
+ * repeated Removed header, or under a header the Log doesn't have exactly once.
+ */
+function restoreHeaderProblem(removedHeader, cells, logHeader) {
+  const removed = headerCounts(removedHeader);
+  const log = headerCounts(logHeader);
+  for (let i = 0; i < (cells || []).length; i++) {
+    if (cellString(cells[i]) === "") continue;
+    const k = normalizeHeader(removedHeader[i]);
+    if (k && isRemovedExtraHeader(removedHeader[i])) continue;
+    if (!k || removed[k] > 1 || log[k] !== 1) return headerProblemText(removedHeader, i);
+  }
+  return "";
+}
+
+/**
+ * The row a Remove or Restore acts on, from the rows that hold its Shift ID: the only one
+ * wherever it has moved, or, when the Shift ID is on several rows, the one still at row.
+ * null when none is.
+ */
+function pickShiftRow(candidates, row) {
+  const list = candidates || [];
+  if (list.length === 1) return list[0];
+  return list.find((c) => c.row === Number(row)) || null;
+}
+
+/**
+ * Checks a Remove a shift… in order: ADMIN_INITIALS, ADMIN_REMOVE_REASON (blank),
+ * ADMIN_NOTE_TOO_LONG (reason), ADMIN_REMOVE_NO_ID, ADMIN_REMOVE_NOT_FOUND (no Log row
+ * has the Shift ID), ADMIN_REMOVE_MOVED (pickShiftRow found none), ADMIN_REMOVE_HEADERS
+ * (removeHeaderProblem).
+ *
+ * Input: {candidates: [{row, values, formats, entry}] (the Log rows with the Shift ID, read
+ * under the lock), shiftId, row (the row the dialog showed), reason, initials, logHeader}.
+ *
+ * Returns {refusal}, {refusal: "ADMIN_REMOVE_HEADERS", header}, or {target, initials,
+ * reason, remaining}: remaining is how many other Log rows hold the Shift ID.
+ */
+function decideRemove(input) {
+  const initials = normalizeInitials(input.initials);
+  if (!initials) return { refusal: "ADMIN_INITIALS" };
+  const reason = cellString(input.reason);
+  if (!reason) return { refusal: "ADMIN_REMOVE_REASON" };
+  if (reason.length > adminNoteMaxLength()) return { refusal: "ADMIN_NOTE_TOO_LONG" };
+  if (!cellString(input.shiftId)) return { refusal: "ADMIN_REMOVE_NO_ID" };
+  const candidates = input.candidates || [];
+  if (!candidates.length) return { refusal: "ADMIN_REMOVE_NOT_FOUND" };
+  const target = pickShiftRow(candidates, input.row);
+  if (!target) return { refusal: "ADMIN_REMOVE_MOVED" };
+  const header = removeHeaderProblem(input.logHeader, target.values);
+  if (header) return { refusal: "ADMIN_REMOVE_HEADERS", header };
+  return { target, initials, reason, remaining: candidates.length - 1 };
+}
+
+/**
+ * Checks a Restore a shift… in order: ADMIN_INITIALS, ADMIN_RESTORE_NOT_FOUND (no Removed
+ * row has the Shift ID), ADMIN_RESTORE_MOVED (pickShiftRow found none),
+ * ADMIN_RESTORE_IN_LOG (a Log row has the Shift ID), ADMIN_RESTORE_OPEN_SHIFT (the row is
+ * open and the volunteer has an open Log row), ADMIN_RESTORE_HEADERS
+ * (restoreHeaderProblem).
+ *
+ * Input: {candidates: [{row, values, formats, entry}] (the Removed rows with the Shift
+ * ID), shiftId, row, initials, logShiftIds (every Shift ID on the Log, from one read of
+ * its Shift ID column), tokenEntries (the Log entries of the row's User Token),
+ * removedHeader, logHeader}.
+ *
+ * Returns {refusal}, {refusal: "ADMIN_RESTORE_HEADERS", header}, or {target, initials}.
+ */
+function decideRestore(input) {
+  const initials = normalizeInitials(input.initials);
+  if (!initials) return { refusal: "ADMIN_INITIALS" };
+  const shiftId = cellString(input.shiftId);
+  const candidates = shiftId ? input.candidates || [] : [];
+  if (!candidates.length) return { refusal: "ADMIN_RESTORE_NOT_FOUND" };
+  const target = pickShiftRow(candidates, input.row);
+  if (!target) return { refusal: "ADMIN_RESTORE_MOVED" };
+  if ((input.logShiftIds || []).some((id) => cellString(id) === shiftId)) {
+    return { refusal: "ADMIN_RESTORE_IN_LOG" };
+  }
+  if (
+    isStatus(target.entry, "open") &&
+    (input.tokenEntries || []).some((e) => isStatus(e, "open") && isTokenRow(e, target.entry.token))
+  ) {
+    return { refusal: "ADMIN_RESTORE_OPEN_SHIFT" };
+  }
+  const header = restoreHeaderProblem(input.removedHeader, target.values, input.logHeader);
+  if (header) return { refusal: "ADMIN_RESTORE_HEADERS", header };
+  return { target, initials };
+}
+
+/**
+ * A row as Remove and Restore list it: {label, detail}. entry is a log entry plus inBy
+ * (Check-In Entered By), and, for a Removed row, removedBy, removedAtDate (Central
+ * yyyy-MM-dd), removedAtMs and removedReason. clock(ms) gives a Central "9:00 AM". The
+ * label reads "Thu 2026-11-12 · Jordan Rivera · in 9:00 AM · closed"; the detail has one
+ * line each for the row's date, name, status, times, hours, Entered By, alerts and notes,
+ * and for a Removed row who removed it, when and why.
+ */
+function shiftChoiceLabel(entry, clock) {
+  const e = entry || {};
+  const date = rowDate(e.dateText);
+  const day = date ? weekdayName(date).slice(0, 3) + " " + date : cellString(e.dateText);
+  const time = (ms) => (isFinite(ms) ? clock(ms) : "blank or unreadable");
+  const hours = (h) => (typeof h === "number" && isFinite(h) ? h.toFixed(2) : "blank");
+  const start = hasReadableStart(e) ? "in " + clock(shiftStartMs(e)) : "check-in unreadable";
+  const label = [
+    day || "no date",
+    cellString(e.name) || "no name",
+    start,
+    cellString(e.status) || "no status",
+  ].join(" · ");
+  const lines = [
+    "Date: " + (cellString(e.dateText) || "blank"),
+    "Volunteer: " + (cellString(e.name) || "blank"),
+    "Status: " + (cellString(e.status) || "blank"),
+    "Check-in: stated " + time(e.statedInMs) + ", recorded " + time(e.recordedInMs),
+    "Check-out: stated " + time(e.statedOutMs) + ", recorded " + time(e.recordedOutMs),
+    "Hours: stated " + hours(e.statedHours) + ", timestamps " + hours(e.recordedHours),
+    "Entered by: in " +
+      (cellString(e.inBy) || "blank") +
+      ", out " +
+      (cellString(e.outBy) || "blank"),
+    "Admin Alerts?: " + (cellString(e.alerts) || "none"),
+    "Notes: " + (cellString(e.notes) || "none"),
+    "Shift ID: " + (cellString(e.shiftId) || "none"),
+  ];
+  if (e.removedBy !== undefined) {
+    const at = isFinite(e.removedAtMs)
+      ? cellString(e.removedAtDate) + " " + clock(e.removedAtMs)
+      : "unknown";
+    lines.push("Removed by: " + (cellString(e.removedBy) || "blank") + ", at " + at);
+    lines.push("Removed reason: " + (cellString(e.removedReason) || "blank"));
+  }
+  return { label, detail: lines.join("\n") };
+}
+
+/** The note Remove adds to each Flags row it ticks. today is yyyy-MM-dd. */
+function removeFlagNote(initials, reason, today) {
+  return (
+    "Log row removed by " +
+    cellString(initials) +
+    " on " +
+    cellString(today) +
+    ": " +
+    cellString(reason)
+  );
+}
+
+/** The note Restore adds to each Flags row of the Shift ID. today is yyyy-MM-dd. */
+function restoreFlagNote(initials, today) {
+  return "Log row restored by " + cellString(initials) + " on " + cellString(today) + ".";
+}
+
+/**
+ * Whether Remove ticks a Flags row that has the removed row's Shift ID. flag is {date,
+ * name, reason, source, logRow}; only is {row, date, name, remaining}: the removed row's
+ * number, Date and Volunteer Name, and how many Log rows still hold the Shift ID after the
+ * delete. With none left, every flag of the Shift ID was the removed row's. With some
+ * left, a flag is the removed row's only when its Log Row, Date and Volunteer Name are
+ * the removed row's; and the Log check's "Shift ID on more than one row" flag is ticked
+ * too when exactly one row is left, since the pair it reports is gone. Every other flag is
+ * left for the remaining copy. A stale Log Row leaves a flag unticked, the safe side.
+ */
+function removeFlagMatches(flag, only) {
+  const f = flag || {};
+  if (!only || !(only.remaining > 0)) return true;
+  const date = cellString(f.date);
+  const sameDate = date === cellString(only.date) || (date !== "" && date === rowDate(only.date));
+  const sameRow = cellString(f.logRow) !== "" && Number(f.logRow) === Number(only.row);
+  if (sameRow && sameDate && normalizeName(f.name) === normalizeName(only.name)) return true;
+  if (only.remaining !== 1) return false;
+  const source = flagSources().logCheck;
+  if (!source || cellString(f.source) !== source) return false;
+  return cellString(f.reason).indexOf(logCheckReasons()["duplicate-id"] + ":") === 0;
+}
+
+// ---------------------------------------------------------------------------
 // Refusals
 
 /** {ok: false, refusal, message} for a refusal code. */
@@ -1657,7 +1980,8 @@ function reportColumns(headerRow) {
  * One Log row as a report reads it: logEntry's fields (outBy among them) plus inBy (the
  * Check-In Entered By text), roleType, activity (blank when the column is missing), and statedHoursCell and
  * recordedHoursCell, the raw Hours Served (stated) and (timestamps) values as the sheet
- * gave them. Arguments as logEntry's.
+ * gave them, and timeKinds, the timeCellKind of the raw Date and four time cells as
+ * {date, recordedIn, statedIn, recordedOut, statedOut}. Arguments as logEntry's.
  */
 function reportEntry(cells, row, cols, read) {
   const H = logHeaderNames();
@@ -1673,6 +1997,13 @@ function reportEntry(cells, row, cols, read) {
   entry.activity = text(H.activity);
   entry.statedHoursCell = raw(H.statedHours);
   entry.recordedHoursCell = raw(H.recordedHours);
+  entry.timeKinds = {
+    date: timeCellKind(raw(H.date)),
+    recordedIn: timeCellKind(raw(H.recordedIn)),
+    statedIn: timeCellKind(raw(H.statedIn)),
+    recordedOut: timeCellKind(raw(H.recordedOut)),
+    statedOut: timeCellKind(raw(H.statedOut)),
+  };
   return entry;
 }
 
@@ -3652,10 +3983,12 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
 //
 // One row per flag, for staff to tick off as reviewed. The Log row is the record: Admin
 // Alerts? keeps every kiosk flag, and a Flags row is a copy for review. The script only
-// appends Flags rows. It reads the Flags header to place its writes; only the weekly
-// flags email reads Flags rows back, and only to count and list them, so staff may sort,
-// filter or delete rows. Reviewed By and Notes are staff's; the script writes Reviewed
-// once, unticked, on the row it appends.
+// appends Flags rows, each under the last row in use (flagRowUsed). It reads the Flags
+// header to place its writes. Three things read Flags rows back: the weekly flags email
+// and the Hours refresh, to count and list them, and the Log check, to skip a problem
+// already flagged. So staff may sort, filter or delete rows; a deleted Log check row is
+// raised again on the next check. Reviewed By and Notes are staff's; the script writes
+// Reviewed once, unticked, on the row it appends.
 
 /** The Flags headers, keyed by the short names the code uses, in the order a new tab gets them. */
 function flagHeaderNames() {
@@ -3698,7 +4031,8 @@ function flagColumnKinds() {
 
 /**
  * Where a flag came from, the Source column. auto-close is the daily auto clock-out
- * (runAutoClockOut), import is Import past hours.
+ * (runAutoClockOut), import is Import past hours, log check is the Log check (nightly or
+ * Kiosk admin > Check the Log now).
  */
 function flagSources() {
   return {
@@ -3706,6 +4040,7 @@ function flagSources() {
     checkOut: "kiosk check-out",
     autoClose: "auto-close",
     import: "import",
+    logCheck: "log check",
   };
 }
 
@@ -3823,6 +4158,20 @@ function flagRowValues(cells, cols, width) {
     row[at] = value;
   });
   return row;
+}
+
+/**
+ * Whether a Flags row is in use, so a new flag goes below it: any cell other than Reviewed
+ * isn't blank, or Reviewed holds anything but an unticked box (blank, false or "FALSE").
+ * cells is one row of the tab, cols is flagColumns of its header. Rows that hold only an
+ * unticked box, as setupSheets leaves every row, are free.
+ */
+function flagRowUsed(cells, cols) {
+  const reviewed = cols[flagHeaderNames().reviewed];
+  return (cells || []).some((value, i) => {
+    if (i !== reviewed) return cellString(value) !== "";
+    return value !== false && cellString(value) !== "" && !/^false$/i.test(cellString(value));
+  });
 }
 
 /**
@@ -5450,4 +5799,397 @@ function autoClockOutFlagBase(row, shiftId, nowMs) {
     source: flagSources().autoClose,
     logRow: row.row,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The Log check
+//
+// A check of every Log row that isBlankLogRow doesn't call blank, run with the nightly
+// Hours refresh and from Kiosk admin > Check the Log now. It reads reportEntry rows,
+// reports each problem as a Flags row with Source "log check", and changes nothing on
+// the Log. Each problem has a key (logCheckKey): its Shift ID and code, or, on a row with
+// no Shift ID, its Date, Volunteer Name and code. The key lives only on the Flags tab, in
+// the row's Shift ID, Date, Volunteer Name and the label its Reason starts with. One
+// Flags row per key, ever, until staff delete it: a key already on the tab isn't raised
+// again, Reviewed or not, and within one run only the first problem per key is kept.
+//
+// Import rows (Check-In Entered By "import") have no times by design, so the checks that
+// read times skip them. The checks that read times on the row's Date (no-check-in,
+// out-before-in, hours-mismatch and the time part of impossible-length) are skipped on a
+// row whose Date is bad.
+
+/** Each Log check problem's code and its fixed label, in the order a row is checked. */
+function logCheckReasons() {
+  return {
+    "no-shift-id": "No Shift ID",
+    "duplicate-id": "Shift ID on more than one row",
+    "bad-date": "Date isn't a full date",
+    "recorded-no-date": "Recorded time has no date",
+    "bad-status": "Status isn't open or closed",
+    "no-check-in": "Check-in missing or unreadable",
+    "out-before-in": "Check-out before check-in",
+    "closed-no-out": "Closed with no check-out",
+    "hours-mismatch": "Hours don't match the times",
+    "impossible-length": "Impossible shift length",
+  };
+}
+
+/** Hours above this, in an hours cell or between a pair of times, are an impossible shift. */
+function logCheckMaxHours() {
+  return 16;
+}
+
+/** The most Flags rows one Log check run adds; the rest wait for the next run. */
+function logCheckMaxNewFlags() {
+  return 100;
+}
+
+/** The Shift ID a Log check Flags row gets when its Log row has none (flagRows needs one). */
+function logCheckNoIdText() {
+  return "(no Shift ID)";
+}
+
+/** How far an hours cell may be from its times, in hundredths of an hour, for rounding. */
+function logCheckHoursTolerance() {
+  return 1;
+}
+
+/** The first year a Log Date may be in. */
+function logCheckFirstYear() {
+  return 2000;
+}
+
+/**
+ * What a raw Log cell holds: "blank" (nothing), "time-only" (a time with no date: a Date
+ * before 2 January 1900, which is how Sheets stores a time typed with no date, or text
+ * clockText reads) or "other". A Date is detected the way isDate_ does it, by its
+ * toString tag, so a Date made in another context counts. No zone work.
+ */
+function timeCellKind(value) {
+  if (cellString(value) === "") return "blank";
+  if (Object.prototype.toString.call(value) === "[object Date]") {
+    const ms = value.getTime();
+    return isFinite(ms) && ms < Date.UTC(1900, 0, 2) ? "time-only" : "other";
+  }
+  return clockText(value) ? "time-only" : "other";
+}
+
+/** How many entries the Log check looks at: those that aren't isBlankLogRow. */
+function logCheckRowCount(entries) {
+  return (entries || []).filter((e) => !isBlankLogRow(e)).length;
+}
+
+/**
+ * A problem's key: "id|<Shift ID>|<code>", or with no Shift ID (blank, or the
+ * logCheckNoIdText a Flags row gets for one) "row|<Date>|<normalized name>|<code>".
+ */
+function logCheckKey(shiftId, dateText, name, code) {
+  const id = cellString(shiftId);
+  if (id && id !== logCheckNoIdText()) return "id|" + id + "|" + code;
+  return "row|" + cellString(dateText) + "|" + normalizeName(name) + "|" + code;
+}
+
+/** An hours cell as a number: a number, or text that reads as one; NaN otherwise. */
+function logCheckHoursNumber(cell) {
+  if (typeof cell === "number") return cell;
+  if (typeof cell !== "string" || cell.trim() === "") return NaN;
+  return Number(cell.trim());
+}
+
+/** An hours cell as the Log check's details show it: "3.50 h", "blank" or 'reads "x"'. */
+function logCheckHoursCellText(cell) {
+  if (cellString(cell) === "") return "blank";
+  const n = logCheckHoursNumber(cell);
+  return isFinite(n) ? n.toFixed(2) + " h" : 'reads "' + cellString(cell) + '"';
+}
+
+/**
+ * The bad-date detail for a row, or "" when its Date is good. A Date is good when the
+ * cell isn't a bare time and its text is a real yyyy-MM-dd day (monthKey) from
+ * 1 January logCheckFirstYear() to the end of lastMonth ("yyyy-MM"). Nobody works in a
+ * later month: Add a shift refuses a date after today and the kiosk writes today.
+ */
+function logCheckDateDetail(entry, lastMonth) {
+  const kinds = entry.timeKinds || {};
+  const text = cellString(entry.dateText);
+  if (kinds.date === "time-only") return "Date holds only a time";
+  if (text === "") return "Date is blank";
+  const month = monthKey(text);
+  if (!month || Number(month.slice(0, 4)) < logCheckFirstYear() || month > lastMonth) {
+    return 'Date reads "' + text + '"';
+  }
+  return "";
+}
+
+/**
+ * Every problem on the Log, in Log row order and then logCheckReasons() order, as
+ * [{code, key, label, reason, base}]. entries are reportEntry rows (timeKinds among
+ * them), in Log row order. clock(ms) gives a time as the details show it, such as
+ * "9:06 AM". reason is "<label>: <detail>". base is {date, name, shiftId, logRow}, the
+ * Flags row's Date (the Date cell's text), Volunteer Name, Shift ID (logCheckNoIdText()
+ * when the row has none) and Log Row. A duplicate Shift ID is one problem, at its first
+ * row.
+ *
+ * nowMs (optional, Date.now() when left out) sets the last month a Date may be in: the
+ * month nowMs falls in, read in UTC, which is never behind the kiosk's Central month.
+ */
+function logCheckProblems(entries, clock, nowMs) {
+  const reasons = logCheckReasons();
+  const maxHours = logCheckMaxHours();
+  const show = typeof clock === "function" ? clock : (ms) => new Date(ms).toISOString();
+  const now = typeof nowMs === "number" && isFinite(nowMs) ? nowMs : Date.now();
+  const lastMonth = new Date(now).toISOString().slice(0, 7);
+  const rows = (entries || []).filter((e) => !isBlankLogRow(e));
+
+  const idRows = new Map();
+  rows.forEach((e) => {
+    const id = cellString(e.shiftId);
+    if (!id) return;
+    if (!idRows.has(id)) idRows.set(id, []);
+    idRows.get(id).push(e.row);
+  });
+
+  const problems = [];
+  const duplicatesDone = new Set();
+  rows.forEach((e) => {
+    const id = cellString(e.shiftId);
+    const kinds = e.timeKinds || {};
+    const add = (code, detail) => {
+      const label = reasons[code];
+      problems.push({
+        code,
+        key: logCheckKey(id, e.dateText, e.name, code),
+        label,
+        reason: label + ": " + detail,
+        base: {
+          date: cellString(e.dateText),
+          name: cellString(e.name),
+          shiftId: id || logCheckNoIdText(),
+          logRow: e.row,
+        },
+      });
+    };
+    const isImport = cellString(e.inBy).toLowerCase() === importEnteredBy();
+    const open = isStatus(e, "open");
+    const closed = isStatus(e, "closed");
+    const pairs = [
+      {
+        times: "recorded",
+        cell: "timestamps",
+        inMs: e.recordedInMs,
+        outMs: e.recordedOutMs,
+        hours: e.recordedHoursCell,
+      },
+      {
+        times: "stated",
+        cell: "stated",
+        inMs: shiftStartMs(e),
+        outMs: e.statedOutMs,
+        hours: e.statedHoursCell,
+      },
+    ];
+    const bothRead = (p) => isFinite(p.inMs) && isFinite(p.outMs);
+
+    if (!id) add("no-shift-id", "the Shift ID cell is blank");
+
+    if (id && !duplicatesDone.has(id) && idRows.get(id).length > 1) {
+      duplicatesDone.add(id);
+      add("duplicate-id", rowList(idRows.get(id)));
+    }
+
+    const dateDetail = logCheckDateDetail(e, lastMonth);
+    if (dateDetail) add("bad-date", dateDetail);
+    const timesRead = !dateDetail && !isImport;
+
+    const bare = [];
+    if (kinds.recordedIn === "time-only") bare.push("Check-In Recorded");
+    if (kinds.recordedOut === "time-only") bare.push("Check-Out Recorded");
+    if (bare.length) {
+      add(
+        "recorded-no-date",
+        bare.join(" and ") + (bare.length > 1 ? " hold" : " holds") + " only a time",
+      );
+    }
+
+    if (!open && !closed) {
+      const status = cellString(e.status);
+      add("bad-status", status ? 'Status reads "' + status + '"' : "Status is blank");
+    }
+
+    const alerts = cellString(e.alerts).toLowerCase();
+    const alerted =
+      alerts.indexOf(unreadableStartAlert().toLowerCase()) >= 0 ||
+      alerts.indexOf(autoClockOutSkippedAlert().toLowerCase()) >= 0;
+    if ((open || closed) && timesRead && !hasReadableStart(e) && !alerted) {
+      const noCells = kinds.recordedIn === "blank" && kinds.statedIn === "blank";
+      add(
+        "no-check-in",
+        noCells ? "both check-in cells blank" : "check-in can't be read on the row's Date",
+      );
+    }
+
+    if (timesRead) {
+      const backwards = pairs
+        .filter((p) => bothRead(p) && p.outMs < p.inMs)
+        .map((p) => p.times + " in " + show(p.inMs) + ", out " + show(p.outMs));
+      if (backwards.length) add("out-before-in", backwards.join("; "));
+    }
+
+    if (closed && !isImport && kinds.recordedOut === "blank" && kinds.statedOut === "blank") {
+      add("closed-no-out", "both check-out cells blank");
+    }
+
+    if (closed && timesRead) {
+      const off = pairs
+        .filter((p) => bothRead(p) && p.outMs >= p.inMs)
+        .filter((p) => {
+          const n = logCheckHoursNumber(p.hours);
+          const expected = hoursBetween(p.inMs, p.outMs);
+          return (
+            cellString(p.hours) === "" ||
+            !isFinite(n) ||
+            Math.abs(Math.round(n * 100) - Math.round(expected * 100)) > logCheckHoursTolerance()
+          );
+        })
+        .map(
+          (p) =>
+            p.cell +
+            " " +
+            logCheckHoursCellText(p.hours) +
+            ", times give " +
+            hoursBetween(p.inMs, p.outMs).toFixed(2) +
+            " h",
+        );
+      if (off.length) add("hours-mismatch", off.join("; "));
+    }
+
+    const tooLong = [];
+    pairs.forEach((p) => {
+      const n = logCheckHoursNumber(p.hours);
+      if (isFinite(n) && (n < 0 || n > maxHours)) {
+        tooLong.push(p.cell + " hours " + n.toFixed(2) + " h");
+      }
+    });
+    if (timesRead) {
+      pairs.forEach((p) => {
+        if (bothRead(p) && p.outMs >= p.inMs && p.outMs - p.inMs > maxHours * 3600000) {
+          const apart = Math.round(((p.outMs - p.inMs) / 3600000) * 100) / 100;
+          tooLong.push(p.times + " times " + apart.toFixed(2) + " h apart");
+        }
+      });
+    }
+    if (tooLong.length) add("impossible-length", tooLong.join("; "));
+  });
+  return problems;
+}
+
+/**
+ * The key (logCheckKey) of a Flags row as readFlags_ gives it ({date, name, shiftId,
+ * reason, raisedAtMs, reviewed, source}), or "" when the row isn't a Log check flag: its
+ * Source isn't "log check" (trimmed, any case) or its Reason doesn't start with a Log
+ * check label and a colon. A Shift ID of logCheckNoIdText() keys by Date and Volunteer
+ * Name.
+ */
+function logCheckFlagKey(flag) {
+  const f = flag || {};
+  if (cellString(f.source).toLowerCase() !== flagSources().logCheck) return "";
+  const reason = cellString(f.reason);
+  const reasons = logCheckReasons();
+  const code = Object.keys(reasons).find((c) => reason.indexOf(reasons[c] + ":") === 0);
+  return code ? logCheckKey(f.shiftId, f.date, f.name, code) : "";
+}
+
+/**
+ * What one run flags. problems is logCheckProblems' list, flags the Flags tab's rows
+ * (readFlags_), nowMs the run's time for Raised At and max the most rows to add
+ * (logCheckMaxNewFlags() when left out). Returns {newRows, found, already, flagged, left,
+ * byLabel}: newRows are flagRows maps with Source "log check", in problem order; found
+ * counts distinct keys, already those whose key is on the tab, flagged is newRows.length
+ * and left the rest, waiting for the next run. byLabel counts found keys per label, in
+ * logCheckReasons() order, naming only labels with at least one.
+ */
+function logCheckPlan(problems, flags, nowMs, max) {
+  const limit =
+    max === undefined || max === null
+      ? logCheckMaxNewFlags()
+      : Math.max(0, Math.floor(Number(max)) || 0);
+  const onTab = new Set();
+  (flags || []).forEach((f) => {
+    const key = logCheckFlagKey(f);
+    if (key) onTab.add(key);
+  });
+  const seen = new Set();
+  const counts = {};
+  const newRows = [];
+  let found = 0;
+  let already = 0;
+  (problems || []).forEach((p) => {
+    if (seen.has(p.key)) return;
+    seen.add(p.key);
+    found++;
+    counts[p.label] = (counts[p.label] || 0) + 1;
+    if (onTab.has(p.key)) {
+      already++;
+      return;
+    }
+    if (newRows.length >= limit) return;
+    const base = {
+      date: p.base.date,
+      name: p.base.name,
+      shiftId: p.base.shiftId,
+      raisedAtMs: nowMs,
+      source: flagSources().logCheck,
+      logRow: p.base.logRow,
+    };
+    flagRows(base, [p.reason]).forEach((row) => newRows.push(row));
+  });
+  const reasons = logCheckReasons();
+  const byLabel = {};
+  Object.keys(reasons).forEach((code) => {
+    if (counts[reasons[code]]) byLabel[reasons[code]] = counts[reasons[code]];
+  });
+  return {
+    newRows,
+    found,
+    already,
+    flagged: newRows.length,
+    left: found - already - newRows.length,
+    byLabel,
+  };
+}
+
+/**
+ * The text a Log check result shows staff (Check the Log now's alert). result is
+ * {kind: "done" | "busy" | "failed", checked, found, already, flagged, left, byLabel, ms,
+ * message}; only its fields are read.
+ */
+function logCheckMessage(result) {
+  const r = result || {};
+  if (r.kind === "busy") {
+    return "The kiosk was busy, so nothing was flagged. Try again in a minute.";
+  }
+  if (r.kind !== "done") {
+    const why = cellString(r.message);
+    return why ? "The Log check failed: " + why : "The Log check failed.";
+  }
+  const head = "Checked " + plural(r.checked || 0, "Log row", "Log rows");
+  if (!r.found) return head + ": no problems found.";
+  let text =
+    head +
+    ": found " +
+    plural(r.found, "problem", "problems") +
+    ". " +
+    (r.flagged || 0) +
+    " flagged now on the Flags tab, " +
+    (r.already || 0) +
+    " already flagged";
+  if (r.left > 0) text += ", " + r.left + " more will be flagged next run";
+  text += ".";
+  const reasons = logCheckReasons();
+  const by = r.byLabel || {};
+  Object.keys(reasons).forEach((code) => {
+    const n = by[reasons[code]];
+    if (n > 0) text += "\n  " + reasons[code] + ": " + n;
+  });
+  return text;
 }
