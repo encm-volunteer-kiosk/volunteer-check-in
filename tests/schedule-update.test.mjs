@@ -6,9 +6,14 @@ import vm from "node:vm";
 const source = readFileSync(new URL("../scripts/ScheduleUpdate.gs", import.meta.url), "utf8");
 const HOUR = 3600000;
 const LOG_HEADERS = [
-  "Shift ID", "Volunteer ID", "First name", "Last name", "Date", "Tapped in at",
-  "Arrived at", "Signed out at", "Hours", "Status", "Flag", "Staff note",
+  "Date", "Day", "Volunteer\nName", "Volunteer\nRole/Type",
+  "Check-In\nRecorded\n(timestamp)", "Check-In\nStated\n(user)",
+  "Check-Out\nRecorded\n(timestamp)", "Check-Out\nStated (user)",
+  "Hours Served\n(timestamps)", "Hours Served\n(stated)", "Admin\nAlerts?",
+  "Activity", "Notes", "User Token", "Status", "Check-In\nEntered By",
+  "Check-Out\nEntered By", "Shift ID",
 ];
+const CHECKOUT_COLUMNS = [7, 8, 9, 10, 15, 17];
 const SHIFT_HEADERS = ["Shifts", "Shift Schedule", "Shift Type", "Start", "Finish"];
 const THURSDAY = [
   ["Thursday", "Morning", "Delivery", "6:30", "9:30"],
@@ -19,10 +24,16 @@ const THURSDAY = [
 
 function logRow(arrived, signedOut = "") {
   const row = LOG_HEADERS.map(() => "");
-  row[4] = "2026-11-12";
-  row[5] = new Date("2026-11-12T20:00:00Z");
-  row[6] = typeof arrived === "string" && arrived ? new Date(arrived) : arrived;
+  row[0] = "2026-11-12";
+  row[1] = "Thursday";
+  row[2] = "Synthetic Volunteer";
+  row[4] = typeof arrived === "string" && arrived ? new Date(arrived) : arrived;
+  row[5] = row[4];
   row[7] = signedOut;
+  row[13] = "synthetic-token";
+  row[14] = "open";
+  row[15] = "kiosk";
+  row[17] = "synthetic-shift-id";
   return row;
 }
 
@@ -34,7 +45,7 @@ function harness({
   config = { DEBUG: true },
   headers = LOG_HEADERS,
   lockAvailable = true,
-  verifyMismatch = false,
+  verifyMismatch = null,
   activeSpreadsheet = true,
   spreadsheetId = "active-test-sheet-id",
 } = {}) {
@@ -123,13 +134,17 @@ function harness({
             formats.push({ row, column, format });
             return this;
           },
-          getValue: () => verifyMismatch ? "" : data[row - 1][column - 1],
+          getValue: () => verifyMismatch === column ? "" : data[row - 1][column - 1],
           getDisplayValue: () => display(data[row - 1][column - 1]),
         };
       },
     };
   }
-  const log = sheet([headers, ...rows.map((row) => row.slice())]);
+  const values = [headers, ...rows.map((row) => row.slice())];
+  const log = sheet(values);
+  const checkoutColumn = headers.findIndex((header) =>
+    String(header).trim().replace(/\s+/g, " ").toLowerCase() === "check-out stated (user)",
+  ) + 1;
   const schedule = sheet([SHIFT_HEADERS, ...shifts]);
   const spreadsheet = {
     getId: () => spreadsheetId,
@@ -145,7 +160,10 @@ function harness({
   };
   const context = {
     Date: ClockDate,
-    Object: { freeze: (value) => Object.freeze({ ...value, ...config }) },
+    Object: {
+      keys: Object.keys,
+      freeze: (value) => Object.freeze({ ...value, ...config }),
+    },
     Utilities: { getUuid: () => "test-run", formatDate, parseDate },
     SpreadsheetApp: {
       getActiveSpreadsheet: () => activeSpreadsheet ? spreadsheet : null,
@@ -177,7 +195,10 @@ function harness({
     showId: () => context.showSpreadsheetId(),
     diagnose: () => context.testCheckoutDiagnostics(),
     install: () => context.createCheckoutTrigger(),
-    writes, formats, entries, triggers, deletedTriggers, oldTrigger,
+    writes, formats, entries, triggers, deletedTriggers, oldTrigger, values,
+    get checkouts() {
+      return writes.filter((write) => write.column === checkoutColumn);
+    },
     released: () => released,
     flushes: () => flushes,
     summary: () => entries.find((entry) => entry.event === "SUMMARY")?.details,
@@ -188,8 +209,8 @@ test("routine checkout logging is disabled by default without changing writes", 
   const h = harness({ config: {} });
   h.run();
   assert.deepEqual(h.entries, []);
-  assert.equal(h.writes.length, 1);
-  assert.equal(h.writes[0].value.toISOString(), "2026-11-12T21:00:00.000Z");
+  assert.equal(h.writes.length, 6);
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-11-12T21:00:00.000Z");
   assert.equal(h.flushes(), 1);
   assert.ok(h.released());
 });
@@ -205,7 +226,8 @@ test("non-debug runs suppress warnings without changing skips or fallbacks", () 
     const h = harness({ ...options, config: { DEBUG: false } });
     h.run();
     assert.deepEqual(h.entries, []);
-    assert.equal(h.writes.length, expectedWrites);
+    assert.equal(h.checkouts.length, expectedWrites);
+    assert.equal(h.writes.length, expectedWrites * 6);
     assert.ok(h.released());
   }
 });
@@ -272,20 +294,137 @@ test("trigger setup requires a bound spreadsheet before replacing existing trigg
   assert.equal(h.deletedTriggers.length, 0);
 });
 
-test("uses the workbook's Afternoon label and D/E times, writing only Log H as a date", () => {
+test("uses the current Log layout and writes both timestamps, hours, and closing metadata", () => {
   const row = logRow("2026-11-12T19:54:40.824Z");
-  const originalArrival = row[6].getTime();
+  row[10] = "Staff alert";
+  row[11] = "Staff activity";
+  row[12] = "Staff note";
   const h = harness({ rows: [row] });
   h.run();
-  assert.equal(h.writes.length, 1);
-  assert.equal(h.writes[0].column, 8);
-  assert.ok(h.writes[0].value instanceof Date);
-  assert.equal(h.writes[0].value.toISOString(), "2026-11-12T21:00:00.000Z");
-  assert.equal(row[6].getTime(), originalArrival);
-  assert.equal(h.formats[0].format, "yyyy-mm-dd h:mm am/pm");
+  assert.deepEqual(h.writes.map(({ column, value }) =>
+    [column, value instanceof Date ? value.toISOString() : value]), [
+    [7, "2026-11-13T06:30:00.000Z"],
+    [8, "2026-11-12T21:00:00.000Z"],
+    [9, 10.59],
+    [10, 1.09],
+    [15, "closed"],
+    [17, "auto-checkout"],
+  ]);
+  for (let i = 0; i < row.length; i++) {
+    if (!CHECKOUT_COLUMNS.includes(i + 1)) assert.deepEqual(h.values[1][i], row[i]);
+  }
+  assert.deepEqual(h.formats.map(({ column, format }) => [column, format]), [
+    [7, "yyyy-mm-dd h:mm am/pm"], [8, "yyyy-mm-dd h:mm am/pm"],
+    [9, "0.00"], [10, "0.00"], [15, "@"], [17, "@"],
+  ]);
   assert.equal(h.flushes(), 1);
   assert.equal(h.summary().updated, 1);
   assert.ok(h.released());
+});
+
+test("the Log fixture matches the kiosk's current eighteen-column schema", () => {
+  const context = {};
+  vm.runInNewContext(
+    readFileSync(new URL("../apps-script/Logic.js", import.meta.url), "utf8"),
+    context,
+  );
+  assert.deepEqual(LOG_HEADERS, Array.from(context.logHeaders()));
+});
+
+test("stated arrival takes priority over recorded arrival for matching and stated hours", () => {
+  const row = logRow("2026-11-12T15:15:00Z");
+  row[4] = new Date("2026-11-12T18:15:00Z");
+  const h = harness({ rows: [row] });
+  h.run();
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-11-12T18:00:00.000Z");
+  assert.equal(h.values[1][8], 12.25);
+  assert.equal(h.values[1][9], 2.75);
+  assert.equal(h.values[1][4].toISOString(), "2026-11-12T18:15:00.000Z");
+  assert.equal(h.values[1][5].toISOString(), "2026-11-12T15:15:00.000Z");
+});
+
+test("blank or unreadable stated arrivals fall back to recorded arrivals without changing either", () => {
+  for (const stated of ["", null, undefined, "invalid", new Date("invalid")]) {
+    const row = logRow("2026-11-12T19:54:40.824Z");
+    row[5] = stated;
+    const h = harness({ rows: [row] });
+    h.run();
+    assert.equal(h.checkouts[0].value.toISOString(), "2026-11-12T21:00:00.000Z");
+    assert.equal(h.values[1][8], 10.59);
+    assert.equal(h.values[1][9], 1.09);
+    assert.deepEqual(h.values[1][4], row[4]);
+    assert.deepEqual(h.values[1][5], stated);
+  }
+});
+
+test("missing recorded arrivals leave recorded hours blank while closing a stated shift", () => {
+  for (const recorded of ["", "invalid", new Date("invalid")]) {
+    const row = logRow("2026-11-12T19:54:40.824Z");
+    row[4] = recorded;
+    const h = harness({ rows: [row] });
+    h.run();
+    assert.equal(h.values[1][6].toISOString(), "2026-11-13T06:30:00.000Z");
+    assert.equal(h.values[1][8], "");
+    assert.equal(h.values[1][9], 1.09);
+    assert.equal(h.values[1][14], "closed");
+    assert.deepEqual(h.values[1][4], recorded);
+  }
+});
+
+test("either recorded or stated existing checkout protects the entire row", () => {
+  for (const column of [6, 7]) {
+    for (const value of [new Date("2026-11-12T21:00:00Z"), "Staff entered value"]) {
+      const row = logRow("2026-11-12T19:54:40.824Z");
+      row[column] = value;
+      const h = harness({ rows: [row] });
+      h.run();
+      assert.equal(h.writes.length, 0);
+      assert.deepEqual(h.values[1], row);
+      assert.equal(h.summary().existingCheckout, 1);
+    }
+  }
+});
+
+test("Log columns can be reordered and interleaved with staff columns", () => {
+  const original = logRow("2026-11-12T19:54:40.824Z");
+  const headers = LOG_HEADERS.slice().reverse();
+  headers.splice(8, 0, "Staff-only column");
+  const row = headers.map((header) => {
+    const index = LOG_HEADERS.indexOf(header);
+    return index < 0 ? "Keep this cell" : original[index];
+  });
+  const h = harness({ headers, rows: [row] });
+  h.run();
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-11-12T21:00:00.000Z");
+  assert.deepEqual(h.writes.map(({ column }) => headers[column - 1]),
+    CHECKOUT_COLUMNS.map((column) => LOG_HEADERS[column - 1]));
+  const changed = new Set(h.writes.map(({ column }) => column - 1));
+  row.forEach((value, i) => {
+    if (!changed.has(i)) assert.deepEqual(h.values[1][i], value);
+  });
+});
+
+test("Log header matching ignores line breaks, extra whitespace, and case", () => {
+  const headers = LOG_HEADERS.map((header) =>
+    "  " + header.toUpperCase().replace(/\s+/g, "\n   ") + "  ");
+  const h = harness({ headers });
+  h.run();
+  assert.equal(h.writes.length, 6);
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-11-12T21:00:00.000Z");
+});
+
+test("missing or duplicate required Log columns fail before any writes", () => {
+  for (const index of [4, 5, 6, 7, 8, 9, 14, 16]) {
+    for (const duplicate of [false, true]) {
+      const headers = [...LOG_HEADERS];
+      if (duplicate) headers.push(headers[index]);
+      else headers[index] = "Staff-only column";
+      const h = harness({ headers });
+      assert.throws(() => h.run(), /Log must contain exactly one/);
+      assert.equal(h.writes.length, 0);
+      assert.ok(h.released());
+    }
+  }
 });
 
 test("the workbook's blank rows receive 3 PM, 3 PM, and the three-hour fallback", () => {
@@ -297,7 +436,7 @@ test("the workbook's blank rows receive 3 PM, 3 PM, and the three-hour fallback"
     logRow("2026-11-12T22:18:48.614Z"),
   ] });
   h.run();
-  assert.deepEqual(h.writes.map(({ row, column, value }) => [
+  assert.deepEqual(h.checkouts.map(({ row, column, value }) => [
     row, column, value.toISOString(),
   ]), [
     [2, 8, "2026-11-12T21:00:00.000Z"],
@@ -311,7 +450,7 @@ test("the workbook's blank rows receive 3 PM, 3 PM, and the three-hour fallback"
 test("overlapping arrivals use the latest Start, ignoring arrival seconds", () => {
   const h = harness({ rows: [logRow("2026-11-12T15:15:59.999Z")] });
   h.run();
-  assert.equal(h.writes[0].value.toISOString(), "2026-11-12T18:00:00.000Z");
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-11-12T18:00:00.000Z");
 });
 
 test("an exact Start takes priority and an adjacent Finish belongs to the next shift", () => {
@@ -320,7 +459,7 @@ test("an exact Start takes priority and an adjacent Finish belongs to the next s
     logRow("2026-11-12T18:00:00Z"),
   ] });
   h.run();
-  assert.deepEqual(h.writes.map(({ value }) => value.toISOString()), [
+  assert.deepEqual(h.checkouts.map(({ value }) => value.toISOString()), [
     "2026-11-12T18:00:00.000Z", "2026-11-12T21:00:00.000Z",
   ]);
 });
@@ -329,14 +468,14 @@ test("a nonmatching arrival falls back to exactly three elapsed hours", () => {
   const arrived = "2026-11-12T22:12:47.123Z";
   const h = harness({ rows: [logRow(arrived)] });
   h.run();
-  assert.equal(h.writes[0].value.getTime(), Date.parse(arrived) + 3 * HOUR);
+  assert.equal(h.checkouts[0].value.getTime(), Date.parse(arrived) + 3 * HOUR);
   assert.equal(h.summary().fallbacks, 1);
 });
 
 test("a header-only Shifts tab still allows the three-hour fallback", () => {
   const h = harness({ shifts: [] });
   h.run();
-  assert.equal(h.writes[0].value.toISOString(), "2026-11-12T22:54:40.824Z");
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-11-12T22:54:40.824Z");
 });
 
 test("Any schedules with blank times use the fallback and emit diagnostics", () => {
@@ -357,7 +496,7 @@ test("invalid shift times are reported, not used as a matching finish", () => {
 test("reads numeric Sheets time values without parsing the schedule label", () => {
   const h = harness({ shifts: [["Thursday", "Afternoon", "Operations", 12 / 24, 15 / 24]] });
   h.run();
-  assert.equal(h.writes[0].value.toISOString(), "2026-11-12T21:00:00.000Z");
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-11-12T21:00:00.000Z");
 });
 
 test("preserves existing sign-outs and today's arrivals while backfilling older blanks", () => {
@@ -369,10 +508,10 @@ test("preserves existing sign-outs and today's arrivals while backfilling older 
     logRow("not a date"),
   ] });
   h.run();
-  assert.equal(h.writes.length, 1);
-  assert.equal(h.writes[0].row, 4);
-  assert.equal(h.writes[0].column, 8);
-  assert.equal(h.writes[0].value.toISOString(), "2026-11-11T22:00:00.000Z");
+  assert.equal(h.writes.length, 6);
+  assert.equal(h.checkouts[0].row, 4);
+  assert.equal(h.checkouts[0].column, 8);
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-11-11T22:00:00.000Z");
   assert.equal(h.summary().existingCheckout, 1);
   assert.equal(h.summary().differentDate, 1);
   assert.equal(h.summary().missingCheckIn, 2);
@@ -394,7 +533,7 @@ test("backfills multiple old dates using each arrival's weekday and original dat
     ],
   });
   h.run();
-  assert.deepEqual(h.writes.map(({ row, column, value }) => [
+  assert.deepEqual(h.checkouts.map(({ row, column, value }) => [
     row, column, value.toISOString(),
   ]), [
     [2, 8, "2026-11-10T15:30:00.000Z"],
@@ -412,7 +551,7 @@ test("backfills an old overnight shift using its arrival date across daylight sa
     shifts: [["Saturday", "Evening", "Operations", "22:00", "02:00"]],
   });
   h.run();
-  assert.equal(h.writes[0].value.toISOString(), "2026-11-01T08:00:00.000Z");
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-11-01T08:00:00.000Z");
 });
 
 test("backfills an old three-hour fallback across its original year boundary", () => {
@@ -420,7 +559,7 @@ test("backfills an old three-hour fallback across its original year boundary", (
     rows: [logRow("2026-01-01T05:45:00Z")], shifts: [],
   });
   h.run();
-  assert.equal(h.writes[0].value.toISOString(), "2026-01-01T08:45:00.000Z");
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-01-01T08:45:00.000Z");
 });
 
 test("backfills abbreviated weekdays and date-specific shifts for older arrivals", () => {
@@ -437,7 +576,7 @@ test("backfills abbreviated weekdays and date-specific shifts for older arrivals
     ],
   });
   h.run();
-  assert.deepEqual(h.writes.map(({ value }) => value.toISOString()), [
+  assert.deepEqual(h.checkouts.map(({ value }) => value.toISOString()), [
     "2026-11-10T15:30:00.000Z",
     "2026-11-11T22:00:00.000Z",
     "2026-11-09T17:00:00.000Z",
@@ -451,7 +590,8 @@ test("backfilled sign-outs are preserved on subsequent runs", () => {
   });
   h.run();
   h.run();
-  assert.equal(h.writes.length, 2);
+  assert.equal(h.writes.length, 12);
+  assert.equal(h.checkouts.length, 2);
   const summary = h.entries.filter((entry) => entry.event === "SUMMARY").at(-1).details;
   assert.equal(summary.updated, 0);
   assert.equal(summary.existingCheckout, 2);
@@ -474,7 +614,7 @@ test("matches the arrival weekday, not the execution weekday", () => {
     ["Thursday", "Afternoon", "Operations", "12:00", "15:00"],
   ] });
   h.run();
-  assert.equal(h.writes[0].value.toISOString(), "2026-11-12T21:00:00.000Z");
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-11-12T21:00:00.000Z");
 });
 
 test("duplicate matching shifts do not create an ambiguity", () => {
@@ -507,7 +647,7 @@ test("overnight matching shifts wait for Finish, then write the next-day timesta
   assert.equal(before.summary().fallbacks, 0);
   const after = harness({ ...options, now: "2026-11-13T08:30:00Z" });
   after.run();
-  assert.equal(after.writes[0].value.toISOString(), "2026-11-13T08:00:00.000Z");
+  assert.equal(after.checkouts[0].value.toISOString(), "2026-11-13T08:00:00.000Z");
 });
 
 test("late-night fallbacks wait for three hours and are picked up by a later hourly run", () => {
@@ -518,7 +658,7 @@ test("late-night fallbacks wait for three hours and are picked up by a later hou
   assert.equal(before.summary().notDue, 1);
   const after = harness({ ...options, now: "2026-11-13T09:00:00Z" });
   after.run();
-  assert.equal(after.writes[0].value.toISOString(), "2026-11-13T08:45:00.000Z");
+  assert.equal(after.checkouts[0].value.toISOString(), "2026-11-13T08:45:00.000Z");
 });
 
 test("at exactly the calculated checkout instant, the row is eligible", () => {
@@ -534,7 +674,7 @@ test("the three-hour fallback is elapsed time across a daylight-saving transitio
     rows: [logRow("2026-11-01T05:30:00Z")], shifts: [], now: "2026-11-02T06:30:00Z",
   });
   h.run();
-  assert.equal(h.writes[0].value.toISOString(), "2026-11-01T08:30:00.000Z");
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-11-01T08:30:00.000Z");
 });
 
 test("scheduled Finish is constructed in the spreadsheet timezone during daylight time", () => {
@@ -542,7 +682,7 @@ test("scheduled Finish is constructed in the spreadsheet timezone during dayligh
     rows: [logRow("2026-07-09T18:30:00Z")], now: "2026-07-10T05:30:00Z",
   });
   h.run();
-  assert.equal(h.writes[0].value.toISOString(), "2026-07-09T20:00:00.000Z");
+  assert.equal(h.checkouts[0].value.toISOString(), "2026-07-09T20:00:00.000Z");
 });
 
 test("derives dates and weekdays dynamically across year and leap-month boundaries", () => {
@@ -555,7 +695,7 @@ test("derives dates and weekdays dynamically across year and leap-month boundari
       shifts: [[weekday, "Afternoon", "Operations", "12:00", "15:00"]],
     });
     h.run();
-    assert.equal(h.writes[0].value.toISOString(), expected);
+    assert.equal(h.checkouts[0].value.toISOString(), expected);
     assert.equal(h.summary().arrivalDateBefore, now.slice(0, 10));
   }
 });
@@ -566,25 +706,55 @@ test("dry runs preview dated sign-outs without writing cells", () => {
   assert.equal(h.writes.length, 0);
   assert.equal(h.summary().previews, 1);
   assert.equal(h.summary().updated, 0);
+  const preview = h.entries.find((entry) => entry.event === "BEFORE_UPDATE").details;
+  assert.equal(preview.proposedRecordedCheckout, "2026-11-13T06:30:00.000Z");
+  assert.equal(preview.recordedHours, 10.59);
+  assert.equal(preview.statedHours, 1.09);
+  assert.equal(h.flushes(), 0);
 });
 
 test("rejects the old Log layout before writing any cells", () => {
-  const headers = [...LOG_HEADERS];
-  headers[6] = "Check-Out Recorded";
+  const headers = [
+    "Shift ID", "Volunteer ID", "First name", "Last name", "Date", "Tapped in at",
+    "Arrived at", "Signed out at", "Hours", "Status", "Flag", "Staff note",
+  ];
   const h = harness({ headers });
-  assert.throws(() => h.run(), /Arrived at/);
+  assert.throws(() => h.run(), /Check-In Recorded \(timestamp\)/);
   assert.equal(h.writes.length, 0);
   assert.ok(h.released());
 });
 
 test("write verification failures are surfaced and always release the lock", () => {
-  const h = harness({ verifyMismatch: true, config: {} });
+  const h = harness({ verifyMismatch: 8, config: {} });
   assert.throws(() => h.run(), /verification failed/);
   assert.deepEqual(h.entries.map((entry) => entry.event), ["AFTER_UPDATE", "EXECUTION_FAILED"]);
   assert.ok(h.entries.every((entry) => entry.level === "ERROR"));
-  assert.equal(h.entries[0].details.checkoutRaw, "<EMPTY STRING>");
+  const mismatch = h.entries[0].details.cells.find((cell) => cell.column === 8);
+  assert.equal(mismatch.actual, "<EMPTY STRING>");
+  assert.equal(mismatch.matches, false);
   assert.equal(h.entries[0].details.checkoutMatches, false);
   assert.ok(h.released());
+});
+
+test("write verification covers every timestamp, hours value, and closing metadata cell", () => {
+  for (const column of CHECKOUT_COLUMNS) {
+    const h = harness({ verifyMismatch: column, config: {} });
+    assert.throws(() => h.run(), /verification failed/);
+    const after = h.entries.find((entry) => entry.event === "AFTER_UPDATE");
+    assert.equal(after.level, "ERROR");
+    assert.equal(after.details.cells.find((cell) => cell.column === column).matches, false);
+    assert.deepEqual(after.details.cells.map((cell) => cell.column), CHECKOUT_COLUMNS);
+    assert.ok(h.released());
+  }
+});
+
+test("disabling verification still writes all checkout cells without flushing", () => {
+  const h = harness({ config: { DEBUG: true, VERIFY_WRITES: false } });
+  h.run();
+  assert.deepEqual(h.writes.map(({ column }) => column), CHECKOUT_COLUMNS);
+  assert.equal(h.summary().updated, 1);
+  assert.equal(h.flushes(), 0);
+  assert.ok(h.entries.some((entry) => entry.event === "AFTER_UPDATE_UNVERIFIED"));
 });
 
 test("a concurrent execution cannot write or release another execution's lock", () => {

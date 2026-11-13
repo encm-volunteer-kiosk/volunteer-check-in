@@ -60,8 +60,8 @@ an error naming the column, and `setupSheets` puts a missing one back (see Setup
 | D      | Volunteer Role/Type            | Left blank for staff. The kiosk never reads or writes it.              |
 | E      | Check-In Recorded (timestamp)  | The server's clock when the volunteer tapped Check In.                 |
 | F      | Check-In Stated (user)         | The arrival time the volunteer chose, or E when they chose none.       |
-| G      | Check-Out Recorded (timestamp) | The server's clock when the volunteer tapped Check Out.                |
-| H      | Check-Out Stated (user)        | The check-out time the volunteer chose, or G when they chose none.     |
+| G      | Check-Out Recorded (timestamp) | The server's clock when the volunteer tapped Check Out or auto-checkout ran. |
+| H      | Check-Out Stated (user)        | The chosen check-out time, G when none was chosen, or the automatic sign-out time. |
 | I      | Hours Served (timestamps)      | G minus E, in hours to 2 decimals.                                     |
 | J      | Hours Served (stated)          | H minus F, in hours to 2 decimals.                                     |
 | K      | Admin Alerts?                  | A note for staff when a stated time is far from the tap (below).       |
@@ -70,22 +70,23 @@ an error naming the column, and `setupSheets` puts a missing one back (see Setup
 | N      | User Token                     | The volunteer's User Token from Volunteer Profiles, unhashed.          |
 | O      | Status                         | `open` from check-in until check-out, then `closed`.                   |
 | P      | Check-In Entered By            | `kiosk`, or the initials of the admin who entered the check-in.        |
-| Q      | Check-Out Entered By           | `kiosk`, or the initials of the admin who entered the check-out.       |
+| Q      | Check-Out Entered By           | `kiosk`, admin initials, or `auto-checkout` for an automatic sign-out.  |
 | R      | Shift ID                       | A unique ID the kiosk gives each row; the admin menu finds rows by it. |
 
 The letters are where a new Log puts each column. A to N are ENCM's headers, word for word.
 
 ### Recorded and stated times
 
-A **recorded** time is the server's clock at the moment the volunteer tapped. A **stated**
-time is the time the volunteer said, on the tablet's time picker, or the time an admin
-entered in the menu. When a volunteer doesn't open the picker, the stated time is the
-recorded time.
+A **recorded** time is the server's clock at the moment the volunteer tapped, or when
+automatic sign-out ran. A **stated** time is the time the volunteer said, on the tablet's
+time picker, the time an admin entered in the menu, or the calculated automatic sign-out
+time. When a volunteer doesn't open the picker, the stated time is the recorded time.
 
 Each hours column pairs times of one kind: Hours Served (timestamps) uses the two recorded
 times, Hours Served (stated) the two stated times. An hours cell is left blank when one of
-its times is blank. Rows the admin menu adds or closes have no recorded time for the end
-the admin entered, so their Hours Served (timestamps) is blank.
+its times is blank. When Check-In Stated is unreadable, stated hours use Check-In Recorded
+as the arrival. Rows the admin menu adds or closes have no recorded time for the end the
+admin entered, so their Hours Served (timestamps) is blank.
 
 Milestones (first shift, 10 shifts, hours totals and so on) count Hours Served (stated),
 from `closed` rows with the volunteer's User Token. Rows the admin menu writes count too,
@@ -366,27 +367,41 @@ sample-data/                invented volunteer profiles with the real column hea
 ## After-midnight automatic sign-out
 
 `scripts/ScheduleUpdate.gs` is Google Sheets Apps Script, not browser or Node code.
-It uses the workbook's **Log** layout, not the older **2026-11 Log** tab:
+It uses the workbook's current eighteen-column **Log** layout. Log columns are found
+by their headers, ignoring case and whitespace (including line breaks), so reordering
+them or inserting staff columns is safe. Missing or duplicate required headers stop
+the job before it writes anything. In the workbook's default order:
 
-- Log G (7): **Arrived at**, read only.
-- Log H (8): **Signed out at**, filled only when blank, as a full date-time.
+- Log E (5): **Check-In Recorded (timestamp)**, read only; fallback arrival.
+- Log F (6): **Check-In Stated (user)**, read only; preferred arrival when readable.
+- Log G (7): **Check-Out Recorded (timestamp)**, set to the automation's execution time.
+- Log H (8): **Check-Out Stated (user)**, set to the calculated sign-out date-time.
+- Log I (9): **Hours Served (timestamps)**, G minus E, rounded to two decimals;
+  blank when E is unreadable.
+- Log J (10): **Hours Served (stated)**, H minus the effective arrival, rounded to two decimals.
+- Log O (15): **Status**, set to `closed`.
+- Log Q (17): **Check-Out Entered By**, set to `auto-checkout`.
 - Shifts A (1): **Shifts**, the weekday of the arrival.
 - Shifts B (2): **Shift Schedule**, a label such as Morning or Afternoon, not a time range.
 - Shifts D (4) / E (5): **Start** / **Finish**.
 
 The job processes blank sign-outs for **all arrival dates before today** in the
 spreadsheet's timezone, including missed dates older than yesterday. Each row's
-**Arrived at** date supplies the weekday used to match Shifts and the calendar date
-of its calculated sign-out; the execution date and Log's separate Date column are
-not used for that calculation. It ignores seconds when matching: an exact Start
+effective arrival (readable Check-In Stated, otherwise Check-In Recorded) supplies the
+weekday used to match Shifts and the calendar date of its calculated sign-out; the
+execution date and Log's separate Date column are not used for that calculation.
+Rows without a readable arrival are skipped. It ignores seconds when matching: an exact Start
 match wins; otherwise the arrival must be at or after Start and before Finish.
 When windows overlap, the latest Start wins. Duplicate windows are harmless;
 conflicting Finishes with the same winning Start are left unchanged and produce
 a warning when debugging is enabled.
 An overnight Finish is dated the next day. If no valid window matches (including
-Any schedules with blank times), sign-out is exactly **Arrived at + 3 elapsed hours**.
-No sign-out is written before its calculated time has passed. Existing sign-outs
-and every other Log column, including Hours and Status, are left unchanged.
+Any schedules with blank times), sign-out is exactly **effective arrival + 3 elapsed hours**.
+No sign-out is written before its calculated time has passed. If either recorded or
+stated checkout is already filled, the entire row is left unchanged. Only the six
+checkout, hours, status, and source cells listed above are updated; check-in values,
+staff alerts/notes, and all other cells are preserved. All six writes are verified
+when `VERIFY_WRITES` is enabled.
 
 The job gets its spreadsheet at runtime with `SpreadsheetApp.getActiveSpreadsheet()`;
 no spreadsheet ID configuration is needed. `showSpreadsheetId` logs the detected ID

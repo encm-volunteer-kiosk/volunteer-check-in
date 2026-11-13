@@ -11,8 +11,11 @@
  *   E (5) = Finish
  *
  * Log:
- *   G (7) = Arrived at (never overwritten)
- *   H (8) = Signed out at (full date and time)
+ *   E/F = Check-In Recorded/Stated (never overwritten; prefer Stated)
+ *   G/H = Check-Out Recorded/Stated (execution time/calculated sign-out)
+ *   I/J = Hours Served (timestamps/stated)
+ *   O = Status, Q = Check-Out Entered By
+ *   Log columns are located by header, not position.
  *
  * Process blank sign-outs for every arrival date before today.
  * Retry hourly so overnight finishes and three-hour fallbacks are not written early.
@@ -27,9 +30,6 @@ const CONFIG = Object.freeze({
   SHIFT_SCHEDULE: 2,
   SHIFT_START: 4,
   SHIFT_FINISH: 5,
-
-  LOG_CHECKIN: 7,
-  LOG_CHECKOUT: 8,
 
   HEADER_ROWS: 1,
 
@@ -112,9 +112,7 @@ function updateDailyCheckOuts() {
       shiftDay: CONFIG.SHIFT_DAY,
       shiftSchedule: CONFIG.SHIFT_SCHEDULE,
       shiftStart: CONFIG.SHIFT_START,
-      shiftFinish: CONFIG.SHIFT_FINISH,
-      logCheckIn: CONFIG.LOG_CHECKIN,
-      logCheckOut: CONFIG.LOG_CHECKOUT
+      shiftFinish: CONFIG.SHIFT_FINISH
     }
   });
 
@@ -184,42 +182,30 @@ function updateDailyCheckOuts() {
     const scheduleIdx = CONFIG.SHIFT_SCHEDULE - 1;
     const startIdx = CONFIG.SHIFT_START - 1;
     const finishIdx = CONFIG.SHIFT_FINISH - 1;
-    const checkinIdx = CONFIG.LOG_CHECKIN - 1;
-    const checkoutIdx = CONFIG.LOG_CHECKOUT - 1;
     if (
       shiftText[0].length < Math.max(
         CONFIG.SHIFT_DAY, CONFIG.SHIFT_SCHEDULE, CONFIG.SHIFT_START,
         CONFIG.SHIFT_FINISH
-      ) ||
-      logs[0].length < Math.max(
-        CONFIG.LOG_CHECKIN, CONFIG.LOG_CHECKOUT
       )
     ) {
       throw new Error("One or more configured columns do not exist.");
     }
+    const logColumns = getCheckoutLogColumns_(logs[0]);
     [
-      [CONFIG.SHIFTS_SHEET, shiftText[0], [
-        [CONFIG.SHIFT_DAY, "Shifts"],
-        [CONFIG.SHIFT_SCHEDULE, "Shift Schedule"],
-        [CONFIG.SHIFT_START, "Start"],
-        [CONFIG.SHIFT_FINISH, "Finish"]
-      ]],
-      [CONFIG.LOG_SHEET, logs[0], [
-        [CONFIG.LOG_CHECKIN, "Arrived at"],
-        [CONFIG.LOG_CHECKOUT, "Signed out at"]
-      ]]
-    ].forEach(([sheetName, headers, columns]) => {
-      columns.forEach(([column, expected]) => {
-        const actual = String(headers[column - 1]).trim().replace(/\s+/g, " ");
-        if (actual.toLowerCase() !== expected.toLowerCase()) {
-          throw new Error(
-            sheetName + " column " + column + ' must be "' + expected +
-            '", not "' + actual + '".'
-          );
-        }
-      });
+      [CONFIG.SHIFT_DAY, "Shifts"],
+      [CONFIG.SHIFT_SCHEDULE, "Shift Schedule"],
+      [CONFIG.SHIFT_START, "Start"],
+      [CONFIG.SHIFT_FINISH, "Finish"]
+    ].forEach(([column, expected]) => {
+      const actual = String(shiftText[0][column - 1]).trim().replace(/\s+/g, " ");
+      if (normalizeCheckoutHeader_(actual) !== normalizeCheckoutHeader_(expected)) {
+        throw new Error(
+          CONFIG.SHIFTS_SHEET + " column " + column + ' must be "' + expected +
+          '", not "' + actual + '".'
+        );
+      }
     });
-    log("INFO", "COLUMN_VALIDATION_PASSED");
+    log("INFO", "COLUMN_VALIDATION_PASSED", { logColumns: logColumns });
 
     currentPhase = "COLLECT_SHIFTS";
     const availableShifts = [];
@@ -281,23 +267,31 @@ function updateDailyCheckOuts() {
       const logRow = i + 1;
       currentRow = logRow;
       counts.logRowsRead++;
-      const checkin = row[checkinIdx];
-      const existingCheckout = row[checkoutIdx];
+      const recordedCheckin = row[logColumns.recordedIn - 1];
+      const statedCheckin = row[logColumns.statedIn - 1];
+      const useStatedCheckin = isCheckoutDate_(statedCheckin);
+      const checkin = useStatedCheckin ? statedCheckin : recordedCheckin;
+      const checkinColumn = useStatedCheckin ? logColumns.statedIn : logColumns.recordedIn;
+      const existingRecordedCheckout = row[logColumns.recordedOut - 1];
+      const existingCheckout = row[logColumns.statedOut - 1];
       debug("LOG_ROW_READ", {
-        logRow: logRow, checkInColumn: CONFIG.LOG_CHECKIN,
+        logRow: logRow, checkInColumn: checkinColumn,
         checkInRaw: describe(checkin),
-        checkoutColumn: CONFIG.LOG_CHECKOUT,
+        recordedCheckoutColumn: logColumns.recordedOut,
+        recordedCheckoutRaw: describe(existingRecordedCheckout),
+        checkoutColumn: logColumns.statedOut,
         checkoutRaw: describe(existingCheckout)
       });
-      if (!isBlank(existingCheckout)) {
+      if (!isBlank(existingRecordedCheckout) || !isBlank(existingCheckout)) {
         counts.existingCheckout++;
         debug("LOG_ROW_SKIPPED", {
           logRow: logRow, reason: "CHECKOUT_ALREADY_PRESENT",
-          checkout: describe(existingCheckout)
+          recordedCheckout: describe(existingRecordedCheckout),
+          statedCheckout: describe(existingCheckout)
         });
         continue;
       }
-      if (!(checkin instanceof Date) || isNaN(checkin.getTime())) {
+      if (!isCheckoutDate_(checkin)) {
         counts.missingCheckIn++;
         debug("LOG_ROW_SKIPPED", {
           logRow: logRow, reason: "CHECKIN_NOT_VALID_DATE",
@@ -394,14 +388,26 @@ function updateDailyCheckOuts() {
         continue;
       }
       counts.eligible++;
+      const recordedHours = checkoutHours_(recordedCheckin, now);
+      const statedHours = checkoutHours_(checkin, checkout);
+      const updates = [
+        { column: logColumns.recordedOut, value: now, format: "yyyy-mm-dd h:mm am/pm" },
+        { column: logColumns.statedOut, value: checkout, format: "yyyy-mm-dd h:mm am/pm" },
+        { column: logColumns.recordedHours, value: recordedHours, format: "0.00" },
+        { column: logColumns.statedHours, value: statedHours, format: "0.00" },
+        { column: logColumns.status, value: "closed", format: "@" },
+        { column: logColumns.outBy, value: "auto-checkout", format: "@" }
+      ];
       log("INFO", "BEFORE_UPDATE", {
         logRow: logRow, matchedShiftRow: matchedShift ? matchedShift.shiftRow : null,
         checkInDate: checkinDate, checkInDay: checkinDay,
-        checkoutColumn: CONFIG.LOG_CHECKOUT,
+        checkoutColumn: logColumns.statedOut,
         currentCheckout: describe(existingCheckout),
         proposedCheckout: Utilities.formatDate(
           checkout, timezone, "yyyy-MM-dd HH:mm:ss"
         ),
+        proposedRecordedCheckout: now.toISOString(),
+        recordedHours: recordedHours, statedHours: statedHours,
         mode: CONFIG.DRY_RUN ? "DRY_RUN" : "LIVE"
       });
       if (CONFIG.DRY_RUN) {
@@ -412,24 +418,36 @@ function updateDailyCheckOuts() {
         continue;
       }
       currentPhase = "WRITE_CHECKOUT";
-      logSheet.getRange(logRow, CONFIG.LOG_CHECKOUT)
-        .setValue(checkout)
-        .setNumberFormat("yyyy-mm-dd h:mm am/pm");
+      updates.forEach(update => {
+        logSheet.getRange(logRow, update.column)
+          .setNumberFormat(update.format)
+          .setValue(update.value);
+      });
       log("INFO", "WRITE_SUBMITTED", {
-        logRow: logRow, checkoutColumn: CONFIG.LOG_CHECKOUT
+        logRow: logRow, columns: updates.map(update => update.column)
       });
       if (CONFIG.VERIFY_WRITES) {
         currentPhase = "VERIFY_CHECKOUT";
         SpreadsheetApp.flush();
-        const actualCheckout = logSheet.getRange(logRow, CONFIG.LOG_CHECKOUT);
-        const checkoutRaw = actualCheckout.getValue();
-        const checkoutMatches = checkoutRaw instanceof Date &&
-          !isNaN(checkoutRaw.getTime()) &&
-          Math.abs(checkoutRaw.getTime() - checkout.getTime()) <= 1000;
+        const verification = updates.map(update => {
+          const cell = logSheet.getRange(logRow, update.column);
+          const actual = cell.getValue();
+          const matches = isCheckoutDate_(update.value)
+            ? isCheckoutDate_(actual) &&
+              Math.abs(actual.getTime() - update.value.getTime()) <= 1000
+            : actual === update.value;
+          return {
+            column: update.column,
+            expected: describe(update.value),
+            actual: describe(actual),
+            displayed: cell.getDisplayValue(),
+            matches: matches
+          };
+        });
+        const checkoutMatches = verification.every(cell => cell.matches);
         log(checkoutMatches ? "INFO" : "ERROR", "AFTER_UPDATE", {
           logRow: logRow,
-          checkoutRaw: describe(checkoutRaw),
-          checkoutDisplayed: actualCheckout.getDisplayValue(),
+          cells: verification,
           checkoutMatches: checkoutMatches
         });
         if (!checkoutMatches) {
@@ -521,6 +539,52 @@ function testCheckoutDiagnostics() {
 // ============================================
 // HELPER FUNCTIONS
 // ============================================
+
+function normalizeCheckoutHeader_(value) {
+  return String(value === null || value === undefined ? "" : value)
+    .trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function getCheckoutLogColumns_(headers) {
+  const required = {
+    recordedIn: "Check-In Recorded (timestamp)",
+    statedIn: "Check-In Stated (user)",
+    recordedOut: "Check-Out Recorded (timestamp)",
+    statedOut: "Check-Out Stated (user)",
+    recordedHours: "Hours Served (timestamps)",
+    statedHours: "Hours Served (stated)",
+    status: "Status",
+    outBy: "Check-Out Entered By"
+  };
+  const normalized = headers.map(normalizeCheckoutHeader_);
+  const columns = {};
+  Object.keys(required).forEach(key => {
+    const expected = required[key];
+    const matches = [];
+    normalized.forEach((header, i) => {
+      if (header === normalizeCheckoutHeader_(expected)) matches.push(i);
+    });
+    if (matches.length !== 1) {
+      throw new Error(
+        CONFIG.LOG_SHEET + ' must contain exactly one "' + expected +
+        '" column; found ' + matches.length + "."
+      );
+    }
+    columns[key] = matches[0] + 1;
+  });
+  return columns;
+}
+
+function isCheckoutDate_(value) {
+  return value instanceof Date && !isNaN(value.getTime());
+}
+
+function checkoutHours_(start, finish) {
+  if (!isCheckoutDate_(start) || !isCheckoutDate_(finish)) return "";
+  return Math.max(0, Math.round(
+    (finish.getTime() - start.getTime()) / 3600000 * 100
+  ) / 100);
+}
 
 function isBlank(value) {
   return value === "" ||
