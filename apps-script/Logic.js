@@ -5364,13 +5364,13 @@ function flagsEmailMessage(input) {
   para("Flags raised in the last 7 days: " + recent.length);
   para("Flags still unreviewed: " + unreviewed);
   para(
-    "Review them on the Flags tab (Data > Filter views > " +
+    "Review them on the Flags tab (Data > Change view > " +
       flagsViewTitle() +
       "): " +
       input.flagsUrl,
     'Review them on the <a href="' +
       htmlText(input.flagsUrl) +
-      '">Flags tab</a> (Data &gt; Filter views &gt; ' +
+      '">Flags tab</a> (Data &gt; Change view &gt; ' +
       htmlText(flagsViewTitle()) +
       ").",
   );
@@ -6911,7 +6911,7 @@ function howToSections() {
           "A flag is something the kiosk wants a person to look at: a time far from when the volunteer tapped, a very long shift, a shift the nightly auto clock-out closed, a name Import past hours couldn't match or a paper shift it brought in for a day the volunteer also has a kiosk shift, or a problem the morning Log check found.",
         ),
         step(
-          "1. Open the Flags tab, then Data > Filter views > Flags: Unreviewed. It shows the flags nobody has ticked yet, newest first.",
+          "1. Open the Flags tab, then Data > Change view > Flags: Unreviewed. It shows the flags nobody has ticked yet, newest first.",
         ),
         step(
           "2. Read the Reason. To find the shift on the Log, copy its Shift ID, open the Log, press Ctrl+F (Cmd+F on a Mac) and paste.",

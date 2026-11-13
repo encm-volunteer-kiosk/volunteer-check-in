@@ -377,3 +377,9 @@ test("the How to tab's name is none the code finds a tab by", () => {
   assert.ok(!name.startsWith(L.reportTabName("2026-11", []).split(" ")[0].toLowerCase() + " "));
   assert.notEqual(L.howToTabMark().key, L.hoursTabMark().key);
 });
+
+test("staff are sent to Data > Change view for the saved Flags view, the menu Sheets has", () => {
+  const rows = plain(L.howToRows()).map((r) => r.text);
+  assert.ok(rows.some((t) => t.includes("Data > Change view > Flags: Unreviewed")));
+  assert.ok(!rows.some((t) => /Data > Filter views/.test(t)));
+});

@@ -304,7 +304,7 @@ staff wrote or changed stays. The notes are also listed at the end of the How to
 | I      | Source         | `kiosk check-in`, `kiosk check-out`, `auto-close`, `import` or `log check`. |
 | J      | Log Row        | The Log row number then. A hint only: sorting the Log moves rows.           |
 
-To review: open Data > Filter views > `Flags: Unreviewed`. It shows the flags not yet
+To review: open Data > Change view > `Flags: Unreviewed`. It shows the flags not yet
 ticked, newest first. Tick Reviewed, type your initials in Reviewed By, and add a note if
 there's something to say. A ticked flag leaves the view. The sheet's edit history (right
 click a cell > Show edit history) shows who ticked it and when.
@@ -1281,7 +1281,7 @@ amount, the report says it can't be read.
 
 ### Filter views
 
-`setupReports` saves these filter views on the Log. In the Log, open Data > Filter views
+`setupReports` saves these filter views on the Log. In the Log, open Data > Change view
 and pick one. A filter view changes only what you see; it changes nothing in the Log and
 nothing others see. Each title starts `Kiosk: `.
 
