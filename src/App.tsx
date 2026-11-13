@@ -12,7 +12,7 @@ import logo from "./assets/encm-logo.png";
 import { appreciationMessages, isToday, type Milestone, type Volunteer } from "./data";
 import { searchNames } from "./nameSearch";
 
-type Screen = "welcome" | "confirm" | "checkout" | "success-in" | "success-out";
+type Screen = "welcome" | "confirm" | "checkout" | "notice" | "success-in" | "success-out";
 type Result = { time: string; duration?: number; milestone?: Milestone | null; message: string };
 type ListState = "loading" | "ready" | "failed";
 type PhoneStep = "entry" | "missing" | null;
@@ -20,6 +20,10 @@ const TZ = "America/Chicago";
 const ACCESS_CODE_KEY = "encm-kiosk-access-code";
 const LIST_REFRESH_MS = 5 * 60_000;
 const LIST_RETRY_MS = 30_000;
+// Back to the welcome screen after this long untouched; the missed check-out notice is
+// shorter, so a volunteer who walked away doesn't hold up the next one.
+const INACTIVITY_MS = 90_000;
+const NOTICE_INACTIVITY_MS = 60_000;
 
 const Icon = ({ name, size = 24 }: { name: string; size?: number }) => {
   const paths: Record<string, React.ReactNode> = {
@@ -131,14 +135,12 @@ function BackButton({ onClick }: { onClick: () => void }) {
 }
 
 /**
- * Checked in today. A known arrival must be dated today. With none, the server's flag
- * decides: it is set for an open row dated today whose check-in time can't be read, so
- * that volunteer still reaches check-out.
+ * The server's flag: an open row less than "Auto clock-out after hours" since its check-in
+ * tap, past midnight too, or one dated today whose check-in time can't be read. So an
+ * evening volunteer still reaches check-out after midnight.
  */
 function isCheckedIn(volunteer: Volunteer) {
-  return volunteer.currentCheckIn
-    ? isToday(volunteer.currentCheckIn)
-    : Boolean(volunteer.checkedIn);
+  return Boolean(volunteer.checkedIn);
 }
 
 function VolunteerCard({ volunteer, onClick }: { volunteer: Volunteer; onClick: () => void }) {
@@ -552,10 +554,11 @@ function Confirmation({
               </>
             ) : checkout && volunteer.currentCheckIn ? (
               <>
-                You checked in today at <strong>{formatTime(volunteer.currentCheckIn)}</strong>.
+                You checked in {isToday(volunteer.currentCheckIn) ? "" : "yesterday "}at{" "}
+                <strong>{formatTime(volunteer.currentCheckIn)}</strong>.
               </>
             ) : checkout ? (
-              "You're checked in today."
+              "You're checked in."
             ) : (
               "Just making sure we have the right neighbor."
             )}
@@ -668,11 +671,38 @@ function ShiftThanks({ checkedInAt }: { checkedInAt: string }) {
     <div className="checkout-thanks">
       <span>
         <Icon name="clock" size={21} />
-        Your time today
+        Your time so far
       </span>
       <strong>{formatDuration(minutes)}</strong>
       <small>Thank you for volunteering with us.</small>
     </div>
+  );
+}
+
+/**
+ * Shown after a check-in when the volunteer's last shift ended without their own Check Out.
+ * It never says what time was recorded. The check-in is already saved; Got it leads to the
+ * checked-in screen.
+ */
+function MissedCheckOutNotice({ volunteer, onDone }: { volunteer: Volunteer; onDone: () => void }) {
+  return (
+    <main className="center-screen screen-enter">
+      <section className="panel confirmation-panel" aria-live="polite">
+        <div className="spark">
+          <i />
+          <i />
+          <i />
+        </div>
+        <h1>Welcome back, {volunteer.firstName}!</h1>
+        <p>
+          Last time you didn&apos;t check out. Please tap <strong>Check Out</strong> before you
+          leave today.
+        </p>
+        <div className="button-stack">
+          <Button onClick={onDone}>Got it</Button>
+        </div>
+      </section>
+    </main>
   );
 }
 
@@ -891,9 +921,9 @@ const nameKey = (v: Volunteer) =>
 
 /**
  * The earliest check-out time the server could accept for this entry, in milliseconds: the
- * stated arrival of its open shift today. For an entry in a same-name group the digits may
+ * stated arrival of its open shift. For an entry in a same-name group the digits may
  * pick any member, so it is the earliest arrival among the group's checked-in members; the
- * server checks the real one. null when no member is checked in today, and null when a
+ * server checks the real one. null when no member is checked in, and null when a
  * checked-in member's check-in time can't be read: the server then checks no lower bound,
  * so the page offers no picker and the server's clock gives the check-out time.
  */
@@ -1020,10 +1050,15 @@ export default function App() {
   const selected = volunteers.find((v) => v.id === selectedId) ?? null;
   const checkOutFloorMs = selected ? checkOutLowerBound(selected, volunteers) : null;
   const checkOutMinMinutes = checkOutFloorMs === null ? null : centralMinutesOf(checkOutFloorMs);
-  // The check-out picker is offered only when at least one quarter hour lies between the
-  // lower bound and now.
+  // The check-out picker is offered only when the lower bound is today and at least one
+  // quarter hour lies between it and now. The picker offers times of today only, so an
+  // arrival on an earlier date (an evening shift checked out after midnight) gets no picker
+  // and Check Out uses the server's clock. The date test must come first: yesterday's
+  // arrival can have fewer minutes since midnight than now.
   const checkOutPickable =
+    checkOutFloorMs !== null &&
     checkOutMinMinutes !== null &&
+    isToday(new Date(checkOutFloorMs).toISOString()) &&
     Math.ceil(checkOutMinMinutes / 15) * 15 <= floorQuarter(minutesOfDay(centralTimeValue()));
 
   const goHome = () => {
@@ -1103,6 +1138,17 @@ export default function App() {
     return () => clearInterval(timer);
   }, [code, listState]);
 
+  // After its own check-in or check-out the page shows the volunteer's new state until the
+  // next list arrives. A list asked for before the change is out of date and is dropped.
+  function markVolunteer(id: string, arrival: string | null) {
+    listApplied.current = listRequested.current;
+    setVolunteers((list) =>
+      list.map((v) =>
+        v.id === id ? { ...v, checkedIn: arrival !== null, currentCheckIn: arrival } : v,
+      ),
+    );
+  }
+
   useEffect(() => {
     if (selectedId && listState === "ready" && !selected) goHome();
   }, [volunteers]);
@@ -1111,7 +1157,10 @@ export default function App() {
     if (screen === "welcome") return;
     const resetTimer = () => {
       if (inactivityRef.current) clearTimeout(inactivityRef.current);
-      inactivityRef.current = window.setTimeout(goHome, 90_000);
+      inactivityRef.current = window.setTimeout(
+        goHome,
+        screen === "notice" ? NOTICE_INACTIVITY_MS : INACTIVITY_MS,
+      );
     };
     const events = ["pointerdown", "keydown", "input"];
     events.forEach((name) => window.addEventListener(name, resetTimer));
@@ -1197,8 +1246,9 @@ export default function App() {
         return;
       }
       selectActedOn(reply.id);
+      markVolunteer(reply.id, reply.arrivedAt);
       setResult({ time: reply.arrivedAt, message: nextMessage() });
-      setScreen("success-in");
+      setScreen(reply.missedSignOut ? "notice" : "success-in");
     } catch {
       setError(
         "We couldn't save your check-in. Please try again or ask a volunteer coordinator for help.",
@@ -1243,6 +1293,7 @@ export default function App() {
         return;
       }
       selectActedOn(reply.id);
+      markVolunteer(reply.id, null);
       setResult({
         time: reply.signedOutAt,
         duration: reply.minutes,
@@ -1329,6 +1380,9 @@ export default function App() {
           onConfirm={handleCheckout}
           onBack={goHome}
         />
+      )}
+      {code && screen === "notice" && selected && (
+        <MissedCheckOutNotice volunteer={selected} onDone={() => setScreen("success-in")} />
       )}
       {code && screen === "success-in" && selected && result && (
         <Success type="in" volunteer={selected} result={result} onDone={goHome} />
