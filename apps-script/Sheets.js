@@ -1,6 +1,6 @@
 /**
- * Sheet access for the volunteer check-in kiosk: the Log and Settings tabs of the bound
- * Check-In Log spreadsheet, and Volunteer Profiles, which is only ever read.
+ * Sheet access for the volunteer check-in kiosk: the Log, Settings and Flags tabs of the
+ * bound Check-In Log spreadsheet, and Volunteer Profiles, which is only ever read.
  *
  * Every decision lives in Logic.js. Functions here read cells into plain values and
  * write values back. Names ending in _ are private to the server: the page can't call
@@ -11,6 +11,7 @@ const LOG_TAB = "Log";
 /** Where setupSheets moves a Log tab still in the kiosk's old column layout. */
 const OLD_LOG_TAB = "Log (old layout)";
 const SETTINGS_TAB = "Settings";
+const FLAGS_TAB = "Flags";
 const DATE_TIME_FORMAT = "yyyy-mm-dd h:mm am/pm";
 
 // ---------------------------------------------------------------------------
@@ -33,10 +34,13 @@ function requireEditorRun_() {
 }
 
 /**
- * Creates or updates the Log and Settings tabs: the Log header, formats and any missing
- * Settings row (setupLog_ for the Log). Writes only empty cells and creates or renames
- * tabs; never changes a cell with text in it or deletes a row, so running it twice
- * changes nothing. Runs only from the Apps Script editor.
+ * Creates or updates the Log, Settings and Flags tabs: the Log header, formats and any
+ * missing Settings row (setupLog_ for the Log), then the Flags tab (setupFlags_), so a
+ * failure there leaves the Log and Settings set up, then the look of all three
+ * (applyLooks_), last. Writes only empty cells, creates or renames tabs, sets formats, the
+ * Flags tab's Reviewed checkbox and its "Flags: Unreviewed" view, and the look; never
+ * changes a cell with text in it or deletes a row, so running it twice changes nothing.
+ * Runs only from the Apps Script editor.
  */
 function setupSheets() {
   requireEditorRun_();
@@ -61,6 +65,55 @@ function setupSheets() {
   if (missing.length) {
     settings.getRange(settings.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
   }
+
+  setupFlags_(ss);
+  applyLooks_(ss);
+}
+
+/**
+ * The look (lookPlan, Logic.js) on the Log, Flags and Settings, from each tab's header as
+ * it is now, on every run: header colours, row height and widths, one banding, the
+ * kiosk's own conditional formats and the tab colour. Staff's conditional formats are
+ * kept, first; any other banding on these tabs is replaced. When it fails, the tabs are
+ * set up and the error says what to check.
+ */
+function applyLooks_(ss) {
+  try {
+    [
+      [LOG_TAB, "log"],
+      [FLAGS_TAB, "flags"],
+      [SETTINGS_TAB, "settings"],
+    ].forEach(([name, tab]) => {
+      const sheet = sheet_(name);
+      applyLook_(sheet, lookPlan(logHeaderRow_(sheet), tab));
+    });
+  } catch (e) {
+    const message = cellString(e && e.message ? e.message : e).replace(/\.$/, "");
+    throw new Error(
+      "The tabs are set up, but their look could not be applied: " +
+        message +
+        ". Check that the Sheets API advanced service is on (it is in appsscript.json), then run setupSheets() again.",
+    );
+  }
+}
+
+/**
+ * Puts a lookPlan on a tab through the advanced Sheets service: reads the tab's bandings
+ * and conditional formats, then sends lookRequests (Logic.js) in one batchUpdate, so the
+ * tab's look changes all at once or not at all.
+ */
+function applyLook_(sheet, plan) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetId = sheet.getSheetId();
+  const got = Sheets.Spreadsheets.get(ss.getId(), {
+    fields: "sheets(properties(sheetId),bandedRanges(bandedRangeId),conditionalFormats)",
+  });
+  const tab = (got.sheets || []).find((s) => s.properties && s.properties.sheetId === sheetId);
+  const existing = {
+    bandings: ((tab && tab.bandedRanges) || []).map((b) => b.bandedRangeId),
+    rules: (tab && tab.conditionalFormats) || [],
+  };
+  Sheets.Spreadsheets.batchUpdate({ requests: lookRequests(plan, sheetId, existing) }, ss.getId());
 }
 
 /**
@@ -107,6 +160,82 @@ function setupLog_(ss) {
   log.setFrozenRows(1);
 }
 
+/**
+ * The Flags part of setupSheets, in this order:
+ * - No Flags tab: create it. Write the headers flagHeaderWrites (Logic.js) names into
+ *   empty cells of row 1, so an empty row gets the full header.
+ * - Set each Flags column's format by its header, put checkbox validation on the Reviewed
+ *   column from row 2 to the tab's last row (that column only, so a validation staff set
+ *   elsewhere stays), and freeze row 1.
+ * - Last: add or update the "Flags: Unreviewed" filter view through the advanced Sheets
+ *   service. A view with that title is updated in place; no other view is touched. When
+ *   this step fails, everything above is already done, and the error says what to check.
+ */
+function setupFlags_(ss) {
+  const sheet = ss.getSheetByName(FLAGS_TAB) || ss.insertSheet(FLAGS_TAB);
+  const writes = flagHeaderWrites(logHeaderRow_(sheet));
+  if (writes.length) {
+    const first = writes[0].col;
+    const last = writes[writes.length - 1].col;
+    if (last > sheet.getMaxColumns()) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), last - sheet.getMaxColumns());
+    }
+    sheet
+      .getRange(1, first, 1, writes.length)
+      .setNumberFormat("@")
+      .setValues([writes.map((w) => w.header)]);
+  }
+  const header = logHeaderRow_(sheet);
+  flagColumnFormats(header).forEach((f) => {
+    const format = flagFormat_(f.kind);
+    if (format) sheet.getRange(1, f.col, sheet.getMaxRows(), 1).setNumberFormat(format);
+  });
+  const cols = flagColumns(header);
+  if (sheet.getMaxRows() >= 2) {
+    sheet
+      .getRange(2, cols[flagHeaderNames().reviewed] + 1, sheet.getMaxRows() - 1, 1)
+      .setDataValidation(checkboxRule_());
+  }
+  sheet.setFrozenRows(1);
+
+  try {
+    const sheetId = sheet.getSheetId();
+    const got = Sheets.Spreadsheets.get(ss.getId(), {
+      fields: "sheets(properties(sheetId),filterViews(filterViewId,title))",
+    });
+    const tab = (got.sheets || []).find((s) => s.properties && s.properties.sheetId === sheetId);
+    const found = ((tab && tab.filterViews) || []).find(
+      (v) => cellString(v.title) === flagsViewTitle(),
+    );
+    Sheets.Spreadsheets.batchUpdate(
+      { requests: flagFilterViewRequests(cols, sheetId, found ? found.filterViewId : null) },
+      ss.getId(),
+    );
+  } catch (e) {
+    const message = cellString(e && e.message ? e.message : e).replace(/\.$/, "");
+    throw new Error(
+      'The Flags tab is set up, but the "' +
+        flagsViewTitle() +
+        '" view could not be made: ' +
+        message +
+        ". Check that the Sheets API advanced service is on (it is in appsscript.json), then run setupSheets() again.",
+    );
+  }
+}
+
+/** The number format a Flags column of this kind (flagColumnKinds) gets; none for the checkbox. */
+function flagFormat_(kind) {
+  if (kind === "time") return DATE_TIME_FORMAT;
+  if (kind === "number") return "0";
+  if (kind === "checkbox") return "";
+  return "@";
+}
+
+/** The Reviewed column's validation: a tickbox. */
+function checkboxRule_() {
+  return SpreadsheetApp.newDataValidation().requireCheckbox().build();
+}
+
 /** Row 1 of a tab as text, at least one cell wide. */
 function logHeaderRow_(sheet) {
   const width = Math.max(sheet.getLastColumn(), 1);
@@ -148,18 +277,206 @@ function cellText_(value) {
 }
 
 /**
- * A date-time cell as {ms, date}: its milliseconds and its Central yyyy-MM-dd. ms is NaN
- * and date empty when the cell isn't a readable time.
+ * A date-time cell as {ms, date, clock}: its milliseconds, its Central yyyy-MM-dd and its
+ * Central "HH:mm". A date value has all three; Sheets keeps a time typed with no date as a
+ * date on 1899-12-30, whose clock is the time as typed. Text that clockText (Logic.js)
+ * reads as a time of day gives only the clock, with ms NaN and date empty; other text is
+ * read by Date.parse, with clock empty. ms is NaN and date and clock empty when the cell
+ * isn't a readable time.
  */
 function cellTime_(value) {
-  let ms = NaN;
-  if (isDate_(value)) ms = value.getTime();
-  else if (cellString(value)) ms = Date.parse(cellString(value));
-  return isFinite(ms) ? { ms, date: centralDate_(new Date(ms)) } : { ms: NaN, date: "" };
+  const none = { ms: NaN, date: "", clock: "" };
+  if (isDate_(value)) {
+    const ms = value.getTime();
+    if (!isFinite(ms)) return none;
+    return {
+      ms,
+      date: centralDate_(value),
+      clock: zoneClock_(value, kioskTimeZone()),
+    };
+  }
+  const text = cellString(value);
+  const clock = clockText(text);
+  if (clock) return { ms: NaN, date: "", clock };
+  const ms = text ? Date.parse(text) : NaN;
+  return isFinite(ms) ? { ms, date: centralDate_(new Date(ms)), clock: "" } : none;
+}
+
+/**
+ * A Central time on a date as {ms, date}: dateText yyyy-MM-dd and timeText "HH:mm". ms is
+ * NaN and date '' when either can't be read. A time skipped when daylight time starts
+ * reads as the later time Utilities.parseDate gives.
+ */
+function timeOnDate_(dateText, timeText) {
+  const text = adminDateTimeText(dateText, timeText);
+  if (!text) return { ms: NaN, date: "" };
+  const parsed = Utilities.parseDate(text, kioskTimeZone(), "yyyy-MM-dd HH:mm");
+  return { ms: parsed.getTime(), date: centralDate_(parsed) };
 }
 
 function centralDate_(date) {
-  return Utilities.formatDate(date, kioskTimeZone(), "yyyy-MM-dd");
+  return zoneDate_(date, kioskTimeZone());
+}
+
+/**
+ * Utilities.formatDate(date, zone, "yyyy-MM-dd"), from the zone's offset for that hour
+ * (zoneOffset_) when it has one.
+ */
+function zoneDate_(date, zone) {
+  const offset = zoneOffset_(date.getTime(), zone);
+  if (offset === null) return Utilities.formatDate(date, zone, "yyyy-MM-dd");
+  const wall = new Date(date.getTime() + offset);
+  return (
+    padNumber_(wall.getUTCFullYear(), 4) +
+    "-" +
+    padNumber_(wall.getUTCMonth() + 1, 2) +
+    "-" +
+    padNumber_(wall.getUTCDate(), 2)
+  );
+}
+
+/** Utilities.formatDate(date, zone, "HH:mm"), read as zoneDate_ reads the date. */
+function zoneClock_(date, zone) {
+  const offset = zoneOffset_(date.getTime(), zone);
+  if (offset === null) return Utilities.formatDate(date, zone, "HH:mm");
+  const wall = new Date(date.getTime() + offset);
+  return padNumber_(wall.getUTCHours(), 2) + ":" + padNumber_(wall.getUTCMinutes(), 2);
+}
+
+/**
+ * How many milliseconds zone's wall clock runs ahead of UTC at ms, or null when this run
+ * reads that time with Utilities.formatDate itself.
+ *
+ * Each UTC hour's offset is read once, at the hour's start (hourOffset_), and kept for the
+ * rest of the script run. That offset holds for the whole hour when the zone's clock can
+ * only change on a whole UTC hour. America/Chicago, the kiosk's zone, does: from local
+ * mean time to Central at 18:00 UTC in 1883, and since then whole-hour offsets changed at
+ * a whole local hour. Any other zone may change at a half hour (America/St_Johns) or at
+ * an odd second (a local mean time), so its hour is used only when the next hour's start
+ * has the same offset; an hour with a change inside it is left to formatDate.
+ */
+function zoneOffset_(ms, zone) {
+  if (!isFinite(ms)) return null;
+  const hour = Math.floor(ms / 3600000);
+  const offset = hourOffset_(zone, hour);
+  if (offset === null || zone === "America/Chicago") return offset;
+  return hourOffset_(zone, hour + 1) === offset ? offset : null;
+}
+
+/** Offsets by zone, then by UTC hour (ms / 3600000, floored); see zoneOffset_. */
+const ZONE_OFFSETS_ = {};
+
+/**
+ * zone's offset at the start of UTC hour, or null when formatDate's text for it can't be
+ * read back exactly. intlOffset_ reads it when it can; otherwise one Utilities.formatDate
+ * call does (formatDateOffset_).
+ */
+function hourOffset_(zone, hour) {
+  const offsets = ZONE_OFFSETS_[zone] || (ZONE_OFFSETS_[zone] = {});
+  if (Object.prototype.hasOwnProperty.call(offsets, hour)) return offsets[hour];
+  const start = hour * 3600000;
+  let offset = intlOffset_(zone, start);
+  if (offset === null) offset = formatDateOffset_(zone, start);
+  offsets[hour] = offset;
+  return offset;
+}
+
+/**
+ * zone's offset at start from one Utilities.formatDate call, or null when its text can't
+ * be read back exactly: a year before 1583 (Apps Script dates those on the Julian
+ * calendar, JavaScript on the Gregorian) or after 9999.
+ */
+function formatDateOffset_(zone, start) {
+  const text = Utilities.formatDate(new Date(start), zone, "yyyy-MM-dd HH:mm:ss");
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(text);
+  if (!m || +m[1] < 1583) return null;
+  const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  const back = new Date(wall).toISOString();
+  return back.slice(0, 10) + " " + back.slice(11, 19) === text ? wall - start : null;
+}
+
+/**
+ * The first moment intlOffset_ reads: 1883-11-18 00:00 UTC. Before it, zones ran on local
+ * mean time, which Apps Script's formatDate and Intl don't always agree on.
+ */
+const INTL_FROM_MS_ = Date.UTC(1883, 10, 18);
+
+/**
+ * zone's offset at start from Intl.DateTimeFormat, or null to leave it to formatDate: a
+ * zone other than America/Chicago, Intl missing or refusing the zone, a time before
+ * INTL_FROM_MS_, an offset that isn't a whole minute (a mean time, again), or parts that
+ * don't read back as one exact wall-clock time.
+ *
+ * Only the kiosk's zone is read this way. Its offsets from Intl were checked against
+ * formatDate's; other zones' were not, and Intl and formatDate can carry different
+ * releases of the time zone rules, or read the years before 1900 differently.
+ */
+function intlOffset_(zone, start) {
+  if (!(start >= INTL_FROM_MS_)) return null;
+  const format = zoneFormat_(zone);
+  if (!format) return null;
+  let parts;
+  try {
+    parts = format.formatToParts(new Date(start));
+  } catch (e) {
+    return null;
+  }
+  const f = {};
+  for (let i = 0; i < parts.length; i++) {
+    const type = parts[i].type;
+    if (type === "literal") continue;
+    if (!/^(year|month|day|hour|minute|second)$/.test(type)) return null;
+    if (!/^[0-9]{1,4}$/.test(parts[i].value)) return null;
+    f[type] = +parts[i].value;
+  }
+  if (!(f.year >= 1883 && f.hour <= 23)) return null;
+  const wall = new Date(Date.UTC(f.year, f.month - 1, f.day, f.hour, f.minute, f.second));
+  if (
+    wall.getUTCFullYear() !== f.year ||
+    wall.getUTCMonth() !== f.month - 1 ||
+    wall.getUTCDate() !== f.day ||
+    wall.getUTCHours() !== f.hour ||
+    wall.getUTCMinutes() !== f.minute ||
+    wall.getUTCSeconds() !== f.second
+  ) {
+    return null;
+  }
+  const offset = wall.getTime() - start;
+  return offset % 60000 === 0 && Math.abs(offset) < 86400000 ? offset : null;
+}
+
+/** One Intl.DateTimeFormat per zone, null where it isn't used; see zoneFormat_. */
+const ZONE_FORMATS_ = {};
+
+/** An Intl.DateTimeFormat for zone's wall clock, 24-hour, or null; see intlOffset_. */
+function zoneFormat_(zone) {
+  if (Object.prototype.hasOwnProperty.call(ZONE_FORMATS_, zone)) return ZONE_FORMATS_[zone];
+  let format = null;
+  if (zone === "America/Chicago" && typeof Intl !== "undefined") {
+    try {
+      format = new Intl.DateTimeFormat("en-US", {
+        timeZone: zone,
+        hourCycle: "h23",
+        year: "numeric",
+        month: "numeric",
+        day: "numeric",
+        hour: "numeric",
+        minute: "numeric",
+        second: "numeric",
+      });
+    } catch (e) {
+      format = null;
+    }
+  }
+  ZONE_FORMATS_[zone] = format;
+  return format;
+}
+
+/** n as decimal digits, zero-padded on the left to at least width. */
+function padNumber_(n, width) {
+  let text = String(n);
+  while (text.length < width) text = "0" + text;
+  return text;
 }
 
 function sha256Hex_(text) {
@@ -251,9 +568,12 @@ function getProfiles_(settings) {
 // ---------------------------------------------------------------------------
 // Log
 
-/** The read functions logEntry (Logic.js) uses to turn cells into text and times. */
+/**
+ * The read functions logEntry (Logic.js) uses to turn cells into text and times, and to
+ * put a time with no date on the row's Date.
+ */
 function logRead_() {
-  return { text: cellText_, time: cellTime_ };
+  return { text: cellText_, time: cellTime_, at: timeOnDate_ };
 }
 
 /** The number format a Log column of this kind (logColumnKinds) gets. */
@@ -284,26 +604,104 @@ function readLog_(cols) {
 }
 
 /**
- * Log rows dated today, in any row order. Reads the Date column found by the header
- * map, then only the block of rows from the first to the last of today's, across the
- * full width.
+ * The Log's header map and one volunteer's rows from one range read, so both come from
+ * one snapshot: {cols, entries, width}. cols is logColumns (Logic.js) of row 1, entries
+ * the rows below it whose User Token is token (logRowHasToken), each as a log entry with
+ * its row number, and width the number of columns read. Only those rows are parsed; a
+ * blank token gives no entries. The kiosk's check-in and check-out read the Log with
+ * this; the admin menu, the jobs and the reports use readLogColumns_ and readLog_.
+ * Throws when a column the kiosk needs is missing or repeated, so an empty tab throws the
+ * missing-column error.
  */
-function readTodayLog_(todayDate, cols) {
+function readLogTable_(token) {
+  const sheet = sheet_(LOG_TAB);
+  const last = Math.max(sheet.getLastRow(), 1);
+  const width = Math.max(sheet.getLastColumn(), 1);
+  const values = sheet.getRange(1, 1, last, width).getValues();
+  const cols = logColumns(values[0].map(cellText_));
+  const read = logRead_();
+  const entries = [];
+  values.slice(1).forEach((cells, i) => {
+    if (logRowHasToken(cells, cols, token, read)) entries.push(logEntry(cells, i + 2, cols, read));
+  });
+  return { cols, entries, width };
+}
+
+/**
+ * One Log row as a log entry, read across the Log's full width in one range read, or null
+ * when row is past the Log's last row. read is logRead_().
+ */
+function readLogRow_(row, cols, read) {
+  const sheet = sheet_(LOG_TAB);
+  if (row < 2 || row > sheet.getLastRow()) return null;
+  const cells = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+  return logEntry(cells, row, cols, read);
+}
+
+/**
+ * One Log row as a log entry, read again just before a write by its row number: one range
+ * read of width columns (readLogTable_'s width), so it costs one round trip. Null when
+ * the read throws, as it does for a row past the tab's last grid row; the error is logged
+ * with shiftId, the Shift ID the caller expects there. A row past the last used row
+ * inside the grid reads as blanks. cols and read are as for logEntry (Logic.js).
+ */
+function readLogRowAt_(row, width, cols, read, shiftId) {
+  let cells;
+  try {
+    cells = sheet_(LOG_TAB).getRange(row, 1, 1, width).getValues()[0];
+  } catch (e) {
+    console.error(
+      "Log row " +
+        row +
+        " not read again for Shift ID " +
+        cellString(shiftId) +
+        ": " +
+        (e && e.message ? e.message : String(e)),
+    );
+    return null;
+  }
+  return logEntry(cells, row, cols, read);
+}
+
+/**
+ * Log rows dated on any of dates (yyyy-MM-dd), in any row order. Reads the Date column
+ * found by the header map, then only the block of rows from the first to the last of
+ * those, across the full width. The kiosk list reads yesterday and today with it
+ * (recentLogDates, Logic.js).
+ */
+function readRecentLog_(dates, cols) {
   const sheet = sheet_(LOG_TAB);
   const last = sheet.getLastRow();
   if (last < 2) return [];
-  const dates = sheet.getRange(2, cols[logHeaderNames().date] + 1, last - 1, 1).getValues();
-  const today = [];
-  dates.forEach((cells, i) => {
-    if (isRowToday(cellText_(cells[0]), todayDate)) today.push(i + 2);
+  const wanted = {};
+  (dates || []).forEach((d) => {
+    if (d) wanted[d] = true;
   });
-  if (!today.length) return [];
-  const first = today[0];
+  const dateCells = sheet.getRange(2, cols[logHeaderNames().date] + 1, last - 1, 1).getValues();
+  const rows = [];
+  dateCells.forEach((cells, i) => {
+    if (wanted[rowDate(cellText_(cells[0]))]) rows.push(i + 2);
+  });
+  if (!rows.length) return [];
+  const first = rows[0];
   const values = sheet
-    .getRange(first, 1, today[today.length - 1] - first + 1, sheet.getLastColumn())
+    .getRange(first, 1, rows[rows.length - 1] - first + 1, sheet.getLastColumn())
     .getValues();
   const read = logRead_();
-  return today.map((row) => logEntry(values[row - first], row, cols, read));
+  return rows.map((row) => logEntry(values[row - first], row, cols, read));
+}
+
+/**
+ * The Shifts tab's windows as shiftsTabWindows (Logic.js) gives them, {windows, problem},
+ * read once. The tab is staff's and only ever read. A missing tab gives no windows and a
+ * problem line; so does a tab with no Shifts, Start and Finish header row. Start and Finish
+ * may be sheet times or text such as "9:00 AM", read like the Log's times.
+ */
+function readShifts_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(shiftsTab());
+  if (!sheet) return { windows: [], problem: 'there is no "' + shiftsTab() + '" tab' };
+  const values = sheet.getDataRange().getValues();
+  return shiftsTabWindows(values, { text: cellText_, clock: (v) => cellTime_(v).clock });
 }
 
 /**
@@ -330,4 +728,152 @@ function appendLogRow_(cells, cols) {
 /** Writes a cell map onto an existing Log row. */
 function updateLogRow_(row, cells, cols) {
   writeLogCells_(sheet_(LOG_TAB), row, cells, cols);
+}
+
+/**
+ * Appends many rows (cell maps) below the Log's last row in one write, for a batch such
+ * as Import past hours; appendLogRow_ writes cell by cell and is far too slow for hundreds
+ * of rows. Grows the tab first when the rows would pass its last grid row. Then one
+ * setNumberFormats and one setValues across the full width: each kiosk column a map names
+ * gets its column's format, staff's columns keep theirs, and cells the maps don't name are
+ * left blank. Returns the first new row number; map i is on that row plus i.
+ */
+function appendLogRows_(cellMaps, cols) {
+  const sheet = sheet_(LOG_TAB);
+  const first = sheet.getLastRow() + 1;
+  if (!cellMaps.length) return first;
+  const width = logHeaderRow_(sheet).length;
+  const last = first + cellMaps.length - 1;
+  if (last > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), Math.max(50, last - sheet.getMaxRows()));
+  }
+  const range = sheet.getRange(first, 1, cellMaps.length, width);
+  const formats = range.getNumberFormats();
+  const values = cellMaps.map((cells, i) => {
+    const line = Array.from({ length: width }, () => "");
+    cellWrites(cells, cols).forEach((w) => {
+      line[w.col - 1] = w.kind === "time" && w.value !== "" ? new Date(w.value) : w.value;
+      formats[i][w.col - 1] = logFormat_(w.kind);
+    });
+    return line;
+  });
+  range.setNumberFormats(formats);
+  range.setValues(values);
+  return first;
+}
+
+// ---------------------------------------------------------------------------
+// Flags
+
+/**
+ * Appends Flags rows (flagRows, Logic.js) below the tab's last row: planFlagRows_ for the
+ * reads, then writeFlagRows_. Jobs.js and Import.js call this. Throws when the tab or a
+ * header it needs is missing.
+ */
+function appendFlagRows_(rows) {
+  if (!rows.length) return;
+  writeFlagRows_(planFlagRows_(rows.length), rows);
+}
+
+/**
+ * Every Flags read an append of count rows needs, so the write that follows reads
+ * nothing: the tab, its header (placed by flagColumns, so columns may be in any order),
+ * its last row and last grid row. Grows the tab first when the rows would pass its last
+ * grid row, then reads the new range's number formats. Returns {sheet, cols, width,
+ * first, formats}: first is the first new row, formats one line per row. A check-in or
+ * check-out plans before its Log write, so it reads nothing after that write. Throws when
+ * the tab or a header it needs is missing.
+ */
+function planFlagRows_(count) {
+  const sheet = sheet_(FLAGS_TAB);
+  const header = logHeaderRow_(sheet);
+  const cols = flagColumns(header);
+  const width = header.length;
+  const first = sheet.getLastRow() + 1;
+  const last = first + count - 1;
+  if (last > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), Math.max(50, last - sheet.getMaxRows()));
+  }
+  const formats = sheet.getRange(first, 1, count, width).getNumberFormats();
+  return { sheet, cols, width, first, formats };
+}
+
+/**
+ * Writes Flags rows where plan (planFlagRows_, for as many rows) says, with no reads: one
+ * setNumberFormats and one setValues across the full width, and the checkbox on the new
+ * Reviewed cells, so the tickbox doesn't depend on what inserting rows copied.
+ */
+function writeFlagRows_(plan, rows) {
+  const { sheet, cols, width, first } = plan;
+  const kinds = flagColumnKinds();
+  // Staff's columns keep the format they have; the script's get theirs.
+  const formats = plan.formats.map((line) => line.slice());
+  Object.keys(cols).forEach((h) => {
+    const format = flagFormat_(kinds[h]);
+    if (cols[h] >= 0 && format) formats.forEach((line) => (line[cols[h]] = format));
+  });
+  const raisedAt = cols[flagHeaderNames().raisedAt];
+  const values = rows.map((cells) => {
+    const line = flagRowValues(cells, cols, width);
+    if (typeof line[raisedAt] === "number") line[raisedAt] = new Date(line[raisedAt]);
+    return line;
+  });
+  const range = sheet.getRange(first, 1, rows.length, width);
+  range.setNumberFormats(formats);
+  range.setValues(values);
+  sheet
+    .getRange(first, cols[flagHeaderNames().reviewed] + 1, rows.length, 1)
+    .setDataValidation(checkboxRule_());
+}
+
+/**
+ * The Flags plan for a call's flag reasons, made before its Log write: planFlagRows_ for
+ * the rows flagRows (Logic.js) will make, one per non-blank reason. null when there are
+ * none. A plan that fails gives {error}, kept for raiseFlags_ to report after the Log
+ * write, so a broken Flags tab never stops a check-in or check-out.
+ */
+function planFlags_(reasons) {
+  const count = (reasons || []).filter((reason) => cellString(reason) !== "").length;
+  if (!count) return null;
+  try {
+    return planFlagRows_(count);
+  } catch (e) {
+    return { error: e };
+  }
+}
+
+/**
+ * Copies a call's flags to the Flags tab, after the call's Log write and under the same
+ * lock. base is as for flagRows (Logic.js), reasons the texts and plan the call's
+ * planFlags_, made before the Log write; with no plan it plans here, as the jobs do.
+ * With no reasons it does nothing and returns true. Otherwise it flushes first, outside
+ * the try, so a Log write that fails still fails the call. Then, in one try: a failed plan
+ * is rethrown; the rows are built, checked against the plan's count, written and flushed,
+ * so a failed Flags write fails here and not at the lock's closing flush. Returns true, or
+ * false after logging the Shift ID and the error. The Log row is the record: a failed
+ * copy never undoes or retries it.
+ */
+function raiseFlags_(base, reasons, plan) {
+  if (!reasons || !reasons.length) return true;
+  SpreadsheetApp.flush();
+  try {
+    if (plan && plan.error) throw plan.error;
+    const rows = flagRows(base, reasons);
+    if (plan && plan.formats.length !== rows.length) {
+      throw new Error(
+        "Flags rows planned for " + plan.formats.length + " rows, built " + rows.length + ".",
+      );
+    }
+    if (rows.length) writeFlagRows_(plan || planFlagRows_(rows.length), rows);
+    SpreadsheetApp.flush();
+    return true;
+  } catch (e) {
+    console.error(
+      "Flags: not copied for Shift ID " +
+        cellString(base && base.shiftId) +
+        ": " +
+        (e && e.message ? e.message : String(e)),
+    );
+    return false;
+  }
 }

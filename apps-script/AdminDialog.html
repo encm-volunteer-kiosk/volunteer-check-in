@@ -163,12 +163,53 @@
         box.className = "message " + (text ? kind : "");
       }
 
+      // name search: begin
+      // The search ignores Latin accents, apostrophes, periods, hyphens, case and spacing.
+      // fold() is a copy of fold() in src/nameSearch.ts, which the tablet's name box uses;
+      // tests/nameSearch.test.mjs runs the code between these two comments and holds the
+      // copies to the same output. Change both together. Self-contained, so the test can
+      // run it alone.
+      function fold(text) {
+        const letters = {
+          "\u00DF": "ss",
+          "\u00E6": "ae",
+          "\u0153": "oe",
+          "\u00F8": "o",
+          "\u0111": "d",
+          "\u00F0": "d",
+          "\u0142": "l",
+          "\u00FE": "th",
+          "\u0131": "i",
+        };
+        return String(text)
+          .replace(/[\u00A8\u00AF\u00B4\u00B8\u02B9\u02BB\u02BC\u02D8-\u02DD\u0374\p{Cf}]/gu, "")
+          .normalize("NFKD")
+          .replace(/(\p{L})?(\p{M}+)/gu, (run, base) =>
+            base && !/\p{Script=Latin}/u.test(base) ? run : base || "",
+          )
+          .toLowerCase()
+          .replace(/[\u00DF\u00E6\u0153\u00F8\u0111\u00F0\u0142\u00FE\u0131]/g, (c) => letters[c])
+          .replace(/['\u2019\u2018\u02BC\u02BB`.\u2032\u02B9\p{Cf}]/gu, "")
+          .replace(/[-\u2010-\u2015\u2212_]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+
+      // True when every word of the query is in the label, or in the label with its spaces
+      // taken out ("marykate" finds "Mary-Kate"). A query with no words keeps every item.
+      function labelMatches(label, query) {
+        const words = fold(query).split(" ").filter(Boolean);
+        const folded = fold(label);
+        const joined = folded.replace(/ /g, "");
+        return words.every((w) => folded.includes(w) || joined.includes(w));
+      }
+      // name search: end
+
       function fillList(select, search, items, valueKey) {
-        const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
         const kept = select.value;
         select.textContent = "";
         items
-          .filter((item) => words.every((w) => item.label.toLowerCase().includes(w)))
+          .filter((item) => labelMatches(item.label, search.value))
           .forEach((item) => select.add(new Option(item.label, item[valueKey])));
         if (kept) select.value = kept;
         if (!select.value && select.options.length === 1) select.selectedIndex = 0;

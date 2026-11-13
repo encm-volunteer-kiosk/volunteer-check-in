@@ -3,7 +3,10 @@
  * forgot to check in and out, and Fix a sign-out for an open row whose volunteer forgot
  * to check out. Each item opens a dialog from AdminDialog.html, which calls the admin*
  * functions below through google.script.run. The menu's third item, Monthly report, is in
- * Reports.js and follows the same rule.
+ * Reports.js, its fourth, Import past hours, in Import.js, and its fifth, Refresh Hours
+ * (refreshHoursNow), in Reports.js; all follow the same rule. Refresh Hours opens no
+ * dialog, so it needs no key: it checks requireEditorRun_ and SpreadsheetApp.getUi()
+ * before it reads anything.
  *
  * The menu and google.script.run can only call public names (no trailing _), so the
  * kiosk page could name these functions too. Every public function here therefore checks
@@ -17,21 +20,38 @@
  *      takes the key first and refuses with ADMIN_EXPIRED when the cache doesn't hold it.
  *      Check 1 alone would let the script owner's own browser through the web app; the
  *      key closes that.
- * onOpen only adds the menu: it reads and writes nothing, and runs as a simple trigger,
- * where requireEditorRun_ can't pass.
+ * onOpen runs as a simple trigger, where requireEditorRun_ can't pass. It calls getUi()
+ * first and adds the menu before anything else: getUi() throws outside the spreadsheet's
+ * own UI, so a call from the web app stops there, and a failure in what follows never costs
+ * the menu. Then, in a try/catch, it notes on the Hours tab that opening didn't refresh it
+ * (noteHoursOnOpen_ in Reports.js: one hold of the document lock, N1 and B1 only, no Log
+ * read), and releases the lock in its own finally.
  *
  * The rules themselves are in Logic.js (decideAddShift, decideFixSignOut); this file reads
  * and writes the Log through Sheets.js, under the kiosk's lock.
  */
 
-/** Adds the Kiosk admin menu when the spreadsheet opens. From the web app it throws at getUi. */
+/**
+ * Adds the Kiosk admin menu when the spreadsheet opens, then notes on the Hours tab that
+ * opening didn't refresh it. From the web app it throws at getUi.
+ */
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("Kiosk admin")
     .addItem("Add a shift…", "openAddShiftDialog")
     .addItem("Fix a sign-out…", "openFixSignOutDialog")
     .addItem("Monthly report…", "openMonthlyReportDialog")
+    .addItem("Import past hours…", "openImportDialog")
+    .addItem("Refresh Hours", "refreshHoursNow")
     .addToUi();
+  const hold = hoursHold_();
+  try {
+    noteHoursOnOpen_(hold);
+  } catch (err) {
+    console.log("Hours note (open) failed: " + hoursMessage_(err));
+  } finally {
+    releaseHoursLock_(hold);
+  }
 }
 
 function openAddShiftDialog() {
@@ -72,7 +92,7 @@ function adminAddShift(key, form) {
   return withLock_(() => {
     const now = new Date();
     const cols = readLogColumns_();
-    const at = (time) => adminTimeOn_(f.date, time);
+    const at = (time) => timeOnDate_(f.date, time);
     const inTime = at(f.inTime);
     const outTime = at(f.outTime);
     const decision = decideAddShift({
@@ -114,7 +134,7 @@ function adminFixSignOut(key, form) {
     const cols = readLogColumns_();
     const entries = readLog_(cols);
     const rows = openRowsById(entries, f.shiftId);
-    const outTime = adminTimeOn_(rows.length ? rowDate(rows[0].dateText) : "", f.outTime);
+    const outTime = timeOnDate_(rows.length ? rowDate(rows[0].dateText) : "", f.outTime);
     const decision = decideFixSignOut({
       entries,
       shiftId: f.shiftId,
@@ -169,15 +189,4 @@ function adminRefusal_(decision) {
 /** A Central clock time such as "9:00 AM". */
 function adminClock_(ms) {
   return Utilities.formatDate(new Date(ms), kioskTimeZone(), "h:mm a");
-}
-
-/**
- * The dialog's date and time as {ms, date}, Central: ms NaN and date '' when either
- * can't be read.
- */
-function adminTimeOn_(dateText, timeText) {
-  const text = adminDateTimeText(dateText, timeText);
-  if (!text) return { ms: NaN, date: "" };
-  const parsed = Utilities.parseDate(text, kioskTimeZone(), "yyyy-MM-dd HH:mm");
-  return { ms: parsed.getTime(), date: centralDate_(parsed) };
 }

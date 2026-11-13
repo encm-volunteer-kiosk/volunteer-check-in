@@ -24,13 +24,58 @@ const centralDate = (ms) =>
     day: "2-digit",
   }).format(new Date(ms));
 
-// read.text and read.time as Sheets.js gives them: times here are ISO texts.
+/** A Central wall-clock time as milliseconds read as UTC, to compare wall clocks. */
+const centralWall = (ms) => {
+  const p = {};
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+    .formatToParts(new Date(ms))
+    .forEach((x) => (p[x.type] = x.value));
+  return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute);
+};
+
+/**
+ * Sheets.js's timeOnDate_: a Central "HH:mm" on a yyyy-MM-dd as {ms, date}. Daylight time
+ * is tried before standard time; a time skipped when daylight time starts takes standard
+ * time, the next valid time, as Utilities.parseDate does.
+ */
+const timeOnDate = (dateText, clock) => {
+  const text = L.adminDateTimeText(dateText, clock);
+  if (!text) return { ms: NaN, date: "" };
+  const wall = Date.parse(text.replace(" ", "T") + ":00Z");
+  const found = [5, 6].map((o) => wall + o * 3600000).find((t) => centralWall(t) === wall);
+  const ms = found === undefined ? wall + 6 * 3600000 : found;
+  return { ms, date: centralDate(ms) };
+};
+
+// read.text, read.time and read.at as Sheets.js gives them: times here are ISO texts, a
+// typed time of day, or Dates.
 const READ = {
   text: (v) => L.cellString(v),
   time: (v) => {
-    const ms = Date.parse(String(v));
-    return isFinite(ms) ? { ms, date: centralDate(ms) } : { ms: NaN, date: "" };
+    const none = { ms: NaN, date: "", clock: "" };
+    if (Object.prototype.toString.call(v) === "[object Date]") {
+      const ms = v.getTime();
+      if (!isFinite(ms)) return none;
+      return {
+        ms,
+        date: centralDate(ms),
+        clock: new Date(centralWall(ms)).toISOString().slice(11, 16),
+      };
+    }
+    const clock = L.clockText(v);
+    if (clock) return { ms: NaN, date: "", clock };
+    const ms = L.cellString(v) ? Date.parse(String(v)) : NaN;
+    return isFinite(ms) ? { ms, date: centralDate(ms), clock: "" } : none;
   },
+  at: timeOnDate,
 };
 
 /** A Central time on a date, as the ISO text READ.time reads (Central is UTC-6 in Nov, -5 in Oct). */
@@ -241,6 +286,34 @@ test("adjusted means the gap rounds to a minute or more, the arrival flag's rule
   const base = Date.parse(at("2026-11-02", "10:00"));
   assert.equal(L.arrivalFlag(base + 30000, base, 0), "arrival differs by 1 min");
   assert.equal(L.arrivalFlag(base + 29000, base, 0), "");
+});
+
+test("a counted kiosk row whose Check-In Stated was typed as a time alone is compared", () => {
+  // Sheets keeps "9:15 AM" typed into the cell as 9:15 on 1899-12-30.
+  const typed = new Date(timeOnDate("1899-12-30", "09:15").ms);
+  const row = kioskShift("2026-11-16", "Ana Ruiz", "tA", "09:00", "12:00", {
+    statedIn: typed,
+    recordedHours: 3,
+    statedHours: 2.75,
+  });
+  const [e] = entriesFor([row]);
+  assert.equal(e.statedInMs, Date.parse(at("2026-11-16", "09:15")));
+  const adjustments = (entries) => plain(L.monthReport(entries, "2026-11", null)).adjustments;
+  assert.deepEqual(adjustments([e]), {
+    compared: 1,
+    adjusted: 1,
+    statedMinusRecordedHundredths: -25,
+  });
+  // Typed as text in a plain-text cell, it reads the same.
+  assert.deepEqual(adjustments(entriesFor([{ ...row, statedIn: "9:15 AM" }])), adjustments([e]));
+  // A read that can't put a time on the row's Date leaves the row out, as before.
+  const noAt = { text: READ.text, time: READ.time };
+  const old = L.reportEntry(cellsFor(row), 2, L.reportColumns(HEADER), noAt);
+  assert.deepEqual(adjustments([old]), {
+    compared: 0,
+    adjusted: 0,
+    statedMinusRecordedHundredths: 0,
+  });
 });
 
 test("rows to review, open rows first, and the open-shift line", () => {
@@ -702,6 +775,49 @@ test("reportRows: rectangular, formats the same shape, no token anywhere", () =>
   }
 });
 
+test("reportRows: says which row is the title, a section, a table header, blank or a plain row", () => {
+  const { values, kinds } = plain(
+    L.reportRows(sampleReport(), "2026-11", "JP", "2026-12-01 9:14 AM"),
+  );
+  assert.equal(kinds.length, values.length);
+  const allowed = ["title", "section", "header", "blank", "body"];
+  assert.ok(
+    kinds.every((k) => allowed.includes(k)),
+    JSON.stringify(kinds),
+  );
+  assert.equal(kinds[0], "title");
+  assert.equal(kinds.filter((k) => k === "title").length, 1);
+  const first = (kind) => values.filter((r, i) => kinds[i] === kind).map((r) => r[0]);
+  const sections = first("section");
+  for (const name of [
+    "Summary",
+    "Month over month",
+    "Year to date",
+    "Hours per volunteer",
+    "Hours by weekday",
+    "Milestones crossed this month",
+    "Rows to review",
+  ]) {
+    assert.ok(sections.includes(name), name);
+  }
+  assert.ok(sections.some((s) => s.startsWith("Hours by Role/Type")));
+  assert.ok(sections.some((s) => s.startsWith("Hours by Activity")));
+  // Each table's header row follows its section title.
+  kinds.forEach((k, i) => {
+    if (k === "section" && ["Hours per volunteer", "Hours by weekday"].includes(values[i][0])) {
+      assert.equal(kinds[i + 1], "header", values[i][0]);
+    }
+  });
+  assert.ok(first("header").includes("Volunteer"));
+  values.forEach((r, i) => {
+    if (kinds[i] === "blank")
+      assert.ok(
+        r.every((c) => c === ""),
+        String(i),
+      );
+  });
+});
+
 test("reportRows: first lines say what it counts, who made it, and the open shifts", () => {
   const { values, formats } = plain(
     L.reportRows(sampleReport(), "2026-11", "JP", "2026-12-01 9:14 AM"),
@@ -743,6 +859,87 @@ test("reportRows: a blank rate prints the message; text that looks like a formul
   );
   assert.ok(values.some((r) => r[0] === "'=HYPERLINK(1)"));
   assert.ok(!values.flat().some((v) => typeof v === "string" && v.startsWith("=")));
+});
+
+test("reportRows: each row's kind, for the report tab's look", () => {
+  const { values, kinds } = plain(
+    L.reportRows(sampleReport(), "2026-11", "JP", "2026-12-01 9:14 AM"),
+  );
+  assert.equal(kinds.length, values.length);
+  assert.ok(kinds.every((k) => ["title", "section", "header", "blank", "body"].includes(k)));
+  assert.equal(kinds[0], "title");
+  assert.equal(kinds.filter((k) => k === "title").length, 1);
+  values.forEach((r, i) => {
+    const blankRow = r.every((v) => v === "");
+    assert.equal(kinds[i] === "blank", blankRow, "row " + (i + 1));
+  });
+  const kindOf = (first, second) =>
+    kinds[values.findIndex((r) => r[0] === first && (second === undefined || r[1] === second))];
+  for (const title of [
+    "Summary",
+    "Month over month",
+    "Year to date",
+    "Hours per volunteer",
+    "Hours by weekday",
+    "Hours by Role/Type",
+    "Hours by Activity",
+    "Milestones crossed this month",
+    "Rows to review",
+    "Open shifts, not counted: 1",
+  ]) {
+    assert.equal(kindOf(title), "section", title);
+  }
+  assert.equal(kindOf("Volunteer", "Shifts"), "header");
+  assert.equal(kindOf("Day", "Shifts"), "header");
+  assert.equal(kindOf("Volunteer", "Milestone"), "header");
+  assert.equal(kindOf("Date", "Volunteer"), "header");
+  assert.equal(kindOf("Stated hours", 11.5), "body");
+  assert.equal(kindOf("Total"), "body");
+  // The line under the title says what the report counts; it is plain text.
+  assert.equal(kinds[1], "body");
+});
+
+test("reportTabLook: title, section and header ranges, widths and the tab colour", () => {
+  const rows = {
+    values: [
+      ["Monthly report", "", "", "", ""],
+      ["Counts closed shifts", "", "", "", ""],
+      ["", "", "", "", ""],
+      ["Hours per volunteer", "", "", "", ""],
+      ["Volunteer", "Shifts", "Stated hours", "", ""],
+      ["Ann Lee", 2, 3.5, "", ""],
+      ["Month over month", "November 2026", "October 2026", "Change", "% change"],
+    ],
+    kinds: ["title", "body", "blank", "section", "header", "body", "section"],
+  };
+  assert.deepEqual(plain(L.reportTabLook(rows)), {
+    styles: [
+      { kind: "title", ranges: ["A1"], fontColor: "#062f5a", fontSize: 14, bold: true },
+      {
+        kind: "section",
+        ranges: ["A4:E4", "A7:E7"],
+        background: "#dff3fb",
+        fontColor: "#062f5a",
+        bold: true,
+      },
+      { kind: "header", ranges: ["A5:C5"], bold: true, bottomBorder: "#062f5a" },
+    ],
+    widths: [
+      { col: 1, px: 230 },
+      { col: 2, px: 170 },
+      { col: 3, px: 140 },
+      { col: 4, px: 110 },
+      { col: 5, px: 300 },
+    ],
+    tabColour: "#0669a9",
+  });
+  // A kind with no rows gets no style.
+  const bare = plain(L.reportTabLook({ values: [["x", ""]], kinds: ["body"] }));
+  assert.deepEqual(bare.styles, []);
+  assert.deepEqual(
+    bare.widths.map((w) => w.col),
+    [1, 2],
+  );
 });
 
 test("hoursText and moneyText", () => {
@@ -811,9 +1008,9 @@ test('refusal("ADMIN_BAD_MONTH")', () => {
   });
 });
 
-test("settingsDefaults has 15 rows, Volunteer hour value blank after the check-out flag", () => {
+test("settingsDefaults has 26 rows, Volunteer hour value blank after the check-out flag", () => {
   const rows = plain(L.settingsDefaults("2026-11-12"));
-  assert.equal(rows.length, 15);
+  assert.equal(rows.length, 26);
   const names = rows.map((r) => r[0]);
   const at = names.indexOf("Volunteer hour value");
   assert.equal(at, names.indexOf("Check-out flag minutes") + 1);
@@ -857,69 +1054,6 @@ test("the reordered header's letters", () => {
     ),
     ["S", "Q", "F", "E", "J", "I", "D", "C", "B"],
   );
-});
-
-test("monthlyHoursFormulas use the map's letters on a reordered header", () => {
-  const f = plain(L.monthlyHoursFormulas(L.reportColumns(REORDERED), "Log"));
-  const cell = (a1) => f.cells.find((c) => c.a1 === a1).value;
-  const spill = cell("H2");
-  for (const h of [
-    H.date,
-    H.name,
-    H.token,
-    H.status,
-    H.statedHours,
-    H.alerts,
-    H.statedIn,
-    H.recordedIn,
-  ]) {
-    const l = letterOf(h);
-    assert.ok(spill.includes("'Log'!" + l + "2:" + l), h + " at " + l);
-  }
-  // The default layout's Date column, A, is the staff column here and is never read.
-  assert.ok(!/'Log'!A2:A/.test(JSON.stringify(f)));
-  assert.ok(cell("N1").includes("'Log'!S2:S"));
-  // Group by the volunteer key only, label by the latest row's name.
-  assert.match(cell("A7"), /UNIQUE\(keys\)/);
-  assert.match(cell("A7"), /ROWS\(FILTER\(names, keys = key\)\)/);
-  assert.ok(!/UNIQUE\(\{/.test(cell("A7")), "no grouping by token and name together");
-  // No token reaches the tab: the spill writes a row number for each token.
-  assert.match(spill, /XMATCH\(rowTokens, allTokens\) \+ 1/);
-  assert.ok(
-    spill.includes('picked, ARRAYFORMULA((months <> "") * (months = $B$1) = 1)'),
-    "an undated row is never picked",
-  );
-  assert.ok(!/\{allTokens|\{rowTokens/.test(spill));
-  for (const c of f.cells) {
-    if (c.value.startsWith("=")) {
-      const opens = (c.value.match(/\(/g) || []).length;
-      const closes = (c.value.match(/\)/g) || []).length;
-      assert.equal(opens, closes, c.a1 + " parentheses");
-    }
-  }
-  assert.deepEqual(f.picker, { a1: "B1", listRange: "N1:N" });
-  assert.deepEqual(f.hiddenColumns, ["H", "I", "J", "K", "L", "N"]);
-  assert.equal(f.rowCount, 5000);
-  assert.ok(!f.cells.some((c) => c.a1 === "B1"), "B1 is the picker, kept by setupReports");
-});
-
-test("monthlyHoursFormulas quote the tab name and refuse a missing column", () => {
-  const f = plain(L.monthlyHoursFormulas(L.reportColumns(HEADER), "Kiosk's Log"));
-  assert.ok(f.cells.find((c) => c.a1 === "H2").value.includes("'Kiosk''s Log'!A2:A"));
-  const cols = plain(L.reportColumns(HEADER));
-  cols[H.statedIn] = -1;
-  assert.throws(() => L.monthlyHoursFormulas(cols, "Log"), /no "check-in stated \(user\)" column/);
-});
-
-test("monthlyHoursFormulas blank only FILTER's no-match result, so other errors show", () => {
-  const f = plain(L.monthlyHoursFormulas(L.reportColumns(HEADER), "Log"));
-  const cell = (a1) => f.cells.find((c) => c.a1 === a1).value;
-  // FILTER with no rows gives #N/A; a deleted column (#REF!) or a bad name (#NAME?) must
-  // still reach staff, as the note in cell C1 tells them.
-  for (const a1 of ["H2", "A7", "C4"]) {
-    assert.ok(cell(a1).startsWith("=IFNA("), a1 + " starts with IFNA");
-    assert.ok(!cell(a1).startsWith("=IFERROR("), a1 + " has no outer IFERROR");
-  }
 });
 
 test("filterViewSpecs use the map's letters on a reordered header", () => {
@@ -989,7 +1123,6 @@ test("each kind of report protection has its own marker, and no marker starts an
     reportTab: "Report tab:",
   });
   assert.ok(L.kioskWarnDescription().startsWith(p.kioskColumn));
-  assert.ok(L.monthlyHoursDescription().startsWith(p.monthlyHours));
   assert.ok(L.reportTabDescription().startsWith(p.reportTab));
   const all = Object.values(p);
   for (const a of all) {
@@ -1030,10 +1163,10 @@ test("ownedProtectionPlan keeps its own, removes stale and duplicate own ones, a
     remove: [],
     add: [],
   });
-  // The Monthly Hours tab: one sheet protection of its own, the report tab's left alone.
+  // A sheet-level protection: one of its own kept, the report tab's left alone.
   const sheetLevel = [
-    { key: "sheet", description: L.monthlyHoursDescription() },
-    { key: "sheet", description: L.monthlyHoursDescription() },
+    { key: "sheet", description: "Monthly Hours tab: kiosk" },
+    { key: "sheet", description: "Monthly Hours tab: kiosk" },
     { key: "sheet", description: L.reportTabDescription() },
   ];
   assert.deepEqual(plain(L.ownedProtectionPlan(["sheet"], sheetLevel, "Monthly Hours tab:")), {
@@ -1048,21 +1181,35 @@ test("ownedProtectionPlan keeps its own, removes stale and duplicate own ones, a
   });
 });
 
-test("pickerMonth keeps a yyyy-MM text month and otherwise shows the current month", () => {
-  assert.equal(L.pickerMonth("2026-09", "2026-11-12"), "2026-09");
-  assert.equal(L.pickerMonth(" 2025-12 ", "2026-11-12"), "2025-12");
-  for (const bad of ["", "2026-11-01", "2026-13", "2026-00", "Nov 2026", "2026-1"]) {
-    assert.equal(L.pickerMonth(bad, "2026-11-12"), "2026-11", bad);
-  }
-});
-
-test("setupReportsMessage gives the counts and says to rerun after a Log column moves", () => {
-  const text = L.setupReportsMessage({
+test("setupReportsMessage gives the counts, when Hours is filled as of, Monthly Hours' fate, and the reruns", () => {
+  const base = {
     views: { added: 0, updated: 7 },
     warnings: { kept: 14, added: 0, removed: 0 },
+  };
+  const text = L.setupReportsMessage({
+    ...base,
+    hours: { asOf: "2026-11-13 9:14 AM", monthlyHours: "deleted" },
   });
+  assert.match(
+    text,
+    /The Hours and Hours data tabs are set up\. Hours is filled as of 2026-11-13 9:14 AM\./,
+  );
+  assert.match(text, /The Monthly Hours tab was deleted; the Hours tab replaces it\./);
   assert.match(text, /Filter views: 7 updated, 0 added\./);
   assert.match(text, /Kiosk column warnings: 14 kept, 0 added, 0 removed\./);
+  assert.match(text, /run setupDailyJobs once more for the nightly Hours refresh/);
   assert.match(text, /inserted, deleted or moved/);
   assert.match(text, /until setupReports runs again/);
+  assert.doesNotMatch(text, /Monthly Hours tab is written/);
+
+  const kept = L.setupReportsMessage({ ...base, hours: { asOf: "x", monthlyHours: "unmarked" } });
+  assert.match(
+    kept,
+    /A tab named Monthly Hours was left alone: it doesn't carry the kiosk's Monthly Hours protection/,
+  );
+  assert.doesNotMatch(kept, /was deleted/);
+
+  const none = L.setupReportsMessage({ ...base, hours: { asOf: "x", monthlyHours: "none" } });
+  assert.doesNotMatch(none, /Monthly Hours/);
+  assert.ok(!none.includes("\n\n"));
 });

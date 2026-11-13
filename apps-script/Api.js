@@ -7,6 +7,20 @@
  * failure (a Sheets error, a missing or repeated Log header, a bad setting). The page
  * never receives a phone number, a User Token, a Profiles row, a start date, or anyone's
  * shift count or hours. Log columns are found by header on every call.
+ *
+ * A check-in or check-out reads Settings once, before the lock, and uses that one read
+ * for the access code and for everything inside the lock: that first read pays any
+ * recalculation the last write started, outside the lock, and a Settings edit made while
+ * the call waits for the lock applies from the next call. Inside the lock it finds the
+ * volunteer in Profiles first, so a wrong name or phone returns without reading the Log.
+ * Then it reads the Log once, header and rows in one range, and parses only that
+ * volunteer's rows (readLogTable_), the only rows the decisions look at.
+ *
+ * Each flag a check-in or check-out writes to Admin Alerts? is also copied to the Flags
+ * tab (raiseFlags_), after the Log write and under the same lock. Every Flags read comes
+ * before the Log write (planFlags_), so after that write the call only writes and
+ * flushes and never waits on the recalculation the write starts. The Log row is the
+ * record: a failed copy is logged and never changes the reply.
  */
 
 /** Serves the page shell, which holds no volunteer data. */
@@ -25,21 +39,26 @@ function apiCheckAccess(code) {
 
 /**
  * {ok: true, volunteers: [{id, firstName, lastName, checkedIn, openShiftArrival,
- * needsPhoneCheck}]}. checkedIn is true when the volunteer has an open row dated today.
- * openShiftArrival is the ISO stated arrival of that row, else null; it is also null when
- * the row's check-in time can't be read, and the volunteer is still checked in. id is
- * the hashed Volunteer ID; the raw User Token never leaves the server.
+ * needsPhoneCheck}]}. checkedIn is true when the volunteer has an open row the tablet can
+ * still check out: one checked in less than "Auto clock-out after hours" ago, past
+ * midnight too, or one dated today whose check-in time can't be read. openShiftArrival is
+ * the ISO stated arrival of that row, else null; it is also null when the row's check-in
+ * time can't be read, and the volunteer is still checked in. id is the hashed Volunteer
+ * ID; the raw User Token never leaves the server. Reads only yesterday's and today's rows.
  */
 function apiListVolunteers(code) {
-  const denied = accessRefusal_(code);
-  if (denied) return denied;
   const settings = readSettings_();
-  const today = centralDate_(new Date());
+  const denied = accessRefusal_(code, settings);
+  if (denied) return denied;
+  const now = new Date();
+  const today = centralDate_(now);
   return {
     ok: true,
     volunteers: volunteerSummaries(
       getProfiles_(settings),
-      readTodayLog_(today, readLogColumns_()),
+      readRecentLog_(recentLogDates(today), readLogColumns_()),
+      now.getTime(),
+      autoClockOutWindowMs(settings["Auto clock-out after hours"]),
       today,
     ),
   };
@@ -51,32 +70,41 @@ function apiListVolunteers(code) {
  * arrival is the server's time of the call, the same as Check-In Recorded. digits is the
  * phone's last four as a string, or null. In a same-name group the digits pick the
  * member, so the volunteer checked in can be another member than the one tapped.
- * {ok: true, id, shiftId, arrivedAt, tappedAt} or a refusal; id is the volunteer
- * checked in.
+ * {ok: true, id, shiftId, arrivedAt, tappedAt, missedSignOut} or a refusal; id is the
+ * volunteer checked in. missedSignOut is true when the volunteer's last check-out was one
+ * they didn't make (missedSignOut, Logic.js), so the page can remind them; it is about
+ * the volunteer just checked in and says nothing else. ALREADY_IN while the volunteer has
+ * an open row checked in less than "Auto clock-out after hours" ago.
  */
 function apiCheckIn(code, id, arrivalIso, digits) {
-  const denied = accessRefusal_(code);
+  const settings = readSettings_();
+  const denied = accessRefusal_(code, settings);
   if (denied) return denied;
   return withLock_(() => {
     const now = new Date();
     const today = centralDate_(now);
-    const settings = readSettings_();
-    const cols = readLogColumns_();
+    const volunteers = getProfiles_(settings);
+    const who = resolveVolunteer(volunteers, id, digits);
+    if (who.refusal) return refusal(who.refusal);
+    const log = readLogTable_(who.volunteer.token);
     const arrivedMs = arrivalMsFromIso(arrivalIso);
     const decision = decideCheckIn({
-      volunteers: getProfiles_(settings),
+      volunteers,
       id,
       digits,
-      entries: readTodayLog_(today, cols),
+      entries: log.entries,
       todayDate: today,
       nowMs: now.getTime(),
+      windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
       arrivedMs,
       arrivedDate: Number.isFinite(arrivedMs) ? centralDate_(new Date(arrivedMs)) : "",
       flagMinutes: parseFlagMinutes(settings["Arrival flag minutes"]),
+      launchDate: settings["Kiosk launch date"],
     });
     if (decision.refusal) return refusal(decision.refusal);
+    const flagPlan = planFlags_(decision.flags);
     const shiftId = Utilities.getUuid();
-    appendLogRow_(
+    const logRow = appendLogRow_(
       checkInCells(
         decision.volunteer,
         today,
@@ -85,7 +113,19 @@ function apiCheckIn(code, id, arrivalIso, digits) {
         decision.flag,
         shiftId,
       ),
-      cols,
+      log.cols,
+    );
+    raiseFlags_(
+      {
+        date: today,
+        name: volunteerFullName(decision.volunteer),
+        shiftId,
+        raisedAtMs: now.getTime(),
+        source: flagSources().checkIn,
+        logRow,
+      },
+      decision.flags,
+      flagPlan,
     );
     return {
       ok: true,
@@ -93,6 +133,7 @@ function apiCheckIn(code, id, arrivalIso, digits) {
       shiftId,
       arrivedAt: new Date(decision.arrivedMs).toISOString(),
       tappedAt: now.toISOString(),
+      missedSignOut: decision.missedSignOut,
     };
   });
 }
@@ -105,30 +146,67 @@ function apiCheckIn(code, id, arrivalIso, digits) {
  * {ok: true, id, signedOutAt, tappedAt, minutes, milestone} or a refusal: id is the
  * volunteer checked out, signedOutAt the stated check-out, tappedAt the server time of
  * the call, minutes the whole minutes of stated hours, and milestone {id, title,
- * message} or null.
+ * message} or null. The open row is the one checked in less than "Auto clock-out after
+ * hours" ago, so an evening shift checks out past midnight; NOT_IN when there is none. A
+ * check-out whose stated hours are more than "Long shift flag hours" is flagged. BUSY
+ * when the open row, read again just before the write, is no longer the row decided on
+ * (staff sorted, inserted or deleted Log rows meanwhile); nothing is written then.
  */
 function apiCheckOut(code, id, digits, checkOutIso) {
-  const denied = accessRefusal_(code);
+  const settings = readSettings_();
+  const denied = accessRefusal_(code, settings);
   if (denied) return denied;
   return withLock_(() => {
     const now = new Date();
-    const settings = readSettings_();
-    const cols = readLogColumns_();
+    const volunteers = getProfiles_(settings);
+    const who = resolveVolunteer(volunteers, id, digits);
+    if (who.refusal) return refusal(who.refusal);
+    const log = readLogTable_(who.volunteer.token);
     const outMs = arrivalMsFromIso(checkOutIso);
     const decision = decideCheckOut({
-      volunteers: getProfiles_(settings),
+      volunteers,
       id,
       digits,
-      entries: readLog_(cols),
+      entries: log.entries,
       todayDate: centralDate_(now),
       nowMs: now.getTime(),
+      windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
       outMs,
       outDate: Number.isFinite(outMs) ? centralDate_(new Date(outMs)) : "",
       flagMinutes: parseFlagMinutes(settings["Check-out flag minutes"]),
+      longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
       launchDate: settings["Kiosk launch date"],
     });
     if (decision.refusal) return refusal(decision.refusal);
-    updateLogRow_(decision.row, decision.cells, cols);
+    const flagPlan = planFlags_(decision.flags);
+    // Staff may sort, insert or delete Log rows while the call runs, which moves rows
+    // under their numbers. Read the row again, last before the write, and write only if
+    // it is still the open row decided on; else BUSY, and a retry reads the Log again.
+    const shiftId = decision.open.shiftId;
+    const current = readLogRowAt_(decision.row, log.width, log.cols, logRead_(), shiftId);
+    if (!autoClockOutRowUnchanged(decision.open, current)) {
+      console.error(
+        "Check-out: Log row " +
+          decision.row +
+          " no longer holds open Shift ID " +
+          cellString(shiftId) +
+          "; answered BUSY and wrote nothing.",
+      );
+      return refusal("BUSY");
+    }
+    updateLogRow_(decision.row, decision.cells, log.cols);
+    raiseFlags_(
+      {
+        date: rowDate(decision.open.dateText),
+        name: decision.open.name,
+        shiftId,
+        raisedAtMs: now.getTime(),
+        source: flagSources().checkOut,
+        logRow: decision.row,
+      },
+      decision.flags,
+      flagPlan,
+    );
     return {
       ok: true,
       id: decision.volunteer.id,
@@ -141,13 +219,15 @@ function apiCheckOut(code, id, digits, checkOutIso) {
 }
 
 /**
- * The ACCESS refusal, or null when the code is right. Runs before any lock is taken, so
+ * The ACCESS refusal, or null when the code is right. settings are the Settings the call
+ * already read; without them this reads Settings itself. Runs before any lock is taken, so
  * calls without the code never hold the lock or make the tablet's call return BUSY.
  * A refused code waits one second. There is no lockout: a lockout would let anyone with
  * the link lock the real tablet out.
  */
-function accessRefusal_(code) {
-  if (!checkAccessCode(code, readSettings_()["Kiosk access code"])) return null;
+function accessRefusal_(code, settings) {
+  const stored = (settings || readSettings_())["Kiosk access code"];
+  if (!checkAccessCode(code, stored)) return null;
   Utilities.sleep(1000);
   return refusal("ACCESS");
 }
