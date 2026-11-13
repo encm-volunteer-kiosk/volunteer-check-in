@@ -172,7 +172,7 @@ function importJob_(form) {
  */
 function importCell_(value, zone) {
   if (typeof value === "number") return value;
-  if (isDate_(value)) return Utilities.formatDate(value, zone, "yyyy-MM-dd");
+  if (isDate_(value)) return zoneDate_(value, zone);
   return cellText_(value);
 }
 

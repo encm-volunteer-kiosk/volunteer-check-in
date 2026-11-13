@@ -244,7 +244,7 @@ function cellTime_(value) {
     return {
       ms,
       date: centralDate_(value),
-      clock: Utilities.formatDate(value, kioskTimeZone(), "HH:mm"),
+      clock: zoneClock_(value, kioskTimeZone()),
     };
   }
   const text = cellString(value);
@@ -267,7 +267,83 @@ function timeOnDate_(dateText, timeText) {
 }
 
 function centralDate_(date) {
-  return Utilities.formatDate(date, kioskTimeZone(), "yyyy-MM-dd");
+  return zoneDate_(date, kioskTimeZone());
+}
+
+/**
+ * Utilities.formatDate(date, zone, "yyyy-MM-dd"), from the zone's offset for that hour
+ * (zoneOffset_) when it has one.
+ */
+function zoneDate_(date, zone) {
+  const offset = zoneOffset_(date.getTime(), zone);
+  if (offset === null) return Utilities.formatDate(date, zone, "yyyy-MM-dd");
+  const wall = new Date(date.getTime() + offset);
+  return (
+    padNumber_(wall.getUTCFullYear(), 4) +
+    "-" +
+    padNumber_(wall.getUTCMonth() + 1, 2) +
+    "-" +
+    padNumber_(wall.getUTCDate(), 2)
+  );
+}
+
+/** Utilities.formatDate(date, zone, "HH:mm"), read as zoneDate_ reads the date. */
+function zoneClock_(date, zone) {
+  const offset = zoneOffset_(date.getTime(), zone);
+  if (offset === null) return Utilities.formatDate(date, zone, "HH:mm");
+  const wall = new Date(date.getTime() + offset);
+  return padNumber_(wall.getUTCHours(), 2) + ":" + padNumber_(wall.getUTCMinutes(), 2);
+}
+
+/**
+ * How many milliseconds zone's wall clock runs ahead of UTC at ms, or null when this run
+ * reads that time with Utilities.formatDate itself.
+ *
+ * Each UTC hour's offset costs one formatDate call, at the hour's start, and is kept for
+ * the rest of the script run. That offset holds for the whole hour when the zone's clock
+ * can only change on a whole UTC hour. The kiosk's zone (America/Chicago) does: from local
+ * mean time to Central at 18:00 UTC in 1883, and since then whole-hour offsets changed at
+ * a whole local hour. Any other zone may change at a half hour (America/St_Johns) or at
+ * an odd second (a local mean time), so its hour is used only when the next hour's start
+ * has the same offset; an hour with a change inside it is left to formatDate.
+ */
+function zoneOffset_(ms, zone) {
+  if (!isFinite(ms)) return null;
+  const hour = Math.floor(ms / 3600000);
+  const offset = hourOffset_(zone, hour);
+  if (offset === null || zone === kioskTimeZone()) return offset;
+  return hourOffset_(zone, hour + 1) === offset ? offset : null;
+}
+
+/** Offsets by zone, then by UTC hour (ms / 3600000, floored); see zoneOffset_. */
+const ZONE_OFFSETS_ = {};
+
+/**
+ * zone's offset at the start of UTC hour, from one Utilities.formatDate call, or null when
+ * its text can't be read back exactly: a year before 1583 (Apps Script dates those on the
+ * Julian calendar, JavaScript on the Gregorian) or after 9999.
+ */
+function hourOffset_(zone, hour) {
+  const offsets = ZONE_OFFSETS_[zone] || (ZONE_OFFSETS_[zone] = {});
+  if (Object.prototype.hasOwnProperty.call(offsets, hour)) return offsets[hour];
+  const start = hour * 3600000;
+  const text = Utilities.formatDate(new Date(start), zone, "yyyy-MM-dd HH:mm:ss");
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(text);
+  let offset = null;
+  if (m && +m[1] >= 1583) {
+    const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+    const back = new Date(wall).toISOString();
+    if (back.slice(0, 10) + " " + back.slice(11, 19) === text) offset = wall - start;
+  }
+  offsets[hour] = offset;
+  return offset;
+}
+
+/** n as decimal digits, zero-padded on the left to at least width. */
+function padNumber_(n, width) {
+  let text = String(n);
+  while (text.length < width) text = "0" + text;
+  return text;
 }
 
 function sha256Hex_(text) {

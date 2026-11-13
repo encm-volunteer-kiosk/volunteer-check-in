@@ -20,6 +20,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -303,6 +304,7 @@ function server(opts = {}) {
       getUuid: () => "uuid-" + ++uuid,
       formatDate: (date, tz, format) => {
         assert.equal(tz, TZ);
+        if (format === "yyyy-MM-dd HH:mm:ss") return formatInZone(date, tz, format);
         if (format === "yyyy-MM-dd") return centralDate(date.getTime());
         if (format === "h:mm a") return clock(date.getTime());
         // A time typed with no date comes back as a date on 1899-12-30 whose Central clock
