@@ -3297,13 +3297,6 @@ function hoursUsageText(openPath) {
   );
 }
 
-/** "#062f5a" as the Sheets API's {red, green, blue}, each 0 to 1. */
-function hoursRgb(hex) {
-  const h = String(hex).replace("#", "");
-  const part = (i) => parseInt(h.slice(i, i + 2), 16) / 255;
-  return { red: part(0), green: part(2), blue: part(4) };
-}
-
 /**
  * Everything setupReports puts on the Hours tab, and the look of Hours data, as plain data
  * and Sheets API requests. hoursSheetId and dataSheetId are the two tabs' sheet IDs;
@@ -3331,12 +3324,11 @@ function hoursRgb(hex) {
  * own grey band never shows. Widths are fixed pixels, not fitted to content.
  */
 function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
-  const navy = "#062f5a";
-  const white = "#ffffff";
-  const band = "#eef7fc";
-  const section = "#dff3fb";
-  const teal = "#168c86";
-  const grey = "#52687b";
+  const P = lookPalette();
+  const navy = P.navy;
+  const white = P.white;
+  const band = P.band;
+  const section = P.section;
   const id = hoursSheetId;
   const source = hoursSourceRange(dataSheetId);
   const range = (r0, r1, c0, c1) => {
@@ -3347,7 +3339,7 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
   const repeat = (gridRange, format, fields) => ({
     repeatCell: { range: gridRange, cell: { userEnteredFormat: format }, fields },
   });
-  const color = (hex) => ({ rgbColor: hoursRgb(hex) });
+  const color = lookColorStyle;
 
   const formats = [
     { unmergeCells: { range: range(0, 3, 0, 16) } },
@@ -3360,7 +3352,13 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
     ),
     repeat(
       range(0, 1, 0, 1),
-      { textFormat: { foregroundColorStyle: color(navy), fontSize: 14, bold: true } },
+      {
+        textFormat: {
+          foregroundColorStyle: color(navy),
+          fontSize: lookTitleFontSize(),
+          bold: true,
+        },
+      },
       "userEnteredFormat.textFormat",
     ),
     repeat(range(0, 1, 1, 2), { wrapStrategy: "OVERFLOW_CELL" }, "userEnteredFormat.wrapStrategy"),
@@ -3593,9 +3591,9 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
       headers: hoursDataHeaders(),
       formats: hoursDataFormats(),
       stateRange: hoursStateRange(),
-      tabColor: grey,
+      tabColor: lookTabColours().hoursData,
     },
-    tabColor: teal,
+    tabColor: lookTabColours().hours,
   };
 }
 
