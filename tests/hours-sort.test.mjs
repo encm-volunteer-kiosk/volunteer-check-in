@@ -596,7 +596,7 @@ test("a run holds the document lock once, released in runHoursSort's finally, an
   );
   assert.equal(s.calls.filter((c) => c.op === "getValues" && c.a1 === "A7:N7").length, 1);
   assert.deepEqual(
-    s.calls.find((c) => c.op === "Sheets.get").value,
+    plain(s.calls.find((c) => c.op === "Sheets.get").value),
     TABLES.map((t) => "'Hours'!" + colLetters(boxColumn(t)) + "8"),
   );
   assert.equal(o.filter((x) => x === "batchUpdate").length, 1);
@@ -635,7 +635,7 @@ test("a busy document lock: nothing read or written, and one line logged", () =>
   const e = s.edit(colLetters(boxColumn(TABLES[0])) + "7", "");
   s.clear();
   s.run(e);
-  assert.deepEqual(ops(s.calls), ["docLock.tryLock", "release-by", "log"]);
+  assert.deepEqual(ops(s.calls), ["docLock.tryLock", "log", "release-by"]);
   assert.deepEqual(s.logs, ["Sort (edit): Hours stayed busy for 4 minutes; nothing changed."]);
 });
 
