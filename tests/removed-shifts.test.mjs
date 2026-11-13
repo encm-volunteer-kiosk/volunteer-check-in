@@ -941,3 +941,17 @@ test("adminFindShifts finds by Shift ID, or by volunteer and date, and skips row
   });
   assert.deepEqual(writes(s), []);
 });
+
+test("cellBack_ writes text so it reads back as text; other values as they are", () => {
+  const { ctx } = removeSetup();
+  assert.equal(ctx.cellBack_(null), "");
+  assert.equal(ctx.cellBack_("=1+1"), "'=1+1");
+  assert.equal(ctx.cellBack_("'Neil"), "''Neil");
+  assert.equal(ctx.cellBack_("Sam Lee"), "Sam Lee");
+  assert.equal(ctx.cellBack_(2.5), 2.5);
+  assert.equal(ctx.cellBack_(true), true);
+  const d = new Date(Date.UTC(2026, 5, 1));
+  assert.equal(ctx.cellBack_(d), d);
+  assert.equal(ctx.isDateValue_(d), true);
+  assert.equal(ctx.isDateValue_("2026-06-01"), false);
+});

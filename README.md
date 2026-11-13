@@ -812,7 +812,7 @@ once and shows what it found.
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
 | No Shift ID                    | The Shift ID is blank.                                                                                     |
 | Shift ID on more than one row  | Two or more rows have the same Shift ID. One flag, at the first row, naming the rows.                      |
-| Date isn't a full date         | The Date holds only a time, can't be read as a date, or is before 2000.                                    |
+| Date isn't a full date         | The Date holds only a time, can't be read as a date, is before 2000, or is after this month.               |
 | Recorded time has no date      | A Recorded (timestamp) cell holds a time with no date. The kiosk always writes a full date and time there. |
 | Status isn't open or closed    | Status is anything else, blank included. Such rows count nowhere.                                          |
 | Check-in missing or unreadable | No check-in time reads on the row's Date, and Admin Alerts? doesn't already say so.                        |

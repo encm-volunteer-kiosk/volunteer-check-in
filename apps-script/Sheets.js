@@ -997,7 +997,7 @@ function appendRemovedRow_(removed, logHeader, values, formats, initials, reason
   if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 50);
   const range = sheet.getRange(row, 1, 1, width);
   const kept = range.getNumberFormats()[0];
-  const line = headerMapCopy(logHeader, values, header, width).map((v) => (v === null ? "" : v));
+  const line = headerMapCopy(logHeader, values, header, width).map(cellBack_);
   const lineFormats = headerMapCopy(logHeader, formats, header, width).map((f, j) =>
     f === null || f === "" ? kept[j] : f,
   );
@@ -1077,11 +1077,33 @@ function appendLogValues_(values, formats, cols) {
   const lineFormats = formats.map((f, j) => (f === null || f === "" ? kept[j] : f));
   const kinds = logColumnKinds();
   Object.keys(cols).forEach((h) => {
-    if (cols[h] >= 0 && cols[h] < width) lineFormats[cols[h]] = logFormat_(kinds[h]);
+    const c = cols[h];
+    if (c < 0 || c >= width) return;
+    const format = logFormat_(kinds[h]);
+    // A real date in a text column (pasted in by hand) keeps the format it came with, so
+    // it still reads as that date rather than as a serial number under plain text.
+    if (format === "@" && isDateValue_(values[c]) && lineFormats[c] !== kept[c]) return;
+    lineFormats[c] = format;
   });
   range.setNumberFormats([lineFormats]);
-  range.setValues([values.map((v) => (v === null ? "" : v))]);
+  range.setValues([values.map(cellBack_)]);
   return row;
+}
+
+/** True when v is a Date, from any script context. */
+function isDateValue_(v) {
+  return Object.prototype.toString.call(v) === "[object Date]";
+}
+
+/**
+ * A cell value read with getValues, as it is written back by setValues so the cell reads
+ * the same: null is blank, text goes through sheetText (so text starting with "=" or an
+ * apostrophe stays text), and numbers, booleans and dates are written as they are. A
+ * formula is not kept: its value is written.
+ */
+function cellBack_(v) {
+  if (v === null) return "";
+  return typeof v === "string" ? sheetText(v) : v;
 }
 
 /**
