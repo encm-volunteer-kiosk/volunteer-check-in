@@ -65,6 +65,18 @@ export function quickAnswers(range: QuickRange): QuickAnswer[] {
   );
 }
 
+/**
+ * The time a tapped quick answer sends. The chip printed the time it had at the last redraw,
+ * and the clock may have passed a quarter hour since, so the printed time is sent while it is
+ * still in the range at the tap. Only when it has left the range (past midnight, say) does
+ * the answer count back from the tap's own latest quarter hour. Null when neither fits.
+ */
+export function pickMinutes(shown: number, ago: number, range: QuickRange) {
+  if (inRange(shown, range)) return shown;
+  const next = range.latest - ago;
+  return inRange(next, range) ? next : null;
+}
+
 // The quarter hour a nudge counts from: the shown time moved into the range and onto a
 // quarter hour, so a nudge from a stray value still lands on an allowed one.
 function nudgeBase(minutes: number, range: QuickRange) {

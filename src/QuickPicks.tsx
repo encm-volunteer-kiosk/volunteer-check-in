@@ -6,6 +6,7 @@ import {
   clockText,
   fromTimeValue,
   nudge,
+  pickMinutes,
   quickAnswers,
   quickRange,
   toTimeValue,
@@ -70,10 +71,9 @@ export function QuickPicks({
     valueRef.current = next;
     onChangeRef.current(toTimeValue(next));
   };
-  const pick = (ago: number) => {
-    const now = quickRange(minRef.current, centralMinutes());
-    const next = now.latest - ago;
-    if (next >= now.earliest) send(next);
+  const pick = (shown: number, ago: number) => {
+    const next = pickMinutes(shown, ago, quickRange(minRef.current, centralMinutes()));
+    if (next !== null) send(next);
   };
   const step = (delta: number) => {
     const next = nudge(valueRef.current, delta, quickRange(minRef.current, centralMinutes()));
@@ -94,7 +94,7 @@ export function QuickPicks({
               className={`quick-pick${chosen ? " is-selected" : ""}`}
               aria-pressed={chosen}
               disabled={saving}
-              onClick={() => pick(range.latest - answer.minutes)}
+              onClick={() => pick(answer.minutes, range.latest - answer.minutes)}
             >
               <strong>{answer.label}</strong>
               <small>{clockText(answer.minutes)}</small>

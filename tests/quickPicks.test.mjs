@@ -12,6 +12,7 @@ import {
   clockText,
   fromTimeValue,
   nudge,
+  pickMinutes,
   quickAnswers,
   quickRange,
   toTimeValue,
@@ -182,4 +183,27 @@ test("centralMinutes reads the Central clock", () => {
   assert.equal(centralMinutes(new Date("2026-07-01T05:07:00Z")), 7);
   // Midnight reads as 0, not 24:00.
   assert.equal(centralMinutes(new Date("2026-11-14T06:00:00Z")), 0);
+});
+
+test("a quick answer sends the time its chip shows when the quarter hour turns before the tap", () => {
+  // The chips were drawn at 2:14:55 PM (latest 2:00 PM), so "15 min ago" shows 1:45 PM.
+  const drawn = quickRange(0, centralMinutes(new Date("2026-11-13T20:14:55Z")));
+  const answer = quickAnswers(drawn).find((item) => item.label === "15 min ago");
+  assert.equal(clockText(answer.minutes), "1:45 PM");
+  // The tap lands at 2:15:05 PM, when the latest quarter hour is 2:15 PM.
+  const tapped = quickRange(0, centralMinutes(new Date("2026-11-13T20:15:05Z")));
+  assert.equal(tapped.latest, 14 * 60 + 15);
+  assert.equal(pickMinutes(answer.minutes, drawn.latest - answer.minutes, tapped), 13 * 60 + 45);
+});
+
+test("a quick answer whose shown time left the range counts back from the tap", () => {
+  // Drawn at 11:59 PM, "Now" shows 11:45 PM; tapped at 12:00:05 AM, 11:45 PM is no longer
+  // today, so "Now" sends 12:00 AM.
+  const drawn = quickRange(0, 23 * 60 + 59);
+  const tapped = quickRange(0, 0);
+  assert.equal(pickMinutes(23 * 60 + 45, 0, tapped), 0);
+  // "15 min ago" from 12:00 AM is before midnight: nothing is sent.
+  assert.equal(pickMinutes(23 * 60 + 30, 15, tapped), null);
+  // A shown time still in range is sent as shown.
+  assert.equal(pickMinutes(23 * 60, 45, drawn), 23 * 60);
 });
