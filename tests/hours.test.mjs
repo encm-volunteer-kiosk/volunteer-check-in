@@ -1000,6 +1000,12 @@ test("one GridRange for every pivot and every slicer: Hours data from row 1, no 
     assert.equal(s.addSlicer.slicer.position.overlayPosition.anchorCell.rowIndex, 4);
     assert.equal(s.addSlicer.slicer.spec.applyToPivotTables, true);
   }
+  // Wide enough that "Role/Type" and "Volunteer" show in full beside the "All" chip, and
+  // side by side without overlapping.
+  const boxes = plan.slicers.map((s) => s.addSlicer.slicer.position.overlayPosition);
+  for (const b of boxes) assert.ok(b.widthPixels >= 240, "slicer width " + b.widthPixels);
+  for (let i = 1; i < boxes.length; i++)
+    assert.ok(boxes[i].offsetXPixels >= boxes[i - 1].offsetXPixels + boxes[i - 1].widthPixels);
   for (const p of plan.pivots) {
     const f = p.updateCells.rows[0].values[0].pivotTable.filterSpecs;
     assert.deepEqual(

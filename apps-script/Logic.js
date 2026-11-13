@@ -3365,11 +3365,13 @@ function hoursUsageText(openPath) {
  * Layout: row 1 the title and the refresh line in B1, not wrapped, overflowing C1:P1; row
  * 2 one merged cell A2:P2, wrapped, top-aligned, 66 px; row 3 one merged cell A3:P3 with
  * the counts; row 5 the slicers for Year, Month, Role/Type, Activity and Volunteer, left
- * to right from column A; from row 8 the pivots Hours by volunteer (A8), Hours by month
- * (E8) and Shifts (K8), each filtered to Shifts = 1, a column no slicer uses. Stripes and
- * Grand Total rows come from rules keyed on each pivot's first column, so they follow the
- * pivot as it grows and shrinks; every body row gets its fill from a rule, so the pivot's
- * own grey band never shows. Widths are fixed pixels, not fitted to content.
+ * to right from column A, each 240 px wide so its title shows in full and its value list
+ * has room (at 165 px the titles were cut to "Ro..."); from row 8 the pivots Hours by
+ * volunteer (A8), Hours by month (E8) and Shifts (K8), each filtered to Shifts = 1, a
+ * column no slicer uses. Stripes and Grand Total rows come from rules keyed on each
+ * pivot's first column, so they follow the pivot as it grows and shrinks; every body row
+ * gets its fill from a rule, so the pivot's own grey band never shows. Widths are fixed
+ * pixels, not fitted to content.
  */
 function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
   const P = lookPalette();
@@ -3610,9 +3612,9 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
         position: {
           overlayPosition: {
             anchorCell: { sheetId: id, rowIndex: 4, columnIndex: 0 },
-            offsetXPixels: i * 175,
+            offsetXPixels: i * 250,
             offsetYPixels: 2,
-            widthPixels: 165,
+            widthPixels: 240,
             heightPixels: 32,
           },
         },
