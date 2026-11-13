@@ -14,6 +14,17 @@ so hours can be credited to each volunteer and reported to grantmakers.
   There is no name grid and no sign-up path, because every volunteer is registered
   before they volunteer. The first time, a board member types the kiosk access code
   from the Settings tab; the tablet remembers it.
+- **Check-out reminders**: every check-in ends on a "You're checked in." screen with the
+  line "Don't forget to check out before you leave." When the volunteer's last shift
+  ended without their own Check Out, a notice comes first: "Welcome back, Sam! Last time
+  you didn't check out. Please tap Check Out before you leave today." It has one button,
+  Got it, which leads to the checked-in screen, and it never shows a time. Left untouched
+  for 60 seconds it goes back to the welcome screen; the check-in is already saved. The
+  last shift counts as missed when it is still open, or was closed by anything other than
+  the volunteer's tap: the auto clock-out, Fix a sign-out, Add a shift, or a row typed by
+  hand. Only shifts dated on or after "Kiosk launch date" count, so imported history never
+  shows the notice. Nothing is stored for it: the check-in that shows the notice is the
+  shift looked at next time, so each missed check-out shows it once.
 - **Server**: Apps Script (`apps-script/`) bound to a Check-In Log spreadsheet with Log
   and Settings tabs. Each shift is one Log row. The Log uses ENCM's own column names from
   their "2026-11 Log" sketch, then four columns of the kiosk's: Status, who entered the
@@ -187,7 +198,12 @@ or earlier than the volunteer's stated arrival. The link shows only when at leas
 quarter-hour (:00, :15, :30, :45) falls between the stated arrival and now. It doesn't
 show when the open row's check-in time can't be read (or, for volunteers who share a name,
 any of their open rows'): there is no arrival to start from, so Check Out uses the
-server's clock.
+server's clock. It doesn't show either when the stated arrival is on an earlier date than
+today (for volunteers who share a name, the earliest of their arrivals): the picker offers
+times of today only, so Check Out uses the server's clock.
+
+The check-out screen says "You checked in at 9:45 PM.", or "You checked in yesterday at
+11:00 PM." after midnight, and shows "Your time so far".
 
 The server refuses a check-out time that is:
 
@@ -206,7 +222,8 @@ are only the tablet's.
 A volunteer stays checked in on the tablet for "Auto clock-out after hours" (Settings,
 12 by default) after they tapped Check In, whatever arrival time they chose and past
 midnight too. A volunteer who checks in at 10 PM can check out at 1 AM, and is listed in
-the Checked-in sidebar until then. Once that time has passed since the tap, the row is
+the Checked-in sidebar until then. After midnight the check-out screen says "You checked
+in yesterday at 10:00 PM." and has no "Change your check-out time" link. Once that time has passed since the tap, the row is
 the auto clock-out's (see Daily jobs): the tablet shows the volunteer as not checked in,
 and they can check in again. Check Out with no chosen time uses the server's clock,
 whatever the date.
@@ -941,8 +958,10 @@ To add the reports to a sheet in use, follow the steps under Setting up the repo
 ```
 pnpm dev         front end alone, with invented volunteers kept in the browser (two
                  Jordan Riveras try the phone step: 0142 and 0187). Any code of 16+
-                 letters opens it; Shift+D opens its test tools.
-pnpm test        server logic and setup tests (Node)
+                 letters opens it; Shift+D opens its test tools. The window after the
+                 tap is 12 hours. Jennifer Smith and Chris Thompson show the missed
+                 check-out notice at their next check-in (reset to see it again).
+pnpm test        server logic, setup and kiosk store tests (Node)
 pnpm build       the Figma Make build
 pnpm build:gas   one self-contained page, copied to apps-script/Index.html
 pnpm push        build:gas, then clasp push
