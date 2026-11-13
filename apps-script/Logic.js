@@ -2920,7 +2920,10 @@ function flagColumnKinds() {
   return kinds;
 }
 
-/** Where a flag came from, the Source column. auto-close is kept for the nightly close. */
+/**
+ * Where a flag came from, the Source column. auto-close is the daily auto clock-out
+ * (runAutoClockOut), import is Import past hours.
+ */
 function flagSources() {
   return {
     checkIn: "kiosk check-in",
@@ -3098,7 +3101,10 @@ function flagFilterViewRequests(cols, sheetId, existingViewId) {
  * once a day at atHour (Central).
  */
 function dailyJobs() {
-  return [{ handler: "runFlagsEmail", everyHours: 1 }];
+  return [
+    { handler: "runFlagsEmail", everyHours: 1 },
+    { handler: "runAutoClockOut", atHour: 4 },
+  ];
 }
 
 /** "Auto clock-out after hours" when blank or out of range. */
@@ -3194,15 +3200,20 @@ function parseEmailAddresses(text) {
   return { valid, invalid };
 }
 
-/** "Flags email day": an English weekday, full or its first three letters, any case; else Monday. */
-function parseWeekdaySetting(text) {
+/** An English weekday, full or its first three letters, any case, as its full name; else ''. */
+function weekdayFromText(text) {
   const s = cellString(text).toLowerCase();
   const names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   const found = names.find((name) => {
     const n = name.toLowerCase();
     return s === n || s === n.slice(0, 3);
   });
-  return found || defaultFlagsEmailDay();
+  return found || "";
+}
+
+/** "Flags email day": an English weekday, full or its first three letters, any case; else Monday. */
+function parseWeekdaySetting(text) {
+  return weekdayFromText(text) || defaultFlagsEmailDay();
 }
 
 /** "Flags email hour": a whole hour from 0 to 23, Central; else 8. */
@@ -3845,4 +3856,377 @@ function importFlagRows(written, counts, flagged, nowMs) {
     ).forEach((r) => rows.push(r));
   });
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Auto clock-out
+//
+// The daily job runAutoClockOut (Jobs.js), at about 4 AM Central, closes open rows nobody
+// checked out of with a guessed time, and flags each one. An open row's age is measured
+// from when it was checked in (checkedInMs). It is the tablet's while that age is under the
+// "Auto clock-out after hours" window (isTabletOpenRow) and the job's once it is at least
+// the window, so a row is never both, and a volunteer can check out at the tablet for the
+// whole window after the tap. Jobs.js reads and writes; the rules are here.
+//
+// The guess is never before the volunteer tapped in (the floor) and never after the run's
+// time or the start of the volunteer's next row (the limit); when the limit is before the
+// floor, the limit wins. In order: the volunteer's usual length on that weekday, else the
+// Finish of the matching window on the Shifts tab, else the arrival plus 3 hours, raised to
+// the floor and cut to the limit. The volunteer's own history comes first, and every guess
+// is flagged with where it came from.
+
+/**
+ * The Check-Out Entered By of a row the auto clock-out closes. entrySource reads it as
+ * "other", never as an admin's initials, so reports list the row as entered another way.
+ */
+function autoCloseEnteredBy() {
+  return "auto-close";
+}
+
+/** The tab in the Check-In Log the job reads shift windows from. Staff's: only ever read. */
+function shiftsTab() {
+  return "Shifts";
+}
+
+/** The Shifts headers the job reads, after normalizeHeader. Other columns are ignored. */
+function shiftsHeaderNames() {
+  return { weekday: "shifts", start: "start", finish: "finish" };
+}
+
+/** The header row is the first of the tab's top rows that holds all three headers. */
+function shiftsHeaderSearchRows() {
+  return 10;
+}
+
+/** A start this many minutes before a Shifts window's Start still matches it. */
+function shiftsEarlyMinutes() {
+  return 30;
+}
+
+/** The usual length looks back this many weeks. */
+function usualLengthWeeks() {
+  return 26;
+}
+
+/** The usual length takes at most this many of the most recent rows. */
+function usualLengthSampleMax() {
+  return 8;
+}
+
+/** The usual length needs at least this many rows. */
+function usualLengthMinRows() {
+  return 3;
+}
+
+/** How far from the median a row may be and still count as near it, for the spread rule. */
+function usualLengthSpreadMinutes() {
+  return 60;
+}
+
+/** The last step's length: the arrival plus this many hours. */
+function fallbackShiftHours() {
+  return 3;
+}
+
+/** A run starts no new row after this long, well inside Google's 6-minute limit. */
+function autoClockOutBudgetMs() {
+  return 4.5 * 60000;
+}
+
+/** The Admin Alerts? text of an open row the job can't close because no time on it reads. */
+function autoClockOutSkippedAlert() {
+  return "auto clock-out skipped: check-in time unreadable";
+}
+
+/**
+ * "Kiosk launch date" as yyyy-MM-dd. Throws when it is blank or unreadable, so the run
+ * fails (and the owner gets Google's failure email) rather than close every open row the
+ * Log has ever had.
+ */
+function autoClockOutLaunchDate(text) {
+  const launch = parseStartDate(text);
+  if (!launch) {
+    throw new Error(
+      'Auto clock-out: the Settings value "Kiosk launch date" is blank or not a date, so ' +
+        "no row was closed. Write it as yyyy-MM-dd.",
+    );
+  }
+  return launch;
+}
+
+/**
+ * The open rows a run at nowMs acts on, as {close, skip}. Only rows with Status open and
+ * a Date on or after launchDate. close: rows whose age (checkedInMs) is at least windowMs,
+ * oldest first; a row edited by hand so its start is not before nowMs is left for a later
+ * run. skip: rows dated before todayDate on which no time reads, so no time can be
+ * guessed, and whose Admin Alerts? doesn't yet hold autoClockOutSkippedAlert(), so each is
+ * flagged once. A row whose Date can't be read is in neither list: it has no age and isn't
+ * dated today.
+ */
+function autoClockOutRows(entries, nowMs, windowMs, todayDate, launchDate) {
+  const close = [];
+  const skip = [];
+  entries.forEach((e) => {
+    if (!isStatus(e, "open")) return;
+    const date = rowDate(e.dateText);
+    if (!date || date < launchDate) return;
+    const at = checkedInMs(e);
+    if (isFinite(at)) {
+      if (nowMs - at >= windowMs && shiftStartMs(e) < nowMs) close.push(e);
+      return;
+    }
+    if (date < todayDate && !cellString(e.alerts).includes(autoClockOutSkippedAlert())) {
+      skip.push(e);
+    }
+  });
+  close.sort((a, b) => checkedInMs(a) - checkedInMs(b) || a.row - b.row);
+  return { close, skip };
+}
+
+/**
+ * The volunteer's usual length for an open row's weekday, as {minutes, weekday}, or null.
+ * The sample is the same token's closed rows dated on the same weekday, before this row's
+ * Date and at most 26 weeks before it, with Hours Served (stated) a number above 0 and at
+ * most 24, and a check-out made at the kiosk, by an admin's initials or typed by hand
+ * (entrySource). Auto-closed and imported rows are left out, so guesses never feed guesses.
+ * The 8 most recent by Date are taken; there must be at least 3. minutes is their median
+ * stated length in whole minutes (an even count takes the mean of the middle two, rounded
+ * down). Null when the sample is too spread: fewer than two thirds of it (rounded up) within
+ * 60 minutes of the median, so one odd shift in three passes and no usual length doesn't.
+ */
+function usualLength(entries, row) {
+  const date = rowDate(row.dateText);
+  if (!date) return null;
+  const weekday = weekdayName(date);
+  const from = addDays(date, -7 * usualLengthWeeks());
+  const sources = ["kiosk", "initials", "typed"];
+  const sample = entries
+    .filter((e) => {
+      if (e.row === row.row || !isTokenRow(e, row.token) || !isStatus(e, "closed")) return false;
+      const d = rowDate(e.dateText);
+      if (!d || d >= date || d < from || weekdayName(d) !== weekday) return false;
+      const hours = e.statedHours;
+      if (typeof hours !== "number" || !isFinite(hours) || hours <= 0 || hours > 24) return false;
+      return sources.indexOf(entrySource(e.outBy)) >= 0;
+    })
+    .sort((a, b) => reportRowOrder(b, a))
+    .slice(0, usualLengthSampleMax());
+  if (sample.length < usualLengthMinRows()) return null;
+  const minutes = sample.map((e) => Math.round(e.statedHours * 60)).sort((a, b) => a - b);
+  const n = minutes.length;
+  const median =
+    n % 2 ? minutes[(n - 1) / 2] : Math.floor((minutes[n / 2 - 1] + minutes[n / 2]) / 2);
+  const near = minutes.filter((m) => Math.abs(m - median) <= usualLengthSpreadMinutes()).length;
+  if (near < Math.ceil((2 * n) / 3)) return null;
+  return { minutes: median, weekday };
+}
+
+/**
+ * A Shifts Start or Finish cell as "HH:mm", or ''. clock is what read.clock gave (a sheet
+ * time, or text clockText reads, such as "9:00 AM"); text is the cell's text, for an hour
+ * with AM or PM and no minutes, such as "9 AM" or "1pm".
+ */
+function shiftsClock(clock, text) {
+  if (cellString(clock)) return cellString(clock);
+  const m = /^(\d{1,2})\s*([ap])\.?\s*m\.?$/i.exec(cellString(text));
+  return m ? clockText(m[1] + ":00 " + m[2] + "m") : "";
+}
+
+/**
+ * The Shifts tab's windows from its values (rows of cells), as {windows, problem}.
+ * windows: [{weekday, start, finish}], weekday a full English name and start and finish
+ * "HH:mm". Columns are found by header (shiftsHeaderNames), in the first of the top rows
+ * that holds all three; other columns are ignored. A weekday cell is an English weekday,
+ * full or its first three letters, any case. A row missing any of the three is skipped.
+ * read.text(value) gives a cell as text and read.clock(value) its "HH:mm" or ''. problem
+ * is '' or a line for the log when no header row is found.
+ */
+function shiftsTabWindows(values, read) {
+  const H = shiftsHeaderNames();
+  let cols = null;
+  let headerAt = -1;
+  for (let i = 0; i < Math.min(values.length, shiftsHeaderSearchRows()); i++) {
+    const names = values[i].map((v) => normalizeHeader(cellString(read.text(v))));
+    const found = {
+      weekday: names.indexOf(H.weekday),
+      start: names.indexOf(H.start),
+      finish: names.indexOf(H.finish),
+    };
+    if (found.weekday >= 0 && found.start >= 0 && found.finish >= 0) {
+      cols = found;
+      headerAt = i;
+      break;
+    }
+  }
+  if (!cols) {
+    return {
+      windows: [],
+      problem: 'the "' + shiftsTab() + '" tab has no header row with Shifts, Start and Finish',
+    };
+  }
+  const windows = [];
+  values.slice(headerAt + 1).forEach((cells) => {
+    const cell = (at) => (at < cells.length ? cells[at] : "");
+    const weekday = weekdayFromText(read.text(cell(cols.weekday)));
+    const start = shiftsClock(read.clock(cell(cols.start)), read.text(cell(cols.start)));
+    const finish = shiftsClock(read.clock(cell(cols.finish)), read.text(cell(cols.finish)));
+    if (weekday && start && finish) windows.push({ weekday, start, finish });
+  });
+  return { windows, problem: "" };
+}
+
+/**
+ * The Shifts window an open row's start matches, as {startMs, finishMs, start}, or null.
+ * A window is Start to Finish on the row's Date, on the row's weekday; Finish is on the
+ * next day when it is not after Start. It matches when startMs is at or after Start minus
+ * 30 minutes and before Finish. Of the matches, the one whose Start is nearest startMs
+ * wins, a tie going to the later Start. at(dateText, clock) gives {ms, date} as read.at.
+ */
+function matchShiftsWindow(windows, dateText, startMs, at) {
+  const date = rowDate(dateText);
+  if (!date || !isFinite(startMs)) return null;
+  const weekday = weekdayName(date);
+  let best = null;
+  (windows || []).forEach((w) => {
+    if (w.weekday !== weekday) return;
+    const s = at(date, w.start);
+    if (!s || !isFinite(s.ms)) return;
+    let f = at(date, w.finish);
+    if (!f || !(f.ms > s.ms)) f = at(addDays(date, 1), w.finish);
+    if (!f || !isFinite(f.ms)) return;
+    if (startMs < s.ms - shiftsEarlyMinutes() * 60000 || startMs >= f.ms) return;
+    const gap = Math.abs(startMs - s.ms);
+    if (!best || gap < best.gap || (gap === best.gap && s.ms > best.startMs)) {
+      best = { startMs: s.ms, finishMs: f.ms, start: w.start, gap };
+    }
+  });
+  return best && { startMs: best.startMs, finishMs: best.finishMs, start: best.start };
+}
+
+/**
+ * The auto clock-out's time for an open row (one autoClockOutRows closes), as {ms, source}
+ * plus weekday for "usual" and windowStart for "shifts". start is the row's start
+ * (shiftStartMs); floor the later of start and Check-In Recorded when it reads; limit the
+ * earlier of nowMs and the start of the same token's next row (any Status, the earliest
+ * start after start).
+ *
+ * The usual length (usualLength) and then the Shifts window's Finish (matchShiftsWindow)
+ * are each used only when they lie between floor and limit. Otherwise start + 3 hours
+ * ("arrival"), raised to floor when earlier ("tap"), then cut to limit when later ("next"
+ * when the next row's start is the limit, "run" when nowMs is). So the guess is never in
+ * the future, never runs into the next shift, and is never before the tap unless the
+ * volunteer's own rows disagree. windows is the Shifts tab's (shiftsTabWindows), [] when
+ * there is none; read.at is as logEntry's.
+ */
+function autoClockOutGuess(entries, row, nowMs, windows, read) {
+  const start = shiftStartMs(row);
+  const floor = isFinite(row.recordedInMs) ? Math.max(start, row.recordedInMs) : start;
+  let next = Infinity;
+  entries.forEach((e) => {
+    if (e.row === row.row || !isTokenRow(e, row.token)) return;
+    const s = shiftStartMs(e);
+    if (isFinite(s) && s > start && s < next) next = s;
+  });
+  const limit = Math.min(nowMs, next);
+  const fits = (ms) => ms >= floor && ms <= limit;
+
+  const usual = usualLength(entries, row);
+  if (usual && fits(start + usual.minutes * 60000)) {
+    return { ms: start + usual.minutes * 60000, source: "usual", weekday: usual.weekday };
+  }
+  const window = matchShiftsWindow(windows, row.dateText, start, read.at);
+  if (window && fits(window.finishMs)) {
+    return { ms: window.finishMs, source: "shifts", windowStart: window.start };
+  }
+  let ms = start + fallbackShiftHours() * 3600000;
+  let source = "arrival";
+  if (ms < floor) {
+    ms = floor;
+    source = "tap";
+  }
+  if (ms > limit) {
+    ms = limit;
+    source = limit === next ? "next" : "run";
+  }
+  return { ms, source };
+}
+
+/** A Central "HH:mm" as "1:30 PM". */
+function clockLabel(hhmm) {
+  const m = /^(\d{2}):(\d{2})$/.exec(cellString(hhmm));
+  if (!m) return cellString(hhmm);
+  const hour = Number(m[1]);
+  return (hour % 12 || 12) + ":" + m[2] + (hour < 12 ? " AM" : " PM");
+}
+
+/**
+ * The Admin Alerts? text and Flags reason of a row the job closes, naming where its time
+ * came from: "auto clock-out at 1:30 PM, usual Tuesday length", "..., Finish of the 9:00
+ * AM Shifts window", "..., arrival + 3 h", "..., time of the check-in tap", "..., start of
+ * the next shift" or "..., time of this run". The time carries its weekday ("Wednesday
+ * 2:00 AM") when it falls on another day than the row's Date. read.time(value) is as
+ * logEntry's; it is given a Date.
+ */
+function autoClockOutAlert(row, guess, read) {
+  const t = read.time(new Date(guess.ms));
+  const day = t.date && t.date !== rowDate(row.dateText) ? weekdayName(t.date) + " " : "";
+  const why = {
+    usual: "usual " + guess.weekday + " length",
+    shifts: "Finish of the " + clockLabel(guess.windowStart) + " Shifts window",
+    arrival: "arrival + " + fallbackShiftHours() + " h",
+    tap: "time of the check-in tap",
+    next: "start of the next shift",
+    run: "time of this run",
+  }[guess.source];
+  return "auto clock-out at " + day + clockLabel(t.clock) + ", " + why;
+}
+
+/**
+ * The cells the job writes on a row it closes. Check-Out Stated is the guess, as a
+ * date-time (on the next day for an overnight guess); Check-Out Recorded and Hours Served
+ * (timestamps) are blank, since nobody tapped; Hours Served (stated) is from the start to
+ * the guess. Status closed, so the guessed hours count at once, flagged. Admin Alerts? gets
+ * the alert after what it holds. A row with no Shift ID gets shiftId, so its Flags row can
+ * find it.
+ */
+function autoClockOutCells(row, guess, alert, shiftId) {
+  const H = logHeaderNames();
+  const cells = {
+    [H.recordedOut]: "",
+    [H.statedOut]: guess.ms,
+    [H.recordedHours]: "",
+    [H.statedHours]: pairHours(shiftStartMs(row), guess.ms),
+    [H.alerts]: sheetText(appendText(row.alerts, alert)),
+    [H.status]: "closed",
+    [H.outBy]: autoCloseEnteredBy(),
+  };
+  if (!cellString(row.shiftId)) cells[H.shiftId] = sheetText(shiftId);
+  return cells;
+}
+
+/**
+ * The cells the job writes on a row it skips (autoClockOutRows skip): the skipped alert
+ * after what Admin Alerts? holds, and shiftId when the row has no Shift ID. The row stays
+ * open.
+ */
+function autoClockOutSkipCells(row, shiftId) {
+  const H = logHeaderNames();
+  const cells = { [H.alerts]: sheetText(appendText(row.alerts, autoClockOutSkippedAlert())) };
+  if (!cellString(row.shiftId)) cells[H.shiftId] = sheetText(shiftId);
+  return cells;
+}
+
+/**
+ * The Flags row base (flagRows) for a row the job writes: Source auto-close, Raised At the
+ * run's time.
+ */
+function autoClockOutFlagBase(row, shiftId, nowMs) {
+  return {
+    date: rowDate(row.dateText),
+    name: row.name,
+    shiftId: cellString(row.shiftId) || shiftId,
+    raisedAtMs: nowMs,
+    source: flagSources().autoClose,
+    logRow: row.row,
+  };
 }

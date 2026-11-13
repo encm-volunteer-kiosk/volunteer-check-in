@@ -423,6 +423,19 @@ function readRecentLog_(dates, cols) {
 }
 
 /**
+ * The Shifts tab's windows as shiftsTabWindows (Logic.js) gives them, {windows, problem},
+ * read once. The tab is staff's and only ever read. A missing tab gives no windows and a
+ * problem line; so does a tab with no Shifts, Start and Finish header row. Start and Finish
+ * may be sheet times or text such as "9:00 AM", read like the Log's times.
+ */
+function readShifts_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(shiftsTab());
+  if (!sheet) return { windows: [], problem: 'there is no "' + shiftsTab() + '" tab' };
+  const values = sheet.getDataRange().getValues();
+  return shiftsTabWindows(values, { text: cellText_, clock: (v) => cellTime_(v).clock });
+}
+
+/**
  * Writes a cell map (Logic.js) on one row. Each cell gets its column's format before its
  * value, in case staff reformatted the column; times go in as Dates. Columns the map
  * doesn't name are left alone.

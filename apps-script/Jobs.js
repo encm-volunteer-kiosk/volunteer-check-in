@@ -1,10 +1,11 @@
 /**
  * The daily jobs: functions that run on installable triggers rather than from the tablet
- * or the Kiosk admin menu. Today that is the weekly flags email (runFlagsEmail), which
- * checks every hour whether it is due.
+ * or the Kiosk admin menu. They are the weekly flags email (runFlagsEmail), which checks
+ * every hour whether it is due, and the auto clock-out (runAutoClockOut), which runs once
+ * a day at about 4 AM Central and closes open rows nobody checked out of.
  *
  * One account owns the triggers. Signed in as it, someone runs setupDailyJobs once from
- * the Apps Script editor; the triggers then run as that account, and it sends the email.
+ * the Apps Script editor; the triggers then run as that account, which sends the email and writes the Log.
  * Google lets each account see and delete only its own triggers, so removeDailyJobs, run
  * as the owner, is how ownership moves to another account.
  *
@@ -13,15 +14,17 @@
  * holds every public function here to it):
  *   - setupDailyJobs and removeDailyJobs run by hand from the editor and start with
  *     requireEditorRun_, as setupSheets does.
- *   - A trigger handler (runFlagsEmail) checks requireEditorRun_, then requireTriggerRun_:
+ *   - A trigger handler (runFlagsEmail, runAutoClockOut) checks requireEditorRun_, then
+ *     requireTriggerRun_:
  *     the event's triggerUid must be one of this account's triggers for that handler. A
  *     trigger's id is never sent anywhere, so the owner's own browser calling through the
  *     web app is refused too. Each handler does its work at most once per due time, so a
  *     caller who guessed an id could only move a run, never repeat it.
  * Everything else ends in _, so google.script.run can't call it.
  *
- * The rules are in Logic.js (dailyJobs, flagsEmailDue, flagsSummary, flagsEmailMessage);
- * this file reads and writes Settings and the Flags tab through Sheets.js.
+ * The rules are in Logic.js (dailyJobs, flagsEmailDue, flagsSummary, flagsEmailMessage,
+ * and the Auto clock-out section); this file reads and writes Settings, the Log, the
+ * Shifts tab and the Flags tab through Sheets.js.
  */
 
 // ---------------------------------------------------------------------------
@@ -31,8 +34,9 @@
  * Installs the daily jobs for the account running it: deletes this account's triggers in
  * this project whose handler is a daily job's, then creates one trigger for each entry of
  * dailyJobs (Logic.js) and nothing else, and writes the account into Settings "Daily jobs
- * installed by". Running it again replaces this account's triggers, so one account never
- * has two copies. Runs only from the Apps Script editor.
+ * installed by". Then it logs how many open rows the auto clock-out would close if it ran
+ * now, since a first run may close a backlog. Running it again replaces this account's
+ * triggers, so one account never has two copies. Runs only from the Apps Script editor.
  */
 function setupDailyJobs() {
   requireEditorRun_();
@@ -51,6 +55,7 @@ function setupDailyJobs() {
       owner +
       ".",
   );
+  console.log(autoClockOutCountLine_(new Date()));
 }
 
 /**
@@ -101,6 +106,27 @@ function runFlagsEmail(e) {
   }
   try {
     sendFlagsEmailIfDue_(new Date());
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * The auto clock-out, run once a day at about 4 AM Central by its trigger. Under the
+ * script lock, closes every open row the run's time makes old enough (autoClockOutRows),
+ * with a guessed time and a flag, and flags once each old row on which no time reads.
+ * When the lock isn't free within 30 seconds it throws: the owner gets Google's failure
+ * email and the next day's run catches up.
+ */
+function runAutoClockOut(e) {
+  requireEditorRun_();
+  requireTriggerRun_(e, "runAutoClockOut");
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    throw new Error("Auto clock-out: the script lock was busy; tomorrow's run will catch up.");
+  }
+  try {
+    autoClockOut_(new Date());
   } finally {
     lock.releaseLock();
   }
@@ -241,4 +267,103 @@ function readFlags_() {
   }));
   const url = SpreadsheetApp.getActiveSpreadsheet().getUrl() + "#gid=" + sheet.getSheetId();
   return { rows, url };
+}
+
+// ---------------------------------------------------------------------------
+// Auto clock-out
+
+/**
+ * The auto clock-out's run at now, once the guard has passed and under the script lock.
+ * Reads Settings, the whole Log and the Shifts tab once. Closes rows one by one, oldest
+ * first, each with its Log write and then its Flags row, then flags the rows it skips.
+ * Status is read under the lock, so a second run closes nothing twice, and a run that
+ * dies part way leaves the rest for the next. It starts no new row after
+ * autoClockOutBudgetMs and leaves the rest for the next day. At the end it writes "Auto
+ * clock-out last run" with how many rows it closed; a run that dies before that leaves
+ * the old value, which the weekly email watches.
+ */
+function autoClockOut_(now) {
+  const settings = readSettings_();
+  const launch = autoClockOutLaunchDate(settings["Kiosk launch date"]);
+  const nowMs = now.getTime();
+  const cols = readLogColumns_();
+  const entries = readLog_(cols);
+  const plan = autoClockOutRows(
+    entries,
+    nowMs,
+    autoClockOutWindowMs(settings["Auto clock-out after hours"]),
+    centralDate_(now),
+    launch,
+  );
+  const shifts = plan.close.length ? readShifts_() : { windows: [], problem: "" };
+  if (shifts.problem) {
+    console.log("Auto clock-out: " + shifts.problem + "; its windows weren't used.");
+  }
+  const read = logRead_();
+  const outOfTime = () => Date.now() - nowMs >= autoClockOutBudgetMs();
+  let closed = 0;
+  let skipped = 0;
+  let left = 0;
+  plan.close.forEach((row) => {
+    if (outOfTime()) {
+      left++;
+      return;
+    }
+    const shiftId = cellString(row.shiftId) || Utilities.getUuid();
+    const guess = autoClockOutGuess(entries, row, nowMs, shifts.windows, read);
+    const alert = autoClockOutAlert(row, guess, read);
+    updateLogRow_(row.row, autoClockOutCells(row, guess, alert, shiftId), cols);
+    raiseFlags_(autoClockOutFlagBase(row, shiftId, nowMs), [alert]);
+    closed++;
+  });
+  plan.skip.forEach((row) => {
+    if (outOfTime()) {
+      left++;
+      return;
+    }
+    const shiftId = cellString(row.shiftId) || Utilities.getUuid();
+    updateLogRow_(row.row, autoClockOutSkipCells(row, shiftId), cols);
+    raiseFlags_(autoClockOutFlagBase(row, shiftId, nowMs), [autoClockOutSkippedAlert()]);
+    skipped++;
+  });
+  setSetting_("Auto clock-out last run", lastRunText(wallClock_(now), "closed " + closed));
+  console.log(
+    "Auto clock-out: closed " +
+      closed +
+      " row(s), flagged " +
+      skipped +
+      " whose check-in time can't be read" +
+      (left ? "; out of time, " + left + " row(s) left for the next run" : "") +
+      ".",
+  );
+}
+
+/**
+ * setupDailyJobs's line about the Log: how many open rows a run now would close, and how
+ * many it would flag as unreadable. Never throws: a Log or Settings it can't read is named
+ * in the line instead, since the run will then fail and the owner will hear of it.
+ */
+function autoClockOutCountLine_(now) {
+  try {
+    const settings = readSettings_();
+    const launch = autoClockOutLaunchDate(settings["Kiosk launch date"]);
+    const plan = autoClockOutRows(
+      readLog_(readLogColumns_()),
+      now.getTime(),
+      autoClockOutWindowMs(settings["Auto clock-out after hours"]),
+      centralDate_(now),
+      launch,
+    );
+    return (
+      "Auto clock-out: a run now would close " +
+      plan.close.length +
+      " open row(s) and flag " +
+      plan.skip.length +
+      " whose check-in time can't be read."
+    );
+  } catch (err) {
+    return (
+      "Auto clock-out: couldn't count the open rows: " + (err && err.message ? err.message : err)
+    );
+  }
 }

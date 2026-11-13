@@ -2641,6 +2641,10 @@ test("a 22:00 check-in is found at 01:00 and gone when 12 hours have passed sinc
   // At an age of exactly the window the row is the job's, not the tablet's.
   assert.equal(find(C(TODAY, "10:00")), null);
   assert.equal(find(C(TODAY, "10:01")), null);
+  const job = (at) => L.autoClockOutRows([row], at, WINDOW, TODAY, LAUNCH).close.length;
+  assert.equal(job(C(TODAY, "04:00")), 0);
+  assert.equal(job(C(TODAY, "09:59")), 0);
+  assert.equal(job(C(TODAY, "10:00")), 1);
   const [listed] = plain(L.volunteerSummaries([VOL], [row], C(TODAY, "01:00"), WINDOW, TODAY));
   assert.equal(listed.checkedIn, true);
   assert.equal(listed.openShiftArrival, new Date(C(YESTERDAY, "22:00")).toISOString());
@@ -2659,6 +2663,10 @@ test("with a 10-hour window a 16:00 tap stating 08:00 can check out until 02:00,
   assert.equal(out.row, 2);
   assert.equal(out.cells[H.statedHours], 17.98);
   assert.deepEqual(checkOut(at("02:00")), { refusal: "NOT_IN" });
+  const job = (hhmm) => L.autoClockOutRows([row], C(TODAY, hhmm), window, TODAY, LAUNCH);
+  assert.equal(job("01:59").close.length, 0);
+  assert.equal(job("02:00").close.length, 1);
+  assert.equal(job("04:00").close[0].row, 2);
 });
 
 test("a row with no readable tap is measured from its start; one with no time is today's only", () => {
@@ -2834,4 +2842,305 @@ test("missedSignOut: the latest row since launch is open, or closed by anyone bu
   // decideCheckIn carries it.
   assert.equal(checkIn({ entries: [closed(2, "2026-11-10", "auto-close")] }).missedSignOut, true);
   assert.equal(checkIn({ entries: [closed(2, "2026-11-10", "kiosk")] }).missedSignOut, false);
+});
+
+// ---------------------------------------------------------------------------
+// Auto clock-out
+
+/** A closed row of Sam's on date, stated length in minutes, check-out entered by outBy. */
+const past = (row, date, minutes, outBy = "kiosk", fields = {}) =>
+  tapped(row, date, "09:00", "09:00", {
+    status: "closed",
+    statedHours: Math.round((minutes / 60) * 100) / 100,
+    outBy,
+    ...fields,
+  });
+// Thursdays before TODAY (2026-11-12, a Thursday).
+const THURSDAYS = ["2026-11-05", "2026-10-29", "2026-10-22", "2026-10-15", "2026-10-08"];
+
+test("autoClockOutRows: open rows since launch whose age from the tap is at least the window, oldest first", () => {
+  const now = C(TODAY, "04:00");
+  const rows = [
+    // Tapped 16:30 yesterday stating 07:00: age 11.5 hours from the tap, left.
+    tapped(2, YESTERDAY, "16:30", "07:00"),
+    // Tapped 15:00 yesterday: age 13 hours, closed.
+    tapped(3, YESTERDAY, "15:00"),
+    // Two days back, closed first.
+    tapped(4, "2026-11-10", "18:00"),
+    // Before the launch date: nobody's.
+    tapped(5, "2026-10-30", "09:00"),
+    // Closed already.
+    tapped(6, "2026-11-10", "09:00", "09:00", { status: "closed" }),
+    // No readable time, dated before today: skipped and flagged.
+    tapped(7, "2026-11-10", null, null),
+    // The same, already flagged: neither.
+    tapped(8, "2026-11-10", null, null, {
+      alerts: "staff note; auto clock-out skipped: check-in time unreadable",
+    }),
+    // No readable time, dated today: the tablet's.
+    tapped(9, TODAY, null, null),
+    // An unreadable Date: no age, not today.
+    entry(10, { dateText: "sometime", recordedInMs: NaN, statedInMs: NaN }),
+    // Edited by hand so its start is after the run: left for a later run.
+    tapped(11, "2026-11-10", "08:00", "09:00", { statedInMs: now + HOUR }),
+  ];
+  const plan = L.autoClockOutRows(rows, now, WINDOW, TODAY, LAUNCH);
+  assert.deepEqual(plain(plan.close.map((e) => e.row)), [4, 3]);
+  assert.deepEqual(plain(plan.skip.map((e) => e.row)), [7]);
+  assert.throws(() => L.autoClockOutLaunchDate(""), /Kiosk launch date/);
+  assert.throws(() => L.autoClockOutLaunchDate("soon"), /Kiosk launch date/);
+  assert.equal(L.autoClockOutLaunchDate("11/01/2026"), "2026-11-01");
+});
+
+test("usualLength needs 3 rows on the weekday, takes the median and refuses a spread sample", () => {
+  const open = tapped(2, TODAY, "09:00");
+  const usual = (rows) => plain(L.usualLength([open, ...rows], open));
+  const on = (lengths, outBy) => lengths.map((m, i) => past(20 + i, THURSDAYS[i], m, outBy));
+  assert.equal(usual(on([180, 180])), null);
+  assert.deepEqual(usual(on([180, 180, 420])), { minutes: 180, weekday: "Thursday" });
+  assert.equal(usual(on([120, 300, 480])), null);
+  // Exactly 60 minutes from the median is near; 61 isn't.
+  assert.deepEqual(usual(on([180, 240, 300])), { minutes: 240, weekday: "Thursday" });
+  assert.equal(usual(on([180, 241, 302])), null);
+  // An even count takes the mean of the middle two, rounded down.
+  assert.deepEqual(usual(on([180, 181, 200, 201])), { minutes: 190, weekday: "Thursday" });
+  // Admin initials and typed rows count; auto-closed and imported rows don't.
+  const mixed = [
+    past(20, THURSDAYS[0], 200, "EM"),
+    past(21, THURSDAYS[1], 200, ""),
+    past(22, THURSDAYS[2], 200),
+  ];
+  assert.deepEqual(usual(mixed), { minutes: 200, weekday: "Thursday" });
+  assert.equal(usual(on([200, 200, 200], "auto-close")), null);
+  assert.equal(usual(on([200, 200, 200], "import")), null);
+  // Other weekdays, other volunteers, open rows and unreadable hours don't count.
+  assert.equal(
+    usual([
+      past(20, "2026-11-04", 200),
+      past(21, THURSDAYS[1], 200, "kiosk", { token: OTHER_TOKEN }),
+      past(22, THURSDAYS[2], 200, "kiosk", { status: "open" }),
+      past(23, THURSDAYS[3], 200, "kiosk", { statedHours: NaN }),
+      past(24, THURSDAYS[4], 200, "kiosk", { statedHours: 0 }),
+      past(25, "2026-10-01", 200, "kiosk", { statedHours: 25 }),
+    ]),
+    null,
+  );
+});
+
+test("usualLength looks back 26 weeks and takes the 8 most recent", () => {
+  const open = tapped(2, TODAY, "09:00");
+  // 182 days back is 26 weeks: in. 189 is out.
+  const edge = [past(20, "2026-11-05", 200), past(21, "2026-10-29", 200)];
+  assert.deepEqual(plain(L.usualLength([open, ...edge, past(22, "2026-05-14", 200)], open)), {
+    minutes: 200,
+    weekday: "Thursday",
+  });
+  assert.equal(L.usualLength([open, ...edge, past(22, "2026-05-07", 200)], open), null);
+  // Ten Thursdays: the 8 most recent are 240; the 2 oldest 60 and 600 are left out.
+  const ten = Array.from({ length: 10 }, (_, i) =>
+    past(30 + i, L.addDays("2026-11-05", -7 * i), i < 8 ? 240 : i === 8 ? 60 : 600),
+  );
+  assert.deepEqual(plain(L.usualLength([open, ...ten], open)), {
+    minutes: 240,
+    weekday: "Thursday",
+  });
+  // Rows on or after the open row's Date are not history.
+  assert.equal(
+    L.usualLength([open, past(20, TODAY, 200), past(21, TODAY, 200), past(22, TODAY, 200)], open),
+    null,
+  );
+});
+
+// ENCM's Shifts tab layout: A "Shifts" (the weekday), B "Shift Schedule" (a label), D
+// "Start", E "Finish". Invented windows; times as sheet times (a Date on 1899-12-30) and
+// as text.
+const sheetTime = (hhmm) => new Date(timeOnDate("1899-12-30", hhmm).ms);
+const SHIFTS_FIXTURE = [
+  ["Volunteer shift schedule", "", "", "", ""],
+  ["Shifts", "Shift Schedule", "Lead", "Start", "Finish"],
+  ["Monday", "Morning pantry", "", sheetTime("09:00"), sheetTime("13:00")],
+  ["Thursday", "Morning pantry", "", sheetTime("09:00"), sheetTime("13:00")],
+  ["thu", "Afternoon pantry", "", "12:00 PM", "4:00 PM"],
+  ["Thursday", "Evening stock", "", "9 PM", "2am"],
+  ["Thursday", "No finish yet", "", "6:00 PM", ""],
+  ["", "Notes row", "", "", ""],
+  ["Holiday", "Closed", "", "9:00 AM", "1:00 PM"],
+];
+const SHIFTS_READ = { text: READ.text, clock: (v) => READ.time(v).clock };
+
+test("shiftsTabWindows reads ENCM's layout by header, sheet times and text alike", () => {
+  const read = plain(L.shiftsTabWindows(SHIFTS_FIXTURE, SHIFTS_READ));
+  assert.equal(read.problem, "");
+  assert.deepEqual(read.windows, [
+    { weekday: "Monday", start: "09:00", finish: "13:00" },
+    { weekday: "Thursday", start: "09:00", finish: "13:00" },
+    { weekday: "Thursday", start: "12:00", finish: "16:00" },
+    { weekday: "Thursday", start: "21:00", finish: "02:00" },
+  ]);
+  // Columns in another order read the same.
+  const moved = SHIFTS_FIXTURE.map((r) => [r[4], r[3], r[2], r[1], r[0]]);
+  assert.deepEqual(plain(L.shiftsTabWindows(moved, SHIFTS_READ)).windows, read.windows);
+  // No Finish header: no windows, and a line for the log.
+  const noFinish = SHIFTS_FIXTURE.map((r) => r.slice(0, 4));
+  const missing = plain(L.shiftsTabWindows(noFinish, SHIFTS_READ));
+  assert.deepEqual(missing.windows, []);
+  assert.match(missing.problem, /no header row with Shifts, Start and Finish/);
+  assert.match(plain(L.shiftsTabWindows([], SHIFTS_READ)).problem, /no header row/);
+});
+
+test("matchShiftsWindow: an early tap, an overnight Finish, the nearest Start and a tie", () => {
+  const windows = plain(L.shiftsTabWindows(SHIFTS_FIXTURE, SHIFTS_READ)).windows;
+  const match = (hhmm, list = windows) =>
+    plain(L.matchShiftsWindow(list, TODAY, C(TODAY, hhmm), timeOnDate));
+  // Up to 30 minutes early still matches.
+  assert.equal(match("08:30").finishMs, C(TODAY, "13:00"));
+  assert.equal(match("08:29"), null);
+  // Before Finish, not at it.
+  assert.equal(match("15:59").finishMs, C(TODAY, "16:00"));
+  assert.equal(match("16:00"), null);
+  // The nearest Start: 11:50 is 10 minutes from 12:00 and 170 from 9:00.
+  assert.deepEqual(match("11:50"), {
+    startMs: C(TODAY, "12:00"),
+    finishMs: C(TODAY, "16:00"),
+    start: "12:00",
+  });
+  // A Finish not after its Start is on the next day.
+  assert.equal(match("21:10").finishMs, C("2026-11-13", "02:00"));
+  // Equally near two Starts: the later Start wins.
+  const tie = [
+    { weekday: "Thursday", start: "09:00", finish: "13:00" },
+    { weekday: "Thursday", start: "10:00", finish: "14:00" },
+  ];
+  assert.equal(match("09:30", tie).start, "10:00");
+  // Another weekday's windows don't match.
+  assert.equal(
+    L.matchShiftsWindow(windows, "2026-11-10", C("2026-11-10", "09:00"), timeOnDate),
+    null,
+  );
+  assert.equal(L.matchShiftsWindow([], TODAY, C(TODAY, "09:00"), timeOnDate), null);
+});
+
+test("autoClockOutGuess: usual length, then Shifts Finish, then arrival + 3 h, never outside floor and limit", () => {
+  const windows = plain(L.shiftsTabWindows(SHIFTS_FIXTURE, SHIFTS_READ)).windows;
+  const run = C("2026-11-13", "04:00");
+  const guess = (row, others = [], list = windows) =>
+    plain(L.autoClockOutGuess([row, ...others], row, run, list, READ));
+  const open = tapped(2, TODAY, "09:00");
+  const history = [200, 210, 220].map((m, i) => past(20 + i, THURSDAYS[i], m));
+  assert.deepEqual(guess(open, history), {
+    ms: C(TODAY, "12:30"),
+    source: "usual",
+    weekday: "Thursday",
+  });
+  assert.deepEqual(guess(open), {
+    ms: C(TODAY, "13:00"),
+    source: "shifts",
+    windowStart: "09:00",
+  });
+  assert.deepEqual(guess(open, [], []), { ms: C(TODAY, "12:00"), source: "arrival" });
+  // A 19:15 tap stating 07:00: the usual length, the 7:00 window's Finish and arrival + 3 h
+  // all fall before the tap, so the guess is the tap.
+  const late = tapped(3, TODAY, "19:15", "07:00");
+  const early = [{ weekday: "Thursday", start: "07:00", finish: "11:00" }];
+  assert.deepEqual(guess(late, history, early), { ms: C(TODAY, "19:15"), source: "tap" });
+  // A next row caps the guess.
+  const next = tapped(4, TODAY, "11:00", "11:00", { status: "closed", outBy: "kiosk" });
+  assert.deepEqual(guess(open, [next], []), { ms: C(TODAY, "11:00"), source: "next" });
+  // And wins when it starts before the tap.
+  const before = tapped(5, TODAY, "12:00", "12:00", { status: "closed" });
+  assert.deepEqual(guess(late, [before], []), { ms: C(TODAY, "12:00"), source: "next" });
+  // A usual length that runs past the next row is skipped for the Finish, if that fits.
+  const tenAm = tapped(6, TODAY, "13:00", "13:00", { status: "closed" });
+  const long = [500, 500, 500].map((m, i) => past(30 + i, THURSDAYS[i], m));
+  assert.deepEqual(guess(open, [...long, tenAm]), {
+    ms: C(TODAY, "13:00"),
+    source: "shifts",
+    windowStart: "09:00",
+  });
+  // Never in the future: an evening row caught by an early run gets the run's time.
+  const evening = tapped(7, TODAY, "23:00");
+  const soon = plain(L.autoClockOutGuess([evening], evening, C("2026-11-13", "01:00"), [], READ));
+  assert.deepEqual(soon, { ms: C("2026-11-13", "01:00"), source: "run" });
+  // Other volunteers' rows don't cap it.
+  assert.deepEqual(guess(open, [{ ...next, token: OTHER_TOKEN }], []), {
+    ms: C(TODAY, "12:00"),
+    source: "arrival",
+  });
+});
+
+test("autoClockOutAlert names where the time came from, with the weekday when it is another day", () => {
+  const row = tapped(2, TODAY, "21:10");
+  const alert = (guess) => L.autoClockOutAlert(row, guess, READ);
+  assert.equal(
+    alert({ ms: C(TODAY, "13:30"), source: "usual", weekday: "Thursday" }),
+    "auto clock-out at 1:30 PM, usual Thursday length",
+  );
+  assert.equal(
+    alert({ ms: C("2026-11-13", "02:00"), source: "shifts", windowStart: "21:00" }),
+    "auto clock-out at Friday 2:00 AM, Finish of the 9:00 PM Shifts window",
+  );
+  assert.equal(
+    alert({ ms: C(TODAY, "12:00"), source: "arrival" }),
+    "auto clock-out at 12:00 PM, arrival + 3 h",
+  );
+  assert.equal(
+    alert({ ms: C(TODAY, "00:15"), source: "tap" }),
+    "auto clock-out at 12:15 AM, time of the check-in tap",
+  );
+  assert.equal(
+    alert({ ms: C(TODAY, "11:00"), source: "next" }),
+    "auto clock-out at 11:00 AM, start of the next shift",
+  );
+  assert.equal(
+    alert({ ms: C("2026-11-13", "04:00"), source: "run" }),
+    "auto clock-out at Friday 4:00 AM, time of this run",
+  );
+});
+
+test("autoClockOutCells close the row with the guess, blank recorded cells and the alert", () => {
+  const row = tapped(2, TODAY, "21:10", "21:00", { alerts: "staff note" });
+  const guess = { ms: C("2026-11-13", "02:00"), source: "shifts", windowStart: "21:00" };
+  const cells = plain(L.autoClockOutCells(row, guess, "the alert", "new-id"));
+  assert.deepEqual(cells, {
+    [H.recordedOut]: "",
+    [H.statedOut]: C("2026-11-13", "02:00"),
+    [H.recordedHours]: "",
+    [H.statedHours]: 5,
+    [H.alerts]: "staff note; the alert",
+    [H.status]: "closed",
+    [H.outBy]: "auto-close",
+  });
+  // A row with no Shift ID gets the new one.
+  const noId = plain(L.autoClockOutCells({ ...row, shiftId: "" }, guess, "a", "new-id"));
+  assert.equal(noId[H.shiftId], "new-id");
+  assert.equal(L.entrySource(cells[H.outBy]), "other");
+  // Every key is a Log header.
+  assert.doesNotThrow(() => L.cellWrites(cells, L.logColumns(LOG_HEADERS)));
+  // A skipped row keeps its Status and gets the alert, and a Shift ID when it has none.
+  assert.deepEqual(plain(L.autoClockOutSkipCells({ ...row, shiftId: "" }, "new-id")), {
+    [H.alerts]: "staff note; auto clock-out skipped: check-in time unreadable",
+    [H.shiftId]: "new-id",
+  });
+  assert.deepEqual(plain(L.autoClockOutSkipCells(row, "new-id")), {
+    [H.alerts]: "staff note; auto clock-out skipped: check-in time unreadable",
+  });
+  assert.deepEqual(plain(L.autoClockOutFlagBase({ ...row, shiftId: "" }, "new-id", 5)), {
+    date: TODAY,
+    name: "Sam Lee",
+    shiftId: "new-id",
+    raisedAtMs: 5,
+    source: "auto-close",
+    logRow: 2,
+  });
+});
+
+test("dailyJobs lists the hourly email and the 4 AM auto clock-out", () => {
+  assert.deepEqual(plain(L.dailyJobs()), [
+    { handler: "runFlagsEmail", everyHours: 1 },
+    { handler: "runAutoClockOut", atHour: 4 },
+  ]);
+  assert.equal(L.flagSources().autoClose, "auto-close");
+  assert.equal(L.weekdayFromText("TUE"), "Tuesday");
+  assert.equal(L.weekdayFromText("Tues"), "");
+  assert.equal(L.parseWeekdaySetting("Tues"), "Monday");
 });

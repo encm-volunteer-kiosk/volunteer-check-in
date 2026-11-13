@@ -80,6 +80,10 @@ class FakeSheet {
   constructor(rows, sheetId = 0) {
     this.rows = rows.map((r) => r.slice());
     this.sheetId = sheetId;
+    this.formats = {};
+  }
+  getMaxRows() {
+    return 1000;
   }
   getSheetId() {
     return this.sheetId;
@@ -116,8 +120,24 @@ class FakeSheet {
         sheet.put(row, col, value);
         return range;
       },
+      setValues: (values) => {
+        values.forEach((line, i) => line.forEach((v, j) => sheet.put(row + i, col + j, v)));
+        return range;
+      },
+      getNumberFormats: () =>
+        Array.from({ length: rows }, () => Array.from({ length: cols }, () => "")),
+      setNumberFormats: () => range,
+      setDataValidation: () => range,
     };
     return range;
+  }
+  /** One row as {header with spaces for line breaks: value}. */
+  rowByHeader(row) {
+    const out = {};
+    this.rows[0].forEach((h, i) => {
+      if (h) out[String(h).replace(/\s+/g, " ")] = (this.rows[row - 1] || [])[i] ?? "";
+    });
+    return out;
   }
 }
 
@@ -161,7 +181,9 @@ function flagRow({
  * A fresh server scope. opts: now (ms, changeable through s.now), account (the Session
  * user, the same active and effective), settings (values over the defaults), flags (rows
  * under FLAG_HEADER; null for no Flags tab; flagHeader to replace the header), triggers
- * ({account: [{uid, handler}]}), lockFree (false: tryLock fails), sendFails, onSend.
+ * ({account: [{uid, handler}]}), lockFree (false: tryLock fails), sendFails, onSend, log
+ * (the Log tab's rows, header first; none when absent), shifts (the Shifts tab's rows;
+ * none when absent), onFlush (called on each SpreadsheetApp.flush).
  * calls records "Service.method" in order; logs what the server logs.
  */
 function server(opts = {}) {
@@ -181,6 +203,9 @@ function server(opts = {}) {
         ? undefined
         : new FakeSheet([opts.flagHeader || FLAG_HEADER, ...(opts.flags || [])], FLAGS_GID),
   };
+  if (opts.log) sheets.Log = new FakeSheet(opts.log);
+  if (opts.shifts) sheets.Shifts = new FakeSheet(opts.shifts);
+  let uuid = 0;
 
   const service = (name, methods) =>
     new Proxy(
@@ -265,9 +290,19 @@ function server(opts = {}) {
         getSheetByName: (name) => sheets[name] || null,
         getUrl: () => SHEET_URL,
       }),
-      flush: () => undefined,
+      flush: () => (opts.onFlush ? opts.onFlush(state) : undefined),
+      newDataValidation: () => {
+        const b = { requireCheckbox: () => b, build: () => "checkbox" };
+        return b;
+      },
     }),
     Utilities: service("Utilities", {
+      getUuid: () => "uuid-" + ++uuid,
+      parseDate: (text, tz, format) => {
+        assert.equal(tz, TZ);
+        assert.equal(format, "yyyy-MM-dd HH:mm");
+        return new Date(centralMs(text));
+      },
       formatDate: (date, tz, format) => {
         assert.equal(tz, TZ);
         const text = centralText(date.getTime());
@@ -301,7 +336,13 @@ function server(opts = {}) {
     const uid = own().find((t) => t.handler === "runFlagsEmail");
     return ctx.runFlagsEmail({ triggerUid: uid ? uid.uid : "none", authMode: "FULL" });
   };
-  return { ctx, calls, logs, mail, created, sheets, triggers, state, setting, run };
+  /** Runs runAutoClockOut at a Central time, as its trigger would. */
+  const runAuto = (centralTime) => {
+    if (centralTime) state.now = centralMs(centralTime);
+    const uid = own().find((t) => t.handler === "runAutoClockOut");
+    return ctx.runAutoClockOut({ triggerUid: uid ? uid.uid : "none", authMode: "FULL" });
+  };
+  return { ctx, calls, logs, mail, created, sheets, triggers, state, setting, run, runAuto };
 }
 
 const OWN_TRIGGER = { [OWNER]: [{ uid: "t-email", handler: "runFlagsEmail" }] };
@@ -865,11 +906,17 @@ test("setupDailyJobs replaces only this account's daily-job triggers and creates
   const s = server({ triggers });
   s.ctx.setupDailyJobs();
   const jobs = plain(s.ctx.dailyJobs());
-  assert.deepEqual(jobs, [{ handler: "runFlagsEmail", everyHours: 1 }]);
-  assert.deepEqual(plain(s.created), jobs);
+  assert.deepEqual(jobs, [
+    { handler: "runFlagsEmail", everyHours: 1 },
+    { handler: "runAutoClockOut", atHour: 4 },
+  ]);
+  assert.deepEqual(plain(s.created), [
+    { handler: "runFlagsEmail", everyHours: 1 },
+    { handler: "runAutoClockOut", atHour: 4, everyDays: 1, timeZone: TZ },
+  ]);
   assert.deepEqual(
     s.triggers[OWNER].map((t) => t.uid),
-    ["keep", "new-1"],
+    ["keep", "new-1", "new-2"],
   );
   assert.deepEqual(
     s.triggers["second@example.org"].map((t) => t.uid),
@@ -878,13 +925,13 @@ test("setupDailyJobs replaces only this account's daily-job triggers and creates
   assert.equal(s.setting("Daily jobs installed by"), OWNER);
   assert.match(
     s.logs.join("\n"),
-    /removed 2 old trigger\(s\) and installed runFlagsEmail every 1 hour\(s\), owned by jobs@example\.org/,
+    /removed 2 old trigger\(s\) and installed runFlagsEmail every 1 hour\(s\); runAutoClockOut daily at 4:00 Central, owned by jobs@example\.org/,
   );
   // Again: still one of each.
   s.ctx.setupDailyJobs();
   assert.deepEqual(
     s.triggers[OWNER].map((t) => t.handler),
-    ["someOtherFunction", "runFlagsEmail"],
+    ["someOtherFunction", "runFlagsEmail", "runAutoClockOut"],
   );
 });
 
@@ -950,4 +997,215 @@ test("removeDailyJobs deletes this account's job triggers and clears Daily jobs 
   );
   assert.equal(t.setting("Daily jobs installed by"), "second@example.org");
   assert.match(t.logs.join("\n"), /names second@example\.org, so it was left as it is/);
+});
+
+// ---------------------------------------------------------------------------
+// Auto clock-out
+
+const LOG_HEADER = plain(L.logHeaders());
+/** A Log row by header; times are Central "yyyy-MM-dd HH:mm" texts, written as Dates. */
+const logLine = (byHeader) =>
+  LOG_HEADER.map((h) => {
+    const v = byHeader[h];
+    if (v === undefined) return "";
+    return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(v) ? new Date(centralMs(v)) : v;
+  });
+const H = plain(L.logHeaderNames());
+/** An open kiosk row: tapped at tap, stating stated, on date. */
+const openLine = (shiftId, token, name, date, tap, stated = tap) =>
+  logLine({
+    [H.date]: date,
+    [H.name]: name,
+    [H.recordedIn]: tap && date + " " + tap,
+    [H.statedIn]: stated && date + " " + stated,
+    [H.token]: token,
+    [H.status]: "open",
+    [H.inBy]: "kiosk",
+    [H.shiftId]: shiftId,
+  });
+const sheetTime = (hhmm) => new Date(centralMs("1899-12-30 " + hhmm));
+// ENCM's Shifts layout, invented windows.
+const SHIFTS = [
+  ["Shifts", "Shift Schedule", "Lead", "Start", "Finish"],
+  ["Thursday", "Morning pantry", "", sheetTime("09:00"), sheetTime("13:00")],
+  ["Tue", "Evening", "", "5:00 PM", "8:00 PM"],
+];
+const AUTO_OWN = { [OWNER]: [{ uid: "t-auto", handler: "runAutoClockOut" }] };
+const AUTO_SETTINGS = { "Kiosk launch date": "2026-11-01", "Auto clock-out after hours": "12" };
+// A Friday, the run's usual time.
+const FRIDAY_4 = "2026-11-13 04:00";
+const autoLog = () => [
+  LOG_HEADER,
+  // Tapped Thursday 09:00: 19 hours old, matched to the 9:00 Thursday window.
+  openLine("s-thu", "tok-a", "Avery Stone", "2026-11-12", "09:00"),
+  // Tapped Thursday 17:30 stating 07:00: 10.5 hours from the tap, left.
+  openLine("s-late", "tok-b", "Blair Moss", "2026-11-12", "17:30", "07:00"),
+  // Before the launch date: left.
+  openLine("s-old", "tok-c", "Casey Fern", "2026-10-20", "09:00"),
+  // No readable time and no Shift ID, dated Tuesday: skipped, flagged.
+  openLine("", "tok-d", "Dana Reed", "2026-11-10", "", ""),
+  // Tapped Wednesday 21:00, no Wednesday window and no history: arrival + 3 h.
+  openLine("s-wed", "tok-e", "Emery Hale", "2026-11-11", "21:00"),
+];
+
+test("runAutoClockOut closes only rows old enough since launch, each flagged, and writes its last run", () => {
+  const s = server({ settings: AUTO_SETTINGS, triggers: AUTO_OWN, log: autoLog(), shifts: SHIFTS });
+  s.runAuto(FRIDAY_4);
+  const log = s.sheets.Log;
+  const row = (n) => log.rowByHeader(n);
+  // Avery: closed at the Thursday window's Finish.
+  assert.equal(row(2).Status, "closed");
+  assert.equal(row(2)["Check-Out Stated (user)"].getTime(), centralMs("2026-11-12 13:00"));
+  assert.equal(row(2)["Check-Out Recorded (timestamp)"], "");
+  assert.equal(row(2)["Hours Served (stated)"], 4);
+  assert.equal(row(2)["Hours Served (timestamps)"], "");
+  assert.equal(row(2)["Check-Out Entered By"], "auto-close");
+  assert.equal(
+    row(2)["Admin Alerts?"],
+    "auto clock-out at 1:00 PM, Finish of the 9:00 AM Shifts window",
+  );
+  // Blair and Casey: still open, untouched.
+  assert.equal(row(3).Status, "open");
+  assert.equal(row(3)["Admin Alerts?"], "");
+  assert.equal(row(4).Status, "open");
+  // Dana: open, with a new Shift ID and the skipped alert.
+  assert.equal(row(5).Status, "open");
+  assert.equal(row(5)["Shift ID"], "uuid-1");
+  assert.equal(row(5)["Admin Alerts?"], "auto clock-out skipped: check-in time unreadable");
+  // Emery: arrival + 3 h, past midnight, so the alert names the weekday.
+  assert.equal(row(6).Status, "closed");
+  assert.equal(row(6)["Check-Out Stated (user)"].getTime(), centralMs("2026-11-12 00:00"));
+  assert.equal(row(6)["Hours Served (stated)"], 3);
+  assert.equal(row(6)["Admin Alerts?"], "auto clock-out at Thursday 12:00 AM, arrival + 3 h");
+  // One Flags row each, oldest closed first, then the skipped row.
+  const flags = [2, 3, 4].map((n) => s.sheets.Flags.rowByHeader(n));
+  assert.deepEqual(
+    flags.map((f) => [f["Shift ID"], f.Source, f.Reason, f["Log Row"], f.Date]),
+    [
+      ["s-wed", "auto-close", row(6)["Admin Alerts?"], 6, "2026-11-11"],
+      ["s-thu", "auto-close", row(2)["Admin Alerts?"], 2, "2026-11-12"],
+      ["uuid-1", "auto-close", row(5)["Admin Alerts?"], 5, "2026-11-10"],
+    ],
+  );
+  assert.equal(s.sheets.Flags.getLastRow(), 4);
+  assert.equal(s.setting("Auto clock-out last run"), "2026-11-13 04:00, closed 2");
+  assert.match(
+    s.logs.join("\n"),
+    /closed 2 row\(s\), flagged 1 whose check-in time can't be read\./,
+  );
+
+  // A second run closes nothing and flags nothing again.
+  s.runAuto("2026-11-13 04:30");
+  assert.equal(s.sheets.Flags.getLastRow(), 4);
+  assert.equal(row(5)["Admin Alerts?"], "auto clock-out skipped: check-in time unreadable");
+  assert.equal(row(3).Status, "open");
+  assert.equal(s.setting("Auto clock-out last run"), "2026-11-13 04:30, closed 0");
+  // The next day Blair's row is old enough; its guess is never before the tap.
+  s.runAuto("2026-11-14 04:00");
+  assert.equal(row(3).Status, "closed");
+  assert.equal(row(3)["Check-Out Stated (user)"].getTime(), centralMs("2026-11-12 17:30"));
+  assert.equal(row(3)["Admin Alerts?"], "auto clock-out at 5:30 PM, time of the check-in tap");
+  assert.equal(s.setting("Auto clock-out last run"), "2026-11-14 04:00, closed 1");
+});
+
+test("runAutoClockOut with no Shifts tab logs one line and guesses arrival + 3 h", () => {
+  const s = server({ settings: AUTO_SETTINGS, triggers: AUTO_OWN, log: autoLog() });
+  s.runAuto(FRIDAY_4);
+  assert.equal(
+    s.sheets.Log.rowByHeader(2)["Admin Alerts?"],
+    "auto clock-out at 12:00 PM, arrival + 3 h",
+  );
+  assert.equal(
+    s.logs.filter((l) => l.includes('there is no "Shifts" tab')).length,
+    1,
+    s.logs.join("\n"),
+  );
+});
+
+test("runAutoClockOut stops starting rows when its time is up and the next run closes the rest", () => {
+  // Each flush moves the clock 1.5 minutes: each closed row costs 3.
+  const s = server({
+    settings: AUTO_SETTINGS,
+    triggers: AUTO_OWN,
+    log: [
+      LOG_HEADER,
+      openLine("s-1", "tok-a", "Avery Stone", "2026-11-10", "09:00"),
+      openLine("s-2", "tok-b", "Blair Moss", "2026-11-10", "10:00"),
+      openLine("s-3", "tok-c", "Casey Fern", "2026-11-10", "11:00"),
+    ],
+    onFlush: (state) => (state.now += 1.5 * MIN),
+  });
+  s.runAuto(FRIDAY_4);
+  const status = () => [2, 3, 4].map((n) => s.sheets.Log.rowByHeader(n).Status);
+  assert.deepEqual(status(), ["closed", "closed", "open"]);
+  assert.equal(s.setting("Auto clock-out last run"), "2026-11-13 04:00, closed 2");
+  assert.match(s.logs.join("\n"), /out of time, 1 row\(s\) left for the next run/);
+  s.runAuto("2026-11-14 04:00");
+  assert.deepEqual(status(), ["closed", "closed", "closed"]);
+});
+
+test("a busy lock makes runAutoClockOut throw before it reads anything", () => {
+  const s = server({
+    settings: AUTO_SETTINGS,
+    triggers: AUTO_OWN,
+    log: autoLog(),
+    lockFree: false,
+  });
+  s.state.now = centralMs(FRIDAY_4);
+  assert.throws(() => s.runAuto(), /lock was busy/);
+  assert.deepEqual(
+    s.calls.filter((c) => c.startsWith("SpreadsheetApp.")),
+    [],
+  );
+  assert.equal(s.setting("Auto clock-out last run"), "");
+});
+
+test("a blank or unreadable Kiosk launch date fails the run before any write", () => {
+  for (const launch of ["", "someday"]) {
+    const s = server({
+      settings: { "Kiosk launch date": launch },
+      triggers: AUTO_OWN,
+      log: autoLog(),
+      shifts: SHIFTS,
+    });
+    const before = JSON.stringify(s.sheets.Log.rows);
+    assert.throws(() => s.runAuto(FRIDAY_4), /Kiosk launch date/);
+    assert.equal(JSON.stringify(s.sheets.Log.rows), before);
+    assert.equal(s.sheets.Flags.getLastRow(), 1);
+    assert.equal(s.setting("Auto clock-out last run"), "");
+  }
+});
+
+test("runAutoClockOut run by its trigger passes the guard; another trigger's id is refused", () => {
+  const s = server({
+    settings: AUTO_SETTINGS,
+    triggers: { [OWNER]: [...AUTO_OWN[OWNER], { uid: "t-email", handler: "runFlagsEmail" }] },
+    log: autoLog(),
+  });
+  s.state.now = centralMs(FRIDAY_4);
+  assert.throws(
+    () => s.ctx.runAutoClockOut({ triggerUid: "t-email" }),
+    /runs only from its trigger/,
+  );
+  assert.throws(() => s.ctx.runAutoClockOut(), /runs only from its trigger/);
+  assert.equal(s.setting("Auto clock-out last run"), "");
+  s.ctx.runAutoClockOut({ triggerUid: "t-auto" });
+  assert.equal(s.setting("Auto clock-out last run"), "2026-11-13 04:00, closed 2");
+});
+
+test("setupDailyJobs logs how many open rows a run now would close", () => {
+  const s = server({ settings: AUTO_SETTINGS, log: autoLog() });
+  s.state.now = centralMs(FRIDAY_4);
+  s.ctx.setupDailyJobs();
+  assert.match(
+    s.logs.join("\n"),
+    /Auto clock-out: a run now would close 2 open row\(s\) and flag 1 whose check-in time can't be read\./,
+  );
+  // Counting writes nothing.
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+  // With no Log tab the line says why and setup still finishes.
+  const t = server({ settings: AUTO_SETTINGS });
+  t.ctx.setupDailyJobs();
+  assert.match(t.logs.join("\n"), /couldn't count the open rows: The "Log" tab is missing/);
+  assert.equal(t.setting("Daily jobs installed by"), OWNER);
 });
