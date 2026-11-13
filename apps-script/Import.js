@@ -149,10 +149,11 @@ function importJob_(form) {
   const sheet = file.getSheetByName(tab);
   if (!sheet) return { refusal: importRefusal("IMPORT_TAB", tab) };
   const values = sheet.getDataRange().getValues();
+  const zone = file.getSpreadsheetTimeZone() || kioskTimeZone();
   const ledger = readImportLedger_();
   const plan = importPlan({
     header: (values[0] || []).map(cellText_),
-    rows: values.slice(1).map((cells) => cells.map(importCell_)),
+    rows: values.slice(1).map((cells) => cells.map((value) => importCell_(value, zone))),
     launchDate: launch.launch,
     todayDate: centralDate_(new Date()),
     volunteers: getProfiles_(settings),
@@ -164,9 +165,14 @@ function importJob_(form) {
   return { fileId, fileName: file.getName(), tab, plan };
 }
 
-/** A source cell for importPlan: a date as yyyy-MM-dd, a number as it is, anything else as text. */
-function importCell_(value) {
+/**
+ * A source cell for importPlan: a date as yyyy-MM-dd, a number as it is, anything else as
+ * text. A date cell holds midnight in the source spreadsheet's own time zone, so it is read
+ * in that zone (zone); read in Central, a source set east of Central would land a day early.
+ */
+function importCell_(value, zone) {
   if (typeof value === "number") return value;
+  if (isDate_(value)) return Utilities.formatDate(value, zone, "yyyy-MM-dd");
   return cellText_(value);
 }
 

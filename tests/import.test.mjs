@@ -75,10 +75,10 @@ const VOLUNTEERS = [
 // ---------------------------------------------------------------------------
 // Central time without Apps Script
 
-const centralParts = (ms) => {
+const zoneParts = (ms, zone) => {
   const parts = {};
   new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
+    timeZone: zone,
     hourCycle: "h23",
     year: "numeric",
     month: "2-digit",
@@ -90,6 +90,7 @@ const centralParts = (ms) => {
     .forEach((p) => (parts[p.type] = p.value));
   return parts;
 };
+const centralParts = (ms) => zoneParts(ms, TZ);
 const centralDate = (ms) => {
   const p = centralParts(ms);
   return p.year + "-" + p.month + "-" + p.day;
@@ -234,7 +235,8 @@ const settingsRows = (extra = []) => [
  * A fresh server scope. opts: log (rows, LOG_HEADER alone by default), settings (rows),
  * source (rows of the source tab, header included), ledger (rows of an Import ledger tab;
  * none by default), volunteers, keys (dialog keys issued), lock (a function of the call
- * number giving whether tryLock succeeds), flags (null for no Flags tab), onFlush.
+ * number giving whether tryLock succeeds), flags (null for no Flags tab), onFlush,
+ * sourceZone (the source spreadsheet's time zone, Central by default).
  */
 function server(opts = {}) {
   const calls = [];
@@ -297,6 +299,7 @@ function server(opts = {}) {
           throw new Error("Unexpected error while getting the method or property openById");
         return {
           getName: () => "Old Volunteer Hours",
+          getSpreadsheetTimeZone: () => opts.sourceZone || TZ,
           getSheetByName: (name) => (name === "Historical Hours" ? source : null),
         };
       },
@@ -321,10 +324,10 @@ function server(opts = {}) {
     Utilities: service("Utilities", {
       getUuid: () => "uuid-" + ++uuid,
       formatDate: (date, tz, format) => {
-        assert.equal(tz, TZ);
-        if (format === "yyyy-MM-dd") return centralDate(date.getTime());
+        assert.ok([TZ, opts.sourceZone].includes(tz), "unexpected time zone " + tz);
+        const p = zoneParts(date.getTime(), tz);
+        if (format === "yyyy-MM-dd") return p.year + "-" + p.month + "-" + p.day;
         if (format === "HH:mm") {
-          const p = centralParts(date.getTime());
           return p.hour + ":" + p.minute;
         }
         throw new Error("format " + format);
@@ -758,6 +761,38 @@ test("Import writes the rows, the ledger and one Flags row per unmatched name; a
   assert.equal(again.imported, 0);
   assert.equal(again.flags, 0);
   assert.equal(JSON.stringify([s.sheets.Log.rows, ledger.rows, s.sheets.Flags.rows]), before);
+});
+
+test("date cells in the source are read in the source spreadsheet's time zone", () => {
+  // Sheets hands a date cell over as midnight in its own spreadsheet's time zone.
+  const rows = (offsets) => [
+    SOURCE_HEADER,
+    [new Date("2025-12-02T00:00:00" + offsets[0]), "Avery", "Quinn", 3, "2025.12", "C3"],
+    [new Date("2026-05-30T00:00:00" + offsets[1]), "Blake", "Morrow", 2, "2026.05", "E2"],
+  ];
+  const cases = [
+    ["America/Chicago", ["-06:00", "-05:00"]],
+    ["America/New_York", ["-05:00", "-04:00"]],
+    ["Etc/GMT", ["Z", "Z"]],
+  ];
+  for (const [zone, offsets] of cases) {
+    const s = server({ source: rows(offsets), sourceZone: zone });
+    const reply = plain(s.ctx.adminImportRun("k", FORM));
+    assert.equal(reply.imported, 2, zone);
+    const log = s.sheets.Log.records();
+    assert.deepEqual(
+      log.map((r) => r.Date),
+      ["2025-12-02", "2026-05-30"],
+      zone,
+    );
+    // The source key, and so the Shift ID, is the same whatever the source's zone.
+    assert.deepEqual(
+      s.sheets["Import ledger"].rows.slice(1, 3).map((r) => r[0]),
+      ["2025-12-02|avery|quinn|1", "2026-05-30|blake|morrow|1"],
+      zone,
+    );
+    assert.equal(log[0]["Shift ID"], "import-" + sha256("2025-12-02|avery|quinn|1").slice(0, 16));
+  }
 });
 
 test("a row staff delete from the Log stays deleted", () => {

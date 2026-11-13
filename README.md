@@ -467,6 +467,10 @@ sheet holds as a date), its Date is after today or on or after "Kiosk launch dat
 has no first or last name, or its hours aren't a number above 0 and at most 24. Left-out
 rows aren't remembered: fix them in the old sheet and run the import again.
 
+A Date the old sheet holds as a date is read in that spreadsheet's own time zone (File →
+Settings there), so its rows land on the day the sheet shows whatever zone it is set to.
+Dates typed as text are read as written.
+
 Both Preview and Import refuse while "Kiosk launch date" in Settings is blank or isn't a
 date. Shifts from the launch date on are the kiosk's own, and importing them would count
 them twice.
