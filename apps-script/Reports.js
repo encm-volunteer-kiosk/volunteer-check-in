@@ -370,9 +370,9 @@ function refreshHours_(cause, hold, openedAtMs) {
       run.budget = hoursBudget(Date.now() - openedAtMs, readHoursCells_(tabs.data), run.rows);
     }
     if (!withHoursLock_(hold, hoursLockWait_(cause))) return { kind: "busy", timing: run.timing };
-    const heldAt = Date.now();
+    run.heldAt = Date.now();
     const decision = hoursHoldStep_(tabs, run, { kind: "read" }, read);
-    run.timing.holdMs = Date.now() - heldAt;
+    run.timing.holdMs = Date.now() - run.heldAt;
     return { kind: decision, line: run.line, timing: run.timing };
   } catch (err) {
     return failHoursRefresh_(tabs, hold, run, err);
@@ -388,10 +388,14 @@ function refreshHours_(cause, hold, openedAtMs) {
  */
 function failHoursRefresh_(tabs, hold, run, err) {
   const message = hoursMessage_(err);
-  if (!hold.held && !withHoursLock_(hold, hoursLockWait_(run.cause))) {
-    return { kind: "busy-failed", message, timing: run.timing };
+  if (!hold.held) {
+    if (!withHoursLock_(hold, hoursLockWait_(run.cause))) {
+      return { kind: "busy-failed", message, timing: run.timing };
+    }
+    run.heldAt = Date.now();
   }
   const decision = hoursHoldStep_(tabs, run, { kind: "failed", message }, null);
+  run.timing.holdMs = Date.now() - run.heldAt;
   return { kind: decision, line: run.line, message, timing: run.timing };
 }
 
@@ -406,6 +410,7 @@ function hoursRun_(cause, t) {
     digest: null,
     rows: 0,
     budget: null,
+    heldAt: null,
     writeStart: null,
     line: "",
     timing: {},
@@ -556,7 +561,8 @@ function hoursMenuText_(result) {
 
 /**
  * One log line for a refresh: its cause and outcome, and the read, the work in Logic.js
- * and the hold timed apart, in ms.
+ * and the hold timed apart, in ms. A failed run's hold runs from the lock to its failure
+ * note.
  */
 function hoursRunLog_(cause, result) {
   const t = result.timing || {};

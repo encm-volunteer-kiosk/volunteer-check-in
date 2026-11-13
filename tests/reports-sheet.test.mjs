@@ -1180,6 +1180,26 @@ test("a refresh that grows Hours data sets the new rows' formats one range per c
   ]);
 });
 
+test("a failed refresh logs its hold time, from the lock to its failure note", () => {
+  // A throw in the table write: the lock was already held.
+  const write = built();
+  write.o.at = NOW + 60000;
+  write.calls.length = 0;
+  FAIL = (c) => c.sheet === "Hours data" && c.op === "setValues";
+  write.ctx.refreshHoursNow();
+  assert.match(
+    write.logs.join("\n"),
+    /\(menu\): failed-write; read \d+ ms, Logic\.js \d+ ms, hold \d+ ms\./,
+  );
+  // A throw in the read: the lock is taken for the note alone.
+  const read = built();
+  read.o.at = NOW + 60000;
+  read.sheet("Log").set(1, HEADER.indexOf("User Token") + 1, "Renamed");
+  read.calls.length = 0;
+  read.ctx.refreshHoursNow();
+  assert.match(read.logs.join("\n"), /\(menu\): failed-read; read -, Logic\.js -, hold \d+ ms\./);
+});
+
 test("setupReports leaves a Monthly Hours tab without the kiosk's protection, and says so", () => {
   const s = server(LOG, { now: NOW });
   s.ss.insertSheet("Monthly Hours").protect().setDescription("Staff: hands off");
