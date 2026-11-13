@@ -775,6 +775,49 @@ test("reportRows: rectangular, formats the same shape, no token anywhere", () =>
   }
 });
 
+test("reportRows: says which row is the title, a section, a table header, blank or a plain row", () => {
+  const { values, kinds } = plain(
+    L.reportRows(sampleReport(), "2026-11", "JP", "2026-12-01 9:14 AM"),
+  );
+  assert.equal(kinds.length, values.length);
+  const allowed = ["title", "section", "header", "blank", "row"];
+  assert.ok(
+    kinds.every((k) => allowed.includes(k)),
+    JSON.stringify(kinds),
+  );
+  assert.equal(kinds[0], "title");
+  assert.equal(kinds.filter((k) => k === "title").length, 1);
+  const first = (kind) => values.filter((r, i) => kinds[i] === kind).map((r) => r[0]);
+  const sections = first("section");
+  for (const name of [
+    "Summary",
+    "Month over month",
+    "Year to date",
+    "Hours per volunteer",
+    "Hours by weekday",
+    "Milestones crossed this month",
+    "Rows to review",
+  ]) {
+    assert.ok(sections.includes(name), name);
+  }
+  assert.ok(sections.some((s) => s.startsWith("Hours by Role/Type")));
+  assert.ok(sections.some((s) => s.startsWith("Hours by Activity")));
+  // Each table's header row follows its section title.
+  kinds.forEach((k, i) => {
+    if (k === "section" && ["Hours per volunteer", "Hours by weekday"].includes(values[i][0])) {
+      assert.equal(kinds[i + 1], "header", values[i][0]);
+    }
+  });
+  assert.ok(first("header").includes("Volunteer"));
+  values.forEach((r, i) => {
+    if (kinds[i] === "blank")
+      assert.ok(
+        r.every((c) => c === ""),
+        String(i),
+      );
+  });
+});
+
 test("reportRows: first lines say what it counts, who made it, and the open shifts", () => {
   const { values, formats } = plain(
     L.reportRows(sampleReport(), "2026-11", "JP", "2026-12-01 9:14 AM"),

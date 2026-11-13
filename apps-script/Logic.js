@@ -2217,8 +2217,11 @@ function openShiftsLine(count) {
 }
 
 /**
- * The frozen report tab's cells, as {values, formats}: two rectangular arrays of the same
- * shape, to be written with setNumberFormats and then setValues. report is monthReport's
+ * The frozen report tab's cells, as {values, formats, kinds}: values and formats are two
+ * rectangular arrays of the same shape, to be written with setNumberFormats and then
+ * setValues; kinds says what each row is, for the tab's styling: "title" (the first
+ * line), "section" (a section's title line), "header" (a table's column headings),
+ * "blank" or "row". report is monthReport's
  * result, month its "yyyy-MM", initials the admin's (already normalized), madeAtText when
  * the report was made, such as "2026-12-01 9:14 AM".
  *
@@ -2230,23 +2233,25 @@ function openShiftsLine(count) {
 function reportRows(report, month, initials, madeAtText) {
   const values = [];
   const formats = [];
-  const T = (text) => [sheetText(text), "@"];
+  const kinds = [];
   const N = (n) => [n, "0"];
   const Hh = (hundredths) => [hundredths / 100, "0.00"];
-  const add = (...cells) => {
+  const addAs = (kind, ...cells) => {
     values.push(cells.map((c) => (Array.isArray(c) ? c[0] : sheetText(c))));
     formats.push(cells.map((c) => (Array.isArray(c) ? c[1] : "@")));
+    kinds.push(kind);
   };
-  const blank = () => add("");
+  const add = (...cells) => addAs("row", ...cells);
+  const blank = () => addAs("blank", "");
   const table = (title, header, rows, empty) => {
     blank();
-    add(title);
-    add(...header);
+    addAs("section", title);
+    addAs("header", ...header);
     if (!rows.length) add(empty || "(none)");
     rows.forEach((r) => add(...r));
   };
 
-  add("Monthly report for " + monthName(month) + " (" + month + ")");
+  addAs("title", "Monthly report for " + monthName(month) + " (" + month + ")");
   add(
     "Counts closed shifts with a User Token, using stated hours. Made " +
       cellString(madeAtText) +
@@ -2257,7 +2262,7 @@ function reportRows(report, month, initials, madeAtText) {
   if (report.openCount) add(openShiftsLine(report.openCount));
 
   blank();
-  add("Summary");
+  addAs("section", "Summary");
   add("Stated hours", Hh(report.hundredths));
   add("Shifts", N(report.shifts));
   add("Volunteers", N(report.headcount));
@@ -2280,7 +2285,14 @@ function reportRows(report, month, initials, madeAtText) {
   add("Stated minus recorded (hours)", hoursText(adj.statedMinusRecordedHundredths, true));
 
   blank();
-  add("Month over month", monthName(month), monthName(report.previousMonth), "Change", "% change");
+  addAs(
+    "section",
+    "Month over month",
+    monthName(month),
+    monthName(report.previousMonth),
+    "Change",
+    "% change",
+  );
   report.monthOverMonth.forEach((r) => {
     const amount = (n) => (r.unit === "hours" ? Hh(n) : N(n));
     const change =
@@ -2289,7 +2301,7 @@ function reportRows(report, month, initials, madeAtText) {
   });
 
   blank();
-  add("Year to date", monthName(report.yearStart) + " to " + monthName(month));
+  addAs("section", "Year to date", monthName(report.yearStart) + " to " + monthName(month));
   add("Stated hours", Hh(report.yearToDate.hundredths));
   add("Shifts", N(report.yearToDate.shifts));
   add("Volunteers", N(report.yearToDate.headcount));
@@ -2317,11 +2329,11 @@ function reportRows(report, month, initials, madeAtText) {
   );
 
   blank();
-  add("Rows to review", "Log row numbers are as of when this report was made.");
+  addAs("section", "Rows to review", "Log row numbers are as of when this report was made.");
   report.review.forEach((g) => {
     add(g.title + ": " + g.rows.length);
     if (!g.rows.length) return;
-    add("Date", "Volunteer", "Status", "Log row", "Detail");
+    addAs("header", "Date", "Volunteer", "Status", "Log row", "Detail");
     g.rows.forEach((r) => add(r.date, r.name, r.status || "(blank)", N(r.row), r.detail));
   });
 
@@ -2332,7 +2344,7 @@ function reportRows(report, month, initials, madeAtText) {
       formats[i].push("@");
     }
   });
-  return { values, formats };
+  return { values, formats, kinds };
 }
 
 /**
