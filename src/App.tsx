@@ -59,6 +59,8 @@ const TZ = "America/Chicago";
 const ACCESS_CODE_KEY = "encm-kiosk-access-code";
 const LIST_REFRESH_MS = 5 * 60_000;
 const LIST_RETRY_MS = 30_000;
+// The header clock reads the time this often, so it is never more than this behind the iPad's.
+const CLOCK_TICK_MS = 5_000;
 
 const Icon = ({ name, size = 24 }: { name: string; size?: number }) => {
   const paths: Record<string, React.ReactNode> = {
@@ -123,7 +125,7 @@ const Icon = ({ name, size = 24 }: { name: string; size?: number }) => {
 function Header() {
   const [now, setNow] = useState(new Date());
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 60_000);
+    const timer = window.setInterval(() => setNow(new Date()), CLOCK_TICK_MS);
     return () => clearInterval(timer);
   }, []);
   const day = new Intl.DateTimeFormat("en-US", {
