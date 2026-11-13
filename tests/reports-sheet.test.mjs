@@ -208,7 +208,7 @@ class FakeRange {
 
 class FakeSheet {
   constructor(name, sheetId, rows = []) {
-    Object.assign(this, { name, sheetId, maxRows: 1000, maxCols: 26 });
+    Object.assign(this, { name, sheetId, maxRows: Math.max(1000, rows.length), maxCols: 26 });
     this.cells = new Map();
     this.formulas = new Map();
     this.rangeFormats = new Map();
@@ -1038,7 +1038,7 @@ function hoursOps(calls) {
       else if (c.op === "setValues" && c.a1.startsWith("A2:")) out.push({ op: "values" });
       else if (c.op === "clearContent" && c.a1 === "A2:J2") out.push({ op: "clear" });
       else if (c.op === "deleteRows") out.push({ op: "trim" });
-      else if (c.op !== "setNumberFormats") out.push({ op: "unexpected " + c.op });
+      else if (c.op !== "setNumberFormat") out.push({ op: "unexpected " + c.op });
     } else if (isHoursWrite(c)) out.push({ op: "unexpected " + c.op + " " + c.a1 });
   }
   return out;
@@ -1083,9 +1083,11 @@ test("setupReports builds Hours and Hours data, marked, fills them, and then del
   assert.deepEqual(data.getRange("A1:J1").getValues()[0], table.header);
   assert.deepEqual(data.getRange(2, 1, table.rows.length, 10).getValues(), table.rows);
   assert.equal(data.maxRows, table.rows.length + 1);
-  assert.equal(data.rangeFormats.get("A2:A"), "@");
+  // One format per run of columns, on whole columns from row 2, not one per cell.
+  assert.equal(data.rangeFormats.get("A2:F"), "@");
   assert.equal(data.rangeFormats.get("G2:G"), "0");
   assert.equal(data.rangeFormats.get("H2:H"), "0.00");
+  assert.equal(data.rangeFormats.get("I2:J"), "@");
   assert.equal(data.rangeFormats.get("L1:Q1"), "@");
   const [l1, m1, n1, o1, p1, q1] = cellsOf(s);
   assert.deepEqual(
@@ -1123,6 +1125,59 @@ test("setupReports builds Hours and Hours data, marked, fills them, and then del
   assert.match(text, /Hours is filled as of 2026-11-13 9:14 AM\./);
   assert.match(text, /The Monthly Hours tab was deleted/);
   assert.deepEqual(s.sheet("Log").state().cells, logBefore);
+});
+
+test("setupReports gives a new Hours data its rows in one call before the pivots exist, and the table write grows nothing", () => {
+  const many = LOG.concat(
+    Array.from({ length: 1200 }, (_, i) =>
+      shift(
+        "2026-10-" + String(1 + (i % 27)).padStart(2, "0"),
+        "Vol " + i,
+        "t" + i,
+        "09:00",
+        "10:00",
+        1,
+      ),
+    ),
+  );
+  const s = server(many, { now: NOW });
+  s.calls.length = 0;
+  s.ctx.setupReports();
+  const rows = s.ctx.readHoursTable_().table.rows.length;
+  assert.ok(rows > 1000);
+  const at = (pred) => s.calls.findIndex(pred);
+  const grows = s.calls.filter((c) => c.sheet === "Hours data" && c.op === "insertRowsAfter");
+  assert.deepEqual(
+    grows.map((c) => c.value),
+    [[1000, rows + 1 - 1000]],
+  );
+  const grow = at((c) => c.sheet === "Hours data" && c.op === "insertRowsAfter");
+  const pivots = at((c) => c.op === "batchUpdate" && c.value > 40);
+  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:J1");
+  assert.ok(grow > 0 && grow < pivots && pivots < values);
+  // Formats go on whole column runs, never cell by cell.
+  assert.ok(!s.calls.some((c) => c.op === "setNumberFormats"));
+  assert.equal(s.sheet("Hours data").maxRows, rows + 1);
+  assert.match(s.logs.join("\n"), /Hours is filled as of/);
+});
+
+test("a refresh that grows Hours data sets the new rows' formats one range per column run", () => {
+  const s = built();
+  s.sheet("Hours data").deleteRows(2, 2);
+  s.o.at = NOW + 60000;
+  s.calls.length = 0;
+  s.ctx.refreshHoursNow();
+  const max = s.sheet("Hours data").maxRows;
+  const formats = s.calls
+    .filter((c) => c.sheet === "Hours data" && c.op === "setNumberFormat")
+    .map((c) => [c.a1, c.value]);
+  const from = max - 1;
+  assert.deepEqual(formats, [
+    ["A" + from + ":F" + max, "@"],
+    ["G" + from + ":G" + max, "0"],
+    ["H" + from + ":H" + max, "0.00"],
+    ["I" + from + ":J" + max, "@"],
+  ]);
 });
 
 test("setupReports leaves a Monthly Hours tab without the kiosk's protection, and says so", () => {

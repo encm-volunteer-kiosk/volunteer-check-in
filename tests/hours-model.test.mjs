@@ -163,7 +163,11 @@ function setup(opts = {}) {
     yield { lock: true };
     try {
       yield* play(env, run, { kind: "setup-start" });
-      yield "data header";
+      // The read comes before the layout, so Hours data gets its rows before the pivots.
+      run.t = env.tick();
+      run.digest = env.dig(run.t);
+      yield "read";
+      yield "data header and rows";
       env.sheet.hoursExists = true;
       env.sheet.data.row3 = null;
       env.sheet.B1 = "";
@@ -173,9 +177,6 @@ function setup(opts = {}) {
       if (opts.fail === "layout") throw INJECTED;
       yield "layout";
       yield* play(env, run, { kind: "setup-built" });
-      run.t = env.tick();
-      run.digest = env.dig(run.t);
-      yield "read";
       yield* play(env, run, { kind: "read" }, opts.fail);
       const s = env.state();
       const d = env.sheet.data;
@@ -433,7 +434,7 @@ test("named: an open note made after a refresh landed keeps the refresh's time a
 test("named: setupReports killed while laying out Hours, then a menu refresh: B1 still says Hours isn't fully set up", () => {
   // Kill setupReports right after its "clear Hours" step.
   let steps = 0;
-  const killAfter = 1 + 1 + 4 + 1 + 1 + 1; // check, lock, setup-start's four steps, header, clear
+  const killAfter = 1 + 1 + 4 + 1 + 1 + 1 + 1; // check, lock, setup-start's four steps, read, header, clear
   const first = playOnce(
     "whole",
     digests.taps,
@@ -460,7 +461,7 @@ test("named: setupReports killed while laying out Hours, then a menu refresh: B1
   assert.equal(env.sheet.cells.M1, "complete");
   assert.match(
     env.sheet.B1,
-    /^Hours is being set up by setupReports since T1001; if this stays over 5 minutes, run setupReports again\. Refreshed from the menu at T1002\.$/,
+    /^Hours is being set up by setupReports since T1001; if this stays over 5 minutes, run setupReports again\. Refreshed from the menu at T1003\.$/,
   );
 });
 

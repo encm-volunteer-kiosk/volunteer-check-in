@@ -204,8 +204,9 @@ function insertHoursTab_(ss, name, value) {
 /**
  * setupReports' steps 3 to 7 on the Hours tabs, in one hold: take the lock (60 s; busy:
  * throw, having changed nothing on Hours); make or find Hours data and mark the tables not
- * whole (M1 "writing S", Q1 "building S"); lay out Hours data, then Hours; Q1 "built S";
- * refresh inside the hold with mark S; flush and read Hours data back; and only when it
+ * whole (M1 "writing S", Q1 "building S"); read the Log and work out the table; lay out
+ * Hours data with rows for that table, then Hours; Q1 "built S"; write the table inside the
+ * hold with mark S; flush and read Hours data back; and only when it
  * reads back built and whole at this run's read time with the rows written, delete the old
  * Monthly Hours tab. A throw, or a read-back that doesn't pass, marks the table stopped
  * (when this run's mark is still in M1), keeps Monthly Hours and throws with B1's text.
@@ -227,16 +228,17 @@ function setupHoursTabs_(ss, found, hold) {
     if (data.getMaxRows() < 2) data.insertRowsAfter(data.getMaxRows(), 2 - data.getMaxRows());
     data.getRange(hoursStateRange()).setNumberFormat("@");
     hoursHoldStep_(tabs, run, { kind: "setup-start" }, null);
-    layoutHoursData_(data);
-
-    if (!tabs.hours) tabs.hours = insertHoursTab_(ss, hoursTabName(), hoursTabMark().hours);
-    layoutHoursTab_(ss, tabs);
-    hoursHoldStep_(tabs, run, { kind: "setup-built" }, null);
-
+    // Read before the layout, so Hours data has its rows before any pivot or slicer reads
+    // it: on a new tab, adding some 20,000 rows under the pivots took minutes.
     run.t = Date.now();
     const read = readHoursTable_();
     run.digest = read.digest;
     run.rows = read.table.rows.length;
+    layoutHoursData_(data, run.rows);
+
+    if (!tabs.hours) tabs.hours = insertHoursTab_(ss, hoursTabName(), hoursTabMark().hours);
+    layoutHoursTab_(ss, tabs);
+    hoursHoldStep_(tabs, run, { kind: "setup-built" }, null);
     hoursHoldStep_(tabs, run, { kind: "read" }, read);
 
     SpreadsheetApp.flush();
@@ -264,15 +266,34 @@ function setupHoursTabs_(ss, found, hold) {
   }
 }
 
-/** Hours data's header row, number formats (text, Shifts "0", Hours "0.00"), tab colour, hidden. */
-function layoutHoursData_(data) {
+/**
+ * Hours data's header row; rows for the header and rows rows, added in one call; the
+ * number formats (text, Shifts "0", Hours "0.00") on whole columns from row 2; tab colour;
+ * hidden.
+ */
+function layoutHoursData_(data, rows) {
   data.getRange(1, 1, 1, hoursDataHeaders().length).setValues([hoursDataHeaders()]);
-  hoursDataFormats().forEach((format, i) => {
-    const letter = columnLetter(i);
-    data.getRange(letter + "2:" + letter).setNumberFormat(format);
-  });
+  const max = data.getMaxRows();
+  if (max < rows + 1) data.insertRowsAfter(max, rows + 1 - max);
+  formatHoursRows_(data, 2, null);
   data.setTabColor(lookTabColours().hoursData);
   data.hideSheet();
+}
+
+/**
+ * Hours data's number formats on rows from to to (null: to the sheet's last row), one
+ * setNumberFormat per run of columns sharing a format, so the sheet keeps one format per
+ * range and not one per cell.
+ */
+function formatHoursRows_(data, from, to) {
+  const formats = hoursDataFormats();
+  let first = 0;
+  formats.forEach((format, i) => {
+    if (formats[i + 1] === format) return;
+    const a1 = columnLetter(first) + from + ":" + columnLetter(i) + (to === null ? "" : to);
+    data.getRange(a1).setNumberFormat(format);
+    first = i + 1;
+  });
 }
 
 /**
@@ -442,9 +463,7 @@ function writeHours_(tabs, steps, run, read) {
         const need = rows.length + 1;
         if (max < need) {
           data.insertRowsAfter(max, need - max);
-          data
-            .getRange(max + 1, 1, need - max, width)
-            .setNumberFormats(rows.slice(max - 1).map(() => hoursDataFormats()));
+          formatHoursRows_(data, max + 1, need);
         }
         break;
       }
