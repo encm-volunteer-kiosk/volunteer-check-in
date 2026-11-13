@@ -384,9 +384,11 @@ function deleteMonthlyHours_(ss) {
  * found is caught and noted per the rule (failHoursRefresh_). Returns {kind, line,
  * message, timing}: kind is hoursNextState's decision, or "no-tabs", "busy" (the lock
  * wasn't free; nothing written) or "busy-failed" (a failure whose note couldn't be
- * written); line is B1's text as last rendered.
+ * written); line is B1's text as last rendered. out, when given, gets out.log, the Log as
+ * readReportLog_ read it, as soon as the read is done, so the nightly Log check can use the
+ * same read; a refresh that never read the Log leaves out.log unset.
  */
-function refreshHours_(cause, hold, openedAtMs) {
+function refreshHours_(cause, hold, openedAtMs, out) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let tabs;
   try {
@@ -398,6 +400,7 @@ function refreshHours_(cause, hold, openedAtMs) {
   const run = hoursRun_(cause, Date.now());
   try {
     const read = readHoursTable_();
+    if (out) out.log = read.log;
     run.digest = read.digest;
     run.rows = read.table.rows.length;
     run.timing.readMs = read.readMs;
@@ -548,8 +551,9 @@ function readHoursCells_(data) {
 
 /**
  * The Log and the Flags tab read and the table worked out, holding no lock: {table
- * (hoursTable's), digest (P1's text), readMs, workMs}. A missing Log column throws the
- * kiosk's message; a missing or broken Flags tab leaves its count unknown.
+ * (hoursTable's), digest (P1's text), readMs, workMs, log (readReportLog_'s answer)}. A
+ * missing Log column throws the kiosk's message; a missing or broken Flags tab leaves its
+ * count unknown.
  */
 function readHoursTable_() {
   const readStart = Date.now();
@@ -563,7 +567,7 @@ function readHoursTable_() {
   const workStart = Date.now();
   const table = hoursTable(log.entries, flags, (ms) => zoneClock_(new Date(ms), kioskTimeZone()));
   const digest = hoursDigestCell(sha256Hex_(table.digestText));
-  return { table, digest, readMs: workStart - readStart, workMs: Date.now() - workStart };
+  return { table, digest, readMs: workStart - readStart, workMs: Date.now() - workStart, log };
 }
 
 /** A Central "yyyy-MM-dd h:mm a", B1's time. */
