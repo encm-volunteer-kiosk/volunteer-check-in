@@ -17,7 +17,9 @@
  * volunteer's rows (readLogTable_), the only rows the decisions look at.
  *
  * Each flag a check-in or check-out writes to Admin Alerts? is also copied to the Flags
- * tab (raiseFlags_), after the Log write and under the same lock. The Log row is the
+ * tab (raiseFlags_), after the Log write and under the same lock. Every Flags read comes
+ * before the Log write (planFlags_), so after that write the call only writes and
+ * flushes and never waits on the recalculation the write starts. The Log row is the
  * record: a failed copy is logged and never changes the reply.
  */
 
@@ -100,6 +102,7 @@ function apiCheckIn(code, id, arrivalIso, digits) {
       launchDate: settings["Kiosk launch date"],
     });
     if (decision.refusal) return refusal(decision.refusal);
+    const flagPlan = planFlags_(decision.flags);
     const shiftId = Utilities.getUuid();
     const logRow = appendLogRow_(
       checkInCells(
@@ -122,6 +125,7 @@ function apiCheckIn(code, id, arrivalIso, digits) {
         logRow,
       },
       decision.flags,
+      flagPlan,
     );
     return {
       ok: true,
@@ -172,6 +176,7 @@ function apiCheckOut(code, id, digits, checkOutIso) {
       launchDate: settings["Kiosk launch date"],
     });
     if (decision.refusal) return refusal(decision.refusal);
+    const flagPlan = planFlags_(decision.flags);
     updateLogRow_(decision.row, decision.cells, log.cols);
     raiseFlags_(
       {
@@ -183,6 +188,7 @@ function apiCheckOut(code, id, digits, checkOutIso) {
         logRow: decision.row,
       },
       decision.flags,
+      flagPlan,
     );
     return {
       ok: true,
