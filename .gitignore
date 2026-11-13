@@ -1,6 +1,7 @@
 # Real ENCM volunteer data (names, DOB, addresses, emergency contacts). Never commit.
 data/
 *.xlsx
+*.ods
 *.csv
 # Invented sample data with the real column headers is the one exception.
 !sample-data/*.csv
@@ -18,6 +19,8 @@ apps-script/Index.html
 .clasprc.json
 node_modules/
 .DS_Store
+# Browser snapshots from playwright-cli.
+.playwright-cli/
 
 # From the Figma Make export
 node_modules/
