@@ -31,7 +31,7 @@ function harness({
   shifts = THURSDAY,
   now = "2026-11-13T06:30:00Z",
   timezone = "America/Chicago",
-  config = {},
+  config = { DEBUG: true },
   headers = LOG_HEADERS,
   lockAvailable = true,
   verifyMismatch = false,
@@ -184,8 +184,45 @@ function harness({
   };
 }
 
+test("routine checkout logging is disabled by default without changing writes", () => {
+  const h = harness({ config: {} });
+  h.run();
+  assert.deepEqual(h.entries, []);
+  assert.equal(h.writes.length, 1);
+  assert.equal(h.writes[0].value.toISOString(), "2026-11-12T21:00:00.000Z");
+  assert.equal(h.flushes(), 1);
+  assert.ok(h.released());
+});
+
+test("non-debug runs suppress warnings without changing skips or fallbacks", () => {
+  for (const [options, expectedWrites] of [
+    [{ rows: [] }, 0],
+    [{ shifts: [["Thursday", "Afternoon", "Operations", "12:00", "25:00"]] }, 1],
+    [{ shifts: [
+      THURSDAY[2], ["Thursday", "Afternoon", "Other", "12:00", "16:00"],
+    ] }, 0],
+  ]) {
+    const h = harness({ ...options, config: { DEBUG: false } });
+    h.run();
+    assert.deepEqual(h.entries, []);
+    assert.equal(h.writes.length, expectedWrites);
+    assert.ok(h.released());
+  }
+});
+
+test("debug mode enables structured INFO, WARN, and per-row DEBUG logs", () => {
+  const h = harness({ config: { DEBUG: true } });
+  h.run();
+  assert.deepEqual([...new Set(h.entries.map((entry) => entry.level))].sort(),
+    ["DEBUG", "INFO", "WARN"]);
+  assert.ok(h.entries.every((entry) =>
+    entry.executionId === "test-run" && typeof entry.timestamp === "string"));
+  assert.ok(h.entries.some((entry) => entry.event === "SHIFT_ROW_READ"));
+  assert.equal(h.summary().updated, 1);
+});
+
 test("showSpreadsheetId logs the active sheet ID without writing cells", () => {
-  const h = harness();
+  const h = harness({ config: {} });
   h.showId();
   assert.deepEqual(h.entries, [{ spreadsheetId: "active-test-sheet-id" }]);
   assert.equal(h.writes.length, 0);
@@ -206,16 +243,17 @@ test("checkout resolves the bound spreadsheet at runtime without a configured ID
 });
 
 test("checkout reports a missing bound spreadsheet and releases the lock", () => {
-  const h = harness({ activeSpreadsheet: false });
+  const h = harness({ activeSpreadsheet: false, config: {} });
   assert.throws(() => h.run(), /No active spreadsheet/);
   const failure = h.entries.find((entry) => entry.event === "EXECUTION_FAILED");
   assert.equal(failure.details.phase, "OPEN_SHEETS");
+  assert.deepEqual(h.entries.map((entry) => entry.level), ["ERROR"]);
   assert.equal(h.writes.length, 0);
   assert.ok(h.released());
 });
 
 test("diagnostics inspect the bound spreadsheet without writing cells", () => {
-  const h = harness({ spreadsheetId: "diagnostic-bound-spreadsheet" });
+  const h = harness({ spreadsheetId: "diagnostic-bound-spreadsheet", config: {} });
   h.diagnose();
   assert.ok(h.entries.some((entry) => entry.spreadsheetId === "diagnostic-bound-spreadsheet"));
   assert.equal(h.writes.length, 0);
@@ -523,7 +561,7 @@ test("derives dates and weekdays dynamically across year and leap-month boundari
 });
 
 test("dry runs preview dated sign-outs without writing cells", () => {
-  const h = harness({ config: { DRY_RUN: true } });
+  const h = harness({ config: { DEBUG: true, DRY_RUN: true } });
   h.run();
   assert.equal(h.writes.length, 0);
   assert.equal(h.summary().previews, 1);
@@ -540,22 +578,35 @@ test("rejects the old Log layout before writing any cells", () => {
 });
 
 test("write verification failures are surfaced and always release the lock", () => {
-  const h = harness({ verifyMismatch: true });
+  const h = harness({ verifyMismatch: true, config: {} });
   assert.throws(() => h.run(), /verification failed/);
-  assert.ok(h.entries.some((entry) => entry.event === "EXECUTION_FAILED"));
+  assert.deepEqual(h.entries.map((entry) => entry.event), ["AFTER_UPDATE", "EXECUTION_FAILED"]);
+  assert.ok(h.entries.every((entry) => entry.level === "ERROR"));
+  assert.equal(h.entries[0].details.checkoutRaw, "<EMPTY STRING>");
+  assert.equal(h.entries[0].details.checkoutMatches, false);
   assert.ok(h.released());
 });
 
 test("a concurrent execution cannot write or release another execution's lock", () => {
-  const h = harness({ lockAvailable: false });
+  const h = harness({ lockAvailable: false, config: {} });
   assert.throws(() => h.run(), /Another checkout process/);
+  assert.deepEqual(h.entries.map((entry) => entry.level), ["ERROR"]);
   assert.equal(h.writes.length, 0);
   assert.equal(h.released(), false);
 });
 
 test("the trigger installer replaces only this job with hourly past-date retries", () => {
-  const h = harness();
+  const h = harness({ config: {} });
   h.install();
   assert.deepEqual(h.triggers, [{ handler: "updateDailyCheckOuts", hours: 1 }]);
   assert.deepEqual(h.deletedTriggers, [h.oldTrigger]);
+  assert.deepEqual(h.entries, []);
+});
+
+test("trigger setup logs its configuration when debugging is enabled", () => {
+  const h = harness({ config: { DEBUG: true } });
+  h.install();
+  assert.equal(h.entries.length, 1);
+  assert.equal(h.entries[0].functionName, "updateDailyCheckOuts");
+  assert.equal(h.entries[0].spreadsheetId, "active-test-sheet-id");
 });

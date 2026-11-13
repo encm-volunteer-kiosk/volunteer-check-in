@@ -38,8 +38,8 @@ const CONFIG = Object.freeze({
   // TRUE = Preview only, FALSE = Write changes
   DRY_RUN: false,
 
-  // Verbose per-row diagnostics (disable after troubleshooting).
-  DEBUG_ROWS: true,
+  // Enable INFO, WARN, and per-row DEBUG logs only while troubleshooting.
+  DEBUG: false,
 
   // Read written cells back after SpreadsheetApp.flush().
   VERIFY_WRITES: true
@@ -73,6 +73,7 @@ function updateDailyCheckOuts() {
     errors: 0
   };
   const log = (level, event, details) => {
+    if (level !== "ERROR" && !CONFIG.DEBUG) return;
     const entry = {
       timestamp: new Date().toISOString(),
       executionId: executionId,
@@ -87,7 +88,7 @@ function updateDailyCheckOuts() {
     else console.log(line);
   };
   const debug = (event, details) => {
-    if (CONFIG.DEBUG_ROWS) log("DEBUG", event, details);
+    log("DEBUG", event, details);
   };
   const describe = value => {
     if (value === "") return "<EMPTY STRING>";
@@ -105,7 +106,7 @@ function updateDailyCheckOuts() {
     shiftsSheet: CONFIG.SHIFTS_SHEET,
     fallbackHours: CONFIG.FALLBACK_HOURS,
     dryRun: CONFIG.DRY_RUN,
-    debugRows: CONFIG.DEBUG_ROWS,
+    debug: CONFIG.DEBUG,
     verifyWrites: CONFIG.VERIFY_WRITES,
     columnIndexes: {
       shiftDay: CONFIG.SHIFT_DAY,
@@ -425,7 +426,7 @@ function updateDailyCheckOuts() {
         const checkoutMatches = checkoutRaw instanceof Date &&
           !isNaN(checkoutRaw.getTime()) &&
           Math.abs(checkoutRaw.getTime() - checkout.getTime()) <= 1000;
-        log("INFO", "AFTER_UPDATE", {
+        log(checkoutMatches ? "INFO" : "ERROR", "AFTER_UPDATE", {
           logRow: logRow,
           checkoutRaw: describe(checkoutRaw),
           checkoutDisplayed: actualCheckout.getDisplayValue(),
@@ -636,12 +637,14 @@ function createCheckoutTrigger() {
     .everyHours(1)
     .create();
 
-  console.log("[SCHEDULE_CHECKOUT] TRIGGER_CREATED " + JSON.stringify({
-    functionName: functionName,
-    spreadsheetId: spreadsheet.getId(),
-    schedule: "hourly; all arrivals before today; wait until checkout is due",
-    timestamp: new Date().toISOString()
-  }));
+  if (CONFIG.DEBUG) {
+    console.log("[SCHEDULE_CHECKOUT] TRIGGER_CREATED " + JSON.stringify({
+      functionName: functionName,
+      spreadsheetId: spreadsheet.getId(),
+      schedule: "hourly; all arrivals before today; wait until checkout is due",
+      timestamp: new Date().toISOString()
+    }));
+  }
 }
 
 /** Legacy installer name; hourly retries also cover finishes after midnight. */

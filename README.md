@@ -381,7 +381,8 @@ of its calculated sign-out; the execution date and Log's separate Date column ar
 not used for that calculation. It ignores seconds when matching: an exact Start
 match wins; otherwise the arrival must be at or after Start and before Finish.
 When windows overlap, the latest Start wins. Duplicate windows are harmless;
-conflicting Finishes with the same winning Start produce a warning and no update.
+conflicting Finishes with the same winning Start are left unchanged and produce
+a warning when debugging is enabled.
 An overnight Finish is dated the next day. If no valid window matches (including
 Any schedules with blank times), sign-out is exactly **Arrived at + 3 elapsed hours**.
 No sign-out is written before its calculated time has passed. Existing sign-outs
@@ -399,9 +400,9 @@ To install:
    `scripts/ScheduleUpdate.gs` to that bound project. This file is not included in
    `pnpm push`; for a clasp-managed project, include it in that project's synced root
    before pushing so a deployment does not remove it.
-2. Set `DRY_RUN: true`, run `testCheckoutDiagnostics`, then `updateDailyCheckOuts`.
+2. Set `DEBUG: true` and `DRY_RUN: true`, run `testCheckoutDiagnostics`, then `updateDailyCheckOuts`.
    Check the execution logs for the arrival-date cutoff, proposed sign-outs, and warnings.
-3. Set `DRY_RUN: false` and run `createCheckoutTrigger` once, authorizing access.
+3. Set `DEBUG: false` and `DRY_RUN: false`, then run `createCheckoutTrigger` once, authorizing access.
    It replaces this job's triggers in that project with an hourly trigger. The old
    `createMidnightTrigger` installer name also installs these hourly retries.
 
@@ -410,7 +411,12 @@ after midnight so, for example, an unmatched 11:45 PM arrival is left alone at
 12:30 AM and receives a 2:45 AM sign-out on the first run at or after 2:45 AM.
 Apps Script time-based triggers are approximate, not exact-minute alarms.
 Old blank sign-outs are backfilled automatically using their original arrival dates.
-No email or popup alert is sent; results and errors appear in the Apps Script execution logs.
+No email or popup alert is sent. `DEBUG` defaults to `false`: routine INFO, WARN,
+per-row DEBUG, and trigger-setup logs are suppressed. Errors, including failed
+write-verification details, are always logged and rethrown. Set `DEBUG: true` while
+troubleshooting or previewing a dry run to see results and warnings in the Apps Script
+execution logs. Explicit diagnostic helpers (`showSpreadsheetId` and
+`testCheckoutDiagnostics`) always log their output.
 
 Local regression tests mock Google services; production needs no Node dependencies:
 `node --test tests/schedule-update.test.mjs`.
