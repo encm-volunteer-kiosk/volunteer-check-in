@@ -34,13 +34,16 @@ function requireEditorRun_() {
 }
 
 /**
- * Creates or updates the Log, Settings and Flags tabs: the Log header, formats and any
- * missing Settings row (setupLog_ for the Log), then the Flags tab (setupFlags_), so a
- * failure there leaves the Log and Settings set up, then the look of all three
- * (applyLooks_), last. Writes only empty cells, creates or renames tabs, sets formats, the
- * Flags tab's Reviewed checkbox and its "Flags: Unreviewed" view, and the look; never
- * changes a cell with text in it or deletes a row, so running it twice changes nothing.
- * Runs only from the Apps Script editor.
+ * Creates or updates the Log, Settings and Flags tabs and the staff help: the Log header,
+ * formats and any missing Settings row (setupLog_ for the Log), Settings' What it does
+ * column, then the Flags tab (setupFlags_), so a failure there leaves the Log and Settings
+ * set up, then the Log and Flags header notes, the look of all three (applyLooks_), and
+ * the How to tab, last. Writes only empty cells, creates or renames tabs, sets formats,
+ * the Flags tab's Reviewed checkbox and its "Flags: Unreviewed" view, and the look; never
+ * changes a cell with text in it or deletes a row, except for the help it rewrites on
+ * every run: Settings column C, the How to tab, and a header note that is empty or still
+ * exactly one of the kiosk's own texts. So running it twice changes nothing. Runs only
+ * from the Apps Script editor.
  */
 function setupSheets() {
   requireEditorRun_();
@@ -52,7 +55,7 @@ function setupSheets() {
   setupLog_(ss);
 
   const settings = ss.getSheetByName(SETTINGS_TAB) || ss.insertSheet(SETTINGS_TAB);
-  settings.getRange("A:B").setNumberFormat("@");
+  settings.getRange("A:C").setNumberFormat("@");
   const settingsHeader = settings.getRange(1, 1, 1, 2);
   if (settingsHeader.getValues()[0].every((v) => cellText_(v) === "")) {
     settingsHeader.setValues([["Setting", "Value"]]);
@@ -65,9 +68,19 @@ function setupSheets() {
   if (missing.length) {
     settings.getRange(settings.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
   }
+  settings.getRange(1, 3).setValue(settingsDescriptionHeader());
+  writeSettingsDescriptions_(settings);
+  protectOnce_(
+    settings.getProtections(SpreadsheetApp.ProtectionType.RANGE),
+    settingsDescriptionProtection(),
+    () => settings.getRange("C2:C").protect(),
+  );
 
   setupFlags_(ss);
+  writeHeaderNotes_(sheet_(LOG_TAB), logHeaderNames(), logHeaderNotes());
+  writeHeaderNotes_(sheet_(FLAGS_TAB), flagHeaderNames(), flagHeaderNotes());
   applyLooks_(ss);
+  setupHowTo_(ss);
 }
 
 /**
@@ -507,7 +520,11 @@ function readSettings_() {
   return settings;
 }
 
-/** Writes one Settings value, found by its name in column A, appending the row if missing. */
+/**
+ * Writes one Settings value, found by its name in column A, appending the row if missing.
+ * An appended row also gets its What it does text in column C; an existing row's C is
+ * left as it is.
+ */
 function setSetting_(name, value) {
   const sheet = sheet_(SETTINGS_TAB);
   const names = sheet.getRange(1, 1, Math.max(sheet.getLastRow(), 1), 1).getValues();
@@ -521,6 +538,9 @@ function setSetting_(name, value) {
   if (!row) {
     row = sheet.getLastRow() + 1;
     sheet.getRange(row, 1).setNumberFormat("@").setValue(name);
+    const descriptions = settingsDescriptions();
+    const what = Object.prototype.hasOwnProperty.call(descriptions, name) ? descriptions[name] : "";
+    sheet.getRange(row, 3).setNumberFormat("@").setValue(what);
   }
   sheet.getRange(row, 2).setNumberFormat("@").setValue(value);
 }
@@ -1159,4 +1179,144 @@ function markShiftFlags_(shiftId, opts) {
     }
   });
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Staff help
+//
+// setupSheets writes the help staff read in the sheet; the text is in Logic.js ("Staff
+// help"). Settings column C and the How to tab are the kiosk's and rewritten whole; a
+// header note is written only where the cell's note is empty or still exactly a kiosk text.
+
+/**
+ * Settings column C from row 2 down: one settingsDescriptionColumn (Logic.js) text per row
+ * down to the last row with a name, each name read by cellText_ as readSettings_ reads it,
+ * in one setValues. C below that row, down to the tab's last row, is cleared, so text left
+ * by a deleted row never sits beside the next appended setting. Writes no other column.
+ */
+function writeSettingsDescriptions_(settings) {
+  const last = settings.getLastRow();
+  if (last < 2) return;
+  const names = settings
+    .getRange(2, 1, last - 1, 1)
+    .getValues()
+    .map((r) => cellText_(r[0]));
+  let named = 0;
+  names.forEach((name, i) => {
+    if (name !== "") named = i + 1;
+  });
+  if (named) {
+    settings
+      .getRange(2, 3, named, 1)
+      .setValues(settingsDescriptionColumn(names.slice(0, named)).map((t) => [t]));
+  }
+  if (named + 1 < last) settings.getRange(named + 2, 3, last - named - 1, 1).clearContent();
+}
+
+/**
+ * Adds a warning-only protection with this description unless one of existing (a tab's
+ * protections) already has it, so a rerun never stacks a second. protect makes the
+ * protection on the right range or tab.
+ */
+function protectOnce_(existing, description, protect) {
+  if ((existing || []).some((p) => p.getDescription() === description)) return;
+  protect().setDescription(description).setWarningOnly(true);
+}
+
+/**
+ * The header notes on a Log or Flags tab's row 1, from A to the header's width: one
+ * getNotes, then headerNotesRow (Logic.js) with headerNoteKioskTexts(), and a setNote only
+ * on each cell whose note changes. A note the rule keeps, a staff note above all, is never
+ * written back, so it can't be altered by a round trip through Sheets.
+ */
+function writeHeaderNotes_(sheet, names, notes) {
+  const header = logHeaderRow_(sheet);
+  const existing = sheet.getRange(1, 1, 1, header.length).getNotes()[0];
+  const wanted = headerNotesRow(header, names, notes, existing, headerNoteKioskTexts());
+  wanted.forEach((note, i) => {
+    if (note !== existing[i]) sheet.getRange(1, i + 1).setNote(note);
+  });
+}
+
+/**
+ * The tab carrying the kiosk's How to mark (howToTabMark, Logic.js), or null. Found by
+ * its developer metadata, never by name, so a renamed or moved tab is still the kiosk's.
+ * Two marked tabs (a duplicated tab carries the mark) stop it, both named.
+ */
+function findHowToTabs_(ss) {
+  const mark = howToTabMark();
+  const found = [];
+  ss.createDeveloperMetadataFinder()
+    .withKey(mark.key)
+    .find()
+    .forEach((md) => {
+      const sheet = md.getLocation().getSheet();
+      if (!sheet || md.getValue() !== mark.value) return;
+      if (!found.some((s) => s.getSheetId() === sheet.getSheetId())) found.push(sheet);
+    });
+  if (found.length > 1) {
+    throw new Error(
+      "These tabs all carry the kiosk's " +
+        howToTabName() +
+        " mark: " +
+        found.map((s) => s.getName()).join(", ") +
+        ". Delete the copy, then run setupSheets again.",
+    );
+  }
+  return found[0] || null;
+}
+
+/**
+ * The How to tab, setupSheets' last step.
+ * - A marked tab (findHowToTabs_) is rewritten where it is, under the name it has now; it
+ *   is never moved or renamed, and other tabs' names aren't looked at.
+ * - With no marked tab, a tab named "How to" in any capitals is someone else's, and it
+ *   stops, named, since Sheets won't hold two names that differ only in capitals.
+ *   Otherwise a new tab is inserted first in the tab bar and marked. So a deleted How to
+ *   comes back at the next run.
+ * Then: one warning-only protection on the tab (protectOnce_), the tab cleared, column A
+ * as plain text, howToRows (Logic.js) in one setValues with howToStyles' formats, column A
+ * 820 px and wrapped, row 1 frozen and the tab colour.
+ */
+function setupHowTo_(ss) {
+  let sheet = findHowToTabs_(ss);
+  if (!sheet) {
+    const name = howToTabName();
+    const clash = ss.getSheets().find((s) => s.getName().toLowerCase() === name.toLowerCase());
+    if (clash) {
+      throw new Error(
+        'A tab named "' +
+          clash.getName() +
+          "\" is already there and isn't the kiosk's. Rename it, then run setupSheets again.",
+      );
+    }
+    sheet = ss.insertSheet(name, 0);
+    sheet.addDeveloperMetadata(howToTabMark().key, howToTabMark().value);
+  }
+  protectOnce_(
+    sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET),
+    howToProtectionDescription(),
+    () => sheet.protect(),
+  );
+
+  const rows = howToRows();
+  const styles = howToStyles();
+  const pick = (field) => rows.map((r) => [styles[r.kind][field]]);
+  sheet.clear();
+  if (sheet.getMaxRows() < rows.length) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), rows.length - sheet.getMaxRows());
+  }
+  sheet.getRange("A:A").setNumberFormat("@");
+  sheet
+    .getRange(1, 1, rows.length, 1)
+    .setValues(rows.map((r) => [r.text]))
+    .setFontWeights(pick("weight"))
+    .setFontSizes(pick("size"))
+    .setFontColors(pick("colour"))
+    .setBackgrounds(pick("background"))
+    .setFontStyles(pick("style"));
+  sheet.setColumnWidth(1, 820);
+  sheet.getRange("A:A").setWrap(true);
+  sheet.setFrozenRows(1);
+  sheet.setTabColor(lookTabColours().howTo);
 }

@@ -76,6 +76,12 @@ sort rows. Line breaks, extra spaces and capital letters in a header don't matte
 rename a kiosk header or keep two columns with the same kiosk header: the kiosk stops with
 an error naming the column, and `setupSheets` puts a missing one back (see Setup).
 
+Each kiosk header carries a hover note for staff saying what the column holds; the same
+notes are listed at the end of the How to tab (see What setupSheets does). `setupSheets`
+writes a note only where the cell's note is empty or is still exactly one of the kiosk's
+own note texts, so a note staff wrote or changed is left as it is, unless it is exactly
+one of the kiosk's texts.
+
 | Column | Header                         | What it holds                                                          |
 | ------ | ------------------------------ | ---------------------------------------------------------------------- |
 | A      | Date                           | The shift's date in Central time, as `yyyy-MM-dd` text.                |
@@ -270,6 +276,10 @@ rows in this import)`), and Date, Shift ID and Log Row are those of the name's f
 row. The other rows of that name carry the alert in Admin Alerts? and show in the `Kiosk:
 Flagged` view.
 
+Each Flags header carries a hover note for staff, written the same way as the Log's: only
+where the cell's note is empty or still exactly one of the kiosk's own texts, so a note
+staff wrote or changed stays. The notes are also listed at the end of the How to tab.
+
 | Column | Header         | What it holds                                                               |
 | ------ | -------------- | --------------------------------------------------------------------------- |
 | A      | Date           | The Log row's Date.                                                         |
@@ -283,7 +293,7 @@ Flagged` view.
 | I      | Source         | `kiosk check-in`, `kiosk check-out`, `auto-close`, `import` or `log check`. |
 | J      | Log Row        | The Log row number then. A hint only: sorting the Log moves rows.           |
 
-To review: open Data > Filter views > `Flags: Unreviewed`. It shows the flags not yet
+To review: open Data > Change view > `Flags: Unreviewed`. It shows the flags not yet
 ticked, newest first. Tick Reviewed, type your initials in Reviewed By, and add a note if
 there's something to say. A ticked flag leaves the view. The sheet's edit history (right
 click a cell > Show edit history) shows who ticked it and when.
@@ -355,27 +365,42 @@ The Settings tab holds one value per row, name in column A and value in column B
 `setupSheets` adds any missing row with its default and never changes a value that is
 there.
 
-| Setting                       | Default                         | What it does                                                                               |
-| ----------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------ |
-| Kiosk access code             | blank                           | The code a board member types on the tablet; at least 16 letters.                          |
-| Volunteer Profiles file ID    | blank                           | The Volunteer Profiles spreadsheet the roster comes from.                                  |
-| Volunteer Profiles tab        | Volunteer Profiles              | The tab in that file.                                                                      |
-| Kiosk launch date             | the day `setupSheets` first ran | Only volunteers whose Profiles start date is on or after it get the first-shift milestone. |
-| Arrival flag minutes          | 15                              | How far a stated arrival may be from the tap before it gets an alert.                      |
-| Check-out flag minutes        | 15                              | How far a stated check-out may be from the tap before it gets an alert.                    |
-| Volunteer hour value          | blank                           | The dollar value of one volunteer hour, for the monthly report (see Reports).              |
-| Profiles problems             | blank                           | Written by the kiosk: Profiles rows it had to leave out, and why.                          |
-| Auto clock-out after hours    | 12                              | Hours after the check-in tap that an open row stays on the tablet. 10 to 24 (below).       |
-| Auto clock-out last run       | blank                           | Written by the auto clock-out: when it last ran, Central, and how many rows it closed.     |
-| Long shift flag hours         | 8                               | A tablet check-out crediting more hours than this is flagged (below).                      |
-| Flags email                   | Off                             | `On` (any capitals) turns the weekly flags email on; anything else is off.                 |
-| Flags email to                | blank                           | Who gets it: addresses separated by commas, semicolons, spaces or new lines.               |
-| Flags email day               | Monday                          | The day it sends: an English weekday, in full or its first three letters.                  |
-| Flags email hour              | 8                               | The hour it sends, Central: a whole number from 0 to 23.                                   |
-| Flags email last run          | blank                           | Written by the weekly email: when it last ran, and `sent to N` or `nothing to send`.       |
-| Daily jobs installed by       | blank                           | Written by `setupDailyJobs`: the account that owns the daily jobs.                         |
-| Past hours file ID            | blank                           | Fills in the Import past hours window; an import that adds rows saves what it used.        |
-| Past hours tab                | Historical Hours                | The same, for the tab.                                                                     |
+Column C, **What it does**, is for staff: one plain sentence per setting, the same
+sentences as the table below. The kiosk writes the column and rewrites it on every
+`setupSheets` run, so staff can't keep their own text there. A row whose name appears
+again lower down gets "Not used: an earlier row has the same name, and only the first one
+counts.", a name the kiosk doesn't know gets "The kiosk doesn't use this row.", and a row
+with no name gets nothing; this is what the kiosk does with each row when it reads
+Settings. Text left in C below the last named row is cleared. Column C has a warning-only
+protection, so typing in it warns first. When the kiosk itself adds a missing row (for
+example "Flags email last run" after someone deleted it), the row gets its sentence at
+once.
+
+| Setting                    | Default                         | What it does                                                                                                                                                                                                                                                                           |
+| -------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kiosk access code          | blank                           | The code a board member types on the tablet to open the kiosk: at least 16 letters (only letters count, and capitals are the same as small letters), and while it's blank or shorter no tablet can open.                                                                               |
+| Volunteer Profiles file ID | blank                           | Which spreadsheet the volunteer list comes from, as the long ID in its link between /d/ and /edit; while it's blank, no volunteer can be found on the tablet or in the menu.                                                                                                           |
+| Volunteer Profiles tab     | Volunteer Profiles              | The tab in that spreadsheet that holds the volunteer list; blank means a tab named Volunteer Profiles.                                                                                                                                                                                 |
+| Kiosk launch date          | the day `setupSheets` first ran | The day the kiosk started, as yyyy-mm-dd: only volunteers who started on or after it get the first-shift welcome, Import past hours brings in only shifts before it, and the nightly auto clock-out closes only shifts on or after it, so never leave it blank.                        |
+| Arrival flag minutes       | 15                              | How many minutes a volunteer's chosen arrival time can be from the moment they tapped in before the shift is flagged, as a number 0 or more; blank means 15.                                                                                                                           |
+| Check-out flag minutes     | 15                              | How many minutes a volunteer's chosen check-out time can be from the moment they tapped out before the shift is flagged, as a number 0 or more; blank means 15.                                                                                                                        |
+| Volunteer hour value       | blank                           | The dollar value of one volunteer hour, such as 34.79, used in the monthly report; while it's blank the report leaves the value out and says to set it here.                                                                                                                           |
+| Profiles problems          | blank                           | Written by the kiosk: rows of Volunteer Profiles it had to leave out, and why (blank means none), so fix them in Volunteer Profiles, not here.                                                                                                                                         |
+| Auto clock-out after hours | 12                              | How many hours after check-in a shift nobody checked out of stays open on the tablet before the nightly auto clock-out closes it, from 10 to 24; blank or anything else means 12.                                                                                                      |
+| Auto clock-out last run    | blank                           | Written by the kiosk: when the nightly auto clock-out last ran and how many shifts it closed, so leave it alone.                                                                                                                                                                       |
+| Long shift flag hours      | 8                               | A tablet check-out that credits more hours than this is flagged as a long shift, as a number above 0; blank or anything else means 8.                                                                                                                                                  |
+| Flags email                | Off                             | Type On to send the weekly flags email; anything else, blank included, keeps it off.                                                                                                                                                                                                   |
+| Flags email to             | blank                           | Who gets the weekly flags email, as one or more email addresses separated by commas, spaces or new lines; blank sends nothing.                                                                                                                                                         |
+| Flags email day            | Monday                          | The weekday the weekly flags email goes out if there is anything to report, such as Monday or Mon; blank or anything else means Monday, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).                                         |
+| Flags email hour           | 8                               | The hour, Central time, the weekly flags email goes out if there is anything to report, as a whole number from 0 to 23 (8 is 8 AM, 14 is 2 PM); blank or anything else means 8, and the first one after a change, or after turning the email On, can come sooner (see the How to tab). |
+| Flags email last run       | blank                           | Written by the kiosk: when the weekly flags email last checked and whether it sent or had nothing to send; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report.                                  |
+| Daily jobs installed by    | blank                           | Written by the kiosk: the Google account that runs the nightly jobs and the weekly email, so leave it alone.                                                                                                                                                                           |
+| Past hours file ID         | blank                           | The old hours spreadsheet that Kiosk admin > Import past hours… offers first; an import fills it in, and blank just means the window starts empty.                                                                                                                                     |
+| Past hours tab             | Historical Hours                | The tab in that old hours spreadsheet that Import past hours… offers first; blank means Historical Hours.                                                                                                                                                                              |
+
+"Flags email to" also splits on semicolons; the sentence leaves that out to stay short.
+"Daily jobs installed by" is written by `setupDailyJobs`, and the two Past hours rows by an
+import that adds rows.
 
 "Auto clock-out after hours" is read as given from 10 to 24; anything else, blank or
 unreadable, reads as 12. A window shorter than a shift plus some slack would take a
@@ -396,7 +421,8 @@ On a spreadsheet set up before them, run `setupSheets` once to add them.
 Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with eight items: Add a
 shift, Fix a sign-out, Remove a shift, Restore a shift, Monthly report, Import past hours,
 Refresh Hours and Check the Log now. Monthly report and Refresh Hours are described under
-Reports. Check the Log now runs the Log check that otherwise runs at about 5 AM (see Daily
+Reports. The sheet's How to tab (see What setupSheets does) walks staff through each item
+in plain words. Check the Log now runs the Log check that otherwise runs at about 5 AM (see Daily
 jobs) and says what it found and how many new Flags rows it added. Anyone who can edit the
 spreadsheet can use it. It runs as whoever has the sheet open, which at
 ENCM is the shared account, so:
@@ -701,12 +727,17 @@ last-run row first, under the kiosk's lock.
 
 ### Weekly flags email
 
-Every hour the email job checks Settings. It sends nothing until "Flags email" is `On`
-and "Flags email to" holds at least one address. Then it sends once a week, at the first
-hourly run on or after "Flags email day" at "Flags email hour" (Central), and writes
-"Flags email last run". A run that couldn't send is caught up by the next hourly run. A
-changed day or hour applies at once. To send again this week, clear "Flags email last
-run": the next hourly run sends.
+Every hour the email job checks Settings. It does nothing, and writes nothing, until
+"Flags email" is `On` and "Flags email to" holds at least one address. Then a check runs
+when "Flags email last run" is blank, unreadable or older than the latest "Flags email
+day" at "Flags email hour" (Central) at or before now. So the first check after turning
+the email on, or after changing the day or hour, can run within the hour, on any day;
+after that a check runs once a week, at the first hourly run on or after that day and
+hour. A check sends only if there is something to report (below), and writes "Flags email
+last run" either way: `sent to N`, or `nothing to send` when there was nothing. A run that
+couldn't send is caught up by the next hourly run. Clearing "Flags email last run" makes
+the next hourly run check again, which likewise sends only if there is something to
+report.
 
 The email comes from the owner account's domain no-reply address, named "ENCM Volunteer
 Kiosk". It says:
@@ -1211,7 +1242,7 @@ amount, the report says it can't be read.
 
 ### Filter views
 
-`setupReports` saves these filter views on the Log. In the Log, open Data > Filter views
+`setupReports` saves these filter views on the Log. In the Log, open Data > Change view
 and pick one. A filter view changes only what you see; it changes nothing in the Log and
 nothing others see. Each title starts `Kiosk: `.
 
@@ -1353,8 +1384,8 @@ For a short clone-to-deploy checklist, see [CONTRIBUTING.md](CONTRIBUTING.md).
    `.clasp.json` (script ID, `rootDir: apps-script`) is committed at the repo root.
 6. `pnpm push` builds the page and pushes everything in `apps-script/`. A push replaces
    the whole remote project, so change code here, never in the Apps Script editor.
-7. Once, in the Apps Script editor, run `setupSheets` (creates the Log, Settings and
-   Flags tabs), then `setupSampleProfiles` (builds an invented Volunteer Profiles file and
+7. Once, in the Apps Script editor, run `setupSheets` (creates the Log, Settings, Flags
+   and How to tabs, with Settings' What it does column and the header notes), then `setupSampleProfiles` (builds an invented Volunteer Profiles file and
    points Settings at it). Then put a kiosk access code of at least 16 letters in Settings.
    Then run `setupReports` (see Reports). All three run only from the editor: called
    through the web app by anyone but the account it runs as, they refuse.
@@ -1384,7 +1415,8 @@ steps have not yet been tried on ENCM's iPad; check step 4 when you set it up.
 `setupSheets` writes only empty cells, creates or renames tabs, and sets formats, the
 Flags tab's Reviewed tickbox, its `Flags: Unreviewed` filter view and the look of the Log,
 Flags and Settings tabs. It never changes a cell with text in it and never deletes a row,
-so running it again changes nothing, except that it puts its look back (below).
+except for the staff help it rewrites on every run (below). So running it again changes
+nothing, except that it puts its look and its help back.
 
 - No Log tab: it creates one with the full header, A to R as in the table above.
 - A Log tab in the kiosk's old layout (first columns Shift ID, Volunteer ID, First name,
@@ -1427,6 +1459,28 @@ so running it again changes nothing, except that it puts its look back (below).
   stops with "The tabs are set up, but their look could not be applied: ..."; everything
   before it is done.
 
+- The staff help, on every run. All its text is in Logic.js's "Staff help" section (and
+  `settingsDescriptions`, after `settingsDefaults`), so a release that runs `setupSheets`
+  keeps it current. Staff text never names code.
+  - Settings column C, What it does (see Settings), after the missing rows are added, with
+    its one warning-only protection. Columns A and B are not written.
+  - The Log and Flags header notes, after the Flags tab is set up. A cell gets the
+    kiosk's note only when its note is empty or is exactly (`===`, nothing trimmed) one of
+    `headerNoteKioskTexts()`: the current notes, or an earlier wording listed in
+    `headerNotePastTexts()`. Any other note is staff's and is never written, not even
+    back as it was. A cell that is no longer a kiosk header loses a note that is exactly a
+    kiosk text, since it describes the wrong column. A deleted note comes back at the
+    next run.
+  - The How to tab, last: short walkthroughs for staff (review flags, fix a sign-out,
+    add, remove and restore a shift, the monthly report, the flags email, changing a
+    setting, the Hours tab), a "Please don't" list, and every Log and Flags header note.
+    It is found by its developer metadata (key `kiosk-guide`), not by name. With no marked
+    tab, it is created first in the tab bar; after that it is never moved or renamed, so
+    it stays where staff put it. It is cleared and rewritten whole on every run, and has a
+    warning-only protection. If it is deleted, the next run makes it again, first in the
+    tab bar. With no marked tab, a tab named "How to" in any capitals stops the run
+    (rename it); two marked tabs (a duplicated tab carries the mark) stop it too, named.
+
 ### Updating a sheet that's already in use
 
 The web app must never run code older than the Log's layout. When an update changes the
@@ -1449,6 +1503,19 @@ is named in the executions log. `setupReports` doesn't need running again.
 
 To add the reports to a sheet in use, or to move one from the Monthly Hours tab to the
 Hours tab and the new look, follow the steps under Setting up the reports.
+
+The staff help (Settings' What it does column, the header notes and the How to tab) is
+written only by `setupSheets`, so:
+
+- a release that changes any help text runs `setupSheets` after the push, as above;
+- a release that changes `hoursHowTo()` or `hoursDateNote()` runs `setupSheets` as well as
+  `setupReports`: the How to tab copies both lines, and `setupReports` doesn't write that
+  tab;
+- a change to a header note's wording adds the old text to `headerNotePastTexts()`.
+  Otherwise cells on a live sheet still carrying the old text are taken for staff notes
+  and never updated. `tests/header-notes-shipped.json` is the record of every note text a
+  release has written: add the new texts to it after the release that writes them, and
+  never remove one. A test fails while any text in it is unknown to the kiosk.
 
 ## Commands
 
@@ -1484,6 +1551,7 @@ apps-script/Sheets.js       Log, Settings, Flags and Profiles access; setupSheet
 apps-script/SampleData.js   invented Volunteer Profiles rows for development
 apps-script/Index.html      the page doGet serves; a build output, not committed
 scripts/copy-to-gas.mjs     checks the single-file build and copies it into apps-script/
-tests/                      logic tests, and setupSheets run against an in-memory sheet
+tests/                      logic tests, and setupSheets run against an in-memory sheet;
+                            header-notes-shipped.json records the header notes released
 sample-data/                invented volunteer profiles with the real column headers
 ```

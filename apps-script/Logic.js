@@ -81,6 +81,95 @@ function settingsDefaults(todayDate) {
   return rows;
 }
 
+/** The header of the Settings tab's column C, which says what each setting does. */
+function settingsDescriptionHeader() {
+  return "What it does";
+}
+
+/**
+ * One plain sentence per Settings row, for staff: what the setting does, what to type and
+ * what blank means. setupSheets writes them into column C on every run and never touches
+ * a value. A row the kiosk fills itself starts "Written by the kiosk:". The names are
+ * exactly settingsDefaults()' names, and a test holds the two lists together.
+ */
+function settingsDescriptions() {
+  return {
+    "Kiosk access code":
+      "The code a board member types on the tablet to open the kiosk: at least 16 letters (only letters count, and capitals are the same as small letters), and while it's blank or shorter no tablet can open.",
+    "Volunteer Profiles file ID":
+      "Which spreadsheet the volunteer list comes from, as the long ID in its link between /d/ and /edit; while it's blank, no volunteer can be found on the tablet or in the menu.",
+    "Volunteer Profiles tab":
+      "The tab in that spreadsheet that holds the volunteer list; blank means a tab named Volunteer Profiles.",
+    "Kiosk launch date":
+      "The day the kiosk started, as yyyy-mm-dd: only volunteers who started on or after it get the first-shift welcome, Import past hours brings in only shifts before it, and the nightly auto clock-out closes only shifts on or after it, so never leave it blank.",
+    "Arrival flag minutes":
+      "How many minutes a volunteer's chosen arrival time can be from the moment they tapped in before the shift is flagged, as a number 0 or more; blank means 15.",
+    "Check-out flag minutes":
+      "How many minutes a volunteer's chosen check-out time can be from the moment they tapped out before the shift is flagged, as a number 0 or more; blank means 15.",
+    [volunteerHourValueSetting()]:
+      "The dollar value of one volunteer hour, such as 34.79, used in the monthly report; while it's blank the report leaves the value out and says to set it here.",
+    "Profiles problems":
+      "Written by the kiosk: rows of Volunteer Profiles it had to leave out, and why (blank means none), so fix them in Volunteer Profiles, not here.",
+    "Auto clock-out after hours":
+      "How many hours after check-in a shift nobody checked out of stays open on the tablet before the nightly auto clock-out closes it, from 10 to 24; blank or anything else means 12.",
+    "Auto clock-out last run":
+      "Written by the kiosk: when the nightly auto clock-out last ran and how many shifts it closed, so leave it alone.",
+    "Long shift flag hours":
+      "A tablet check-out that credits more hours than this is flagged as a long shift, as a number above 0; blank or anything else means 8.",
+    "Flags email":
+      "Type On to send the weekly flags email; anything else, blank included, keeps it off.",
+    "Flags email to":
+      "Who gets the weekly flags email, as one or more email addresses separated by commas, spaces or new lines; blank sends nothing.",
+    "Flags email day":
+      "The weekday the weekly flags email goes out if there is anything to report, such as Monday or Mon; blank or anything else means Monday, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).",
+    "Flags email hour":
+      "The hour, Central time, the weekly flags email goes out if there is anything to report, as a whole number from 0 to 23 (8 is 8 AM, 14 is 2 PM); blank or anything else means 8, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).",
+    "Flags email last run":
+      "Written by the kiosk: when the weekly flags email last checked and whether it sent or had nothing to send; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report.",
+    "Daily jobs installed by":
+      "Written by the kiosk: the Google account that runs the nightly jobs and the weekly email, so leave it alone.",
+    [importFileSetting()]:
+      "The old hours spreadsheet that Kiosk admin > Import past hours… offers first; an import fills it in, and blank just means the window starts empty.",
+    [importTabSetting()]:
+      "The tab in that old hours spreadsheet that Import past hours… offers first; blank means Historical Hours.",
+  };
+}
+
+/**
+ * Column C of the Settings tab from row 2 down, one text per name in names (column A's
+ * text, read the way readSettings_ reads it, down to the last row with a name). It says
+ * what readSettings_ does with each row, because both compare names exactly:
+ * - a known name, the first time: its sentence;
+ * - the same known name again: the not-used line, since only the first row counts;
+ * - a name the kiosk doesn't know, every time: the unknown line;
+ * - no name: "".
+ * Known means an own key of settingsDescriptions(), so "toString" is unknown.
+ */
+function settingsDescriptionColumn(names) {
+  const descriptions = settingsDescriptions();
+  const seen = {};
+  return (names || []).map((raw) => {
+    const name = cellString(raw);
+    if (name === "") return "";
+    if (!Object.prototype.hasOwnProperty.call(descriptions, name)) {
+      return "The kiosk doesn't use this row.";
+    }
+    if (Object.prototype.hasOwnProperty.call(seen, name)) {
+      return "Not used: an earlier row has the same name, and only the first one counts.";
+    }
+    seen[name] = true;
+    return descriptions[name];
+  });
+}
+
+/**
+ * The description of the one warning-only protection on Settings column C, so typing
+ * there warns first. setupSheets finds it by this text and never adds a second.
+ */
+function settingsDescriptionProtection() {
+  return "What it does: written by the kiosk. Type a setting's value in the Value column, not here.";
+}
+
 /**
  * Profiles headers the kiosk needs, after normalizeHeader. Email is never read. The
  * token is found separately, under one of profileTokenHeaders().
@@ -4615,6 +4704,7 @@ function lookTabColours() {
     hours: P.teal,
     hoursData: P.grey,
     report: P.blue,
+    howTo: P.blue,
   };
 }
 
@@ -4741,7 +4831,11 @@ function lookColumns(tab) {
     ];
   }
   if (tab === "settings") {
-    return [col("Setting", "navy", 230), col("Value", "teal", 380)];
+    return [
+      col("Setting", "navy", 230),
+      col("Value", "teal", 380),
+      col(settingsDescriptionHeader(), "navy", 420),
+    ];
   }
   throw new Error("No look for a tab called " + tab + ".");
 }
@@ -4754,7 +4848,7 @@ function lookColumns(tab) {
  *   the look doesn't know, or a blank cell between headers, is staff's: teal.
  * - widths: [{col (0-based), px}] for the headers the look knows; a staff column's width
  *   is left alone. A header found twice gets its width in both places.
- * - wrapColumns: 0-based columns wrapped from top to bottom (Settings' Value).
+ * - wrapColumns: 0-based columns wrapped from top to bottom (Settings' Value and What it does).
  * - banding: one row banding from row 2 over the header's columns, white then band, with
  *   no end row: Sheets keeps it to the tab's last row, and rows the kiosk appends at the
  *   end extend it. null when the header is empty.
@@ -4818,6 +4912,8 @@ function lookPlan(headerRow, tab) {
   } else {
     const value = first("Value");
     if (value >= 0) wrapColumns.push(value);
+    const what = first(settingsDescriptionHeader());
+    if (what >= 0) wrapColumns.push(what);
   }
   return {
     tab,
@@ -5267,13 +5363,13 @@ function flagsEmailMessage(input) {
   para("Flags raised in the last 7 days: " + recent.length);
   para("Flags still unreviewed: " + unreviewed);
   para(
-    "Review them on the Flags tab (Data > Filter views > " +
+    "Review them on the Flags tab (Data > Change view > " +
       flagsViewTitle() +
       "): " +
       input.flagsUrl,
     'Review them on the <a href="' +
       htmlText(input.flagsUrl) +
-      '">Flags tab</a> (Data &gt; Filter views &gt; ' +
+      '">Flags tab</a> (Data &gt; Change view &gt; ' +
       htmlText(flagsViewTitle()) +
       ").",
   );
@@ -6548,4 +6644,418 @@ function logCheckMessage(result) {
     if (n > 0) text += "\n  " + reasons[code] + ": " + n;
   });
   return text;
+}
+
+// ---------------------------------------------------------------------------
+// Staff help
+//
+// Help for the staff who run the sheet, written into the sheet by setupSheets on every
+// run: the Settings tab's What it does column (above, after settingsDefaults), a hover
+// note on each kiosk column header of the Log and Flags tabs, and the How to tab. All the
+// text lives here, so each release that runs setupSheets keeps it current. Staff text
+// never names code: it quotes only what staff see on screen.
+
+/** The hover note on each Log header, keyed like logHeaderNames(). */
+function logHeaderNotes() {
+  return {
+    date: "The shift's date, as yyyy-mm-dd. Filled by the kiosk; change it only to fix a mistake.",
+    day: "The weekday of the Date. Filled by the kiosk.",
+    name: "The volunteer's first and last name, from Volunteer Profiles. Filled by the kiosk; change it only to fix a mistake.",
+    role: "Yours to fill: the volunteer's role or type. The kiosk never writes it; the Hours tab and the monthly report group by it.",
+    recordedIn:
+      "When the volunteer actually tapped Check In on the tablet. Blank on shifts added with Kiosk admin > Add a shift… or imported.",
+    statedIn:
+      "The arrival time the volunteer chose on the tablet, or the time an admin entered. The same as Recorded when they chose none. Hours count from this time.",
+    recordedOut:
+      "When the volunteer actually tapped Check Out. Blank when an admin or the nightly auto clock-out closed the shift.",
+    statedOut:
+      "The check-out time the volunteer chose, the time an admin entered, or the nightly auto clock-out's guess. Hours count to this time.",
+    recordedHours:
+      "Hours between the two Recorded times, to 2 decimals. For checking only: the reports don't count it.",
+    statedHours:
+      "Hours between the two Stated times, to 2 decimals. This is what the Hours tab, the monthly report and milestones count. If you fix a time by hand, fix this too.",
+    alerts:
+      "The kiosk's notes when something looks off: a time far from the tap, a long shift, an unreadable time, an auto clock-out. Each one is also on the Flags tab for review.",
+    activity:
+      "Yours to fill: what the volunteer did. The kiosk never writes it; the Hours tab and the monthly report group by it.",
+    notes:
+      "Notes typed in a Kiosk admin window are added here, after anything already in the cell. Otherwise yours.",
+    token:
+      "The volunteer's private token from Volunteer Profiles, which links the row to them. Keep this spreadsheet shared as narrowly as Volunteer Profiles.",
+    status: "open from check-in until check-out, then closed. Only closed rows count toward hours.",
+    inBy: "kiosk for a tablet check-in, an admin's initials for one added in the menu, import for past hours; blank means typed by hand.",
+    outBy:
+      "kiosk, an admin's initials, auto-close for the nightly auto clock-out, or import; blank means typed by hand.",
+    shiftId:
+      "The row's own ID. The Kiosk admin menu and the Flags tab find the row by it, so never change it or put it on another row.",
+  };
+}
+
+/** The hover note on each Flags header, keyed like flagHeaderNames(). */
+function flagHeaderNotes() {
+  return {
+    date: "The flagged shift's Date on the Log. Filled by the kiosk.",
+    name: "The flagged shift's volunteer. Filled by the kiosk.",
+    shiftId:
+      "The flagged shift's Shift ID: the sure way to find it on the Log (copy it, then Ctrl+F on the Log).",
+    reason:
+      "Why it was flagged, word for word as in the Log's Admin Alerts?, or a problem the morning Log check found.",
+    raisedAt: "When the flag was raised.",
+    reviewed:
+      "Tick it once someone has looked at the flag. Ticked flags leave the Flags: Unreviewed view and the weekly email's unreviewed count.",
+    reviewedBy: "Yours: your initials.",
+    notes: "Yours: what you found or did. Remove a shift and Restore a shift add a line here too.",
+    source:
+      "What raised it: kiosk check-in, kiosk check-out, auto-close (the nightly auto clock-out), import (Import past hours) or log check (the morning Log check).",
+    logRow:
+      "The Log row number when the flag was raised. A hint only: sorting the Log moves rows, so trust the Shift ID.",
+  };
+}
+
+/**
+ * Every header note text the kiosk wrote in an earlier release and no longer writes. When
+ * a note's wording changes, its old text goes here, so a cell still carrying it is known
+ * as the kiosk's and brought up to date; otherwise it would be taken for a staff note and
+ * never updated. The list only grows: a text stays while any live sheet may carry it.
+ */
+function headerNotePastTexts() {
+  return [];
+}
+
+/** Every text the kiosk counts as its own note: the current Log and Flags notes, then the past ones. */
+function headerNoteKioskTexts() {
+  const log = logHeaderNotes();
+  const flags = flagHeaderNotes();
+  return Object.keys(log)
+    .map((k) => log[k])
+    .concat(Object.keys(flags).map((k) => flags[k]))
+    .concat(headerNotePastTexts());
+}
+
+/**
+ * The notes for one tab's row 1, one per cell of headerRow, from each cell's existing note
+ * (existing[i], "" when there is none). names and notes are one tab's header names and
+ * notes, keyed alike; kioskTexts is headerNoteKioskTexts(). The kiosk writes a note only
+ * on a cell whose note is empty or is exactly one of its own texts, compared with ===,
+ * nothing trimmed or folded first; every other note is returned as it is, character for
+ * character, so words staff wrote are kept unless they are exactly a kiosk text.
+ * - A kiosk header (normalizeHeader match, every place it appears): its own current text
+ *   when the note is empty or a kiosk text; else the note as it is.
+ * - Any other cell: "" when the note is a kiosk text, which there describes the wrong
+ *   column; else the note as it is.
+ */
+function headerNotesRow(headerRow, names, notes, existing, kioskTexts) {
+  const byHeader = new Map();
+  Object.keys(names).forEach((k) => byHeader.set(normalizeHeader(names[k]), notes[k]));
+  const kiosk = new Set(kioskTexts || []);
+  const have = existing || [];
+  return (headerRow || []).map((cell, i) => {
+    const e = have[i] === null || have[i] === undefined ? "" : String(have[i]);
+    const h = normalizeHeader(cell);
+    if (h !== "" && byHeader.has(h)) return e === "" || kiosk.has(e) ? byHeader.get(h) : e;
+    return kiosk.has(e) ? "" : e;
+  });
+}
+
+/** The name the How to tab gets when the kiosk makes it. After that it is found by its mark. */
+function howToTabName() {
+  return "How to";
+}
+
+/** The developer metadata that marks the kiosk's How to tab, a key no other tab uses. */
+function howToTabMark() {
+  return { key: "kiosk-guide", value: "how-to" };
+}
+
+/** The description of the How to tab's one warning-only protection. */
+function howToProtectionDescription() {
+  return "How to: written by the kiosk and rewritten whenever the kiosk is updated. Changes made here won't last.";
+}
+
+/**
+ * One item line per header in names, in its order: the header with its line breaks and
+ * spaces made single spaces, ": ", then that header's note exactly as headerNotesRow
+ * writes it. The How to tab's column sections are built from these, so the tab and the
+ * hover notes can't drift apart.
+ */
+function howToColumnLines(names, notes) {
+  return Object.keys(names).map((k) => ({
+    kind: "item",
+    text: cellString(names[k]).replace(/\s+/g, " ") + ": " + notes[k],
+  }));
+}
+
+/**
+ * The How to tab's sections, as [{title, lines: [{kind, text}]}], kind "text", "step",
+ * "tip" or "item"; a step's text carries its own number. setupSheets rewrites the whole
+ * tab from this on every run, so a release that changes this text, or the Hours lines it
+ * copies from hoursHowTo() and hoursDateNote(), runs setupSheets after the push.
+ */
+function howToSections() {
+  const text = (t) => ({ kind: "text", text: t });
+  const step = (t) => ({ kind: "step", text: t });
+  const tip = (t) => ({ kind: "tip", text: t });
+  const item = (t) => ({ kind: "item", text: t });
+  return [
+    {
+      title: "Before you start",
+      lines: [
+        text(
+          "Use the Kiosk admin menu in a browser signed in to just one Google account, the shared kiosk account. With two accounts signed in, its windows can fail with a PERMISSION_DENIED error; a private (incognito) window signed in to the kiosk account fixes it.",
+        ),
+        text(
+          "Every save asks for your initials (1 to 5 letters), so the sheet shows who did what.",
+        ),
+        text("A menu window stops working after 30 minutes. Close it and open the menu again."),
+        text("If a save is refused, the window says why and keeps what you typed."),
+      ],
+    },
+    {
+      title: "Review flags",
+      lines: [
+        text(
+          "A flag is something the kiosk wants a person to look at: a time far from when the volunteer tapped, a very long shift, a shift the nightly auto clock-out closed, a name Import past hours couldn't match, or a problem the morning Log check found.",
+        ),
+        step(
+          "1. Open the Flags tab, then Data > Change view > Flags: Unreviewed. It shows the flags nobody has ticked yet, newest first.",
+        ),
+        step(
+          "2. Read the Reason. To find the shift on the Log, copy its Shift ID, open the Log, press Ctrl+F (Cmd+F on a Mac) and paste.",
+        ),
+        step("3. Fix the shift if it needs it (see below), or leave it if it's fine."),
+        step(
+          "4. Tick Reviewed, type your initials in Reviewed By, and add a note in Notes if there's something to say. The flag leaves the view.",
+        ),
+        tip(
+          "Fixing a shift doesn't tick its flag: tick it yourself. A flag the morning Log check raised (Source: log check) comes back if you delete its row while the problem is still on the Log; other flags don't come back.",
+        ),
+      ],
+    },
+    {
+      title: "Fix a sign-out (someone forgot to check out)",
+      lines: [
+        step("1. Kiosk admin > Fix a sign-out…"),
+        step("2. Pick the shift from the list of open shifts. Type part of the name to search."),
+        step(
+          "3. Enter the time they left (it goes on the shift's own date), a note if you like, and your initials. Press Save.",
+        ),
+        tip(
+          "If the check-in time itself is wrong or can't be read, fix it on the Log first, then come back here.",
+        ),
+      ],
+    },
+    {
+      title: "Add a shift (someone forgot to check in and out)",
+      lines: [
+        step("1. Kiosk admin > Add a shift…"),
+        step(
+          "2. Search for the volunteer. People who share a name show their Profiles row and the last four digits of their phone, so you can tell them apart.",
+        ),
+        step(
+          "3. Pick the date, enter the check-in and check-out times they gave you, a note if you like, and your initials. Press Save.",
+        ),
+        tip(
+          "If they still have an open shift that day, close it with Kiosk admin > Fix a sign-out… first.",
+        ),
+      ],
+    },
+    {
+      title: "Remove a shift (a row that shouldn't be there)",
+      lines: [
+        step("1. Kiosk admin > Remove a shift…"),
+        step("2. Paste the shift's Shift ID, or pick the volunteer and the date, then press Find."),
+        step("3. Pick the row and check its details show the right shift."),
+        step("4. Type a reason and your initials. Press Save."),
+        tip(
+          "The row moves to the Removed shifts tab, so nothing is lost, and its flags are ticked. A row with no Shift ID can't be removed this way: delete it on the Log by hand.",
+        ),
+      ],
+    },
+    {
+      title: "Restore a shift (put a removed row back)",
+      lines: [
+        step("1. Kiosk admin > Restore a shift…"),
+        step(
+          "2. Find the row in the list, newest first; type to search. Each row shows who removed it, when and why.",
+        ),
+        step("3. Type your initials and press Save. The row goes back at the bottom of the Log."),
+        tip(
+          "The Hours tab shows an added, fixed, removed or restored shift after its next refresh: about 5 AM, or now with Kiosk admin > Refresh Hours.",
+        ),
+      ],
+    },
+    {
+      title: "Make the monthly report",
+      lines: [
+        step("1. Kiosk admin > Monthly report…"),
+        step("2. Choose the month, type your initials and press Make report."),
+        step(
+          "3. The report goes on a new tab named for the month, such as Report 2026-11. The window then shows Download CSV and Download PDF links for that tab.",
+        ),
+        tip(
+          "The report's dollar figure uses Volunteer hour value on the Settings tab. Making the same month again makes a second tab; delete old report tabs when you're done with them.",
+        ),
+      ],
+    },
+    {
+      title: "The weekly flags email",
+      lines: [
+        text(
+          "Once a week the kiosk can email a short list of new and unreviewed flags. It sends only when there is something to report: a flag raised in the last 7 days, a flag nobody has ticked Reviewed, or a nightly auto clock-out that hasn't run for over 2 days or has never run.",
+        ),
+        step("1. On the Settings tab, type the addresses in the Value of Flags email to."),
+        step(
+          "2. Change Flags email day and Flags email hour (Central time) if Monday at 8 AM doesn't suit.",
+        ),
+        step(
+          '3. Set Flags email to On. The kiosk checks once an hour. If Flags email last run is blank, unreadable or older than the last time that day and hour came round, the next hourly check runs, whatever the day. After that a check runs once a week, at the first hourly check on or after that day and hour. A check with nothing to report sends nothing and writes "nothing to send" in Flags email last run.',
+        ),
+        tip(
+          "Changing the day or hour takes effect at once: if the new day and hour have come round since the last check, a check runs within the hour. To stop the email, set Flags email to Off. To check this week again, clear the Value of Flags email last run: the next hourly check runs, and sends if there is anything to report.",
+        ),
+      ],
+    },
+    {
+      title: "Change a setting",
+      lines: [
+        step(
+          "1. Open the Settings tab and find the setting in the Setting column. Its What it does column says what it does and what to type.",
+        ),
+        step(
+          "2. Type the new value in the Value column on that row. Change nothing else on the row.",
+        ),
+        step(
+          "3. The kiosk uses the new value the next time it needs it: the next tap, menu window or scheduled job.",
+        ),
+        tip(
+          'Rows whose What it does starts "Written by the kiosk" fill themselves in; leave them alone unless a how-to on this tab says otherwise.',
+        ),
+      ],
+    },
+    {
+      title: "Look up hours (the Hours tab)",
+      lines: [
+        text(
+          "The Hours tab shows hours, shifts and volunteers for any period you pick. It updates at about 5 AM each day; Kiosk admin > Refresh Hours updates it now.",
+        ),
+        step(
+          "1. Use the slicers above the tables (Year, Month, Role/Type, Activity, Volunteer) to pick a period. Every slicer filters every table.",
+        ),
+        step("2. " + hoursHowTo()),
+        step("3. " + hoursDateNote()),
+        step(
+          "4. To sort a table, pick an order in the Sort box above it. Everyone sees the new order.",
+        ),
+        step("5. Your slicer picks are yours alone: nobody else sees them."),
+        step(
+          "6. Double-click a number to see the shifts behind it on a new tab. Delete that tab when you're done.",
+        ),
+        tip(
+          "Don't use Set current filters as default in a slicer's menu: it changes the Hours tab for everyone.",
+        ),
+      ],
+    },
+    {
+      title: "Other menu items",
+      lines: [
+        text("Kiosk admin > Refresh Hours brings the Hours tab up to date now."),
+        text(
+          "Kiosk admin > Check the Log now runs the morning check for problems on the Log right away and says what it found. New problems go on the Flags tab.",
+        ),
+        text(
+          "Kiosk admin > Import past hours… brings shifts in from an old hours spreadsheet. Press Preview first; it never brings in the same shift twice.",
+        ),
+      ],
+    },
+    {
+      title: "Please don't",
+      lines: [
+        item(
+          "• Rename the Log, Flags, Settings or Hours tabs. The kiosk finds them and stops working without them.",
+        ),
+        item(
+          "• Rename or delete the Shifts tab. The nightly auto clock-out reads it to guess when people left, and without it the guesses get worse.",
+        ),
+        item(
+          "• Rename a column header on the Log or Flags tab, or give two columns the same header. Adding columns of your own is fine; if one of the kiosk's columns needs to move, tell the kiosk's developers so its colours and filter views follow.",
+        ),
+        item(
+          "• Change a name in the Setting column on the Settings tab. The kiosk would treat that setting as missing.",
+        ),
+        item(
+          "• Delete a shift with a Shift ID from the Log by hand. Use Kiosk admin > Remove a shift… so a copy is kept.",
+        ),
+        item(
+          "• Change a Shift ID, or put one row's Shift ID on another row. Copying one to search for it is fine.",
+        ),
+        item(
+          "• Type over or delete anything on the Hours tab other than its slicers and Sort boxes.",
+        ),
+        item("• Edit the Removed shifts or Import ledger tabs by hand. The kiosk relies on them."),
+      ],
+    },
+    {
+      title: "What the Log columns hold",
+      lines: [
+        text(
+          "Each Log and Flags column header has a hover note with the text below. Once you write your own note on a header, or change the kiosk's, the kiosk leaves it exactly as you left it, and its own text stays here. If you delete a note, the kiosk puts its own back the next time it is updated.",
+        ),
+      ].concat(howToColumnLines(logHeaderNames(), logHeaderNotes())),
+    },
+    {
+      title: "What the Flags columns hold",
+      lines: howToColumnLines(flagHeaderNames(), flagHeaderNotes()),
+    },
+  ];
+}
+
+/**
+ * The How to tab's rows, one per line of column A, as [{kind, text}]: the title, the two
+ * notes under it, then per section a blank row, its heading and its lines.
+ */
+function howToRows() {
+  const rows = [
+    { kind: "title", text: "How to: the volunteer kiosk sheet" },
+    {
+      kind: "note",
+      text: "Short how-tos for the jobs staff do in this spreadsheet. The kiosk writes this tab and rewrites it whenever the kiosk is updated, so changes made here won't last; to suggest a change, tell the kiosk's developers.",
+    },
+    {
+      kind: "note",
+      text: "Hover over a column header on the Log or the Flags tab to see what that column holds; the same notes are at the end of this tab. On the Settings tab, the What it does column explains each setting.",
+    },
+  ];
+  howToSections().forEach((section) => {
+    rows.push({ kind: "blank", text: "" });
+    rows.push({ kind: "heading", text: section.title });
+    section.lines.forEach((line) => rows.push({ kind: line.kind, text: line.text }));
+  });
+  return rows;
+}
+
+/**
+ * Each How to row kind's format, as {weight, size, colour, background, style} in the
+ * values Sheets' setFontWeights, setFontSizes, setFontColors, setBackgrounds and
+ * setFontStyles take.
+ */
+function howToStyles() {
+  const P = lookPalette();
+  const black = "#000000";
+  const look = (weight, size, colour, background, style) => ({
+    weight,
+    size,
+    colour,
+    background,
+    style,
+  });
+  return {
+    title: look("bold", lookTitleFontSize(), P.navy, P.white, "normal"),
+    note: look("normal", 10, P.grey, P.white, "italic"),
+    heading: look("bold", 11, P.navy, P.section, "normal"),
+    text: look("normal", 10, black, P.white, "normal"),
+    step: look("normal", 10, black, P.white, "normal"),
+    tip: look("normal", 10, P.grey, P.white, "italic"),
+    item: look("normal", 10, black, P.white, "normal"),
+    blank: look("normal", 10, black, P.white, "normal"),
+  };
 }
