@@ -59,7 +59,7 @@
   min-height: 100dvh;
   height: 100dvh;
   position: relative;
-  overflow: none;
+  overflow: visible;
   overscroll-behavior: none;
   isolation: isolate;
   background: #fcf4e5;
@@ -1543,6 +1543,16 @@
   }
   .success-content > .button {
     margin-top: 14px;
+  }
+}
+
+/* While a name is typed on a landscape tablet, the header and greeting give up their room so
+   the results sit above the on-screen keyboard. Layout only, no scrolling. Clearing the box
+   or leaving the screen brings them back. */
+@media (orientation: landscape) and (max-height: 900px) {
+  .app-shell.has-query .header,
+  .app-shell.has-query .name-entry-hero {
+    display: none;
   }
 }
 

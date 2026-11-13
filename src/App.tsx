@@ -324,10 +324,13 @@ function Welcome({
   volunteers,
   listState,
   onSelect,
+  onHasQuery,
 }: {
   volunteers: Volunteer[];
   listState: ListState;
   onSelect: (v: Volunteer) => void;
+  // Told whether the name box holds any text, and false when the screen closes.
+  onHasQuery: (hasQuery: boolean) => void;
 }) {
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -342,11 +345,8 @@ function Welcome({
   const normalizedQuery = query.trim().toLowerCase();
   const results = useMemo(() => searchNames(volunteers, query), [query, volunteers]);
 
-  const cardRef = useRef<HTMLElement>(null);
-  // Set once the name box gets focus: room below the card, so the page can scroll the box
-  // and its results above the tablet keyboard. Never unset, so a tap on a result can't
-  // shift the layout under the finger.
-  const [typing, setTyping] = useState(false);
+  useEffect(() => onHasQuery(query !== ""), [query]);
+  useEffect(() => () => onHasQuery(false), []);
 
   const updateQuery = (next: string) => {
     setQuery(next);
@@ -354,7 +354,7 @@ function Welcome({
   };
 
   return (
-    <main className={`welcome name-entry screen-enter${typing ? " is-typing" : ""}`}>
+    <main className="welcome name-entry screen-enter">
       <section className="hero name-entry-hero">
         <div className="spark spark-hero">
           <i />
@@ -368,7 +368,7 @@ function Welcome({
         <p>Tap the box below and type your name.</p>
       </section>
 
-      <section className="name-search-card" aria-label="Find your volunteer profile" ref={cardRef}>
+      <section className="name-search-card" aria-label="Find your volunteer profile">
         <label className="search-field name-search-field">
           <Icon name="search" size={29} />
           <span className="sr-only">Type your first and last name</span>
@@ -377,7 +377,10 @@ function Welcome({
             autoFocus
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            onFocus={() => setTyping(true)}
+            // The tablet's Search key closes the keyboard, so results under it show.
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
             placeholder="Enter your name"
             maxLength={60}
             autoComplete="off"
@@ -1144,6 +1147,9 @@ export default function App() {
   const listRequested = useRef(0);
   const listApplied = useRef(0);
   const [messageIndex, setMessageIndex] = useState(0);
+  // The welcome screen's name box holds text: on a landscape tablet the header and greeting
+  // hide so the results sit above the keyboard (index.css).
+  const [hasQuery, setHasQuery] = useState(false);
   const [screen, setScreen] = useState<Screen>("welcome");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // The setup screen's code check only. A check-in or check-out is a save, below.
@@ -1514,7 +1520,7 @@ export default function App() {
   };
 
   return (
-    <div className={`app-shell screen-${code ? screen : "welcome"}`}>
+    <div className={`app-shell screen-${code ? screen : "welcome"}${hasQuery ? " has-query" : ""}`}>
       {!code && (
         <>
           <Header />
@@ -1524,7 +1530,12 @@ export default function App() {
       {code && screen === "welcome" && (
         <>
           <Header />
-          <Welcome volunteers={volunteers} listState={listState} onSelect={select} />
+          <Welcome
+            volunteers={volunteers}
+            listState={listState}
+            onSelect={select}
+            onHasQuery={setHasQuery}
+          />
           <CheckedInSidebar volunteers={volunteers} onSelect={select} />
         </>
       )}
