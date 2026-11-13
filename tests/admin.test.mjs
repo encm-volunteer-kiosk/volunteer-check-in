@@ -615,10 +615,20 @@ test("the menu items that open no dialog read nothing outside the spreadsheet's 
   }
 });
 
-test("onOpen only adds the menu, and its items name the openers and Refresh Hours", () => {
+test("onOpen adds the menu first, and its items name the openers and Refresh Hours", () => {
   const { ctx, calls, menu } = server({ active: "" });
+  const logs = [];
+  ctx.console.log = (...args) => logs.push(args.join(" "));
+  // getUi comes first and the menu is whole before anything else. The Hours note after it
+  // (tests/reports-sheet.test.mjs) finds no Hours tabs on this stand-in and fails; the
+  // failure is logged and costs nothing.
   assert.equal(ctx.onOpen({}), undefined);
-  assert.deepEqual(onlyFrom(calls, ["SpreadsheetApp.getUi", "menu."]), []);
+  assert.equal(calls[0], "SpreadsheetApp.getUi");
+  const added = calls.indexOf("menu.addToUi");
+  assert.deepEqual(onlyFrom(calls.slice(0, added + 1), ["SpreadsheetApp.getUi", "menu."]), []);
+  assert.deepEqual(calls.slice(added + 1), ["SpreadsheetApp.getActiveSpreadsheet"]);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /^Hours note \(open\) failed: /);
   assert.deepEqual(menu, [
     "Kiosk admin",
     ["Add a shift…", "openAddShiftDialog"],

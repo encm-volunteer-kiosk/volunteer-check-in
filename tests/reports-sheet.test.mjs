@@ -505,7 +505,14 @@ function server(logRows, opts = {}) {
       getActiveSpreadsheet: () => ss,
       getUi: () => {
         if (!opts.ui) throw new Error("Cannot call SpreadsheetApp.getUi() from this context.");
-        return { alert: (text) => (rec({ op: "alert", value: text }), alerts.push(text)) };
+        const menu = {
+          addItem: () => menu,
+          addToUi: () => rec({ op: "menu" }),
+        };
+        return {
+          alert: (text) => (rec({ op: "alert", value: text }), alerts.push(text)),
+          createMenu: () => menu,
+        };
       },
       ProtectionType: { RANGE: "RANGE", SHEET: "SHEET" },
       BorderStyle: { SOLID: "SOLID" },
@@ -1056,7 +1063,7 @@ function checkOneHold(calls, label) {
   const by = calls[releases[0] - 1];
   assert.equal(by.op, "release-by", label);
   assert.ok(
-    ["setupReports", "refreshHoursNow", "runHoursRefresh", "open"].includes(by.value),
+    ["setupReports", "refreshHoursNow", "runHoursRefresh", "open", "onOpen"].includes(by.value),
     label + ": released by " + by.value,
   );
   calls.forEach((c, i) => {
@@ -1104,7 +1111,11 @@ test("setupReports builds Hours and Hours data, marked, fills them, and then del
   assert.equal(hours.get(1, 1), "Volunteer hours");
   assert.equal(hours.get(1, 2), "As of 2026-11-13 9:14 AM, refreshed by setupReports.");
   assert.equal(hours.get(3, 1), table.countsLine);
-  assert.match(hours.get(2, 1), /the last refresh from the menu, at night or by setupReports\./);
+  // Opening the sheet only notes that it didn't refresh, so row 2 doesn't name it.
+  assert.match(
+    hours.get(2, 1),
+    /^The tables show the Log as of the time in B1\. Newer taps show at the next refresh: from Kiosk admin > Refresh Hours, and each night\./,
+  );
   assert.equal(hours.frozenRows, 1);
   assert.equal(hours.slicers.length, 5);
   assert.equal(hours.pivots.length, 3);
@@ -1177,6 +1188,94 @@ test("a refresh that grows Hours data sets the new rows' formats one range per c
     ["G" + from + ":G" + max, "0"],
     ["H" + from + ":H" + max, "0.00"],
     ["I" + from + ":J" + max, "@"],
+  ]);
+});
+
+/** A built server whose Log readers fail the test: onOpen reads no Log. */
+function opened(opts = {}) {
+  const s = built(opts);
+  s.o.at = NOW + 60000;
+  const noRead = () => assert.fail("onOpen read the Log");
+  s.ctx.readHoursTable_ = noRead;
+  s.ctx.readReportLog_ = noRead;
+  s.calls.length = 0;
+  s.logs.length = 0;
+  return s;
+}
+
+test("onOpen adds the menu, then in one hold writes only N1's note-only note and B1", () => {
+  const s = opened();
+  const W = NOW + 60000;
+  const before = cellsOf(s);
+  s.ctx.onOpen({});
+  assert.equal(s.calls[0].op, "menu");
+  checkOneHold(s.calls, "onOpen");
+  assert.equal(s.calls.find((c) => c.op === "docLock.tryLock").value, 2000);
+  assert.deepEqual(hoursOps(s.calls), [
+    { op: "set", cell: "N1", value: "open-skipped|open|" + W + "|" + W + "|note-only" },
+    { op: "render" },
+    { op: "flush" },
+  ]);
+  const after = cellsOf(s);
+  assert.deepEqual(
+    [after[0], after[1], after[3], after[4], after[5]],
+    [before[0], before[1], before[3], before[4], before[5]],
+  );
+  const b1 = s.sheet("Hours").get(1, 2);
+  assert.equal(
+    b1,
+    "As of 2026-11-13 9:14 AM. Not refreshed on open at 2026-11-13 9:15 AM: use Kiosk admin > Refresh Hours for newer taps.",
+  );
+  assert.deepEqual(s.logs, [
+    "Hours refresh (open): note-only; read -, Logic.js -, hold 0 ms. B1: " + b1,
+  ]);
+});
+
+test("onOpen settles a write left behind before its note", () => {
+  const s = opened();
+  s.sheet("Hours data")
+    .getRange("M1")
+    .setValue("writing " + (NOW - 5));
+  s.calls.length = 0;
+  s.ctx.onOpen({});
+  assert.deepEqual(
+    hoursOps(s.calls).map((o) => o.op + (o.cell ? " " + o.cell + "=" + o.value : "")),
+    [
+      "set M1=stopped " + (NOW - 5),
+      "set N1=open-skipped|open|" + (NOW + 60000) + "|" + (NOW + 60000) + "|note-only",
+      "render",
+      "flush",
+    ],
+  );
+});
+
+test("onOpen with the document lock busy writes nothing on Hours and logs it", () => {
+  const s = opened();
+  s.o.docBusy = true;
+  s.ctx.onOpen({});
+  assert.equal(s.calls[0].op, "menu");
+  assert.ok(!s.calls.some(isHoursWrite));
+  assert.ok(!s.calls.some((c) => c.op === "docLock.release"));
+  assert.deepEqual(s.logs, ["Hours refresh (open): busy; read -, Logic.js -, hold -."]);
+});
+
+test("a throw in onOpen's note never costs the menu, and the lock is released", () => {
+  const s = opened();
+  FAIL = (c) => c.sheet === "Hours data" && c.op === "setValue" && c.a1 === "N1";
+  assert.equal(s.ctx.onOpen({}), undefined);
+  assert.equal(s.calls[0].op, "menu");
+  checkOneHold(s.calls, "onOpen throws");
+  assert.equal(s.logs.length, 1);
+  assert.match(s.logs[0], /^Hours note \(open\) failed: injected/);
+  // No Hours tabs at all: the menu, a log line, no lock asked for.
+  const bare = server(LOG, { now: NOW, ui: true });
+  bare.ctx.onOpen({});
+  assert.deepEqual(
+    bare.calls.map((c) => c.op),
+    ["menu", "release-by"],
+  );
+  assert.deepEqual(bare.logs, [
+    "Hours refresh (open): no-tabs; read -, Logic.js -, hold -. Run setupReports.",
   ]);
 });
 

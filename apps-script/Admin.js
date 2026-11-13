@@ -20,14 +20,21 @@
  *      takes the key first and refuses with ADMIN_EXPIRED when the cache doesn't hold it.
  *      Check 1 alone would let the script owner's own browser through the web app; the
  *      key closes that.
- * onOpen only adds the menu: it reads and writes nothing, and runs as a simple trigger,
- * where requireEditorRun_ can't pass.
+ * onOpen runs as a simple trigger, where requireEditorRun_ can't pass. It calls getUi()
+ * first and adds the menu before anything else: getUi() throws outside the spreadsheet's
+ * own UI, so a call from the web app stops there, and a failure in what follows never costs
+ * the menu. Then, in a try/catch, it notes on the Hours tab that opening didn't refresh it
+ * (noteHoursOnOpen_ in Reports.js: one hold of the document lock, N1 and B1 only, no Log
+ * read), and releases the lock in its own finally.
  *
  * The rules themselves are in Logic.js (decideAddShift, decideFixSignOut); this file reads
  * and writes the Log through Sheets.js, under the kiosk's lock.
  */
 
-/** Adds the Kiosk admin menu when the spreadsheet opens. From the web app it throws at getUi. */
+/**
+ * Adds the Kiosk admin menu when the spreadsheet opens, then notes on the Hours tab that
+ * opening didn't refresh it. From the web app it throws at getUi.
+ */
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("Kiosk admin")
@@ -37,6 +44,14 @@ function onOpen() {
     .addItem("Import past hours…", "openImportDialog")
     .addItem("Refresh Hours", "refreshHoursNow")
     .addToUi();
+  const hold = hoursHold_();
+  try {
+    noteHoursOnOpen_(hold);
+  } catch (err) {
+    console.log("Hours note (open) failed: " + hoursMessage_(err));
+  } finally {
+    releaseHoursLock_(hold);
+  }
 }
 
 function openAddShiftDialog() {

@@ -81,14 +81,34 @@ function refreshHoursNow() {
 }
 
 /**
- * The refresh on open, for onOpen to call once the timing probe has picked the path that
- * refreshes. openedAtMs is when onOpen began. Logs one line with the read, the work in
- * Logic.js and the hold timed apart. onOpen makes the hold and releases it in its own
- * finally:
- *   const hold = hoursHold_();
- *   try { refreshHoursOnOpen_(hold, openedAtMs); } catch (err) { console.log(...); }
- *   finally { releaseHoursLock_(hold); }
- * Nothing calls it yet: onOpen only adds the menu.
+ * What opening the sheet does to Hours (onOpen): it doesn't refresh, it notes that it
+ * didn't. Finds the tabs by their marks; takes the document lock (2 s; busy: log and
+ * stop, nothing written); settles; sets N1 to the open's note-only note; renders B1 and
+ * flushes. It reads no Log, writes no table, and logs one line. onOpen makes the hold and
+ * releases it in its own finally. A full refresh on open was timed on a 20,000-row Log
+ * at 19-23 s before any table write, too slow for onOpen's 30 s, so opening only notes.
+ */
+function noteHoursOnOpen_(hold) {
+  const tabs = findHoursTabs_(SpreadsheetApp.getActiveSpreadsheet());
+  let result;
+  if (!tabs.hours || !tabs.data) {
+    result = { kind: "no-tabs", message: "Run setupReports." };
+  } else if (!withHoursLock_(hold, hoursLockWait_("open"))) {
+    result = { kind: "busy" };
+  } else {
+    const run = hoursRun_("open", Date.now());
+    run.heldAt = Date.now();
+    const kind = hoursHoldStep_(tabs, run, { kind: "note-only" }, null);
+    result = { kind, line: run.line, timing: { holdMs: Date.now() - run.heldAt } };
+  }
+  console.log(hoursRunLog_("open", result));
+  return result;
+}
+
+/**
+ * A full refresh on open, not wired: onOpen only notes (noteHoursOnOpen_). openedAtMs is
+ * when onOpen began. Logs one line with the read, the work in Logic.js and the hold timed
+ * apart. The caller makes the hold and releases it in its own finally.
  */
 function refreshHoursOnOpen_(hold, openedAtMs) {
   const result = refreshHours_("open", hold, openedAtMs);
@@ -105,12 +125,12 @@ function hoursLockWait_(cause) {
 }
 
 /**
- * What opening the sheet does to Hours, for row 2's text (hoursUsageText): "none" while
- * onOpen only adds the menu. Change it with onOpen: "refresh" when it refreshes, "note"
- * when it only notes that it didn't.
+ * What opening the sheet does to Hours, for row 2's text (hoursUsageText): "note", since
+ * onOpen only notes that it didn't refresh (noteHoursOnOpen_). Change it with onOpen:
+ * "refresh" when it refreshes, "none" when it writes nothing.
  */
 function hoursOpenPath_() {
-  return "none";
+  return "note";
 }
 
 /** One execution's hold on the document lock: asked for at most once (withHoursLock_). */
