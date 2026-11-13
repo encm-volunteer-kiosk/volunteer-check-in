@@ -8,10 +8,12 @@ so hours can be credited to each volunteer and reported to grantmakers.
 ## How it works
 
 - **Kiosk page**: a React app (`src/`, from Josh's Figma Make design) with one search
-  box that uses the tablet's own keyboard. It is built into a single HTML file that the
-  Apps Script web app serves. There is no name grid and no sign-up path, because every
-  volunteer is registered before they volunteer. The first time, a board member types
-  the kiosk access code from the Settings tab; the tablet remembers it.
+  box that uses the tablet's own keyboard. The search ignores accents, apostrophes,
+  periods, hyphens, capitals and extra spaces, so `jose` finds José and `obrien` finds
+  O'Brien. It is built into a single HTML file that the Apps Script web app serves.
+  There is no name grid and no sign-up path, because every volunteer is registered
+  before they volunteer. The first time, a board member types the kiosk access code
+  from the Settings tab; the tablet remembers it.
 - **Server**: Apps Script (`apps-script/`) bound to a Check-In Log spreadsheet with Log
   and Settings tabs. Each shift is one Log row. The Log uses ENCM's own column names from
   their "2026-11 Log" sketch, then four columns of the kiosk's: Status, who entered the
@@ -198,6 +200,10 @@ letters, with spaces and dots dropped, stored in capitals (`j.p.` is stored as `
 initials go in Check-In Entered By and Check-Out Entered By, since everyone at ENCM signs
 in as the same account. A window stops working after 30 minutes; close it and open the
 menu again. If a save is refused, the window says why and keeps what was typed.
+
+The "type to search" box in Add a shift and Fix a sign-out ignores accents, apostrophes,
+periods, hyphens, capitals and extra spaces, the same as the kiosk's name box. Every word
+typed must appear in an entry, in any order.
 
 ### Add a shift
 
