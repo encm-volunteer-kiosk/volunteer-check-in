@@ -21,6 +21,7 @@ import {
   type ListStorage,
 } from "./listStore";
 import { searchNames } from "./nameSearch";
+import { QuickPicks } from "./QuickPicks";
 import {
   abandonSave,
   autoHomeMs,
@@ -203,120 +204,6 @@ function VolunteerCard({ volunteer, onClick }: { volunteer: Volunteer; onClick: 
         )}
       </span>
     </button>
-  );
-}
-
-const minuteOptions = [0, 15, 30, 45];
-
-function TimeKeyboard({
-  value,
-  minMinutes = 0,
-  label,
-  confirmText,
-  saving,
-  onChange,
-  onConfirm,
-  onBack,
-}: {
-  value: string;
-  // The earliest time that can be chosen, in Central minutes since midnight (fractions
-  // allowed): 0 for arrival, the stated arrival for check-out.
-  minMinutes?: number;
-  label: string;
-  confirmText: string;
-  saving: boolean;
-  onChange: (time: string) => void;
-  onConfirm: () => void;
-  onBack: () => void;
-}) {
-  const [hourValue, minuteValue] = value.split(":").map(Number);
-  const hour12 = hourValue % 12 || 12;
-  const period = hourValue >= 12 ? "PM" : "AM";
-
-  // Minutes since midnight, Central. The choices are the quarter hours from the lower
-  // bound up to now; nothing later than now can be chosen.
-  const latest = floorQuarter(minutesOfDay(centralTimeValue()));
-  const earliest = Math.ceil(minMinutes / 15) * 15;
-  const toMinutes = (hour: number, minute: number, nextPeriod: "AM" | "PM") =>
-    ((hour % 12) + (nextPeriod === "PM" ? 12 : 0)) * 60 + minute;
-  const inRange = (total: number) => total >= earliest && total <= latest;
-  const hourInRange = (hour: number, nextPeriod: "AM" | "PM") =>
-    minuteOptions.some((minute) => inRange(toMinutes(hour, minute, nextPeriod)));
-  const periodInRange = (nextPeriod: "AM" | "PM") => {
-    const first = nextPeriod === "PM" ? 12 * 60 : 0;
-    return Math.max(earliest, first) <= Math.min(latest, first + 11 * 60 + 45);
-  };
-
-  const updateTime = (hour: number, minute: number, nextPeriod: "AM" | "PM") => {
-    // A new hour or period keeps the chosen minutes when they are in range; otherwise it
-    // takes the nearest quarter hour that is.
-    const total = Math.min(Math.max(toMinutes(hour, minute, nextPeriod), earliest), latest);
-    onChange(
-      `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`,
-    );
-  };
-
-  return (
-    <div className="app-keyboard time-keyboard" aria-label={label}>
-      <div className="keyboard-row" aria-label="Choose an hour">
-        {Array.from({ length: 12 }, (_, index) => index + 1).map((hour) => (
-          <button
-            type="button"
-            className={`time-key${hour === hour12 ? " is-selected" : ""}`}
-            key={hour}
-            onClick={() => updateTime(hour, minuteValue, period)}
-            disabled={!hourInRange(hour, period)}
-            aria-label={`${hour} o'clock`}
-            aria-pressed={hour === hour12}
-          >
-            {hour}
-          </button>
-        ))}
-      </div>
-      <div className="keyboard-row" aria-label="Choose minutes">
-        {minuteOptions.map((minute) => (
-          <button
-            type="button"
-            className={`time-key${minute === minuteValue ? " is-selected" : ""}`}
-            key={minute}
-            onClick={() => updateTime(hour12, minute, period)}
-            disabled={!inRange(toMinutes(hour12, minute, period))}
-            aria-label={`${minute} minutes past the hour`}
-            aria-pressed={minute === minuteValue}
-          >
-            :{String(minute).padStart(2, "0")}
-          </button>
-        ))}
-      </div>
-      <div className="keyboard-row time-action-row">
-        {(["AM", "PM"] as const).map((option) => (
-          <button
-            type="button"
-            className={`keyboard-action period-key${option === period ? " is-selected" : ""}`}
-            key={option}
-            onClick={() => updateTime(hour12, minuteValue, option)}
-            disabled={!periodInRange(option)}
-            aria-pressed={option === period}
-          >
-            {option}
-          </button>
-        ))}
-        <div className="button-stack keyboard-button-stack">
-          <Button variant="secondary" onClick={onBack} disabled={saving}>
-            Go back
-          </Button>
-          <Button onClick={onConfirm} disabled={saving}>
-            {saving ? (
-              <>
-                <span className="spinner" /> Saving…
-              </>
-            ) : (
-              confirmText
-            )}
-          </Button>
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -624,12 +511,7 @@ function Confirmation({
                   <Icon name="clock" size={21} />
                   {checkout ? "What time did you leave?" : "What time did you arrive?"}
                 </span>
-                <output aria-live="polite">{formatTimeValue(time!)}</output>
-                <small>
-                  {checkout
-                    ? "Tap to adjust your check-out time."
-                    : "Tap to adjust your arrival time."}
-                </small>
+                <small>Tap a time below, or use −15 and +15 to adjust it.</small>
               </div>
             </div>
           )}
@@ -669,10 +551,10 @@ function Confirmation({
         </section>
       </main>
       {showTimeKeyboard && (
-        <TimeKeyboard
+        <QuickPicks
           value={time!}
           minMinutes={minMinutes}
-          label={checkout ? "Check-out time keyboard" : "Arrival time keyboard"}
+          label={checkout ? "Check-out time picker" : "Arrival time picker"}
           confirmText={checkout ? "Check Out" : "Check In"}
           saving={saving}
           onChange={onTimeChange!}
@@ -1037,11 +919,6 @@ function checkOutLowerBound(volunteer: Volunteer, volunteers: Volunteer[]) {
   if (checkedIn.some((v) => !v.currentCheckIn)) return null;
   const arrivals = checkedIn.map((v) => Date.parse(v.currentCheckIn!));
   return arrivals.length ? Math.min(...arrivals) : null;
-}
-
-function formatTimeValue(value: string) {
-  const [hour, minute] = value.split(":").map(Number);
-  return `${hour % 12 || 12}:${String(minute).padStart(2, "0")} ${hour >= 12 ? "PM" : "AM"}`;
 }
 
 function centralTimeToIso(time: string) {
