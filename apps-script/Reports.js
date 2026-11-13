@@ -257,7 +257,7 @@ function setupHoursTabs_(ss, found, hold) {
     layoutHoursData_(data, run.rows);
 
     if (!tabs.hours) tabs.hours = insertHoursTab_(ss, hoursTabName(), hoursTabMark().hours);
-    layoutHoursTab_(ss, tabs);
+    layoutHoursTab_(ss, tabs, run.rows);
     hoursHoldStep_(tabs, run, { kind: "setup-built" }, null);
     hoursHoldStep_(tabs, run, { kind: "read" }, read);
 
@@ -318,11 +318,13 @@ function formatHoursRows_(data, from, to) {
 
 /**
  * The Hours tab laid out from hoursTabPlan: every slicer, pivot, conditional format rule
- * and merge removed and the tab cleared whole; A1's title, then B1 rendered, then rows 2
+ * and merge removed and the tab cleared whole; rows for the Shifts pivot (growHoursTab_)
+ * over rows rows, the table setupReports is about to write, or over what Hours data holds
+ * now, whichever is more; A1's title, then B1 rendered, then rows 2
  * and 3; then the formats, widths, rules, pivots and slicers in one batchUpdate through
  * the advanced Sheets service; row 1 frozen; the tab colour.
  */
-function layoutHoursTab_(ss, tabs) {
+function layoutHoursTab_(ss, tabs, rows) {
   const hours = tabs.hours;
   hours.getSlicers().forEach((s) => s.remove());
   hours.getPivotTables().forEach((p) => p.remove());
@@ -332,6 +334,9 @@ function layoutHoursTab_(ss, tabs) {
   if (hours.getMaxColumns() < 16) {
     hours.insertColumnsAfter(hours.getMaxColumns(), 16 - hours.getMaxColumns());
   }
+  // The pivots below list whatever Hours data holds as soon as they exist, and then the
+  // table of rows rows lands, so the tab gets rows for the larger before they are made.
+  growHoursTab_(hours, Math.max(rows, tabs.data.getLastRow() - 1));
   const plan = hoursTabPlan(hours.getSheetId(), tabs.data.getSheetId(), hoursOpenPath_());
   const [title, ...rest] = plan.cells;
   hours.getRange(title.a1).setValue(title.value);
@@ -340,6 +345,17 @@ function layoutHoursTab_(ss, tabs) {
   Sheets.Spreadsheets.batchUpdate({ requests: plan.requests }, ss.getId());
   hours.setFrozenRows(plan.frozenRows);
   hours.setTabColor(plan.tabColor);
+}
+
+/**
+ * Gives the Hours tab hoursTabRows(rows) rows, in one call, when it has fewer, so the
+ * Shifts pivot (one line per shift) never has to add rows to its tab while a table lands.
+ * Never deletes a row.
+ */
+function growHoursTab_(hours, rows) {
+  const max = hours.getMaxRows();
+  const need = hoursTabRows(rows);
+  if (max < need) hours.insertRowsAfter(max, need - max);
 }
 
 /**
@@ -484,6 +500,7 @@ function writeHours_(tabs, steps, run, read) {
         break;
       case "grow": {
         run.writeStart = Date.now();
+        growHoursTab_(tabs.hours, rows.length);
         const max = data.getMaxRows();
         const need = rows.length + 1;
         if (max < need) {

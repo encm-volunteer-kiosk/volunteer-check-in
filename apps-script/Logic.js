@@ -2783,6 +2783,23 @@ function hoursSourceRange(dataSheetId) {
   return { sheetId: dataSheetId, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 10 };
 }
 
+/** The row the Hours tab's pivots start on (A8, E8, K8). */
+function hoursPivotRow() {
+  return 8;
+}
+
+/**
+ * The rows the Hours tab needs for a table of rows rows: the Shifts pivot at K8 puts one
+ * line per shift below its header, so its last line is about hoursPivotRow() + rows, and
+ * 200 spare rows cover its Grand Total and a refresh that adds a few rows. A pivot that
+ * must add rows to its tab while a large setValues lands fails ("Service Spreadsheets
+ * failed while accessing document"), so the tab gets these rows, in one call, before any
+ * table write. The tab is never made smaller.
+ */
+function hoursTabRows(rows) {
+  return hoursPivotRow() + Math.max(0, rows) + 200;
+}
+
 /** What Start holds when a row's start can't be read (an imported row has none). */
 function hoursNoTime() {
   return "no time";
@@ -3212,10 +3229,12 @@ function hoursBudget(sinceOpenMs, state, rowsNow) {
  *
  * Each step is {op: "set", cell, value}, {op: "set", cell: "O1", timing: true} (the
  * caller writes hoursTimingCell of its measured times), {op: "render"} (B1 from the cells
- * read back), {op: "flush"}, or a table change: "grow" (add rows if the tab is short, with
- * formats on the new rows), "values" (one setValues of the rows), "clear" (A2:J2, only
- * when there are no rows), "trim" (delete the rows below the last one kept), "counts"
- * (row 3 on the Hours tab).
+ * read back), {op: "flush"}, or a table change: "grow" (add rows to the Hours tab, in one
+ * call, when it has fewer than hoursTabRows of the rows, so the Shifts pivot never grows
+ * its tab during the write; then add rows to Hours data if it is short, with formats on
+ * the new rows; neither tab is made smaller), "values" (one setValues of the rows),
+ * "clear" (A2:J2, only when there are no rows), "trim" (delete Hours data's rows below the
+ * last one kept), "counts" (row 3 on the Hours tab).
  *
  * The rule, clause by clause:
  * - Settle on entry: unless held, the first write is M1 "writing t" to "stopped t", or an
@@ -3573,7 +3592,7 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath) {
   const pivots = [byVolunteer, byMonth, shifts].map((pivotTable, i) => ({
     updateCells: {
       rows: [{ values: [{ pivotTable }] }],
-      start: { sheetId: id, rowIndex: 7, columnIndex: pivotsAt[i][1] },
+      start: { sheetId: id, rowIndex: hoursPivotRow() - 1, columnIndex: pivotsAt[i][1] },
       fields: "pivotTable",
     },
   }));

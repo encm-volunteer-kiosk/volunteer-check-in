@@ -1015,6 +1015,29 @@ function built(opts = {}, log = LOG) {
   return s;
 }
 
+/** n closed shifts of n new volunteers, in October 2026. */
+function manyShifts(n) {
+  return Array.from({ length: n }, (_, i) =>
+    shift(
+      "2026-10-" + String(1 + (i % 27)).padStart(2, "0"),
+      "Vol " + i,
+      "t" + i,
+      "09:00",
+      "10:00",
+      1,
+    ),
+  );
+}
+
+/** Appends manyShifts(n) to a server's Log tab, growing the tab as needed. */
+function addShifts(s, n) {
+  const log = s.sheet("Log");
+  let last = 1;
+  for (const k of log.cells.keys()) last = Math.max(last, Number(k.split(":")[0]));
+  if (log.maxRows < last + n) log.insertRowsAfter(log.maxRows, last + n - log.maxRows);
+  manyShifts(n).forEach((r, i) => r.forEach((v, j) => log.set(last + 1 + i, j + 1, v)));
+}
+
 /** Each entry point the refresh has, run once. */
 const ENTRY = {
   menu: (s) => s.ctx.refreshHoursNow(),
@@ -1033,16 +1056,19 @@ const ENTRY = {
 function hoursOps(calls) {
   const out = [];
   for (const c of calls) {
+    const last = out[out.length - 1];
     if (c.op === "flush") out.push({ op: "flush" });
-    else if (c.sheet === "Hours" && c.op === "setValue" && c.a1 === "B1")
+    else if (isHoursWrite(c) && c.op === "insertRowsAfter") {
+      // The grow step adds rows to the Hours tab, then to Hours data: one step.
+      if (!last || last.op !== "grow") out.push({ op: "grow" });
+    } else if (c.sheet === "Hours" && c.op === "setValue" && c.a1 === "B1")
       out.push({ op: "render" });
     else if (c.sheet === "Hours" && c.op === "setValue" && c.a1 === "A3")
       out.push({ op: "counts" });
     else if (c.sheet === "Hours data") {
       if (c.op === "setValue" && STATE.includes(c.a1)) {
         out.push({ op: "set", cell: c.a1, value: c.value });
-      } else if (c.op === "insertRowsAfter") out.push({ op: "grow" });
-      else if (c.op === "setValues" && c.a1.startsWith("A2:")) out.push({ op: "values" });
+      } else if (c.op === "setValues" && c.a1.startsWith("A2:")) out.push({ op: "values" });
       else if (c.op === "clearContent" && c.a1 === "A2:J2") out.push({ op: "clear" });
       else if (c.op === "deleteRows") out.push({ op: "trim" });
       else if (c.op !== "setNumberFormat") out.push({ op: "unexpected " + c.op });
@@ -1189,6 +1215,96 @@ test("a refresh that grows Hours data sets the new rows' formats one range per c
     ["H" + from + ":H" + max, "0.00"],
     ["I" + from + ":J" + max, "@"],
   ]);
+});
+
+test("setupReports' first fill gives a new 1,000-row Hours tab rows for the Shifts pivot before the pivots exist and before the table lands", () => {
+  const s = server(LOG.concat(manyShifts(1200)), { now: NOW });
+  s.calls.length = 0;
+  s.ctx.setupReports();
+  const rows = s.ctx.readHoursTable_().table.rows.length;
+  const need = s.ctx.hoursTabRows(rows);
+  // Row 8, where the pivots start, plus one line per shift, plus 200 spare.
+  assert.equal(need, 8 + rows + 200);
+  assert.ok(rows > 1000);
+  const hoursGrows = s.calls.filter((c) => c.sheet === "Hours" && c.op === "insertRowsAfter");
+  assert.deepEqual(
+    hoursGrows.map((c) => c.value),
+    [[1000, need - 1000]],
+  );
+  const at = (pred) => s.calls.findIndex(pred);
+  const building = at(
+    (c) => c.sheet === "Hours data" && c.a1 === "Q1" && /^building /.test(c.value),
+  );
+  const grow = at((c) => c.sheet === "Hours" && c.op === "insertRowsAfter");
+  const pivots = at((c) => c.op === "batchUpdate" && c.value > 40);
+  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:J1");
+  assert.ok(building >= 0 && building < grow && grow < pivots && pivots < values);
+  // The tables were marked not whole, and that was flushed, before the tab grew.
+  assert.ok(s.calls.slice(building, grow).some((c) => c.op === "flush"));
+  assert.equal(s.sheet("Hours").maxRows, need);
+  assert.match(s.logs.join("\n"), /Hours is filled as of/);
+
+  // setupReports again over the filled Hours data with a new Hours tab: the pivots list the
+  // old table as soon as they exist, so the tab grows before they are made.
+  s.ss.deleteSheet(s.sheet("Hours"));
+  s.calls.length = 0;
+  s.ctx.setupReports();
+  const again = s.calls.filter((c) => c.sheet === "Hours" && c.op === "insertRowsAfter");
+  assert.deepEqual(
+    again.map((c) => c.value),
+    [[1000, need - 1000]],
+  );
+  const at2 = (pred) => s.calls.findIndex(pred);
+  assert.ok(
+    at2((c) => c.sheet === "Hours" && c.op === "insertRowsAfter") <
+      at2((c) => c.op === "batchUpdate" && c.value > 40),
+  );
+  assert.equal(s.sheet("Hours").maxRows, need);
+});
+
+test("a refresh whose table outgrows the Hours tab grows it in one call, after M1 writing is flushed and before the table lands", () => {
+  const s = built();
+  assert.equal(s.sheet("Hours").maxRows, 1000);
+  addShifts(s, 1100);
+  s.o.at = NOW + 60000;
+  s.calls.length = 0;
+  s.ctx.refreshHoursNow();
+  const rows = s.ctx.readHoursTable_().table.rows.length;
+  const need = s.ctx.hoursTabRows(rows);
+  assert.ok(need > 1000);
+  const hoursGrows = s.calls.filter((c) => c.sheet === "Hours" && c.op === "insertRowsAfter");
+  assert.deepEqual(
+    hoursGrows.map((c) => c.value),
+    [[1000, need - 1000]],
+  );
+  const at = (pred) => s.calls.findIndex(pred);
+  const writing = at((c) => c.sheet === "Hours data" && c.a1 === "M1" && /^writing /.test(c.value));
+  const grow = at((c) => c.sheet === "Hours" && c.op === "insertRowsAfter");
+  const values = at((c) => c.sheet === "Hours data" && c.op === "setValues");
+  assert.ok(writing >= 0 && writing < grow && grow < values);
+  assert.ok(s.calls.slice(writing, grow).some((c) => c.op === "flush"));
+  assert.equal(s.sheet("Hours").maxRows, need);
+  assert.equal(cellsOf(s)[1], "complete");
+  assert.match(s.alerts[0], /^As of .*, refreshed from the menu\.$/);
+});
+
+test("nothing makes the Hours tab smaller: a refresh or setupReports with fewer rows keeps its rows", () => {
+  const s = built({}, LOG.concat(manyShifts(1200)));
+  const big = s.sheet("Hours").maxRows;
+  assert.ok(big > 1000);
+  // The Log loses the added rows: the table is a few rows again.
+  s.sheet("Log").deleteRows(LOG.length + 1, 1200);
+  s.o.at = NOW + 60000;
+  s.calls.length = 0;
+  s.ctx.refreshHoursNow();
+  s.ctx.runHoursRefresh(TRIGGER);
+  s.ctx.setupReports();
+  const rows = s.ctx.readHoursTable_().table.rows.length;
+  assert.ok(rows < 10);
+  assert.equal(s.sheet("Hours").maxRows, big);
+  assert.ok(!s.calls.some((c) => c.sheet === "Hours" && /^delete/.test(c.op)));
+  // Hours data is trimmed to the table, as before.
+  assert.equal(s.sheet("Hours data").maxRows, rows + 1);
 });
 
 /** A built server whose Log readers fail the test: onOpen reads no Log. */
@@ -1399,6 +1515,11 @@ test("a refresh writes exactly the steps hoursNextState lists, in order, one cal
           .getRange("L1")
           .setValue(String(NOW + 1e9)),
     },
+    {
+      name: "menu, the Log outgrows the Hours tab",
+      entry: "menu",
+      prep: (s) => addShifts(s, 1100),
+    },
     { name: "nightly", entry: "nightly" },
     { name: "open, unchanged", entry: "open" },
     {
@@ -1452,7 +1573,7 @@ test("a refresh writes exactly the steps hoursNextState lists, in order, one cal
     const next = plain(
       s.ctx.hoursNextState(state, run, message ? { kind: "failed", message } : { kind: "read" }),
     );
-    const grows = data.maxRows < rows + 1;
+    const grows = data.maxRows < rows + 1 || s.sheet("Hours").maxRows < s.ctx.hoursTabRows(rows);
     const trims = data.maxRows > Math.max(2, rows + 1);
     const expected = next.steps.flatMap((st) => {
       if (st.op === "grow") return grows ? [st] : [];
