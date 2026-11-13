@@ -1333,7 +1333,10 @@ test("setupSheets writes Settings' What it does column and leaves A:B cell for c
     ["flags email", "on"],
   ]);
   const S = server(ss);
+  const original = settingsAB(settings);
   S.setupSheets();
+  // The first run leaves every A:B cell that was there as it was; it may only append rows.
+  original.forEach(([key, v]) => assert.equal(settings.values.get(key), v, key));
   const before = settingsAB(settings);
   S.setupSheets();
   assert.deepEqual(settingsAB(settings), before, "a second run changes nothing in A:B");
