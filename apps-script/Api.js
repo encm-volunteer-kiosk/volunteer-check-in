@@ -29,21 +29,26 @@ function apiCheckAccess(code) {
 
 /**
  * {ok: true, volunteers: [{id, firstName, lastName, checkedIn, openShiftArrival,
- * needsPhoneCheck}]}. checkedIn is true when the volunteer has an open row dated today.
- * openShiftArrival is the ISO stated arrival of that row, else null; it is also null when
- * the row's check-in time can't be read, and the volunteer is still checked in. id is
- * the hashed Volunteer ID; the raw User Token never leaves the server.
+ * needsPhoneCheck}]}. checkedIn is true when the volunteer has an open row the tablet can
+ * still check out: one checked in less than "Auto clock-out after hours" ago, past
+ * midnight too, or one dated today whose check-in time can't be read. openShiftArrival is
+ * the ISO stated arrival of that row, else null; it is also null when the row's check-in
+ * time can't be read, and the volunteer is still checked in. id is the hashed Volunteer
+ * ID; the raw User Token never leaves the server. Reads only yesterday's and today's rows.
  */
 function apiListVolunteers(code) {
   const denied = accessRefusal_(code);
   if (denied) return denied;
   const settings = readSettings_();
-  const today = centralDate_(new Date());
+  const now = new Date();
+  const today = centralDate_(now);
   return {
     ok: true,
     volunteers: volunteerSummaries(
       getProfiles_(settings),
-      readTodayLog_(today, readLogColumns_()),
+      readRecentLog_(recentLogDates(today), readLogColumns_()),
+      now.getTime(),
+      autoClockOutWindowMs(settings["Auto clock-out after hours"]),
       today,
     ),
   };
@@ -55,8 +60,11 @@ function apiListVolunteers(code) {
  * arrival is the server's time of the call, the same as Check-In Recorded. digits is the
  * phone's last four as a string, or null. In a same-name group the digits pick the
  * member, so the volunteer checked in can be another member than the one tapped.
- * {ok: true, id, shiftId, arrivedAt, tappedAt} or a refusal; id is the volunteer
- * checked in.
+ * {ok: true, id, shiftId, arrivedAt, tappedAt, missedSignOut} or a refusal; id is the
+ * volunteer checked in. missedSignOut is true when the volunteer's last check-out was one
+ * they didn't make (missedSignOut, Logic.js), so the page can remind them; it is about
+ * the volunteer just checked in and says nothing else. ALREADY_IN while the volunteer has
+ * an open row checked in less than "Auto clock-out after hours" ago. Reads the whole Log.
  */
 function apiCheckIn(code, id, arrivalIso, digits) {
   const denied = accessRefusal_(code);
@@ -71,12 +79,14 @@ function apiCheckIn(code, id, arrivalIso, digits) {
       volunteers: getProfiles_(settings),
       id,
       digits,
-      entries: readTodayLog_(today, cols),
+      entries: readLog_(cols),
       todayDate: today,
       nowMs: now.getTime(),
+      windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
       arrivedMs,
       arrivedDate: Number.isFinite(arrivedMs) ? centralDate_(new Date(arrivedMs)) : "",
       flagMinutes: parseFlagMinutes(settings["Arrival flag minutes"]),
+      launchDate: settings["Kiosk launch date"],
     });
     if (decision.refusal) return refusal(decision.refusal);
     const shiftId = Utilities.getUuid();
@@ -108,6 +118,7 @@ function apiCheckIn(code, id, arrivalIso, digits) {
       shiftId,
       arrivedAt: new Date(decision.arrivedMs).toISOString(),
       tappedAt: now.toISOString(),
+      missedSignOut: decision.missedSignOut,
     };
   });
 }
@@ -120,7 +131,9 @@ function apiCheckIn(code, id, arrivalIso, digits) {
  * {ok: true, id, signedOutAt, tappedAt, minutes, milestone} or a refusal: id is the
  * volunteer checked out, signedOutAt the stated check-out, tappedAt the server time of
  * the call, minutes the whole minutes of stated hours, and milestone {id, title,
- * message} or null.
+ * message} or null. The open row is the one checked in less than "Auto clock-out after
+ * hours" ago, so an evening shift checks out past midnight; NOT_IN when there is none. A
+ * check-out whose stated hours are more than "Long shift flag hours" is flagged.
  */
 function apiCheckOut(code, id, digits, checkOutIso) {
   const denied = accessRefusal_(code);
@@ -137,9 +150,11 @@ function apiCheckOut(code, id, digits, checkOutIso) {
       entries: readLog_(cols),
       todayDate: centralDate_(now),
       nowMs: now.getTime(),
+      windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
       outMs,
       outDate: Number.isFinite(outMs) ? centralDate_(new Date(outMs)) : "",
       flagMinutes: parseFlagMinutes(settings["Check-out flag minutes"]),
+      longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
       launchDate: settings["Kiosk launch date"],
     });
     if (decision.refusal) return refusal(decision.refusal);

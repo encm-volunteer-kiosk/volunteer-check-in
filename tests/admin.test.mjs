@@ -1052,3 +1052,112 @@ test("adminFixSignOut closes a row whose check-in was typed as a time with no da
   // The typed cell is never rewritten.
   assert.equal(row["Check-In Stated (user)"].getTime(), at("1899-12-30", "09:00").getTime());
 });
+
+// ---------------------------------------------------------------------------
+// The window after the tap, the missed check-out and the long-shift flag, end to end
+
+const WINDOW_SETTINGS = [
+  ...KIOSK_SETTINGS,
+  ["Kiosk launch date", "2026-11-01"],
+  ["Auto clock-out after hours", "12"],
+  ["Long shift flag hours", "8"],
+];
+const YESTERDAY = "2026-11-11";
+const closedBy = (shiftId, date, outBy) =>
+  logRow({
+    "Shift ID": shiftId,
+    "User Token": "tok-sam",
+    Status: "closed",
+    Date: date,
+    "Volunteer Name": "Sam Lee",
+    "Check-In Recorded (timestamp)": at(date, "09:00"),
+    "Check-In Stated (user)": at(date, "09:00"),
+    "Check-Out Stated (user)": at(date, "12:00"),
+    "Hours Served (stated)": 3,
+    "Check-In Entered By": "kiosk",
+    "Check-Out Entered By": outBy,
+  });
+
+test("apiCheckIn's reply carries missedSignOut, from the whole Log", () => {
+  const reply = (outBy) =>
+    plain(
+      kiosk({
+        settings: WINDOW_SETTINGS,
+        log: [LOG_HEADER, closedBy("s-old", "2026-11-03", outBy)],
+      }).ctx.apiCheckIn(CODE, SAM.id, null, null),
+    );
+  const missed = reply("auto-close");
+  assert.deepEqual(Object.keys(missed).sort(), [
+    "arrivedAt",
+    "id",
+    "missedSignOut",
+    "ok",
+    "shiftId",
+    "tappedAt",
+  ]);
+  assert.equal(missed.ok, true);
+  assert.equal(missed.missedSignOut, true);
+  assert.equal(reply("EM").missedSignOut, true);
+  assert.equal(reply("kiosk").missedSignOut, false);
+  // No rows since launch: no notice.
+  assert.equal(
+    plain(kiosk({ settings: WINDOW_SETTINGS }).ctx.apiCheckIn(CODE, SAM.id, null, null))
+      .missedSignOut,
+    false,
+  );
+});
+
+test("an evening check-in stays checked in past midnight: listed, refused a second check-in, and checked out", () => {
+  const evening = kioskOpen("s-eve", YESTERDAY, "23:00");
+  const s = kiosk({ settings: WINDOW_SETTINGS, log: [LOG_HEADER, evening] });
+  const [listed] = plain(s.ctx.apiListVolunteers(CODE).volunteers);
+  assert.equal(listed.checkedIn, true);
+  assert.equal(listed.openShiftArrival, at(YESTERDAY, "23:00").toISOString());
+  assert.deepEqual(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)), {
+    ok: false,
+    refusal: "ALREADY_IN",
+    message: "You're already checked in.",
+  });
+  const out = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.equal(out.ok, true);
+  const row = s.sheets.Log.rowByHeader(2);
+  assert.equal(row.Status, "closed");
+  assert.equal(row["Hours Served (stated)"], 11);
+  // Eleven stated hours is a long shift.
+  assert.equal(row["Admin Alerts?"], "long shift: 11 h stated, over 8 h");
+  // A row checked in more than 12 hours ago is no longer the tablet's.
+  const old = kiosk({
+    settings: WINDOW_SETTINGS,
+    log: [LOG_HEADER, kioskOpen("s-old", YESTERDAY, "21:59")],
+  });
+  assert.equal(plain(old.ctx.apiListVolunteers(CODE).volunteers)[0].checkedIn, false);
+  assert.equal(plain(old.ctx.apiCheckOut(CODE, SAM.id, null, null)).refusal, "NOT_IN");
+});
+
+test("apiCheckOut flags a long shift in Admin Alerts? and on the Flags tab, after the check-out flag", () => {
+  const open = kioskOpen("s-long", TODAY, "00:30");
+  const s = kiosk({ settings: WINDOW_SETTINGS, log: [LOG_HEADER, open] });
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30))).ok, true);
+  const log = s.sheets.Log.rowByHeader(2);
+  assert.equal(log["Hours Served (stated)"], 9);
+  assert.equal(
+    log["Admin Alerts?"],
+    "check-out differs by 30 min; long shift: 9 h stated, over 8 h",
+  );
+  const flags = [2, 3].map((r) => s.sheets.Flags.rowByHeader(r));
+  assert.deepEqual(
+    flags.map((f) => [f.Reason, f.Source, f["Shift ID"]]),
+    [
+      ["check-out differs by 30 min", "kiosk check-out", "s-long"],
+      ["long shift: 9 h stated, over 8 h", "kiosk check-out", "s-long"],
+    ],
+  );
+  // A Long shift flag hours of 10 moves the line.
+  const t = kiosk({
+    settings: [...KIOSK_SETTINGS, ["Long shift flag hours", "10"]],
+    log: [LOG_HEADER, kioskOpen("s-long", TODAY, "00:30")],
+  });
+  t.ctx.apiCheckOut(CODE, SAM.id, null, null);
+  assert.equal(t.sheets.Log.rowByHeader(2)["Admin Alerts?"], "");
+  assert.equal(t.sheets.Flags.getLastRow(), 1);
+});

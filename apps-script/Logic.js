@@ -109,8 +109,8 @@ function refusalMessages() {
   return {
     ACCESS: "This kiosk needs to be set up. Please ask a board member.",
     NOT_FOUND: "We couldn't find your profile. Please see a board member.",
-    ALREADY_IN: "You're already checked in today.",
-    NOT_IN: "You're not checked in today.",
+    ALREADY_IN: "You're already checked in.",
+    NOT_IN: "You're not checked in.",
     ARRIVAL_FUTURE: "Your arrival time can't be in the future. Please choose an earlier time.",
     ARRIVAL_OTHER_DAY: "Please choose a time from today.",
     PHONE_NEEDED: "Please enter the last four digits of your phone number.",
@@ -556,15 +556,20 @@ function validateArrival(nowMs, arrivedMs, arrivedDate, todayDate) {
 /**
  * {outMs} for an acceptable check-out time, else a refusal code. A null time (the
  * volunteer chose none, or the page is older than the check-out picker) is server time
- * and is never refused. Otherwise, in order: unreadable, future, another day, then before
- * startMs, the open shift's start. Equal to the start is accepted. When startMs is
- * unreadable that last check is skipped. outDate is the time's Central date.
+ * and is never refused, whatever the date. Otherwise, in order: unreadable
+ * (CHECKOUT_OTHER_DAY), future, then before startMs, the open shift's start. Equal to the
+ * start is accepted. Any time from the start up to now is accepted, past midnight too, so
+ * an evening shift can be checked out after midnight. Only when startMs is unreadable is
+ * the time held to today instead (CHECKOUT_OTHER_DAY): there is no start to measure from.
+ * outDate is the time's Central date.
  */
 function validateCheckOut(nowMs, outMs, outDate, todayDate, startMs) {
   if (outMs === null) return { outMs: nowMs };
-  const checked = checkStatedTime(nowMs, outMs, outDate, todayDate);
+  const hasStart = typeof startMs === "number" && isFinite(startMs);
+  // With a start, the time's own date is the date wanted, so no date is refused.
+  const checked = checkStatedTime(nowMs, outMs, outDate, hasStart ? outDate : todayDate);
   if (checked.refused) return "CHECKOUT_" + checked.refused;
-  if (isFinite(startMs) && checked.ms < startMs) return "CHECKOUT_BEFORE_ARRIVAL";
+  if (hasStart && checked.ms < startMs) return "CHECKOUT_BEFORE_ARRIVAL";
   return { outMs: checked.ms };
 }
 
@@ -868,7 +873,8 @@ function rowTimeMs(t, day, read) {
 /**
  * One Log row as the entry the rest of this file uses:
  * {row, shiftId, token, name, dateText, recordedInMs, statedInMs, recordedOutMs,
- * statedOutMs, recordedHours, statedHours, alerts, notes, status}.
+ * statedOutMs, recordedHours, statedHours, alerts, notes, status, outBy}. outBy is the
+ * Check-Out Entered By text.
  *
  * cells is the row's raw values, row its sheet row number, cols the logColumns map. read
  * holds the functions the caller supplies: read.text(value) gives a cell as text (a date
@@ -911,6 +917,7 @@ function logEntry(cells, row, cols, read) {
     alerts: text(H.alerts),
     notes: text(H.notes),
     status: text(H.status),
+    outBy: text(H.outBy),
   };
 }
 
@@ -970,16 +977,61 @@ function hasReadableStart(entry) {
   return isFinite(shiftStartMs(entry));
 }
 
-/** This token's open row dated today (the latest start if staff edits left more than one), or null. */
-function findOpenShiftToday(entries, token, todayDate) {
+/**
+ * When the row was checked in, which is where its age is measured from: Check-In Recorded
+ * (the tap) when it reads, else the start (shiftStartMs). NaN when neither reads. The tap,
+ * not the stated arrival, because the arrival picker offers any earlier time of the day:
+ * measured from a stated 8 AM, a volunteer tapping in at 4 PM could be out of the window
+ * the moment the row is written. A row with no readable tap was typed or edited by hand,
+ * and its start is the only time it has.
+ */
+function checkedInMs(entry) {
+  return isFinite(entry.recordedInMs) ? entry.recordedInMs : shiftStartMs(entry);
+}
+
+/**
+ * True when an open row is the tablet's at nowMs: its age (checkedInMs) is under windowMs,
+ * the "Auto clock-out after hours" window. A row with no readable time has no age and is
+ * the tablet's while it is dated todayDate. Once a row's age is at least the window it is
+ * the auto clock-out's (autoClockOutRows) and no longer the tablet's, so a row is never
+ * both.
+ */
+function isTabletOpenRow(entry, nowMs, windowMs, todayDate) {
+  if (!isStatus(entry, "open")) return false;
+  const at = checkedInMs(entry);
+  if (isFinite(at)) return nowMs - at < windowMs;
+  return isRowToday(entry.dateText, todayDate);
+}
+
+/**
+ * This token's open row that the tablet can still check out (isTabletOpenRow), or null.
+ * When staff edits left more than one, the latest start wins.
+ */
+function findOpenShift(entries, token, nowMs, windowMs, todayDate) {
   let found = null;
   entries.forEach((e) => {
-    if (!isTokenRow(e, token) || !isStatus(e, "open") || !isRowToday(e.dateText, todayDate)) {
-      return;
-    }
+    if (!isTokenRow(e, token) || !isTabletOpenRow(e, nowMs, windowMs, todayDate)) return;
     if (!found || shiftStartMs(e) > shiftStartMs(found)) found = e;
   });
   return found;
+}
+
+/**
+ * The "Auto clock-out after hours" Settings value as milliseconds (parseAutoClockOutHours).
+ */
+function autoClockOutWindowMs(text) {
+  return parseAutoClockOutHours(text) * 3600000;
+}
+
+/**
+ * The Log dates the kiosk list reads: yesterday and today. Every readable time on a row is
+ * on its Date (rowTimeMs) and the window is at most 24 hours, so a row still in the window
+ * is dated one of these. The one exception is the night clocks spring forward with the
+ * window at 24: a tap just before midnight two days back is still in it for that hour.
+ * The list misses that row; check-in reads the whole Log and refuses with ALREADY_IN.
+ */
+function recentLogDates(todayDate) {
+  return [addDays(todayDate, -1), todayDate];
 }
 
 /** Count and total whole minutes, from milestoneHours, of this token's closed rows. */
@@ -996,13 +1048,14 @@ function closedTotals(entries, token) {
 
 /**
  * The list the page gets: the hashed ID only, and no phone, start date, token or row.
- * checkedIn is the test check-in and check-out use, an open row dated today, so it holds
- * even when that row's start can't be read. openShiftArrival is that row's start, or null
- * when there is no such row or its start can't be read.
+ * checkedIn is the test check-in and check-out use, an open row the tablet can still
+ * check out (findOpenShift), so it holds past midnight for the window after the tap, and
+ * holds even when that row's start can't be read. openShiftArrival is that row's start,
+ * or null when there is no such row or its start can't be read.
  */
-function volunteerSummaries(volunteers, entries, todayDate) {
+function volunteerSummaries(volunteers, entries, nowMs, windowMs, todayDate) {
   return volunteers.map((v) => {
-    const open = findOpenShiftToday(entries, v.token, todayDate);
+    const open = findOpenShift(entries, v.token, nowMs, windowMs, todayDate);
     const startMs = open ? shiftStartMs(open) : NaN;
     return {
       id: v.id,
@@ -1013,6 +1066,28 @@ function volunteerSummaries(volunteers, entries, todayDate) {
       needsPhoneCheck: v.needsPhoneCheck,
     };
   });
+}
+
+/**
+ * True when this token's latest row dated on or after the launch date, in reportRowOrder,
+ * is a check-out the volunteer didn't make: still open, or closed with a Check-Out Entered
+ * By other than kiosk (the auto clock-out, an admin's Fix a sign-out or Add a shift, or a
+ * row typed by hand). Read at check-in, before the new row is written, so the notice
+ * shows once per missed check-out: the new row is the one looked at next time. An open
+ * row found here has left the window, or the check-in would have been refused. False
+ * when the launch date can't be read; rows before it, such as imported ones, never count.
+ */
+function missedSignOut(entries, token, launchDate) {
+  const launch = parseStartDate(launchDate);
+  if (!launch) return false;
+  const rows = entries.filter((e) => {
+    const date = rowDate(e.dateText);
+    return isTokenRow(e, token) && date !== "" && date >= launch;
+  });
+  if (!rows.length) return false;
+  const last = rows.slice().sort(reportRowOrder)[rows.length - 1];
+  if (isStatus(last, "open")) return true;
+  return isStatus(last, "closed") && entrySource(last.outBy) !== "kiosk";
 }
 
 // ---------------------------------------------------------------------------
@@ -1059,26 +1134,52 @@ function unreadableStartAlert() {
 }
 
 /**
- * The flags a kiosk check-out raises, in the order Admin Alerts? gets them: the check-out
- * flag when there is one, then unreadableStartAlert() when the open row has no readable
- * start. The Flags tab gets one row for each, so it and Admin Alerts? never disagree.
+ * '' or the Admin Alerts? text for a tablet check-out whose stated hours are more than
+ * limitHours ("Long shift flag hours"): "long shift: 10.25 h stated, over 8 h". statedHours
+ * is the Hours Served (stated) value the check-out writes, so the flag and the cell never
+ * disagree; exactly limitHours is not flagged. Blank hours (no readable start) give ''.
  */
-function checkOutFlags(open, flag) {
+function longShiftAlert(statedHours, limitHours) {
+  if (typeof statedHours !== "number" || !isFinite(statedHours)) return "";
+  if (!(statedHours > limitHours)) return "";
+  return (
+    "long shift: " +
+    hoursNumberText(statedHours) +
+    " h stated, over " +
+    hoursNumberText(limitHours) +
+    " h"
+  );
+}
+
+/** Hours as the alerts print them: up to 2 decimals, no trailing zeros ("8", "10.25", "8.5"). */
+function hoursNumberText(hours) {
+  return String(Math.round(hours * 100) / 100);
+}
+
+/**
+ * The flags a kiosk check-out raises, in the order Admin Alerts? gets them: the check-out
+ * flag when there is one, then the long-shift flag (longShiftAlert) when there is one,
+ * then unreadableStartAlert() when the open row has no readable start. The Flags tab gets
+ * one row for each, so it and Admin Alerts? never disagree.
+ */
+function checkOutFlags(open, flag, longFlag) {
   const flags = [];
   if (cellString(flag)) flags.push(cellString(flag));
+  if (cellString(longFlag)) flags.push(cellString(longFlag));
   if (!hasReadableStart(open)) flags.push(unreadableStartAlert());
   return flags;
 }
 
 /**
  * The cells a kiosk check-out writes on the open row. nowMs is the tap (Check-Out
- * Recorded), statedOutMs the stated check-out, flag the check-out flag or ''. Each hours
+ * Recorded), statedOutMs the stated check-out, flag the check-out flag or '', longFlag the
+ * long-shift flag or ''. Each hours
  * value pairs times of one kind and is blank when either is unreadable. Admin Alerts? is
  * written only when checkOutFlags has something to add, and then keeps what the cell
  * held. A row whose start can't be read closes with blank stated hours and an alert
  * saying so, not with a zero.
  */
-function checkOutCells(open, nowMs, statedOutMs, flag) {
+function checkOutCells(open, nowMs, statedOutMs, flag, longFlag) {
   const H = logHeaderNames();
   const cells = {
     [H.recordedOut]: nowMs,
@@ -1088,7 +1189,7 @@ function checkOutCells(open, nowMs, statedOutMs, flag) {
     [H.status]: "closed",
     [H.outBy]: "kiosk",
   };
-  const flags = checkOutFlags(open, flag);
+  const flags = checkOutFlags(open, flag, longFlag);
   if (flags.length) cells[H.alerts] = sheetText(flags.reduce(appendText, open.alerts));
   return cells;
 }
@@ -1097,18 +1198,20 @@ function checkOutCells(open, nowMs, statedOutMs, flag) {
 // Check-in and check-out decisions
 
 /**
- * Checks a check-in in order: NOT_FOUND, phone, ALREADY_IN, ARRIVAL_FUTURE,
- * ARRIVAL_OTHER_DAY. Input: {volunteers, id (the tapped entry), digits, entries,
- * todayDate, nowMs, arrivedMs (null for server time), arrivedDate, flagMinutes}. Returns
- * {refusal} or {volunteer, arrivedMs, flag, flags}; volunteer is the one resolveVolunteer
- * found, flag the arrival flag or '', and flags the list the Flags tab gets: [flag], or []
- * when nothing is flagged.
+ * Checks a check-in in order: NOT_FOUND, phone, ALREADY_IN (an open row still in the
+ * window, findOpenShift), ARRIVAL_FUTURE, ARRIVAL_OTHER_DAY. Input: {volunteers, id (the
+ * tapped entry), digits, entries (the whole Log), todayDate, nowMs, windowMs, arrivedMs
+ * (null for server time), arrivedDate, flagMinutes, launchDate}. Returns {refusal} or
+ * {volunteer, arrivedMs, flag, flags, missedSignOut}; volunteer is the one
+ * resolveVolunteer found, flag the arrival flag or '', flags the list the Flags tab gets:
+ * [flag], or [] when nothing is flagged, and missedSignOut whether the volunteer's last
+ * check-out was one they didn't make (missedSignOut).
  */
 function decideCheckIn(input) {
   const who = resolveVolunteer(input.volunteers, input.id, input.digits);
   if (who.refusal) return { refusal: who.refusal };
   const volunteer = who.volunteer;
-  if (findOpenShiftToday(input.entries, volunteer.token, input.todayDate)) {
+  if (findOpenShift(input.entries, volunteer.token, input.nowMs, input.windowMs, input.todayDate)) {
     return { refusal: "ALREADY_IN" };
   }
   const arrival = validateArrival(input.nowMs, input.arrivedMs, input.arrivedDate, input.todayDate);
@@ -1119,26 +1222,35 @@ function decideCheckIn(input) {
     arrivedMs: arrival.arrivedMs,
     flag,
     flags: flag ? [flag] : [],
+    missedSignOut: missedSignOut(input.entries, volunteer.token, input.launchDate),
   };
 }
 
 /**
- * Checks a check-out in order: NOT_FOUND, phone, NOT_IN, then the stated check-out time
- * (CHECKOUT_OTHER_DAY, CHECKOUT_FUTURE, CHECKOUT_BEFORE_ARRIVAL). Input: {volunteers, id
- * (the tapped entry), digits, entries (the whole Log), todayDate, nowMs, outMs (null for
- * server time), outDate, flagMinutes, launchDate}.
+ * Checks a check-out in order: NOT_FOUND, phone, NOT_IN (no open row in the window,
+ * findOpenShift), then the stated check-out time (validateCheckOut). Input: {volunteers, id
+ * (the tapped entry), digits, entries (the whole Log), todayDate, nowMs, windowMs, outMs
+ * (null for server time), outDate, flagMinutes, longShiftHours (parseLongShiftHours),
+ * launchDate}.
  *
  * Returns {refusal} or {volunteer, row, cells, minutes, milestone, statedOutMs, flags,
  * open}: volunteer is the one resolveVolunteer found, row the open row, cells its
  * check-out cell map, minutes the whole minutes this shift adds toward milestones, and the
  * milestone is counted from the closed rows before this one. flags is checkOutFlags, the
- * texts the cells add to Admin Alerts?, and open the open row's entry.
+ * texts the cells add to Admin Alerts? (the long-shift flag among them when the stated
+ * hours are more than longShiftHours), and open the open row's entry.
  */
 function decideCheckOut(input) {
   const who = resolveVolunteer(input.volunteers, input.id, input.digits);
   if (who.refusal) return { refusal: who.refusal };
   const volunteer = who.volunteer;
-  const open = findOpenShiftToday(input.entries, volunteer.token, input.todayDate);
+  const open = findOpenShift(
+    input.entries,
+    volunteer.token,
+    input.nowMs,
+    input.windowMs,
+    input.todayDate,
+  );
   if (!open) return { refusal: "NOT_IN" };
   const out = validateCheckOut(
     input.nowMs,
@@ -1149,7 +1261,8 @@ function decideCheckOut(input) {
   );
   if (typeof out === "string") return { refusal: out };
   const flag = checkOutFlag(input.nowMs, out.outMs, input.flagMinutes);
-  const cells = checkOutCells(open, input.nowMs, out.outMs, flag);
+  const longFlag = longShiftAlert(pairHours(shiftStartMs(open), out.outMs), input.longShiftHours);
+  const cells = checkOutCells(open, input.nowMs, out.outMs, flag, longFlag);
   const H = logHeaderNames();
   const minutes = minutesFromHours(
     milestoneHours({ ...open, statedHours: hoursCell(cells[H.statedHours]) }),
@@ -1168,7 +1281,7 @@ function decideCheckOut(input) {
       input.launchDate,
     ),
     statedOutMs: out.outMs,
-    flags: checkOutFlags(open, flag),
+    flags: checkOutFlags(open, flag, longFlag),
     open,
   };
 }
@@ -1529,8 +1642,8 @@ function reportColumns(headerRow) {
 }
 
 /**
- * One Log row as a report reads it: logEntry's fields plus inBy, outBy (the Entered By
- * texts), roleType, activity (blank when the column is missing), and statedHoursCell and
+ * One Log row as a report reads it: logEntry's fields (outBy among them) plus inBy (the
+ * Check-In Entered By text), roleType, activity (blank when the column is missing), and statedHoursCell and
  * recordedHoursCell, the raw Hours Served (stated) and (timestamps) values as the sheet
  * gave them. Arguments as logEntry's.
  */
@@ -1544,7 +1657,6 @@ function reportEntry(cells, row, cols, read) {
   const text = (header) => cellString(read.text(raw(header)));
   const entry = logEntry(cells, row, cols, read);
   entry.inBy = text(H.inBy);
-  entry.outBy = text(H.outBy);
   entry.roleType = text(H.role);
   entry.activity = text(H.activity);
   entry.statedHoursCell = raw(H.statedHours);

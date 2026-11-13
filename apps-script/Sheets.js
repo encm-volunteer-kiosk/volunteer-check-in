@@ -395,26 +395,31 @@ function readLog_(cols) {
 }
 
 /**
- * Log rows dated today, in any row order. Reads the Date column found by the header
- * map, then only the block of rows from the first to the last of today's, across the
- * full width.
+ * Log rows dated on any of dates (yyyy-MM-dd), in any row order. Reads the Date column
+ * found by the header map, then only the block of rows from the first to the last of
+ * those, across the full width. The kiosk list reads yesterday and today with it
+ * (recentLogDates, Logic.js).
  */
-function readTodayLog_(todayDate, cols) {
+function readRecentLog_(dates, cols) {
   const sheet = sheet_(LOG_TAB);
   const last = sheet.getLastRow();
   if (last < 2) return [];
-  const dates = sheet.getRange(2, cols[logHeaderNames().date] + 1, last - 1, 1).getValues();
-  const today = [];
-  dates.forEach((cells, i) => {
-    if (isRowToday(cellText_(cells[0]), todayDate)) today.push(i + 2);
+  const wanted = {};
+  (dates || []).forEach((d) => {
+    if (d) wanted[d] = true;
   });
-  if (!today.length) return [];
-  const first = today[0];
+  const dateCells = sheet.getRange(2, cols[logHeaderNames().date] + 1, last - 1, 1).getValues();
+  const rows = [];
+  dateCells.forEach((cells, i) => {
+    if (wanted[rowDate(cellText_(cells[0]))]) rows.push(i + 2);
+  });
+  if (!rows.length) return [];
+  const first = rows[0];
   const values = sheet
-    .getRange(first, 1, today[today.length - 1] - first + 1, sheet.getLastColumn())
+    .getRange(first, 1, rows[rows.length - 1] - first + 1, sheet.getLastColumn())
     .getValues();
   const read = logRead_();
-  return today.map((row) => logEntry(values[row - first], row, cols, read));
+  return rows.map((row) => logEntry(values[row - first], row, cols, read));
 }
 
 /**
