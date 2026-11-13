@@ -68,6 +68,19 @@ function settingsDefaults(todayDate) {
   ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].forEach((day) =>
     rows.push(["Closing time " + day, "17:00"]),
   );
+  rows.push(
+    ["Auto clock-out after hours", String(defaultAutoClockOutHours())],
+    ["Auto clock-out last run", ""],
+    ["Long shift flag hours", String(defaultLongShiftHours())],
+    ["Flags email", "Off"],
+    ["Flags email to", ""],
+    ["Flags email day", defaultFlagsEmailDay()],
+    ["Flags email hour", String(defaultFlagsEmailHour())],
+    ["Flags email last run", ""],
+    ["Daily jobs installed by", ""],
+    ["Past hours file ID", ""],
+    ["Past hours tab", "Historical Hours"],
+  );
   return rows;
 }
 
@@ -2751,9 +2764,10 @@ function setupReportsMessage(counts) {
 //
 // One row per flag, for staff to tick off as reviewed. The Log row is the record: Admin
 // Alerts? keeps every kiosk flag, and a Flags row is a copy for review. The script only
-// appends Flags rows. It reads the Flags header to place its writes and never reads a
-// Flags row back, so staff may sort, filter or delete rows. Reviewed By and Notes are
-// staff's; the script writes Reviewed once, unticked, on the row it appends.
+// appends Flags rows. It reads the Flags header to place its writes; only the weekly
+// flags email reads Flags rows back, and only to count and list them, so staff may sort,
+// filter or delete rows. Reviewed By and Notes are staff's; the script writes Reviewed
+// once, unticked, on the row it appends.
 
 /** The Flags headers, keyed by the short names the code uses, in the order a new tab gets them. */
 function flagHeaderNames() {
@@ -2954,4 +2968,310 @@ function flagFilterViewRequests(cols, sheetId, existingViewId) {
       },
     },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Daily jobs
+//
+// Jobs.js runs these on installable triggers owned by one account, which installs them
+// with setupDailyJobs. This section holds their pure rules: the list of jobs, the Settings
+// values they read, when the weekly flags email is due and what it says. Times of day are
+// Central wall-clock texts, "yyyy-MM-dd HH:mm", as Jobs.js formats the server's clock and
+// as the last-run Settings values are written.
+
+/**
+ * The jobs setupDailyJobs installs, one trigger each, and nothing else. handler is the
+ * public Jobs.js function the trigger calls. A job runs either every everyHours hours or
+ * once a day at atHour (Central).
+ */
+function dailyJobs() {
+  return [{ handler: "runFlagsEmail", everyHours: 1 }];
+}
+
+/** "Auto clock-out after hours" when blank or out of range. */
+function defaultAutoClockOutHours() {
+  return 12;
+}
+
+/** The fewest and most hours "Auto clock-out after hours" may be. */
+function autoClockOutHoursRange() {
+  return { min: 10, max: 24 };
+}
+
+/** "Long shift flag hours" when blank or not above 0. */
+function defaultLongShiftHours() {
+  return 8;
+}
+
+function defaultFlagsEmailDay() {
+  return "Monday";
+}
+
+function defaultFlagsEmailHour() {
+  return 8;
+}
+
+/** The weekly email's sender name. The address is the job owner's domain no-reply address. */
+function flagsEmailSenderName() {
+  return "ENCM Volunteer Kiosk";
+}
+
+/** How many of the week's flags the email lists before "and N more". */
+function flagsEmailListMax() {
+  return 25;
+}
+
+/** The email warns when "Auto clock-out last run" is blank or older than this many hours. */
+function autoClockOutStaleHours() {
+  return 48;
+}
+
+/** The text of a number Setting, or NaN when it isn't a finite number. */
+function settingNumber(text) {
+  const s = cellString(text);
+  const n = Number(s);
+  return s !== "" && isFinite(n) ? n : NaN;
+}
+
+/**
+ * "Auto clock-out after hours": a number from 10 to 24 as given, anything else 12. Below
+ * 10 is read as a mistake: a window shorter than a shift plus some slack would take a
+ * volunteer who is still there off the tablet.
+ */
+function parseAutoClockOutHours(text) {
+  const n = settingNumber(text);
+  const range = autoClockOutHoursRange();
+  return n >= range.min && n <= range.max ? n : defaultAutoClockOutHours();
+}
+
+/** "Long shift flag hours": a finite number above 0 as given, anything else 8. */
+function parseLongShiftHours(text) {
+  const n = settingNumber(text);
+  return n > 0 ? n : defaultLongShiftHours();
+}
+
+/** "Flags email": true only for On, in any case. */
+function parseFlagsEmailOn(text) {
+  return cellString(text).toLowerCase() === "on";
+}
+
+/**
+ * "Flags email to": the addresses split on commas, semicolons, spaces or new lines, as
+ * {valid, invalid}. Valid ones look like a@b.c and are kept once each, in the order
+ * written, ignoring case for the repeat.
+ */
+function parseEmailAddresses(text) {
+  const valid = [];
+  const invalid = [];
+  const seen = {};
+  cellString(text)
+    .split(/[,;\s]+/)
+    .filter((part) => part !== "")
+    .forEach((part) => {
+      if (!/^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(part)) {
+        invalid.push(part);
+        return;
+      }
+      const key = part.toLowerCase();
+      if (!seen[key]) {
+        seen[key] = true;
+        valid.push(part);
+      }
+    });
+  return { valid, invalid };
+}
+
+/** "Flags email day": an English weekday, full or its first three letters, any case; else Monday. */
+function parseWeekdaySetting(text) {
+  const s = cellString(text).toLowerCase();
+  const names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const found = names.find((name) => {
+    const n = name.toLowerCase();
+    return s === n || s === n.slice(0, 3);
+  });
+  return found || defaultFlagsEmailDay();
+}
+
+/** "Flags email hour": a whole hour from 0 to 23, Central; else 8. */
+function parseEmailHour(text) {
+  const n = settingNumber(text);
+  return Number.isInteger(n) && n >= 0 && n <= 23 ? n : defaultFlagsEmailHour();
+}
+
+/** A yyyy-MM-dd date moved by a whole number of days; empty for an unreadable date. */
+function addDays(dateText, days) {
+  const date = parseStartDate(dateText);
+  if (!date) return "";
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
+/**
+ * The "yyyy-MM-dd HH:mm" a last-run Settings value starts with ("2026-11-09 08:05, sent to
+ * 3"), or empty when it doesn't start with a readable one.
+ */
+function lastRunTime(text) {
+  const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2})(?!\d)/.exec(cellString(text));
+  if (!m || !parseStartDate(m[1]) || Number(m[2]) > 23 || Number(m[3]) > 59) return "";
+  return m[0];
+}
+
+/** A last-run Settings value: the time, then ", " and what the run did. */
+function lastRunText(nowText, what) {
+  return nowText + ", " + what;
+}
+
+/**
+ * The weekly email's due slot: the latest "yyyy-MM-dd HH:00" at or before nowText that
+ * falls on weekday (a name from parseWeekdaySetting) at hour (0-23).
+ */
+function flagsEmailSlot(nowText, weekday, hour) {
+  const today = nowText.slice(0, 10);
+  const nowHour = Number(nowText.slice(11, 13));
+  const names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  let back = (names.indexOf(weekdayName(today)) - names.indexOf(weekday) + 7) % 7;
+  if (back === 0 && nowHour < hour) back = 7;
+  return addDays(today, -back) + " " + String(hour).padStart(2, "0") + ":00";
+}
+
+/**
+ * True when the weekly email is due at nowText: "Flags email last run" (lastRunValue) is
+ * before the due slot. A blank or unreadable last run is before every slot. The texts are
+ * Central wall-clock times, compared as text, so the hour repeated when clocks fall back
+ * can't send twice.
+ */
+function flagsEmailDue(nowText, lastRunValue, weekday, hour) {
+  const last = lastRunTime(lastRunValue);
+  return last === "" || last < flagsEmailSlot(nowText, weekday, hour);
+}
+
+/** A "yyyy-MM-dd HH:mm" text as milliseconds on a clock with no time zone, for differences. */
+function wallClockMs(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/.exec(cellString(text));
+  if (!m) return NaN;
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
+}
+
+/**
+ * {stale, lastRun}: stale when "Auto clock-out last run" (lastRunValue) is blank,
+ * unreadable or more than 48 hours before nowText (an hour either way across a clock
+ * change); lastRun is its "yyyy-MM-dd HH:mm" or empty.
+ */
+function autoClockOutCheck(lastRunValue, nowText) {
+  const lastRun = lastRunTime(lastRunValue);
+  const stale =
+    lastRun === "" ||
+    wallClockMs(nowText) - wallClockMs(lastRun) > autoClockOutStaleHours() * 3600000;
+  return { stale, lastRun };
+}
+
+/**
+ * The weekly email's counts from the Flags tab's rows. flags is [{date, name, shiftId,
+ * reason, raisedAtMs, reviewed}]. recent: the rows raised in the 7 days before nowMs,
+ * newest first. unreviewed: rows with a Volunteer Name or Shift ID whose Reviewed isn't
+ * ticked, any age.
+ */
+function flagsSummary(flags, nowMs) {
+  const from = nowMs - 7 * 24 * 3600000;
+  const recent = flags
+    .filter((f) => isFinite(f.raisedAtMs) && f.raisedAtMs > from && f.raisedAtMs <= nowMs)
+    .sort((a, b) => b.raisedAtMs - a.raisedAtMs);
+  const unreviewed = flags.filter(
+    (f) => (cellString(f.name) !== "" || cellString(f.shiftId) !== "") && f.reviewed !== true,
+  ).length;
+  return { recent, unreviewed };
+}
+
+/** True for a ticked Reviewed cell: the checkbox's true, or the text TRUE. */
+function isTicked(value) {
+  return value === true || cellString(value).toLowerCase() === "true";
+}
+
+function htmlText(text) {
+  return cellString(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function plural(count, one, many) {
+  return count + " " + (count === 1 ? one : many);
+}
+
+/**
+ * The weekly flags email, or null when there is nothing to send: no flag raised in the
+ * week, none unreviewed and the auto clock-out not stale. input is {summary
+ * (flagsSummary), autoClockOut (autoClockOutCheck), flagsUrl, skipped (addresses in
+ * "Flags email to" that couldn't be read)}. Returns {subject, body, htmlBody}. Names
+ * and reasons come from the Flags tab, which staff already see; no User Token.
+ */
+function flagsEmailMessage(input) {
+  const recent = input.summary.recent;
+  const unreviewed = input.summary.unreviewed;
+  const auto = input.autoClockOut;
+  if (!recent.length && !unreviewed && !auto.stale) return null;
+
+  const counts =
+    plural(recent.length, "new flag", "new flags") + " this week, " + unreviewed + " unreviewed";
+  const subject = "Volunteer kiosk: " + (auto.stale ? "auto clock-out not running, " : "") + counts;
+
+  const text = [];
+  const html = [];
+  const para = (plain, markup) => {
+    text.push(plain);
+    html.push("<p>" + (markup === undefined ? htmlText(plain) : markup) + "</p>");
+  };
+  if (auto.stale) {
+    para(
+      (auto.lastRun
+        ? "The auto clock-out last ran at " + auto.lastRun + "."
+        : "The auto clock-out has never run.") +
+        " Shifts nobody checked out of are not being closed. Ask whoever looks after the" +
+        ' kiosk to check its daily jobs; Settings "Daily jobs installed by" names the account' +
+        " that runs them.",
+    );
+  }
+  para("Flags raised in the last 7 days: " + recent.length);
+  para("Flags still unreviewed: " + unreviewed);
+  para(
+    "Review them on the Flags tab (Data > Filter views > " +
+      flagsViewTitle() +
+      "): " +
+      input.flagsUrl,
+    'Review them on the <a href="' +
+      htmlText(input.flagsUrl) +
+      '">Flags tab</a> (Data &gt; Filter views &gt; ' +
+      htmlText(flagsViewTitle()) +
+      ").",
+  );
+  if (recent.length) {
+    const shown = recent.slice(0, flagsEmailListMax());
+    const line = (f) =>
+      cellString(f.date) + ", " + cellString(f.name) + ": " + cellString(f.reason);
+    const more = recent.length - shown.length;
+    text.push(
+      ["This week's flags, newest first:"]
+        .concat(shown.map(line))
+        .concat(more > 0 ? ["and " + more + " more"] : [])
+        .join("\n"),
+    );
+    html.push(
+      "<p>This week's flags, newest first:</p><ul>" +
+        shown.map((f) => "<li>" + htmlText(line(f)) + "</li>").join("") +
+        "</ul>" +
+        (more > 0 ? "<p>and " + more + " more</p>" : ""),
+    );
+  }
+  if (input.skipped && input.skipped.length) {
+    para(
+      'Not sent to these entries in Settings "Flags email to", which aren\'t email addresses: ' +
+        input.skipped.join(", "),
+    );
+  }
+  para(
+    'Sent by the volunteer kiosk because Settings "Flags email" is On. Set it to Off to stop' +
+      " these emails.",
+  );
+  return { subject, body: text.join("\n\n"), htmlBody: html.join("\n") };
 }

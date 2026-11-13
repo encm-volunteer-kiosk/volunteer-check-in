@@ -215,9 +215,74 @@ test("settingsDefaults", () => {
   assert.equal(defaults["Profiles problems"], "");
   assert.equal(defaults["Closing time Monday"], "17:00");
   assert.equal(defaults["Closing time Sunday"], "17:00");
-  assert.equal(rows.length, 15);
+  assert.equal(defaults["Auto clock-out after hours"], "12");
+  assert.equal(defaults["Auto clock-out last run"], "");
+  assert.equal(defaults["Long shift flag hours"], "8");
+  assert.equal(defaults["Flags email"], "Off");
+  assert.equal(defaults["Flags email to"], "");
+  assert.equal(defaults["Flags email day"], "Monday");
+  assert.equal(defaults["Flags email hour"], "8");
+  assert.equal(defaults["Flags email last run"], "");
+  assert.equal(defaults["Daily jobs installed by"], "");
+  assert.equal(defaults["Past hours file ID"], "");
+  assert.equal(defaults["Past hours tab"], "Historical Hours");
+  assert.equal(rows.length, 26);
   const names = rows.map((r) => r[0]);
+  assert.equal(new Set(names).size, names.length);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
+  // The new rows come after every row a sheet set up earlier already has.
+  assert.equal(
+    names.indexOf("Auto clock-out after hours"),
+    names.indexOf("Closing time Sunday") + 1,
+  );
+  // Each default reads back as itself.
+  assert.equal(L.parseAutoClockOutHours(defaults["Auto clock-out after hours"]), 12);
+  assert.equal(L.parseLongShiftHours(defaults["Long shift flag hours"]), 8);
+  assert.equal(L.parseFlagsEmailOn(defaults["Flags email"]), false);
+  assert.equal(L.parseWeekdaySetting(defaults["Flags email day"]), "Monday");
+  assert.equal(L.parseEmailHour(defaults["Flags email hour"]), 8);
+});
+
+test("Auto clock-out after hours reads 10 to 24 as given and anything else as 12", () => {
+  for (const [text, want] of [
+    ["10", 10],
+    ["24", 24],
+    ["16", 16],
+    ["12.5", 12.5],
+    [" 18 ", 18],
+    ["9.99", 12],
+    ["9.5", 12],
+    ["8", 12],
+    ["7.5", 12],
+    ["0", 12],
+    ["-12", 12],
+    ["24.5", 12],
+    ["25", 12],
+    ["", 12],
+    ["twelve", 12],
+    ["Infinity", 12],
+    [null, 12],
+    [undefined, 12],
+  ]) {
+    assert.equal(L.parseAutoClockOutHours(text), want, String(text));
+  }
+});
+
+test("parseLongShiftHours reads a finite number above 0 as given and anything else as 8", () => {
+  for (const [text, want] of [
+    ["8.5", 8.5],
+    ["10", 10],
+    ["0.25", 0.25],
+    ["", 8],
+    ["long", 8],
+    ["0", 8],
+    ["-1", 8],
+    ["Infinity", 8],
+    ["NaN", 8],
+    [undefined, 8],
+  ]) {
+    assert.equal(L.parseLongShiftHours(text), want, String(text));
+  }
 });
 
 // ---------------------------------------------------------------------------
