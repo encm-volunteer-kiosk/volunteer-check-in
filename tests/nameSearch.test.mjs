@@ -1,5 +1,7 @@
-// Tests for name search on the tablet's name box: src/nameSearch.ts, imported as it is
-// (Node strips its types).
+// Tests for name search: the tablet's name box (src/nameSearch.ts, imported as it is; Node
+// strips its types) and the Kiosk admin dialog's two search boxes (the code between the
+// "name search" comments in apps-script/AdminDialog.html, run on its own). The two carry
+// separate copies of fold(), so the tests hold them to the same output on every code point.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -9,6 +11,12 @@ import { compact, fold, nameTier, rankNames, searchNames } from "../src/nameSear
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
+
+const dialogHtml = read("apps-script/AdminDialog.html");
+const BEGIN = "// name search: begin";
+const END = "// name search: end";
+const dialogSearch = dialogHtml.slice(dialogHtml.indexOf(BEGIN), dialogHtml.indexOf(END));
+const dialog = vm.runInNewContext(dialogSearch + "\n;({ fold, labelMatches });");
 
 const L = {};
 vm.runInNewContext(read("apps-script/Logic.js"), L);
@@ -102,6 +110,12 @@ test("fold gives each name in the case table its expected form", () => {
   }
 });
 
+test("the admin dialog's fold matches the tablet's on the case table", () => {
+  for (const [input] of CASES) {
+    assert.equal(dialog.fold(input), fold(input), JSON.stringify(input));
+  }
+});
+
 test("names that differ in another script's marks stay different", () => {
   // राम and रमा differ only in where the vowel sign sits.
   assert.notEqual(fold("\u0930\u093E\u092E"), fold("\u0930\u092E\u093E"));
@@ -109,17 +123,26 @@ test("names that differ in another script's marks stay different", () => {
   assert.notEqual(fold("\u041F\u0451\u0442\u0440"), fold("\u041F\u0435\u0442\u0440"));
 });
 
-test("fold is stable on every code point, alone and next to a mark", () => {
+test("the dialog's search code holds no Apps Script scriptlet and fillList uses it", () => {
+  assert.ok(dialogHtml.includes(BEGIN) && dialogHtml.includes(END));
+  assert.ok(!dialogSearch.includes("<?"));
+  assert.match(dialogHtml, /function fillList[\s\S]*?labelMatches\(item\.label, search\.value\)/);
+});
+
+test("both folds agree on every code point, alone and next to a mark, and fold is stable", () => {
+  const differ = [];
   const unstable = [];
   for (let cp = 0; cp <= 0x10ffff; cp++) {
     const c = String.fromCodePoint(cp);
     // Alone; followed by a mark; between a letter and a mark.
     for (const text of [c, c + "\u0301", "a" + c + "\u0301"]) {
       const folded = fold(text);
+      if (dialog.fold(text) !== folded) differ.push(text);
       if (fold(folded) !== folded) unstable.push(text);
     }
   }
   const show = (list) => list.slice(0, 10).map((t) => JSON.stringify(t));
+  assert.deepEqual(show(differ), [], `${differ.length} inputs fold differently`);
   assert.deepEqual(show(unstable), [], `${unstable.length} inputs change when folded again`);
 });
 
@@ -215,6 +238,30 @@ test("a search never changes the names it returns", () => {
   const people = [person("Jos\u00E9 D\u00EDaz")];
   assert.equal(searchNames(people, "jose")[0], people[0]);
   assert.equal(compact(fold("Mary-Kate Lee")), "marykatelee");
+});
+
+// ---------------------------------------------------------------------------
+// The Kiosk admin dialog's search boxes
+
+test("admin search: each word of the query, in any order, folded", () => {
+  assert.equal(dialog.labelMatches("Sam O'Brien", "obrien sam"), true);
+  assert.equal(dialog.labelMatches("Mary-Kate Lee", "lee marykate"), true);
+  assert.equal(
+    dialog.labelMatches("Mon 2026-06-01 \u00B7 Jos\u00E9 D\u00EDaz \u00B7 in 9:00 AM", "jose"),
+    true,
+  );
+  assert.equal(
+    dialog.labelMatches("Mon 2026-06-01 \u00B7 Sam Lee \u00B7 in 9:00 AM", "2026-06-01 9:00"),
+    true,
+  );
+  assert.equal(dialog.labelMatches("Sam Lee", "jose"), false);
+  assert.equal(dialog.labelMatches("Sam Lee", "sam bob"), false);
+});
+
+test("admin search: an empty or punctuation-only query keeps every item", () => {
+  for (const query of ["", "   ", "'", "-.\u2019"]) {
+    assert.equal(dialog.labelMatches("Sam Lee", query), true, JSON.stringify(query));
+  }
 });
 
 // ---------------------------------------------------------------------------
