@@ -1054,6 +1054,8 @@ tab to the Hours tab and the new look, do these steps in this order:
 
 ## Setup
 
+For a short clone-to-deploy checklist, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 1. `pnpm install`
 2. Install clasp, Google's command-line tool for Apps Script:
    `npm install -g @google/clasp`
