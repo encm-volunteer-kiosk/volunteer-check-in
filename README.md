@@ -30,7 +30,8 @@ so hours can be credited to each volunteer and reported to grantmakers.
 - **Reports**: a Monthly Hours tab that updates by itself, a frozen monthly report with
   CSV and PDF downloads, saved filter views on the Log, and a warning when someone edits
   a column the kiosk fills (see Reports).
-- **Not built yet**: the nightly close of shifts nobody signed out of.
+- **Daily jobs**: a weekly email of flags to staff, and an auto clock-out at about 4 AM
+  that closes shifts nobody checked out of, with a guessed time, flagged (see Daily jobs).
 
 Team design pages (private; ask Ethan for access):
 
@@ -51,8 +52,9 @@ to fix it quietly.
 
 The kiosk writes one tab named `Log`. A month is a filter on the Date column, not a tab of
 its own. Other tabs in the spreadsheet, such as ENCM's "2026-11 Log", belong to staff; the
-kiosk never reads or writes them. The one exception is `Import ledger`, which Import past
-hours makes and adds to (see Kiosk admin menu).
+kiosk never reads or writes them. The exceptions are `Import ledger`, which Import past
+hours makes and adds to (see Kiosk admin menu), and `Shifts`, staff's shift schedule,
+which the auto clock-out reads and never writes (see Daily jobs).
 
 Row 1 is the header and stays frozen. The kiosk finds each column by its header text, not
 by its position, so staff can reorder columns, add columns of their own between them, and
@@ -78,7 +80,7 @@ an error naming the column, and `setupSheets` puts a missing one back (see Setup
 | N      | User Token                     | The volunteer's User Token from Volunteer Profiles, unhashed.          |
 | O      | Status                         | `open` from check-in until check-out, then `closed`.                   |
 | P      | Check-In Entered By            | `kiosk`, or the initials of the admin who entered the check-in.        |
-| Q      | Check-Out Entered By           | `kiosk`, or the initials of the admin who entered the check-out.       |
+| Q      | Check-Out Entered By           | `kiosk`, an admin's initials, or `auto-close` (see Daily jobs).        |
 | R      | Shift ID                       | A unique ID the kiosk gives each row; the admin menu finds rows by it. |
 
 The letters are where a new Log puts each column. A to N are ENCM's headers, word for word.
@@ -107,12 +109,24 @@ The kiosk writes these alerts here and nothing else:
   flag minutes" (Settings) from the tap.
 - `check-out differs by N min`, at check-out, when the stated check-out is more than
   "Check-out flag minutes" (Settings) from the tap.
+- `long shift: 10.25 h stated, over 8 h`, at check-out, when the shift's stated hours are
+  more than "Long shift flag hours" (Settings), whatever the clock or date (see Check-out
+  time).
 - `check-in time unreadable, stated hours left blank`, at check-out, when someone has
   edited the row's check-in times into something the kiosk can't read, such as `9ish` or
   a time on another date. A time typed alone, such as `9:00 AM`, is read (see Rows typed
   by hand), so it doesn't raise this alert. The tablet still shows the volunteer as
   checked in, and the row still closes at check-out, with blank hours, and counts as a
   shift of 0 hours until staff fix the times and hours by hand.
+
+The auto clock-out (see Daily jobs) writes one of these:
+
+- `auto clock-out at 1:30 PM, ...`, on a row it closed, ending with where the time came
+  from: `usual Tuesday length`, `Finish of the 9:00 AM Shifts window`, `arrival + 3 h`,
+  `time of the check-in tap`, `start of the next shift` or `time of this run`. The time
+  carries its weekday (`at Friday 2:00 AM`) when it is on another day than the row's Date.
+- `auto clock-out skipped: check-in time unreadable`, once, on an open row it couldn't
+  close because no time on it reads.
 
 Import past hours (Kiosk admin menu) writes one of these on an imported row whose name it
 couldn't match to exactly one volunteer:
@@ -178,24 +192,52 @@ server's clock.
 The server refuses a check-out time that is:
 
 - more than 5 minutes in the future. Up to 5 minutes ahead is taken as now.
-- on another day. The tablet only offers today.
 - before the volunteer's stated arrival. Equal to it is accepted, for 0 hours.
+- on another day than today, but only when the open row's check-in time can't be read.
+  Otherwise any time from the arrival up to now is accepted, past midnight too.
 
 A check-out earlier than the recorded check-in tap is allowed: a volunteer who states they
 arrived at 9:00, taps in at 11:00 and states they left at 10:00 is credited 1 stated hour,
 and the arrival alert marks the row. The server accepts any minute; the 15-minute steps
 are only the tablet's.
 
+### Overnight shifts
+
+A volunteer stays checked in on the tablet for "Auto clock-out after hours" (Settings,
+12 by default) after they tapped Check In, whatever arrival time they chose and past
+midnight too. A volunteer who checks in at 10 PM can check out at 1 AM, and is listed in
+the Checked-in sidebar until then. Once that time has passed since the tap, the row is
+the auto clock-out's (see Daily jobs): the tablet shows the volunteer as not checked in,
+and they can check in again. Check Out with no chosen time uses the server's clock,
+whatever the date.
+
+A check-out past midnight is written as a date and time on its own date. The Log reads
+every time on a row as being on the row's Date, so the kiosk and the reports read that
+check-out as unreadable. The hours are safe: Hours Served (stated) is worked out when the
+row is written, and every report counts that cell. Two things leave the row out: the
+monthly report's adjustments comparison, which needs all four times, and the admin
+overlap check, as for a check-out typed before the check-in.
+
+### Long shifts
+
+A tablet check-out whose stated hours (from the stated arrival to the stated check-out,
+the hours the row is credited) are more than "Long shift flag hours" (Settings, 8 by
+default) gets the alert `long shift: 10.25 h stated, over 8 h` in Admin Alerts? and a
+Flags row, whatever the clock or date. Exactly that many hours is not flagged. It catches
+a sign-out made the next morning that credits the whole night; a short overnight shift,
+such as 11 PM to 2 AM, is not flagged. Fix a sign-out, Add a shift and the auto clock-out
+don't raise it: staff typed those times, and every auto clock-out is flagged anyway.
+
 ## Flags tab
 
 A flag is an alert the kiosk writes to Admin Alerts? on the Log: a stated arrival or
-check-out far from the tap, a check-in time it couldn't read, or an imported name it
-couldn't match. Each one is also copied
+check-out far from the tap, a long shift, a check-in time it couldn't read, a time the
+auto clock-out guessed, or an imported name it couldn't match. Each one is also copied
 to a tab named `Flags`, one row per flag, so staff can tick it off once someone has looked
 at it. The Log row is still the record: Admin Alerts? keeps every flag.
 
-Only the kiosk adds Flags rows, at check-in and at check-out, and Import past hours, for
-names it couldn't match. Add a shift and Fix a sign-out add none: shifts added or closed
+Only the kiosk adds Flags rows, at check-in and at check-out, the auto clock-out, one per
+row it closes or skips, and Import past hours, for names it couldn't match. Add a shift and Fix a sign-out add none: shifts added or closed
 with them carry the admin's initials in the Entered By columns and show in the `Kiosk:
 Admin-entered` filter view (see Reports). Editing the Log by hand adds no Flags row.
 
@@ -215,7 +257,7 @@ Flagged` view.
 | F      | Reviewed       | A tickbox. Tick it once you've looked at the flag.                |
 | G      | Reviewed By    | Your initials.                                                    |
 | H      | Notes          | What you found or did.                                            |
-| I      | Source         | `kiosk check-in`, `kiosk check-out` or `import`.                  |
+| I      | Source         | `kiosk check-in`, `kiosk check-out`, `auto-close` or `import`.    |
 | J      | Log Row        | The Log row number then. A hint only: sorting the Log moves rows. |
 
 To review: open Data > Filter views > `Flags: Unreviewed`. It shows the flags not yet
@@ -453,7 +495,7 @@ cells by hand in the sheet.
 
 It can't close an open row whose Date or check-in time can't be read. Fix that cell by
 hand first, then use Fix a sign-out. If the row is dated today, the volunteer can still
-check out on the tablet instead: the row closes with blank hours and the
+check out on the tablet that day instead: the row closes with blank hours and the
 `check-in time unreadable, stated hours left blank` alert, and staff then fix the times
 and hours by hand.
 
@@ -466,7 +508,8 @@ called from the open spreadsheet, through a window the menu opened.
 ## Daily jobs
 
 Jobs the script runs on its own, on Google's timed triggers: the weekly flags email,
-checked every hour. They live in `apps-script/Jobs.js`.
+checked every hour, and the auto clock-out, once a day at about 4 AM Central. They live in
+`apps-script/Jobs.js`.
 
 ### Who runs them
 
@@ -530,6 +573,64 @@ Token. A missing or broken Flags tab makes the run fail (and the owner gets Goog
 failure email) rather than send a wrong count. If the run finds the kiosk's lock busy for
 30 seconds, it stops and the next hourly run catches up.
 
+### Auto clock-out
+
+Once a day, at some minute between 4 and 5 AM Central, the auto clock-out closes shifts
+nobody checked out of. It closes every `open` row dated on or after "Kiosk launch date"
+whose check-in tap was at least "Auto clock-out after hours" ago (or, for a row with no
+recorded tap, its stated arrival). That is the same line at which the tablet stops
+offering the row, so a row is never both the tablet's and the job's. It closes old rows
+as well as last night's, so a run that was missed is caught up the next day. A blank or
+unreadable "Kiosk launch date" makes the run fail, and the owner gets Google's failure
+email, rather than close every open row the Log has ever had.
+
+The time it writes is a guess, and never before the volunteer tapped in, after the run, or
+after the start of the volunteer's next shift. It tries, in order:
+
+1. **The volunteer's usual length** on that weekday: the middle value of their stated
+   hours on the same weekday in the last 26 weeks, from up to 8 of their most recent
+   shifts checked out at the tablet, by an admin, or typed by hand (never auto-closed or
+   imported ones). It needs at least 3 such shifts, and two thirds of them within an hour
+   of each other.
+2. **The Finish of their shift on the `Shifts` tab**: the window on that weekday whose
+   Start is nearest their arrival, counting an arrival up to 30 minutes early. A Finish
+   not after its Start is the next morning.
+3. **Their arrival plus 3 hours**, moved up to their check-in tap when that was later,
+   and back to their next shift's start when that was earlier.
+
+The row gets the guess in Check-Out Stated, Hours Served (stated) from the arrival to the
+guess, Status `closed`, and `auto-close` in Check-Out Entered By. Check-Out Recorded and
+Hours Served (timestamps) stay blank: nobody tapped. Admin Alerts? gets
+`auto clock-out at 1:30 PM, ...` naming where the time came from, and the Flags tab a row
+with Source `auto-close`. The guessed hours count in reports straight away. At the end it
+writes "Auto clock-out last run": when it ran and how many rows it closed. The weekly email
+warns when that is more than 2 days old.
+
+**The `Shifts` tab** is staff's; the job only reads it. It finds the columns by their
+headers, `Shifts` (the weekday, in full or its first three letters), `Start` and
+`Finish`, in the first of the tab's top rows that has all three; other columns, such as
+`Shift Schedule`, are ignored. Times may be sheet times or text such as `9:00 AM` or
+`9 AM`. A row missing any of the three is skipped. With no `Shifts` tab, or no such headers,
+step 2 is skipped and the run logs one line saying so.
+
+**To correct a guessed time**, edit the row on the Log by hand: Check-Out Stated and Hours
+Served (stated). Fix a sign-out only takes open rows. Tick the Flags row once done.
+
+**An open row whose check-in time can't be read** (such as `9ish`) can't be guessed for.
+From the day after its Date, the run leaves it open, gives it a Shift ID if it has none,
+and flags it once with `auto clock-out skipped: check-in time unreadable`. To clear it,
+type its check-in time on the Log, then close it with Fix a sign-out, or let the next run
+guess it.
+
+Open rows dated before "Kiosk launch date", or whose Date can't be read, are never closed
+or flagged. An open row counts no hours, and doesn't stop the volunteer checking in.
+
+Each run takes the kiosk's lock, so a tablet tap at that minute may wait or see "The kiosk
+is busy". A run that finds the lock busy for 30 seconds fails, and the next day's run
+catches up. A first run at ENCM may close a backlog of old open rows: `setupDailyJobs`
+logs how many a run would close now. A run stops starting new rows after 4.5 minutes,
+inside Google's 6-minute limit, and leaves the rest for the next day.
+
 ## Reports
 
 There are four tools for staff. All of them read the Log tab and none of them changes a
@@ -563,11 +664,12 @@ Log cell. No report shows a User Token: tokens are read only to tell volunteers 
   with a User Token, using its stated hours. It has no recorded time for the end the admin
   entered, so it is never in the adjustments comparison. It is listed under rows entered
   by an admin, with the initials.
-- **Auto-closed rows**: the nightly close isn't built, and what it will write isn't
-  decided. Whatever it writes, a row with a Status other than `open` or `closed` is not
-  counted and is listed for review. A row whose Check-In Entered By or Check-Out Entered
-  By holds something other than `kiosk` or initials, such as `auto-close`, is listed for
-  review too, and counts if it is `closed` with a User Token.
+- **Auto-closed rows** (see Daily jobs) are `closed`, keep their User Token, and count
+  with the hours from the guessed time. They have no Check-Out Recorded, so they are never
+  in the adjustments comparison. A report lists them under flagged rows and under rows
+  entered another way (`out "auto-close"`), and the `Kiosk: Flagged` and `Kiosk: Other
+  status or source` views show them. A row with a Status other than `open` or `closed` is
+  not counted and is listed for review.
 - **Imported rows** (Import past hours, Kiosk admin menu) are `closed`, have a User
   Token and Hours Served (stated), and count in the month of their Date. They have no
   times, so they are never in the adjustments comparison; a report lists them under rows
