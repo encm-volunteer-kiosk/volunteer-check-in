@@ -94,6 +94,11 @@
   padding-right: var(--sidebar-width);
 }
 
+/* Setup screen has no sidebar, so don't reserve space for it */
+.app-shell.setup {
+  padding-right: 0;
+}
+
 .checkin-sidebar .checkout-action {
   display: none;
 }
@@ -598,19 +603,26 @@
 }
 .back-button {
   position: absolute;
-  left: 34px;
-  top: 28px;
-  border: 0;
-  background: transparent;
+  left: 24px;
+  top: 24px;
+  border: 1px solid rgba(185, 212, 226, 0.9);
+  border-radius: 999px;
+  background: rgba(255, 253, 250, 0.94);
+  box-shadow: 0 6px 18px rgba(8, 47, 88, 0.14);
+  backdrop-filter: blur(5px);
   color: var(--navy);
-  min-height: 48px;
-  padding: 0 10px;
+  min-height: 44px;
+  padding: 0 16px 0 12px;
   display: flex;
   gap: 6px;
   align-items: center;
   font-weight: 800;
-  font-size: 17px;
+  font-size: 16px;
   z-index: 4;
+  transition: background 130ms ease;
+}
+.back-button:active {
+  background: #caeaf6;
 }
 .panel {
   width: min(540px, 100%);
