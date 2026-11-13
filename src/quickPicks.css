@@ -32,7 +32,8 @@
   touch-action: manipulation;
   transition:
     transform 80ms ease,
-    background 80ms ease;
+    background 80ms ease,
+    color 80ms ease;
 }
 .quick-pick {
   min-height: 62px;
@@ -47,6 +48,7 @@
   color: var(--muted);
   font-size: 13px;
   font-weight: 800;
+  transition: color 80ms ease;
 }
 /* Not on the chosen answer: iPad Safari keeps :hover on the last button tapped, and the
    light hover background would hide the chosen answer's white text. */
