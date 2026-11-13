@@ -982,30 +982,47 @@ test("one GridRange for every pivot and every slicer: Hours data from row 1, no 
   const source = { sheetId: 22, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 10 };
   assert.deepEqual(plain(L.hoursSourceRange(22)), source);
   assert.equal(plan.pivots.length, 3);
-  assert.equal(plan.slicers.length, 5);
+  assert.equal(plan.slicers.length, 7);
   for (const p of plan.pivots)
     assert.deepEqual(p.updateCells.rows[0].values[0].pivotTable.source, source);
   for (const s of plan.slicers) assert.deepEqual(s.addSlicer.slicer.spec.dataRange, source);
-  // No slicer is on Shifts, and every pivot filters on it.
+  // No slicer is on Shifts (G), and every pivot filters on it. From date reads A and To
+  // date D: two slicers on one column would share one filter.
   const headers = plain(L.hoursDataHeaders());
   assert.deepEqual(
-    plan.slicers.map((s) => headers[s.addSlicer.slicer.spec.columnIndex]),
-    ["Year", "Month", "Role/Type", "Activity", "Volunteer"],
+    plan.slicers.map((s) => [s.addSlicer.slicer.spec.columnIndex, s.addSlicer.slicer.spec.title]),
+    [
+      [1, "Year"],
+      [2, "Month"],
+      [8, "Role/Type"],
+      [9, "Activity"],
+      [5, "Volunteer"],
+      [0, "From date"],
+      [3, "To date"],
+    ],
   );
   assert.deepEqual(
-    plan.slicers.map((s) => s.addSlicer.slicer.spec.title),
+    plan.slicers.slice(0, 5).map((s) => headers[s.addSlicer.slicer.spec.columnIndex]),
     ["Year", "Month", "Role/Type", "Activity", "Volunteer"],
   );
-  for (const s of plan.slicers) {
-    assert.equal(s.addSlicer.slicer.position.overlayPosition.anchorCell.rowIndex, 4);
-    assert.equal(s.addSlicer.slicer.spec.applyToPivotTables, true);
-  }
-  // Wide enough that "Role/Type" and "Volunteer" show in full beside the "All" chip, and
-  // side by side without overlapping.
+  for (const s of plan.slicers) assert.equal(s.addSlicer.slicer.spec.applyToPivotTables, true);
+  // Five in row 5 and the two date slicers in row 6, each row from column A at 250 px
+  // steps: wide enough that "Role/Type" and "Volunteer" show in full beside the "All"
+  // chip, side by side without overlapping, and 32 px high in 38 px rows.
   const boxes = plan.slicers.map((s) => s.addSlicer.slicer.position.overlayPosition);
-  for (const b of boxes) assert.ok(b.widthPixels >= 240, "slicer width " + b.widthPixels);
-  for (let i = 1; i < boxes.length; i++)
-    assert.ok(boxes[i].offsetXPixels >= boxes[i - 1].offsetXPixels + boxes[i - 1].widthPixels);
+  assert.deepEqual(
+    boxes.map((b) => [b.anchorCell.sheetId, b.anchorCell.rowIndex, b.anchorCell.columnIndex]),
+    [0, 0, 0, 0, 0, 1, 1].map((r) => [11, 4 + r, 0]),
+  );
+  assert.deepEqual(
+    boxes.map((b) => b.offsetXPixels),
+    [0, 250, 500, 750, 1000, 0, 250],
+  );
+  for (const b of boxes) {
+    assert.equal(b.widthPixels, 240);
+    assert.equal(b.heightPixels, 32);
+    assert.equal(b.offsetYPixels, 2);
+  }
   for (const p of plan.pivots) {
     const f = p.updateCells.rows[0].values[0].pivotTable.filterSpecs;
     assert.deepEqual(
@@ -1051,19 +1068,21 @@ test("the three pivots: where they sit, their rows and values", () => {
     ],
   );
   assert.equal(month.values[3].formula, "=SUM(Hours)/SUM(Shifts)");
+  // One line per shift: the Shift label (K, offset 10) sorted by its box, newest first to
+  // start, then Role/Type and Activity as repeated labels with no totals.
   assert.deepEqual(
     shifts.rows.map((r) => [
-      headers[r.sourceColumnOffset],
+      r.sourceColumnOffset,
+      r.label,
       r.sortOrder,
       r.showTotals,
       r.repeatHeadings,
+      r.valueBucket,
     ]),
     [
-      ["Date", "DESCENDING", true, true],
-      ["Start", "ASCENDING", false, true],
-      ["Volunteer", "ASCENDING", false, true],
-      ["Role/Type", "ASCENDING", false, true],
-      ["Activity", "ASCENDING", false, true],
+      [10, "Shift", "DESCENDING", true, true, undefined],
+      [8, "Role/Type", "ASCENDING", false, true, undefined],
+      [9, "Activity", "ASCENDING", false, true, undefined],
     ],
   );
   assert.deepEqual(
@@ -1092,6 +1111,15 @@ test("the Grand Total rules come before the stripe rules, and every body row get
     assert.equal(r.rule.ranges[0].startRowIndex, 8);
     assert.equal(r.rule.ranges[0].endRowIndex, undefined);
   }
+  // Each pivot's rules cover its columns: A to C, E to I, and K to N for Shifts.
+  assert.deepEqual(
+    rules.map((r) => [r.rule.ranges[0].startColumnIndex, r.rule.ranges[0].endColumnIndex]),
+    [0, 1, 2].flatMap(() => [
+      [0, 3],
+      [4, 9],
+      [10, 14],
+    ]),
+  );
   assert.deepEqual(rules[0].rule.booleanRule.format.textFormat, { bold: true });
   assert.deepEqual(rules[6].rule.booleanRule.format.backgroundColorStyle.rgbColor, {
     red: 1,
@@ -1104,7 +1132,7 @@ test("the Grand Total rules come before the stripe rules, and every body row get
   assert.ok(kinds.lastIndexOf("updateCells") < kinds.indexOf("addSlicer"));
 });
 
-test("widths are fixed pixels for every column A to P, and rows 2 and 3 have their heights", () => {
+test("widths are fixed pixels for every column A to P, and rows 2, 3, 5 and 6 have their heights", () => {
   const plan = plain(L.hoursTabPlan(11, 22, "refresh"));
   const px = {};
   plan.widths.forEach((w) => {
@@ -1124,11 +1152,11 @@ test("widths are fixed pixels for every column A to P, and rows 2 and 3 have the
     H: 90,
     I: 110,
     J: 24,
-    K: 110,
-    L: 70,
-    M: 220,
-    N: 140,
-    O: 140,
+    K: 320,
+    L: 140,
+    M: 140,
+    N: 90,
+    O: 90,
     P: 90,
   });
   assert.deepEqual(
@@ -1139,10 +1167,21 @@ test("widths are fixed pixels for every column A to P, and rows 2 and 3 have the
     [
       [1, 66],
       [2, 44],
+      [4, 38],
+      [5, 38],
     ],
   );
   assert.equal(plan.frozenRows, 1);
-  assert.deepEqual(plain(plan.cells.map((c) => c.a1)), ["A1", "A2", "A3"]);
+  assert.deepEqual(plain(plan.cells.map((c) => c.a1)), [
+    "A1",
+    "A2",
+    "A3",
+    "A4",
+    "F6",
+    "A7",
+    "E7",
+    "K7",
+  ]);
   assert.equal(plan.cells[0].value, "Volunteer hours");
   assert.ok(!plan.cells.some((c) => c.a1 === "B1"), "B1 is written only by the render");
   assert.deepEqual(plan.data.formats, plain(L.hoursDataFormats()));
@@ -1168,11 +1207,371 @@ test("row 2 names the open refresh only when the open path refreshes", () => {
     const t = L.hoursUsageText(path);
     assert.match(
       t,
-      /Your picks are yours alone: nobody else sees them, and they're gone when you close the tab\./,
+      /Your picks are yours alone: nobody else sees them, and they're gone when you close the tab or reload the page\./,
     );
-    assert.match(t, /setupReports resets sorts\.$/);
+    assert.match(
+      t,
+      /or use From date and To date for a range of days; clear them all for all time\./,
+    );
+    assert.ok(
+      t.endsWith(
+        " To sort a table, pick an order in the box above it. The new order takes up to " +
+          L.hoursSortSeconds() +
+          " seconds to show, and it is shared: everyone sees it.",
+      ),
+      t,
+    );
+    assert.doesNotMatch(t, /resets sorts|Sort by in the editor/);
   }
 });
+
+test("the sort boxes' choices: each starts with Sort:, the starting choice first, and sorts by a value its pivot has", () => {
+  const tables = plain(L.hoursSortChoices());
+  assert.deepEqual(
+    tables.map((t) => [t.key, t.cell, t.merge, t.column, t.endColumn, t.pivot, t.start]),
+    [
+      ["volunteer", "A7", "A7:C7", 0, 3, "A8", "Sort: most hours first"],
+      ["month", "E7", "E7:I7", 4, 9, "E8", "Sort: oldest month first"],
+      ["shifts", "K7", "K7:N7", 10, 14, "K8", "Sort: newest first"],
+    ],
+  );
+  const pivots = plain(L.hoursPivots(L.hoursSourceRange(22), []));
+  tables.forEach((t, i) => {
+    assert.equal(t.choices[0].text, t.start);
+    const texts = t.choices.map((c) => c.text);
+    assert.equal(new Set(texts).size, texts.length, t.key + ": no choice twice");
+    for (const c of t.choices) {
+      assert.match(c.text, /^Sort: /);
+      assert.ok(["ASCENDING", "DESCENDING"].includes(c.sortOrder), c.text);
+      assert.ok(c.valuesIndex === null || c.valuesIndex < pivots[i].values.length, c.text);
+    }
+  });
+  // The orders each table offers, as the sort they give: [text, order, by value].
+  const sorts = (t) => t.choices.map((c) => [c.text, c.sortOrder, c.valuesIndex]);
+  assert.deepEqual(sorts(tables[0]), [
+    ["Sort: most hours first", "DESCENDING", 1],
+    ["Sort: fewest hours first", "ASCENDING", 1],
+    ["Sort: most shifts first", "DESCENDING", 0],
+    ["Sort: name A to Z", "ASCENDING", null],
+    ["Sort: name Z to A", "DESCENDING", null],
+  ]);
+  assert.deepEqual(sorts(tables[1]), [
+    ["Sort: oldest month first", "ASCENDING", null],
+    ["Sort: newest month first", "DESCENDING", null],
+    ["Sort: most hours first", "DESCENDING", 1],
+    ["Sort: most shifts first", "DESCENDING", 0],
+    ["Sort: most volunteers first", "DESCENDING", 2],
+  ]);
+  assert.deepEqual(sorts(tables[2]), [
+    ["Sort: newest first", "DESCENDING", null],
+    ["Sort: oldest first", "ASCENDING", null],
+    ["Sort: most hours first", "DESCENDING", 0],
+    ["Sort: fewest hours first", "ASCENDING", 0],
+  ]);
+  // Each by-value choice names the value it sorts by.
+  const names = pivots.map((p) => p.values.map((v) => v.name));
+  assert.deepEqual(
+    [names[0][1], names[0][0], names[1][1], names[1][0], names[1][2], names[2][0]],
+    ["Hours", "Shifts", "Hours", "Shifts", "Volunteers", "Hours"],
+  );
+});
+
+test("hoursBoxChoices keeps a box's own choice, and resets a blank, unknown or other box's value with a write-back", () => {
+  const row = (a, e, k) => {
+    const r = Array(14).fill("");
+    r[0] = a;
+    r[4] = e;
+    r[10] = k;
+    return r;
+  };
+  const read = (values) =>
+    plain(L.hoursBoxChoices(values)).map((b) => [b.key, b.cell, b.choice, b.writeBack]);
+  assert.deepEqual(
+    read(row("Sort: name Z to A", "Sort: most volunteers first", "Sort: oldest first")),
+    [
+      ["volunteer", "A7", "Sort: name Z to A", false],
+      ["month", "E7", "Sort: most volunteers first", false],
+      ["shifts", "K7", "Sort: oldest first", false],
+    ],
+  );
+  const starts = [
+    ["volunteer", "A7", "Sort: most hours first", true],
+    ["month", "E7", "Sort: oldest month first", true],
+    ["shifts", "K7", "Sort: newest first", true],
+  ];
+  // Blank, typed, spaced, another box's choice pasted over each box, not text at all, and
+  // a row 7 that is short or missing.
+  assert.deepEqual(read(row("", "", "")), starts);
+  assert.deepEqual(read(row("most hours", "Sort:", "newest first")), starts);
+  assert.deepEqual(read(row(" Sort: most hours first", "Sort: oldest month first ", "")), starts);
+  assert.deepEqual(
+    read(row("Sort: newest first", "Sort: name A to Z", "Sort: oldest month first")),
+    starts,
+  );
+  assert.deepEqual(read(row(7, null, new Date(0))), starts);
+  assert.deepEqual(read([]), starts);
+  assert.deepEqual(read(undefined), starts);
+  assert.deepEqual(
+    read(["Sort: name A to Z"]).map((b) => b[3]),
+    [false, true, true],
+  );
+  // A choice two boxes share is each box's own: "most hours first" pasted from A7 to E7.
+  assert.deepEqual(read(row("", "Sort: most hours first", "Sort: most hours first")).slice(1), [
+    ["month", "E7", "Sort: most hours first", false],
+    ["shifts", "K7", "Sort: most hours first", false],
+  ]);
+});
+
+test("every choice gives its sort on its table's outer row group, and the other tables keep their starting sort", () => {
+  const source = plain(L.hoursSourceRange(22));
+  const tables = plain(L.hoursSortChoices());
+  const outer = (pivots) =>
+    pivots.map((p) => [p.rows[0].sortOrder, p.rows[0].valueBucket ? p.rows[0].valueBucket : null]);
+  const startSorts = outer(plain(L.hoursPivots(source)));
+  assert.deepEqual(startSorts, [
+    ["DESCENDING", { valuesIndex: 1 }],
+    ["ASCENDING", null],
+    ["DESCENDING", null],
+  ]);
+  tables.forEach((t, i) => {
+    for (const c of t.choices) {
+      const picks = tables.map((u) => u.start);
+      picks[i] = c.text;
+      // As texts, and as hoursBoxChoices gives them.
+      for (const given of [picks, picks.map((choice) => ({ choice, writeBack: false }))]) {
+        const pivots = plain(L.hoursPivots(source, given));
+        const want = startSorts.slice();
+        want[i] = [c.sortOrder, c.valuesIndex === null ? null : { valuesIndex: c.valuesIndex }];
+        assert.deepEqual(outer(pivots), want, c.text);
+        // A value bucket with no buckets sorts by that value's Grand Total.
+        if (c.valuesIndex !== null) assert.equal(pivots[i].rows[0].valueBucket.buckets, undefined);
+        // Nothing but the order changes.
+        const strip = (p) => ({ ...p, rows: p.rows.map(({ sortOrder, valueBucket, ...r }) => r) });
+        assert.deepEqual(pivots.map(strip), plain(L.hoursPivots(source)).map(strip));
+      }
+    }
+  });
+  // An unknown choice gives the starting sort.
+  assert.deepEqual(
+    outer(plain(L.hoursPivots(source, ["x", "Sort: name A to Z", null]))),
+    startSorts,
+  );
+});
+
+test("row 7: the sort boxes, merged across their tables, filled, each a strict dropdown of its own choices, holding its choice", () => {
+  const plan = plain(L.hoursTabPlan(11, 22, "refresh"));
+  const tables = plain(L.hoursSortChoices());
+  const merges = plan.formats.filter((f) => f.mergeCells).map((f) => f.mergeCells.range);
+  for (const t of tables) {
+    assert.ok(
+      merges.some(
+        (r) =>
+          r.sheetId === 11 &&
+          r.startRowIndex === 6 &&
+          r.endRowIndex === 7 &&
+          r.startColumnIndex === t.column &&
+          r.endColumnIndex === t.endColumn,
+      ),
+      t.merge,
+    );
+    const fill = plan.formats.find(
+      (f) =>
+        f.repeatCell &&
+        f.repeatCell.range.startRowIndex === 6 &&
+        f.repeatCell.range.startColumnIndex === t.column,
+    );
+    assert.equal(fill.repeatCell.range.endColumnIndex, t.endColumn);
+    assert.deepEqual(
+      fill.repeatCell.cell.userEnteredFormat,
+      plain({
+        backgroundColorStyle: L.lookColorStyle(L.lookPalette().section),
+        textFormat: { foregroundColorStyle: L.lookColorStyle(L.lookPalette().navy) },
+      }),
+    );
+  }
+  // Rows 1 to 7 are unmerged first, so a merge never lands on an old one.
+  assert.deepEqual(plan.formats[0].unmergeCells.range, {
+    sheetId: 11,
+    startRowIndex: 0,
+    endRowIndex: 7,
+    startColumnIndex: 0,
+    endColumnIndex: 16,
+  });
+  assert.deepEqual(
+    plan.validations.map((v) => v.setDataValidation),
+    tables.map((t) => ({
+      range: {
+        sheetId: 11,
+        startRowIndex: 6,
+        endRowIndex: 7,
+        startColumnIndex: t.column,
+        endColumnIndex: t.column + 1,
+      },
+      rule: {
+        condition: {
+          type: "ONE_OF_LIST",
+          values: t.choices.map((c) => ({ userEnteredValue: c.text })),
+        },
+        strict: true,
+        showCustomUi: true,
+      },
+    })),
+  );
+  const cell = (p, a1) => p.cells.find((c) => c.a1 === a1).value;
+  assert.deepEqual(
+    tables.map((t) => cell(plan, t.cell)),
+    tables.map((t) => t.start),
+  );
+  assert.deepEqual(
+    plan.boxes.map((b) => b.choice),
+    tables.map((t) => t.start),
+  );
+  // In the requests: the merges before the dropdowns, the dropdowns before the pivots.
+  const kinds = plan.requests.map((r) => Object.keys(r)[0]);
+  assert.ok(kinds.lastIndexOf("mergeCells") < kinds.indexOf("setDataValidation"));
+  assert.ok(kinds.lastIndexOf("setDataValidation") < kinds.indexOf("updateCells"));
+  // Given choices: the boxes hold them and the pivots sort by them; an unknown one starts.
+  const picked = plain(
+    L.hoursTabPlan(
+      11,
+      22,
+      "refresh",
+      L.hoursBoxChoices([
+        "Sort: name A to Z",
+        "",
+        "",
+        "",
+        "nonsense",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "Sort: most hours first",
+      ]),
+    ),
+  );
+  assert.deepEqual(
+    ["A7", "E7", "K7"].map((a1) => cell(picked, a1)),
+    ["Sort: name A to Z", "Sort: oldest month first", "Sort: most hours first"],
+  );
+  assert.deepEqual(
+    picked.pivots.map((p) => p.updateCells.rows[0].values[0].pivotTable),
+    plain(L.hoursPivots(picked.source, ["Sort: name A to Z", "", "Sort: most hours first"])),
+  );
+});
+
+test("row 4's how-to line and F6's date note are one line of 10 pt navy text each, and the seconds come from hoursSortSeconds", () => {
+  const plan = plain(L.hoursTabPlan(11, 22, "refresh"));
+  const cell = (a1) => plan.cells.find((c) => c.a1 === a1).value;
+  const seconds = L.hoursSortSeconds();
+  assert.equal(seconds % 5, 0);
+  assert.equal(
+    cell("A4"),
+    "In a slicer, click Clear, then tick what you want. Reload the page to clear every slicer." +
+      " A sort box takes up to " +
+      seconds +
+      " seconds.",
+  );
+  assert.equal(cell("A4"), L.hoursHowTo());
+  assert.ok(L.hoursUsageText("refresh").includes("up to " + seconds + " seconds"));
+  assert.equal(
+    cell("F6"),
+    "Date range: From date > Filter by condition > Greater than or equal to > a date like" +
+      " 2026-11-01. To date: Less than or equal to.",
+  );
+  assert.equal(cell("F6"), L.hoursDateNote());
+  for (const [r, c] of [
+    [3, 0],
+    [5, 5],
+  ]) {
+    const f = plan.formats.find(
+      (x) =>
+        x.repeatCell &&
+        x.repeatCell.range.startRowIndex === r &&
+        x.repeatCell.range.startColumnIndex === c,
+    );
+    assert.deepEqual(f.repeatCell.range, {
+      sheetId: 11,
+      startRowIndex: r,
+      endRowIndex: r + 1,
+      startColumnIndex: c,
+      endColumnIndex: c + 1,
+    });
+    assert.deepEqual(f.repeatCell.cell.userEnteredFormat, {
+      wrapStrategy: "OVERFLOW_CELL",
+      textFormat: {
+        foregroundColorStyle: plain(L.lookColorStyle(L.lookPalette().navy)),
+        fontSize: 10,
+      },
+    });
+  }
+  // No merge in rows 4 and 6, so each line runs on over the empty cells to its right.
+  for (const f of plan.formats.filter((x) => x.mergeCells))
+    assert.ok(![3, 5].includes(f.mergeCells.range.startRowIndex));
+  // The Shifts pivot's Hours (N) shows two decimals; O and P hold nothing.
+  const numberAt = (c) =>
+    plan.formats.find(
+      (x) =>
+        x.repeatCell &&
+        x.repeatCell.range.startRowIndex === 8 &&
+        x.repeatCell.range.startColumnIndex === c,
+    );
+  assert.equal(numberAt(13).repeatCell.cell.userEnteredFormat.numberFormat.pattern, "0.00");
+  assert.equal(numberAt(14), undefined);
+  assert.equal(numberAt(15), undefined);
+});
+
+// The Shift label comes from the Hours data columns; until Hours data has its Shift column
+// (K) there is no label to order.
+test(
+  "the Shifts box's newest first and oldest first order a day's no-time and timed shifts as the label sorts",
+  { skip: plain(L.hoursDataHeaders())[10] !== "Shift" && "Hours data has no Shift column yet" },
+  () => {
+    nextRow = 2;
+    const entries = [
+      row({
+        token: "tok-a",
+        name: "Ann Lee",
+        date: "2026-11-13",
+        start: at("2026-11-13", "13:30"),
+      }),
+      row({
+        token: "tok-b",
+        name: "Bo Tran",
+        date: "2026-11-13",
+        start: NaN,
+        inBy: "import",
+        outBy: "import",
+      }),
+      row({
+        token: "tok-c",
+        name: "Cy Moss",
+        date: "2026-11-12",
+        start: at("2026-11-12", "15:00"),
+      }),
+      row({
+        token: "tok-d",
+        name: "Di Park",
+        date: "2026-11-13",
+        start: at("2026-11-13", "09:00"),
+      }),
+    ];
+    const labels = plain(L.hoursTable(entries, [], clock)).rows.map((r) => r[10]);
+    // Sheets orders text with digits before letters, as plain code-unit order does here.
+    const ascending = labels.slice().sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const who = (list) => list.map((l) => l.split(" · ")[1]);
+    // Oldest first: days oldest first; within a day the earliest start first, no time last.
+    assert.deepEqual(who(ascending), ["Cy Moss", "Di Park", "Ann Lee", "Bo Tran"]);
+    // Newest first: days newest first; within a day no time first, then latest to earliest.
+    assert.deepEqual(who(ascending.slice().reverse()), [
+      "Bo Tran",
+      "Ann Lee",
+      "Di Park",
+      "Cy Moss",
+    ]);
+  },
+);
 
 test("the tab names and marks", () => {
   assert.equal(L.hoursTabName(), "Hours");

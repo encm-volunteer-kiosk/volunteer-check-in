@@ -204,6 +204,20 @@ class FakeRange {
     this.sheet.validations.set(this.getA1Notation(), rule);
     return this;
   }
+  /** Removes every validation whose range overlaps this one. */
+  clearDataValidations() {
+    rec({ sheet: this.sheet.name, op: "clearDataValidations", a1: this.getA1Notation() });
+    for (const key of [...this.sheet.validations.keys()]) {
+      const v = this.sheet.getRange(key);
+      const apart =
+        v.row > this.row + this.rows - 1 ||
+        this.row > v.row + v.rows - 1 ||
+        v.col > this.col + this.cols - 1 ||
+        this.col > v.col + v.cols - 1;
+      if (!apart) this.sheet.validations.delete(key);
+    }
+    return this;
+  }
   protect() {
     const p = new FakeProtection(this.sheet, "RANGE", this);
     this.sheet.protections.push(p);
@@ -575,6 +589,19 @@ function server(logRows, opts = {}) {
             } else if (r.addConditionalFormatRule) {
               const rule = r.addConditionalFormatRule;
               bySheetId(rule.rule.ranges[0].sheetId).rules.splice(rule.index, 0, plain(rule.rule));
+            } else if (r.setDataValidation) {
+              // Kept by the range's A1, as Range.setDataValidation keeps it.
+              const g = r.setDataValidation.range;
+              const sheet = bySheetId(g.sheetId);
+              const a1 = sheet
+                .getRange(
+                  g.startRowIndex + 1,
+                  g.startColumnIndex + 1,
+                  g.endRowIndex - g.startRowIndex,
+                  g.endColumnIndex - g.startColumnIndex,
+                )
+                .getA1Notation();
+              sheet.validations.set(a1, plain(r.setDataValidation.rule));
             } else if (r.mergeCells) {
               bySheetId(r.mergeCells.range.sheetId).merges.push(plain(r.mergeCells.range));
             } else if (r.unmergeCells || r.repeatCell || r.updateDimensionProperties) {
@@ -1176,8 +1203,18 @@ test("setupReports builds Hours and Hours data, marked, fills them, and then del
     /^The tables show the Log as of the time in B1\. Newer taps show at the next refresh: from Kiosk admin > Refresh Hours, and each night\./,
   );
   assert.equal(hours.frozenRows, 1);
-  assert.equal(hours.slicers.length, 5);
+  assert.equal(hours.slicers.length, 7);
   assert.equal(hours.pivots.length, 3);
+  // A new tab's sort boxes hold their starting choices, each with its own dropdown.
+  const boxes = plain(s.ctx.hoursSortChoices());
+  assert.deepEqual(
+    boxes.map((b) => hours.getRange(b.cell).getValue()),
+    boxes.map((b) => b.start),
+  );
+  assert.deepEqual(
+    [...hours.validations.keys()],
+    boxes.map((b) => b.cell),
+  );
   const source = plain(s.ctx.hoursSourceRange(data.sheetId));
   for (const slicer of hours.slicers) assert.deepEqual(slicer.spec.dataRange, source);
   for (const p of hours.pivots) assert.deepEqual(p.rows[0].values[0].pivotTable.source, source);
@@ -1195,6 +1232,82 @@ test("setupReports builds Hours and Hours data, marked, fills them, and then del
   assert.match(text, /Hours is filled as of 2026-11-13 9:14 AM\./);
   assert.match(text, /The Monthly Hours tab was deleted/);
   assert.deepEqual(s.sheet("Log").state().cells, logBefore);
+});
+
+/** Each box's cell, choice text and the sort its pivot's outer group has, on the Hours tab. */
+function boxesAndSorts(s) {
+  const hours = s.sheet("Hours");
+  return plain(s.ctx.hoursSortChoices()).map((b) => {
+    const pivot = hours.pivots.find((p) => p.start.columnIndex === b.column);
+    const group = pivot.rows[0].values[0].pivotTable.rows[0];
+    return [
+      b.cell,
+      hours.getRange(b.cell).getValue(),
+      group.sortOrder,
+      group.valueBucket ? group.valueBucket.valuesIndex : null,
+    ];
+  });
+}
+
+test("setupReports keeps each sort box's choice through a rebuild and resets a blank or unknown box to its starting choice", () => {
+  const s = built();
+  assert.deepEqual(boxesAndSorts(s), [
+    ["A7", "Sort: most hours first", "DESCENDING", 1],
+    ["E7", "Sort: oldest month first", "ASCENDING", null],
+    ["K7", "Sort: newest first", "DESCENDING", null],
+  ]);
+  const hours = s.sheet("Hours");
+  hours.getRange("A7").setValue("Sort: name A to Z");
+  // The volunteer box's choice pasted onto the month box isn't one of the month box's.
+  hours.getRange("E7").setValue("Sort: name A to Z");
+  hours.getRange("K7").setValue("Sort: most hours first");
+  s.ctx.setupReports();
+  assert.deepEqual(boxesAndSorts(s), [
+    ["A7", "Sort: name A to Z", "ASCENDING", null],
+    ["E7", "Sort: oldest month first", "ASCENDING", null],
+    ["K7", "Sort: most hours first", "DESCENDING", 0],
+  ]);
+  assert.equal(hours.pivots.length, 3);
+  // Kept again over a second rebuild; a cleared box and a typed value go back to the start.
+  hours.getRange("A7").clearContent();
+  hours.getRange("E7").setValue("newest");
+  s.ctx.setupReports();
+  assert.deepEqual(boxesAndSorts(s), [
+    ["A7", "Sort: most hours first", "DESCENDING", 1],
+    ["E7", "Sort: oldest month first", "ASCENDING", null],
+    ["K7", "Sort: most hours first", "DESCENDING", 0],
+  ]);
+  assert.match(s.logs.join("\n"), /Hours is filled as of/);
+});
+
+test("setupReports clears every dropdown on the Hours tab before it lays out, so only the boxes' own are left", () => {
+  const s = built();
+  const hours = s.sheet("Hours");
+  const own = (cell) => plain(hours.validations.get(cell));
+  const a7 = own("A7");
+  const e7 = own("E7");
+  const k7 = own("K7");
+  assert.deepEqual(
+    a7.condition.values.map((v) => v.userEnteredValue),
+    plain(s.ctx.hoursSortChoices()[0].choices.map((c) => c.text)),
+  );
+  assert.equal(a7.strict, true);
+  assert.equal(a7.showCustomUi, true);
+  // A dropdown left where a layout once had one, and a box carrying another box's list.
+  hours.getRange("P20").setDataValidation({ list: "left behind" });
+  hours.getRange("B7").setDataValidation({ list: "left behind" });
+  hours.getRange("E7").setDataValidation(a7);
+  s.calls.length = 0;
+  s.ctx.setupReports();
+  assert.deepEqual([...hours.validations.keys()], ["A7", "E7", "K7"]);
+  assert.deepEqual([own("A7"), own("E7"), own("K7")], [a7, e7, k7]);
+  // Cleared over the whole tab inside the hold, before the clear and the layout's batch.
+  const at = (pred) => s.calls.findIndex(pred);
+  const cleared = at((c) => c.sheet === "Hours" && c.op === "clearDataValidations");
+  assert.equal(s.calls[cleared].a1, "A1:" + colLetters(hours.maxCols) + hours.maxRows);
+  assert.ok(at((c) => c.op === "docLock.tryLock") < cleared);
+  assert.ok(cleared < at((c) => c.sheet === "Hours" && c.op === "clear"));
+  assert.ok(cleared < at((c) => c.op === "batchUpdate" && c.value > 40));
 });
 
 test("setupReports gives a new Hours data its rows in one call before the pivots exist, and the table write grows nothing", () => {

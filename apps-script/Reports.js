@@ -317,19 +317,31 @@ function formatHoursRows_(data, from, to) {
 }
 
 /**
- * The Hours tab laid out from hoursTabPlan: every slicer, pivot, conditional format rule
- * and merge removed and the tab cleared whole; rows for the Shifts pivot (growHoursTab_)
- * over rows rows, the table setupReports is about to write, or over what Hours data holds
- * now, whichever is more; A1's title, then B1 rendered, then rows 2
- * and 3; then the formats, widths, rules, pivots and slicers in one batchUpdate through
- * the advanced Sheets service; row 1 frozen; the tab colour.
+ * The Hours tab laid out from hoursTabPlan: row 7's sort boxes read first, so each box
+ * that holds one of its own choices keeps it (hoursBoxChoices; a new tab, or one laid out
+ * before the boxes, gets the starting choices); every slicer, pivot, conditional format
+ * rule, merge and data validation removed and the tab cleared whole (clear() leaves data
+ * validation, so it is cleared on its own and no dropdown is left behind); rows for the
+ * Shifts pivot (growHoursTab_) over rows rows, the table setupReports is about to write,
+ * or over what Hours data holds now, whichever is more; A1's title, then B1 rendered, then
+ * rows 2 to 7's text and the boxes' choices; then the formats, widths, heights, the boxes'
+ * dropdowns, rules, pivots and slicers in one batchUpdate through the advanced Sheets
+ * service; row 1 frozen; the tab colour.
  */
 function layoutHoursTab_(ss, tabs, rows) {
   const hours = tabs.hours;
+  // A7:N7, or as much of it as the tab has.
+  const boxRow =
+    hours.getMaxRows() >= 7
+      ? hours.getRange(7, 1, 1, Math.min(14, hours.getMaxColumns())).getValues()[0]
+      : [];
+  const choices = hoursBoxChoices(boxRow);
   hours.getSlicers().forEach((s) => s.remove());
   hours.getPivotTables().forEach((p) => p.remove());
   hours.clearConditionalFormatRules();
-  hours.getRange(1, 1, hours.getMaxRows(), hours.getMaxColumns()).breakApart();
+  const whole = hours.getRange(1, 1, hours.getMaxRows(), hours.getMaxColumns());
+  whole.breakApart();
+  whole.clearDataValidations();
   hours.clear();
   if (hours.getMaxColumns() < 16) {
     hours.insertColumnsAfter(hours.getMaxColumns(), 16 - hours.getMaxColumns());
@@ -337,7 +349,7 @@ function layoutHoursTab_(ss, tabs, rows) {
   // The pivots below list whatever Hours data holds as soon as they exist, and then the
   // table of rows rows lands, so the tab gets rows for the larger before they are made.
   growHoursTab_(hours, Math.max(rows, tabs.data.getLastRow() - 1));
-  const plan = hoursTabPlan(hours.getSheetId(), tabs.data.getSheetId(), hoursOpenPath_());
+  const plan = hoursTabPlan(hours.getSheetId(), tabs.data.getSheetId(), hoursOpenPath_(), choices);
   const [title, ...rest] = plan.cells;
   hours.getRange(title.a1).setValue(title.value);
   renderHoursLine_(tabs);
