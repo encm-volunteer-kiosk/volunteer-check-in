@@ -65,9 +65,6 @@ function settingsDefaults(todayDate) {
     [volunteerHourValueSetting(), ""],
     ["Profiles problems", ""],
   ];
-  ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].forEach((day) =>
-    rows.push(["Closing time " + day, "17:00"]),
-  );
   rows.push(
     ["Auto clock-out after hours", String(defaultAutoClockOutHours())],
     ["Auto clock-out last run", ""],

@@ -321,7 +321,6 @@ there.
 | Check-out flag minutes        | 15                              | How far a stated check-out may be from the tap before it gets an alert.                    |
 | Volunteer hour value          | blank                           | The dollar value of one volunteer hour, for the monthly report (see Reports).              |
 | Profiles problems             | blank                           | Written by the kiosk: Profiles rows it had to leave out, and why.                          |
-| Closing time Monday to Sunday | 17:00                           | Not read. The auto clock-out takes shift times from the `Shifts` tab instead.              |
 | Auto clock-out after hours    | 12                              | Hours after the check-in tap that an open row stays on the tablet. 10 to 24 (below).       |
 | Auto clock-out last run       | blank                           | Written by the auto clock-out: when it last ran, Central, and how many rows it closed.     |
 | Long shift flag hours         | 8                               | A tablet check-out crediting more hours than this is flagged (below).                      |

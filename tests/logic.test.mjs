@@ -217,8 +217,8 @@ test("settingsDefaults", () => {
   assert.equal(defaults["Check-out flag minutes"], "15");
   assert.equal(defaults["Volunteer hour value"], "");
   assert.equal(defaults["Profiles problems"], "");
-  assert.equal(defaults["Closing time Monday"], "17:00");
-  assert.equal(defaults["Closing time Sunday"], "17:00");
+  assert.equal(defaults["Closing time Monday"], undefined);
+  assert.equal(defaults["Closing time Sunday"], undefined);
   assert.equal(defaults["Auto clock-out after hours"], "12");
   assert.equal(defaults["Auto clock-out last run"], "");
   assert.equal(defaults["Long shift flag hours"], "8");
@@ -230,15 +230,12 @@ test("settingsDefaults", () => {
   assert.equal(defaults["Daily jobs installed by"], "");
   assert.equal(defaults["Past hours file ID"], "");
   assert.equal(defaults["Past hours tab"], "Historical Hours");
-  assert.equal(rows.length, 26);
+  assert.equal(rows.length, 19);
   const names = rows.map((r) => r[0]);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
   // The new rows come after every row a sheet set up earlier already has.
-  assert.equal(
-    names.indexOf("Auto clock-out after hours"),
-    names.indexOf("Closing time Sunday") + 1,
-  );
+  assert.equal(names.indexOf("Auto clock-out after hours"), names.indexOf("Profiles problems") + 1);
   // Each default reads back as itself.
   assert.equal(L.parseAutoClockOutHours(defaults["Auto clock-out after hours"]), 12);
   assert.equal(L.parseLongShiftHours(defaults["Long shift flag hours"]), 8);
