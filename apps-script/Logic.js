@@ -5677,9 +5677,10 @@ function importHours(value) {
  * Log's kiosk days (importKioskDays; missing is empty), and a SHA-256 hex function.
  *
  * A row is importable when its Date reads as a day (parseStartDate) not after today, it
- * has a first or last name, and its hours are a number above 0 and at most 24. Wholly blank rows are skipped and not counted. A key counts every row
- * whose date reads and that has a name, left out or not, so fixing one row's hours in the
- * source doesn't change its neighbours' keys.
+ * has a first or last name, and its hours are a number above 0 and at most 24. Wholly
+ * blank rows are skipped and not counted. A key counts every row whose date reads and that
+ * has a name, left out or not, so fixing one row's hours in the source doesn't change its
+ * neighbours' keys.
  *
  * A name matches when exactly one Profiles volunteer has its name key. Returns {refusal}
  * (headers), or {rowsRead, toImport, alreadyImported, onLog, leftOut}: the

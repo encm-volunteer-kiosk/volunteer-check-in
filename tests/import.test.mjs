@@ -1037,6 +1037,32 @@ test("the plan marks a matched row whose volunteer has a kiosk shift that day", 
   assert.deepEqual(plain(L.importSummary(none).sameDayRows), []);
 });
 
+test("a same-day row already imported or already on the Log isn't counted as same day", () => {
+  const rows = [
+    ["2025-12-02", "Avery", "Quinn", 3, "", ""], // 2: same day, in the ledger
+    ["2025-11-30", "Blake", "Morrow", 2, "", ""], // 3: same day, its Shift ID on the Log
+    ["2025-12-02", "Avery", "Quinn", 1, "", ""], // 4: same day, to import
+  ];
+  const kioskDays = L.importKioskDays([
+    { dateText: "2025-12-02", token: "tok-avery", status: "closed", shiftId: "k-1" },
+    { dateText: "2025-11-30", token: "tok-blake", status: "closed", shiftId: "k-2" },
+  ]);
+  const [ledgered, logged] = plan(rows, { kioskDays }).toImport;
+  const p = plan(rows, {
+    kioskDays,
+    ledgerKeys: [ledgered.key],
+    logShiftIds: [logged.shiftId],
+  });
+  assert.deepEqual(plain(p.alreadyImported.map((i) => [i.sourceRow, i.sameDay])), [[2, true]]);
+  assert.deepEqual(plain(p.onLog.map((i) => [i.sourceRow, i.sameDay])), [[3, true]]);
+  const s = plain(L.importSummary(p));
+  assert.equal(s.toImport, 1);
+  assert.equal(s.alreadyImported, 1);
+  assert.equal(s.onLog, 1);
+  assert.equal(s.sameDay, 1);
+  assert.deepEqual(s.sameDayRows, [{ name: "Avery Quinn", date: "2025-12-02", row: 4 }]);
+});
+
 test("the same-day alert is in Admin Alerts? exactly when the row is same-day", () => {
   const alert = L.importSameDayAlert();
   assert.equal(
@@ -1297,6 +1323,44 @@ test("a Flags tab that can't be written still leaves the same-day alert on the L
   assert.equal(s.sheets["Import ledger"].getLastRow(), 14);
   assert.equal(s.sheets.Log.records()[1]["Admin Alerts?"], L.importSameDayAlert());
   assert.match(s.errors.join("\n"), /Flags: not copied/);
+});
+
+test("a same-day row spelt differently in the old sheet is named as on Profiles", () => {
+  const s = server({
+    source: [SOURCE_HEADER, ["2025-12-02", "avery ", " QUINN", 3, "2025.12", "C3"]],
+    log: [LOG_HEADER, kioskRow("kiosk-1", "tok-avery", "closed", "2025-12-02")],
+  });
+  const preview = plain(s.ctx.adminImportPreview("k", FORM)).summary;
+  assert.equal(preview.matched, 1);
+  assert.deepEqual(preview.sameDayRows, [{ name: "Avery Quinn", date: "2025-12-02", row: 2 }]);
+  const reply = plain(s.ctx.adminImportRun("k", FORM));
+  assert.equal(reply.imported, 1);
+  assert.equal(reply.sameDay, 1);
+  assert.equal(reply.flags, 1);
+  const row = s.sheets.Log.records()[1];
+  assert.equal(row["Volunteer Name"], "Avery Quinn");
+  assert.equal(row["Admin Alerts?"], L.importSameDayAlert());
+  const flags = s.sheets.Flags.records();
+  assert.equal(flags.length, 1);
+  assert.equal(flags[0]["Volunteer Name"], "Avery Quinn");
+  assert.equal(flags[0].Reason, L.importSameDayAlert());
+  assert.equal(flags[0]["Shift ID"], row["Shift ID"]);
+});
+
+test("a Log Date cell holding a date value counts on its Central day", () => {
+  // 21:00 Central on 2025-12-02, which is already 2025-12-03 in UTC.
+  const evening = new Date("2025-12-03T03:00:00Z");
+  const s = server({ log: [LOG_HEADER, kioskRow("kiosk-1", "tok-avery", "closed", evening)] });
+  const preview = plain(s.ctx.adminImportPreview("k", FORM)).summary;
+  assert.equal(preview.sameDay, 1);
+  assert.deepEqual(preview.sameDayRows, [{ name: "Avery Quinn", date: "2025-12-02", row: 2 }]);
+  const reply = plain(s.ctx.adminImportRun("k", FORM));
+  assert.equal(reply.sameDay, 1);
+  const flags = s.sheets.Flags.records().filter((f) => f.Reason === L.importSameDayAlert());
+  assert.deepEqual(
+    flags.map((f) => [f.Date, f["Volunteer Name"]]),
+    [["2025-12-02", "Avery Quinn"]],
+  );
 });
 
 // ---------------------------------------------------------------------------

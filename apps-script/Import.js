@@ -57,8 +57,9 @@ function adminImportPreview(key, form) {
  * Imports what the preview listed. form is {file, tab, initials}. Replies {ok: true,
  * fileName, tab, summary, done, imported, matched, unmatched, sameDay, hours, ledgerAdded,
  * flags, flagsFailed, remaining, message}: summary is the plan the run started from, the
- * rest what it wrote. sameDay counts the written rows each block found a kiosk shift for. done is false when it stopped part way (busy kiosk or the time limit);
- * message then says to run it again. Or a refusal, with nothing written.
+ * rest what it wrote. sameDay counts the written rows each block found a kiosk shift for.
+ * done is false when it stopped part way (busy kiosk or the time limit); message then says
+ * to run it again. Or a refusal, with nothing written.
  */
 function adminImportRun(key, form) {
   const denied = adminGuard_(key);
