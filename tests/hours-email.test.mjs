@@ -112,9 +112,13 @@ function entry(row, f) {
   };
 }
 
-/** A closed shift on date from 9:00 AM Central, hours long (the stated hours cell). */
+/**
+ * A closed shift on date from 9:00 AM Central, hours long (the stated hours cell). A Date
+ * that isn't yyyy-mm-dd (a typed "10/15/2026") gets its times from a fixed day.
+ */
 function shift(date, hours, more = {}) {
-  const inMs = centralMs(date + " 09:00");
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : "2026-10-15";
+  const inMs = centralMs(day + " 09:00");
   const n = Number(hours);
   return {
     dateText: date,
@@ -172,7 +176,7 @@ function fixtureRows() {
   add({ ...shift("2026-10-10", 3), outBy: "auto-close", alerts: "auto clock-out: time guessed" });
   add(shift("2026-10-17", "2.5"));
   add(shift("2026-10-24", 3.5));
-  add(shift("2026-11-02", 3));
+  add({ ...shift("2026-11-02", 3), notes: "Parked in lot B" });
   // Not counted on November 14.
   add({ ...shift("2026-11-13", ""), status: "open", outBy: "", statedOutMs: NaN });
   add(shift("2026-11-20", 3));
@@ -621,7 +625,7 @@ test("H3: no hours at all, none in the month, one shift, paper only above 0, the
   );
 });
 
-test("H3: the email holds no token, Shift ID, Log row, flag or note", () => {
+test("H3: the email holds no token, Shift ID, Log row, flag, note or other name", () => {
   for (const choice of ["this", "last"]) {
     const today = choice === "this" ? "2026-11-14" : "2026-11-03";
     const m = L.hoursEmailMessage({
@@ -632,8 +636,11 @@ test("H3: the email holds no token, Shift ID, Log row, flag or note", () => {
       signature: "",
     });
     const text = m.subject + "\n" + m.body;
-    ["tok-", "s-", "import", "Log row", "flag", "alert", "James", "auto"].forEach((part) =>
-      assert.ok(!text.includes(part), choice + ": " + part),
+    // The fixture's Shift IDs are "s-<row>" and "import-<n>"; the file name's "hours-to"
+    // is no Shift ID.
+    assert.ok(!/\bs-\d/.test(text), choice + ": a Shift ID");
+    ["tok-", "import", "Log row", "flag", "alert", "James", "Okafor", "auto", "lot B"].forEach(
+      (part) => assert.ok(!text.includes(part), choice + ": " + part),
     );
   }
 });
@@ -720,9 +727,13 @@ test("H4: profileEmailsFrom finds each volunteer's row by token, with the proble
   // Rows reordered: still found by token.
   const moved = [rows[2], rows[1], rows[0]];
   assert.deepEqual(plain(L.profileEmailsFrom(PROFILE_HEADER, moved, [MARIA]))["maria-id"].row, 4);
-  // No Email column: the problem for every volunteer.
+  // No Email column: the problem for every volunteer, each still found by token.
   const none = plain(
-    L.profileEmailsFrom(["Volunteer First Name", "User Token"], rows, [MARIA, JAMES]),
+    L.profileEmailsFrom(
+      ["Volunteer First Name", "User Token"],
+      rows.map((r) => [r[0], r[3]]),
+      [MARIA, JAMES],
+    ),
   );
   assert.deepEqual(none["maria-id"], {
     email: "",
@@ -731,7 +742,8 @@ test("H4: profileEmailsFrom finds each volunteer's row by token, with the proble
     text: "Volunteer Profiles has no Email column.",
   });
   assert.equal(none["james-id"].problem, "no-email-column");
-  assert.deepEqual(L.profileEmailHeaders(), ["email", "email address"]);
+  assert.equal(none["james-id"].row, 3);
+  assert.deepEqual(plain(L.profileEmailHeaders()), ["email", "email address"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -888,6 +900,32 @@ test("H7: the shifts file's exact text, its rows the all-time line's shifts", ()
   // With no shifts the file is its header alone.
   assert.equal(L.hoursEmailCsv([], clock), "Date,Check-in,Check-out,Hours\r\n");
   assert.equal(L.hoursEmailFileName("2026-11-14"), "volunteer-hours-to-2026-11-14.csv");
+});
+
+test("H7: shifts on one Date go by check-in time, then Log row, an unknown time last", () => {
+  const rows = [
+    entry(2, shift("2026-03-07", 1, { statedInMs: centralMs("2026-03-07 13:00") })),
+    entry(3, { ...shift("2026-03-07", 2), statedInMs: NaN, statedOutMs: NaN }),
+    entry(4, shift("2026-03-07", 3)),
+    entry(5, shift("2026-03-07", 4)),
+    entry(6, shift("2026-03-06", 5)),
+  ];
+  const p = L.hoursEmailPlan({
+    volunteer: MARIA,
+    entries: rows,
+    flags: [],
+    period: L.hoursEmailPeriod("this", "2026-03-31"),
+    todayDate: "2026-03-31",
+    listedTokens: LISTED,
+  });
+  assert.deepEqual(
+    p.allShifts.map((s) => s.row),
+    [6, 4, 5, 2, 3],
+  );
+  assert.deepEqual(
+    p.monthShifts.map((s) => s.hundredths),
+    [500, 300, 400, 100, 200],
+  );
 });
 
 // ---------------------------------------------------------------------------
