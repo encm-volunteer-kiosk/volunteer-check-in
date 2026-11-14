@@ -16,6 +16,8 @@
 //   added later is held to the same rule.
 // - The glue: the admin functions read and write an in-memory Log through Sheets.js, and
 //   the kiosk's check-in and check-out copy their flags to an in-memory Flags tab.
+// - Email hours: the preview and the send against stand-in MailApp, lock, cache and Hours
+//   emails tab, each of which a test can make busy or throw at the point it names.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -122,6 +124,32 @@ class FakeSheet {
     this.reads = [];
     this.name = "";
     this.afterValues = null;
+    this.frozenRows = 0;
+    this.protections = [];
+  }
+  setFrozenRows(n) {
+    this.noteWrite("setFrozenRows " + n);
+    this.frozenRows = n;
+  }
+  /** A tab protection, as protect() makes it: a description and warning-only, both set later. */
+  protect() {
+    this.noteWrite("protect");
+    const p = { description: "", warningOnly: false };
+    const protection = {
+      setDescription: (d) => ((p.description = d), protection),
+      setWarningOnly: (w) => ((p.warningOnly = w), protection),
+      getDescription: () => p.description,
+      state: p,
+    };
+    this.protections.push(protection);
+    return protection;
+  }
+  getProtections(type) {
+    assert.equal(type, "SHEET", "a tab's protections are asked for by ProtectionType.SHEET");
+    return this.protections.slice();
+  }
+  getSheetId() {
+    return 0;
   }
   noteRead(what) {
     this.reads.push(what);
@@ -255,6 +283,20 @@ class FakeSheet {
  * a test sets the clock to age one. errors collects what the server logs with
  * console.error. journal lists, in order, every sheet read and write (FakeSheet), each tab
  * the script opens ("read <tab> getSheetByName") and each flush ("flush").
+ *
+ * For Kiosk admin > Email hours…: opts.hoursEmails gives the Hours emails tab's rows (no tab
+ * by default; insertSheet makes one) and opts.quota the mail quota left today (1500).
+ * mail records the quota and every MailApp.sendEmail ({message, held}); mail.events lists
+ * both in order, each with whether the script lock was held. A send uses one of the quota.
+ * blobs lists every Utilities.newBlob. lock is the script lock: lock.busy (true, or a
+ * function of the try's number from 0) makes tryLock fail, lock.held says whether it is
+ * held now, and lock.tries and lock.takes count tryLock calls and the ones that got it.
+ * faults holds functions a test sets to make a call throw: sendEmail(message) returns a
+ * message to throw with, cachePut(key) and cacheRemove(key) return true to throw, account()
+ * returns true to make Session.getActiveUser throw, openById() true to make opening
+ * Profiles throw, flush() true to make SpreadsheetApp.flush throw (after it is journaled)
+ * and insertSheet() true to make a new tab fail. The other reads are made to throw through
+ * a sheet's afterValues.
  */
 function server(opts = {}) {
   const calls = [];
@@ -295,9 +337,19 @@ function server(opts = {}) {
     // Not enumerable, so a JSON copy of one sheet holds only that sheet.
     Object.defineProperty(sheet, "journal", { value: journal });
   }
+  if (opts.hoursEmails) sheets["Hours emails"] = new FakeSheet(opts.hoursEmails);
+  const register = (name, sheet) => {
+    sheet.name = name;
+    Object.defineProperty(sheet, "journal", { value: journal });
+  };
+  if (sheets["Hours emails"]) register("Hours emails", sheets["Hours emails"]);
   const shown = [];
   const menu = [];
   let uuid = 0;
+  const faults = {};
+  const lock = { held: false, tries: 0, takes: 0, busy: false };
+  const mail = { quota: opts.quota ?? 1500, sent: [], events: [] };
+  const blobs = [];
 
   /** A service whose every method call is recorded; a method it lacks throws. */
   const service = (name, methods) =>
@@ -306,6 +358,8 @@ function server(opts = {}) {
       {
         get(_, prop) {
           if (typeof prop !== "string") return undefined;
+          // A constant such as SpreadsheetApp.ProtectionType is read, not called.
+          if (methods[prop] && typeof methods[prop] !== "function") return methods[prop];
           return (...args) => {
             calls.push(name + "." + prop);
             if (!methods[prop]) throw new Error("unexpected call " + name + "." + prop);
@@ -323,7 +377,10 @@ function server(opts = {}) {
   const ctx = {
     console: { log: console.log, error: (...args) => errors.push(args.join(" ")) },
     Session: service("Session", {
-      getActiveUser: () => email(opts.active ?? "staff@example.org"),
+      getActiveUser: () => {
+        if (faults.account && faults.account()) throw new Error("Session read failed");
+        return email(opts.active ?? "staff@example.org");
+      },
       getEffectiveUser: () => email(opts.effective ?? opts.active ?? "staff@example.org"),
     }),
     CacheService: service("CacheService", {
@@ -342,10 +399,14 @@ function server(opts = {}) {
           put: (k, v) => {
             if (settingsKey(k)) failSettings("put");
             failProfiles(k, "put");
+            if (faults.cachePut && faults.cachePut(k)) throw new Error("cache.put failed");
             cache.set(k, v);
           },
           remove: (k) => {
             if (settingsKey(k)) failSettings("remove");
+            if (faults.cacheRemove && faults.cacheRemove(k)) {
+              throw new Error("cache.remove failed");
+            }
             cache.delete(k);
           },
         }),
@@ -359,9 +420,36 @@ function server(opts = {}) {
           }),
         ),
     }),
-    MailApp: service("MailApp", {}),
+    MailApp: service("MailApp", {
+      getRemainingDailyQuota: () => {
+        mail.events.push({ what: "quota", held: lock.held });
+        return mail.quota;
+      },
+      sendEmail: (...args) => {
+        assert.equal(args.length, 1, "sendEmail takes one message object");
+        const message = args[0];
+        mail.events.push({ what: "send", to: message.to, held: lock.held });
+        const thrown = faults.sendEmail && faults.sendEmail(message);
+        if (thrown) throw new Error(thrown);
+        mail.sent.push({ message, held: lock.held });
+        mail.quota--;
+      },
+    }),
     LockService: service("LockService", {
-      getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }),
+      getScriptLock: () => ({
+        tryLock: () => {
+          const n = lock.tries++;
+          const busy = typeof lock.busy === "function" ? lock.busy(n) : lock.busy;
+          if (busy) return false;
+          assert.equal(lock.held, false, "the script lock is taken twice at once");
+          lock.held = true;
+          lock.takes++;
+          return true;
+        },
+        releaseLock: () => {
+          lock.held = false;
+        },
+      }),
     }),
     SpreadsheetApp: service("SpreadsheetApp", {
       getUi: () => {
@@ -372,19 +460,31 @@ function server(opts = {}) {
           showModalDialog: (output, title) => shown.push({ output, title }),
         };
       },
+      ProtectionType: { SHEET: "SHEET" },
       getActiveSpreadsheet: () => ({
         getSheetByName: (name) => {
           journal.push("read " + name + " getSheetByName");
           return sheets[name] || null;
         },
+        insertSheet: (name) => {
+          if (faults.insertSheet && faults.insertSheet()) throw new Error("insertSheet failed");
+          assert.ok(!sheets[name], "a second tab named " + name);
+          journal.push("write " + name + " insertSheet");
+          sheets[name] = new FakeSheet([]);
+          register(name, sheets[name]);
+          return sheets[name];
+        },
+        getUrl: () => "https://docs.google.com/spreadsheets/d/log-1/edit",
       }),
       openById: (id) => {
+        if (faults.openById && faults.openById()) throw new Error("Profiles read failed");
         if (id !== "file-1" || !opts.profiles) throw new Error("no file " + id);
         const profiles = new FakeSheet(opts.profiles);
         return { getSheetByName: (name) => (name === "Volunteer Profiles" ? profiles : null) };
       },
       flush: () => {
         journal.push("flush");
+        if (faults.flush && faults.flush()) throw new Error("flush failed");
         return opts.onFlush ? opts.onFlush() : undefined;
       },
       newDataValidation: () => {
@@ -397,8 +497,8 @@ function server(opts = {}) {
         const template = { file };
         template.evaluate = () => {
           const output = { template: { ...template } };
-          output.setWidth = () => output;
-          output.setHeight = () => output;
+          output.setWidth = (w) => ((output.width = w), output);
+          output.setHeight = (h) => ((output.height = h), output);
           return output;
         };
         return template;
@@ -406,6 +506,11 @@ function server(opts = {}) {
     }),
     Utilities: service("Utilities", {
       getUuid: () => "uuid-" + ++uuid,
+      newBlob: (text, type, name) => {
+        const blob = { text, type, name };
+        blobs.push(blob);
+        return blob;
+      },
       sleep: () => undefined,
       // The algorithm and charset are read off the stand-in as functions; SHA-256 of UTF-8.
       computeDigest: (algorithm, text) =>
@@ -452,7 +557,7 @@ function server(opts = {}) {
   for (const key of opts.keys || []) cache.set(ctx.adminKeyCacheKey(key), "1");
   calls.length = 0;
   journal.length = 0;
-  return { ctx, calls, cache, sheets, shown, menu, errors, journal };
+  return { ctx, calls, cache, sheets, shown, menu, errors, journal, mail, lock, faults, blobs };
 }
 
 // ---------------------------------------------------------------------------
@@ -506,10 +611,15 @@ test("Admin.js, Reports.js and Jobs.js declare the public functions, and only fu
     "openMonthlyReportDialog",
     "adminReportMonths",
     "adminMonthlyReport",
+    "openEmailHoursDialog",
+    "adminHoursPreview",
+    "adminSendHours",
   ]) {
     assert.ok(PUBLIC.includes(name), name);
   }
   for (const name of [
+    "adminHoursPreview",
+    "adminSendHours",
     "adminReportMonths",
     "adminMonthlyReport",
     "adminFindShifts",
@@ -755,6 +865,7 @@ test("onOpen adds the menu first, and its items name the openers, Refresh Hours 
     ["Remove a shift…", "openRemoveShiftDialog"],
     ["Restore a shift…", "openRestoreShiftDialog"],
     ["Monthly report…", "openMonthlyReportDialog"],
+    ["Email hours…", "openEmailHoursDialog"],
     ["Import past hours…", "openImportDialog"],
     ["Refresh Hours", "refreshHoursNow"],
     ["Check the Log now", "checkLogNow"],
@@ -797,6 +908,26 @@ test("an opener puts a fresh key only into the dialog's HTML, and the key then w
     ok: true,
     shifts: [],
   });
+  // Every one of these windows is 480 by 600.
+  for (const d of s.shown) assert.deepEqual([d.output.width, d.output.height], [480, 600]);
+});
+
+test("the Email hours opener serves the admin window in email mode, 480 by 720, and its key works", () => {
+  const s = server({ volunteers: [SAM] });
+  assert.equal(s.ctx.openEmailHoursDialog(), undefined);
+  assert.equal(s.shown.length, 1);
+  const { output, title } = s.shown[0];
+  assert.equal(title, "Email volunteers their hours");
+  assert.equal(output.template.file, "AdminDialog");
+  assert.equal(output.template.mode, "email");
+  assert.equal(output.template.contactNote, "");
+  assert.deepEqual([output.width, output.height], [480, 720]);
+  assert.ok(output.template.key);
+  assert.ok(s.cache.has("admin-key:" + output.template.key));
+  assert.equal(s.ctx.adminRoster(output.template.key).ok, true);
+  // A second window gets a key of its own.
+  s.ctx.openEmailHoursDialog();
+  assert.notEqual(s.shown[1].output.template.key, output.template.key);
 });
 
 test("the Monthly report opener serves Report.html with a fresh key, and the key then works", () => {
@@ -819,6 +950,7 @@ const CONTACT_OPENERS = [
   "openRemoveShiftDialog",
   "openRestoreShiftDialog",
   "openMonthlyReportDialog",
+  "openEmailHoursDialog",
 ];
 
 test("the admin and Monthly report openers put the Kiosk contact line into the window", () => {
@@ -835,6 +967,14 @@ test("the admin and Monthly report openers put the Kiosk contact line into the w
       "If this keeps happening, contact: Pat Example, pat@example.org",
       name,
     );
+    // The admin windows are 480 by 600, the Email hours window 480 by 720.
+    if (s.shown[0].output.template.file === "AdminDialog") {
+      assert.deepEqual(
+        [s.shown[0].output.width, s.shown[0].output.height],
+        [480, name === "openEmailHoursDialog" ? 720 : 600],
+        name,
+      );
+    }
     // A blank contact adds nothing.
     const blank = server({ settings: [...settings.slice(0, 2), ["Kiosk contact", " \n "]] });
     blank.ctx[name]();
@@ -2522,6 +2662,1183 @@ test("the row read again is null when the read throws, and a blank row past the 
 });
 
 // ---------------------------------------------------------------------------
+// Kiosk admin > Email hours…
+
+// The sample roster's people, in a Profiles tab with an Email column. Their ids are the
+// hashed tokens, as the kiosk list makes them.
+const EMAIL_PROFILE_HEADER = [
+  "Volunteer\nFirst Name",
+  "Volunteer\nLast Name",
+  "Volunteer\nPhone",
+  "Start Date\nmm/dd/yyyy",
+  "Email",
+  "Onboarding\nToken",
+];
+const person = (first, last, phone, email, token) => ({
+  first,
+  last,
+  name: first + " " + last,
+  phone,
+  email,
+  token,
+  id: createHash("sha256").update(token, "utf8").digest("hex").slice(0, 16),
+});
+const MARIA = person(
+  "Maria",
+  "Alvarez",
+  "615-555-0101",
+  "maria.alvarez@example.org",
+  "sample-token-01",
+);
+const JAMES = person(
+  "James",
+  "Okafor",
+  "615-555-0102",
+  "james.okafor@example.org",
+  "sample-token-02",
+);
+const DEV = person("Dev", "Patel", "615-555-0104", "dev.patel@example.org", "sample-token-04");
+// On the Profiles tab only in the tests that add her; she has no shifts.
+const ANA = person("Ana", "Diaz", "615-555-0105", "ana.diaz@example.org", "sample-token-05");
+const profileRow = (p) => [p.first, p.last, p.phone, "02/15/2026", p.email, p.token];
+const EMAIL_SETTINGS = [
+  ["Setting", "Value"],
+  ["Volunteer Profiles file ID", "file-1"],
+  ["Volunteer Profiles tab", "Volunteer Profiles"],
+  ["Hours email contact", "Pat Example\npat@example.org"],
+  ["Hours email signature", ""],
+];
+const EMAIL_TODAY = "2026-11-14";
+const EMAIL_NOW = centralMs(EMAIL_TODAY + " 10:00");
+/** A closed kiosk shift: date, check-in and check-out "HH:mm" Central, and stated hours. */
+const closedShift = (shiftId, p, date, from, to, hours) =>
+  logRow({
+    "Shift ID": shiftId,
+    "User Token": p.token,
+    Status: "closed",
+    Date: date,
+    "Volunteer Name": p.name,
+    "Check-In Recorded (timestamp)": at(date, from),
+    "Check-In Stated (user)": at(date, from),
+    "Check-Out Recorded (timestamp)": at(date, to),
+    "Check-Out Stated (user)": at(date, to),
+    "Hours Served (timestamps)": hours,
+    "Hours Served (stated)": hours,
+    "Check-In Entered By": "kiosk",
+    "Check-Out Entered By": "kiosk",
+  });
+const emailLog = () => [
+  LOG_HEADER,
+  closedShift("maria-1", MARIA, "2026-10-05", "09:00", "11:00", 2),
+  closedShift("maria-2", MARIA, "2026-11-02", "09:00", "12:00", 3),
+  closedShift("maria-3", MARIA, "2026-11-12", "13:00", "16:30", 3.5),
+  closedShift("j-1", JAMES, "2026-11-03", "10:00", "12:15", 2.25),
+  closedShift("d-1", DEV, "2026-11-04", "14:00", "15:00", 1),
+];
+/**
+ * A server for the Email hours tests: the clock on EMAIL_NOW, a dialog key "k", Settings
+ * with an Hours email contact, Profiles with Maria, James and Dev, and their shifts.
+ * profiles is the Profiles tab's rows, which the test may change between calls: each
+ * openById reads them afresh, while the kiosk list stays cached after its first read.
+ */
+const emailServer = (opts = {}) => {
+  const settings = (opts.settings || EMAIL_SETTINGS).map((r) => r.slice());
+  const profiles = opts.profiles || [EMAIL_PROFILE_HEADER, ...[MARIA, JAMES, DEV].map(profileRow)];
+  const clock = { now: EMAIL_NOW };
+  const s = server({
+    keys: ["k"],
+    log: emailLog(),
+    ...opts,
+    settings,
+    profiles,
+    get now() {
+      return clock.now;
+    },
+  });
+  // The per-volunteer log lines, kept out of the test output.
+  const logs = [];
+  s.ctx.console.log = (...args) => logs.push(args.join(" "));
+  return { ...s, profiles, clock, logs };
+};
+const previewHours = (s, ids, more = {}) =>
+  plain(s.ctx.adminHoursPreview("k", { ids, choice: "this", attach: false, ...more }));
+const sendHours = (s, ticket, ids, initials = "JP") =>
+  plain(s.ctx.adminSendHours("k", { ticket, ids, initials }));
+/** The Hours emails tab's data rows, each as {header: value}. */
+const hoursEmailRows = (s) => {
+  const sheet = s.sheets["Hours emails"];
+  if (!sheet) return [];
+  const out = [];
+  for (let r = 2; r <= sheet.lastRow(); r++) out.push(sheet.rowByHeader(r));
+  return out;
+};
+const sentTo = (s) => s.mail.sent.map((m) => m.message.to);
+const ticketKey = (ticket) => "hours-email:" + ticket;
+
+const withEmail = (p, email) => {
+  const row = profileRow(p);
+  row[4] = email;
+  return row;
+};
+/** The ticket a preview left in the script cache, as an object, or null. */
+const ticketItem = (s, ticket) => {
+  const text = s.cache.get(ticketKey(ticket));
+  return text === undefined ? null : JSON.parse(text);
+};
+/** A row without its Sent at cell, which is checked on its own. */
+const rowOf = (r) => {
+  const { "Sent at": sentAt, ...rest } = r;
+  return rest;
+};
+const R_TAKEN = "not sent: this preview has expired or was already sent for them";
+const R_CHANGED = "not sent: changed since the preview; press Preview again to check it";
+const R_QUOTA = "not sent: Google's daily email limit for this account is used up";
+const R_GONE = "not sent: Not on the volunteer list any more; press Preview again.";
+const CONTACT_PROBLEM =
+  "Type who volunteers should contact about their hours in Hours email contact on the Settings tab, then press Preview again.";
+const MARIA_CSV =
+  "Date,Check-in,Check-out,Hours\r\n" +
+  "2026-10-05,9:00 AM,11:00 AM,2.00\r\n" +
+  "2026-11-02,9:00 AM,12:00 PM,3.00\r\n" +
+  "2026-11-12,1:00 PM,4:30 PM,3.50\r\n";
+const HOURS_COL = LOG_HEADER.indexOf("Hours Served\n(stated)");
+/** The Log row (0-based in sheet.rows) of a Shift ID. */
+const logIndex = (s, shiftId) => s.sheets.Log.rows.findIndex((r) => r[0] === shiftId);
+/** A row the send writes, by header, for a volunteer and a result, before Sent at. */
+const expectedRow = (sendId, p, result, hours, more = {}) => ({
+  "Send ID": sendId,
+  "Volunteer Name": p.name,
+  "Volunteer ID": p.id,
+  Email: p.email,
+  Month: "2026-11",
+  "Month hours": hours ? hours[0] : "",
+  Year: "2026",
+  "Year hours": hours ? hours[1] : "",
+  "All-time hours": hours ? hours[2] : "",
+  "Shifts file": "no",
+  "Sent by": "JP",
+  "Sent from": "staff@example.org",
+  Result: result,
+  ...more,
+});
+const MARIA_HOURS = [6.5, 8.5, 8.5];
+const JAMES_HOURS = [2.25, 2.25, 2.25];
+const DEV_HOURS = [1, 1, 1];
+
+test("Email hours: a Send with no preview is refused as stale and sends nothing", () => {
+  const s = emailServer();
+  for (const ticket of ["uuid-9", "", undefined, "no such/ticket"]) {
+    const reply = sendHours(s, ticket, [MARIA.id]);
+    assert.deepEqual(reply, plain(s.ctx.refusal("HOURS_EMAIL_STALE")), String(ticket));
+    assert.equal(
+      reply.message,
+      "This preview has expired or was already sent. Press Preview again.",
+    );
+  }
+  // A ticket past its time is stale too, though the cache still holds it.
+  const p = previewHours(s, [MARIA.id]);
+  assert.ok(s.cache.has(ticketKey(p.ticket)));
+  s.clock.now = EMAIL_NOW + s.ctx.adminKeySeconds() * 1000;
+  assert.deepEqual(sendHours(s, p.ticket, [MARIA.id]), plain(s.ctx.refusal("HOURS_EMAIL_STALE")));
+  assert.deepEqual(s.mail.sent, []);
+  assert.equal(s.sheets["Hours emails"], undefined);
+});
+
+test("Email hours: a preview leaves out a volunteer with no email and tickets the rest", () => {
+  const profiles = [EMAIL_PROFILE_HEADER, profileRow(MARIA), profileRow(JAMES), withEmail(DEV, "")];
+  const s = emailServer({ profiles });
+  const reply = previewHours(s, [DEV.id, MARIA.id, JAMES.id, MARIA.id]);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.month, "2026-11");
+  assert.equal(reply.asOf, EMAIL_TODAY);
+  assert.equal(
+    reply.from,
+    "ENCM Volunteer Kiosk, from a no-reply address (sent by staff@example.org)",
+  );
+  // Roster order, each once.
+  assert.deepEqual(
+    reply.volunteers.map((v) => v.id),
+    [MARIA.id, JAMES.id, DEV.id],
+  );
+  const dev = reply.volunteers[2];
+  assert.equal(dev.to, "");
+  assert.deepEqual(dev.problems, [
+    "Volunteer Profiles row 4 has no email. Add it there, then press Preview again.",
+  ]);
+  // The hours still show, so the admin can check them.
+  assert.equal(dev.totals.all.hundredths, 100);
+  assert.equal(reply.volunteers[0].to, MARIA.email);
+  assert.equal(reply.volunteers[0].profilesRow, 2);
+  assert.equal(reply.volunteers[0].lastSent, "never");
+  assert.deepEqual(reply.setProblems, []);
+  assert.deepEqual(reply.sendIds, [MARIA.id, JAMES.id]);
+  assert.equal(reply.chunkSize, 10);
+  assert.ok(reply.ticket);
+  const item = ticketItem(s, reply.ticket);
+  assert.deepEqual(Object.keys(item.entries).sort(), [MARIA.id, JAMES.id].sort());
+  assert.deepEqual(Object.keys(item.entries[MARIA.id]).sort(), ["digest", "label", "name", "to"]);
+  assert.equal(item.entries[MARIA.id].name, "Maria Alvarez");
+  assert.equal(item.entries[MARIA.id].label, "Maria Alvarez");
+  assert.equal(item.entries[MARIA.id].to, MARIA.email);
+  assert.match(item.entries[MARIA.id].digest, /^[0-9a-f]{64}$/);
+  assert.equal(item.choice, "this");
+  assert.equal(item.attach, false);
+  // The Send ID is a uuid without its dashes, cut to 8 characters: "uuid-2" on the stand-in.
+  assert.equal(item.sendId, "uuid2");
+  // A preview sends nothing and reads the quota once, for the set.
+  assert.deepEqual(s.mail.sent, []);
+  assert.deepEqual(s.mail.events, [{ what: "quota", held: false }]);
+  assert.equal(s.lock.tries, 0);
+
+  // With nobody left to send, no ticket.
+  const alone = previewHours(s, [DEV.id]);
+  assert.deepEqual(alone.setProblems, [
+    "None of the ticked volunteers can be sent; fix the problems shown, then press Preview again.",
+  ]);
+  assert.deepEqual(alone.sendIds, []);
+  assert.equal(alone.ticket, "");
+});
+
+test("Email hours: a Send of the ticket sends each email as the flags email is sent, with the file when asked", () => {
+  const s = emailServer();
+  const preview = previewHours(s, [MARIA.id, JAMES.id], { attach: true });
+  const sendId = ticketItem(s, preview.ticket).sendId;
+  const reply = sendHours(s, preview.ticket, preview.sendIds);
+  assert.deepEqual(reply, {
+    ok: true,
+    results: [
+      { id: MARIA.id, result: "sent" },
+      { id: JAMES.id, result: "sent" },
+    ],
+    recordFailed: false,
+  });
+  assert.deepEqual(sentTo(s), [MARIA.email, JAMES.email]);
+  s.mail.sent.forEach(({ message }, i) => {
+    const shown = preview.volunteers[i];
+    // No replyTo, htmlBody, cc or bcc.
+    assert.deepEqual(Object.keys(message).sort(), [
+      "attachments",
+      "body",
+      "name",
+      "noReply",
+      "subject",
+      "to",
+    ]);
+    assert.equal(message.subject, shown.subject);
+    assert.equal(message.body, shown.body);
+    assert.equal(message.name, s.ctx.flagsEmailSenderName());
+    assert.equal(message.noReply, true);
+    assert.equal(message.attachments.length, 1);
+    assert.equal(message.attachments[0].type, "text/csv");
+    assert.equal(message.attachments[0].name, "volunteer-hours-to-2026-11-14.csv");
+  });
+  assert.equal(s.mail.sent[0].message.attachments[0].text, MARIA_CSV);
+  assert.equal(
+    s.mail.sent[1].message.attachments[0].text,
+    "Date,Check-in,Check-out,Hours\r\n2026-11-03,10:00 AM,12:15 PM,2.25\r\n",
+  );
+  const rows = hoursEmailRows(s);
+  assert.deepEqual(rows.map(rowOf), [
+    expectedRow(sendId, MARIA, "sent", MARIA_HOURS, { "Shifts file": "yes" }),
+    expectedRow(sendId, JAMES, "sent", JAMES_HOURS, { "Shifts file": "yes" }),
+  ]);
+  for (const r of rows) assert.equal(r["Sent at"].getTime(), EMAIL_NOW);
+
+  // Without the box, no attachments key at all.
+  const t = emailServer();
+  const plainPreview = previewHours(t, [MARIA.id]);
+  assert.equal(plainPreview.volunteers[0].attachment, null);
+  assert.equal(sendHours(t, plainPreview.ticket, [MARIA.id]).results[0].result, "sent");
+  assert.deepEqual(Object.keys(t.mail.sent[0].message).sort(), [
+    "body",
+    "name",
+    "noReply",
+    "subject",
+    "to",
+  ]);
+  assert.deepEqual(t.blobs, []);
+  assert.equal(hoursEmailRows(t)[0]["Shifts file"], "no");
+});
+
+test("Email hours: the ticket in the cache decides, and a repeat gets what it holds", () => {
+  // A second Send of the same set, after the first took every entry, is stale.
+  const s = emailServer();
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  sendHours(s, p.ticket, p.sendIds);
+  assert.equal(s.cache.has(ticketKey(p.ticket)), false);
+  assert.deepEqual(sendHours(s, p.ticket, p.sendIds), plain(s.ctx.refusal("HOURS_EMAIL_STALE")));
+  assert.equal(s.mail.sent.length, 2);
+  assert.equal(hoursEmailRows(s).length, 2);
+
+  // Send [a, b], then [a, c]: a was already sent, c goes.
+  const t = emailServer();
+  const q = previewHours(t, [MARIA.id, JAMES.id, DEV.id]);
+  sendHours(t, q.ticket, [MARIA.id, JAMES.id]);
+  assert.deepEqual(Object.keys(ticketItem(t, q.ticket).entries), [DEV.id]);
+  const mixed = sendHours(t, q.ticket, [MARIA.id, DEV.id]);
+  assert.deepEqual(mixed.results, [
+    { id: MARIA.id, result: R_TAKEN },
+    { id: DEV.id, result: "sent" },
+  ]);
+  assert.deepEqual(sentTo(t), [MARIA.email, JAMES.email, DEV.email]);
+  assert.deepEqual(
+    hoursEmailRows(t).map((r) => r["Volunteer ID"]),
+    [MARIA.id, JAMES.id, DEV.id],
+  );
+  assert.equal(t.cache.has(ticketKey(q.ticket)), false);
+
+  // With a and c taken and b's entry still held, [a, c] takes nothing: no read, no row.
+  const u = emailServer();
+  const r = previewHours(u, [MARIA.id, JAMES.id, DEV.id]);
+  sendHours(u, r.ticket, [MARIA.id, DEV.id]);
+  const held = u.cache.get(ticketKey(r.ticket));
+  u.sheets.Log.reads.length = 0;
+  u.journal.length = 0;
+  u.calls.length = 0;
+  const takes = u.lock.takes;
+  const none = sendHours(u, r.ticket, [MARIA.id, DEV.id]);
+  assert.deepEqual(none, {
+    ok: true,
+    results: [
+      { id: MARIA.id, result: R_TAKEN },
+      { id: DEV.id, result: R_TAKEN },
+    ],
+    recordFailed: false,
+  });
+  assert.equal(u.mail.sent.length, 2);
+  assert.deepEqual(u.sheets.Log.reads, []);
+  assert.ok(!u.calls.includes("SpreadsheetApp.openById"));
+  assert.deepEqual(
+    u.journal.filter((j) => j.startsWith("write ")),
+    [],
+  );
+  assert.equal(hoursEmailRows(u).length, 2);
+  assert.equal(u.lock.takes, takes + 1);
+  // b's entry is still there to send.
+  assert.equal(u.cache.get(ticketKey(r.ticket)), held);
+  assert.deepEqual(sendHours(u, r.ticket, [JAMES.id]).results, [{ id: JAMES.id, result: "sent" }]);
+});
+
+test("Email hours: a volunteer changed between Preview and Send isn't sent, and still gets a row", () => {
+  // A Log hours cell changed.
+  const s = emailServer();
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  const sendId = ticketItem(s, p.ticket).sendId;
+  s.sheets.Log.rows[logIndex(s, "j-1")][HOURS_COL] = 2.5;
+  assert.deepEqual(sendHours(s, p.ticket, p.sendIds).results, [
+    { id: MARIA.id, result: "sent" },
+    { id: JAMES.id, result: R_CHANGED },
+  ]);
+  assert.deepEqual(sentTo(s), [MARIA.email]);
+  assert.deepEqual(hoursEmailRows(s).map(rowOf), [
+    expectedRow(sendId, MARIA, "sent", MARIA_HOURS),
+    expectedRow(sendId, JAMES, R_CHANGED, null),
+  ]);
+
+  // A Profiles Email cell changed: the row keeps the previewed address.
+  const t = emailServer();
+  const q = previewHours(t, [MARIA.id, JAMES.id]);
+  t.profiles[2][4] = "james.okafor.new@example.org";
+  assert.deepEqual(sendHours(t, q.ticket, q.sendIds).results, [
+    { id: MARIA.id, result: "sent" },
+    { id: JAMES.id, result: R_CHANGED },
+  ]);
+  assert.deepEqual(sentTo(t), [MARIA.email]);
+  assert.equal(hoursEmailRows(t)[1].Email, JAMES.email);
+  assert.equal(hoursEmailRows(t)[1]["Month hours"], "");
+
+  // Removed from Profiles: the row carries the previewed name, id and address.
+  const u = emailServer();
+  const r = previewHours(u, [MARIA.id, JAMES.id]);
+  const uSendId = ticketItem(u, r.ticket).sendId;
+  u.profiles.splice(2, 1);
+  assert.deepEqual(sendHours(u, r.ticket, r.sendIds).results, [
+    { id: MARIA.id, result: "sent" },
+    { id: JAMES.id, result: R_GONE },
+  ]);
+  assert.deepEqual(hoursEmailRows(u).map(rowOf)[1], expectedRow(uSendId, JAMES, R_GONE, null));
+  // One log line each, with the Volunteer ID and no name or address; a problem by its code.
+  assert.deepEqual(u.logs, [
+    "Hours email: sent (volunteer " + MARIA.id + ")",
+    "Hours email: not sent (volunteer " + JAMES.id + "): not-found",
+  ]);
+});
+
+test("Email hours: a blank Hours email contact stops every send", () => {
+  const blank = EMAIL_SETTINGS.map((r) => (r[0] === "Hours email contact" ? [r[0], " \n  \n"] : r));
+  const s = emailServer({ settings: blank });
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  assert.deepEqual(p.setProblems, [CONTACT_PROBLEM]);
+  assert.equal(p.ticket, "");
+  assert.deepEqual(p.sendIds, [MARIA.id, JAMES.id]);
+  assert.ok(![...s.cache.keys()].some((k) => k.startsWith("hours-email:")));
+
+  // Blanked between Preview and Send: each taken volunteer gets the problem and a row.
+  const t = emailServer();
+  const q = previewHours(t, [MARIA.id, JAMES.id]);
+  const sendId = ticketItem(t, q.ticket).sendId;
+  const row = t.sheets.Settings.rows.findIndex((r) => r[0] === "Hours email contact");
+  t.sheets.Settings.rows[row][1] = "";
+  const reply = sendHours(t, q.ticket, q.sendIds);
+  assert.deepEqual(reply.results, [
+    { id: MARIA.id, result: "not sent: " + CONTACT_PROBLEM },
+    { id: JAMES.id, result: "not sent: " + CONTACT_PROBLEM },
+  ]);
+  assert.deepEqual(t.mail.sent, []);
+  assert.deepEqual(hoursEmailRows(t).map(rowOf), [
+    expectedRow(sendId, MARIA, "not sent: " + CONTACT_PROBLEM, null),
+    expectedRow(sendId, JAMES, "not sent: " + CONTACT_PROBLEM, null),
+  ]);
+});
+
+test("Email hours: the quota is read once for the set at Preview and right before each send", () => {
+  const short = emailServer({ quota: 1 });
+  const p = previewHours(short, [MARIA.id, JAMES.id]);
+  assert.deepEqual(p.setProblems, [
+    "This would send 2 emails, and Google allows 1 more from this account today. Untick some, or send the rest tomorrow.",
+  ]);
+  assert.equal(p.ticket, "");
+  const none = emailServer({ quota: 0 });
+  assert.deepEqual(previewHours(none, [MARIA.id]).setProblems, [
+    "Google's daily email limit for this account is used up; try again tomorrow.",
+  ]);
+
+  // 2 at Preview, 1 at Send: the first goes, the second is held back, and both get a row.
+  const s = emailServer({ quota: 2 });
+  const q = previewHours(s, [MARIA.id, JAMES.id]);
+  assert.ok(q.ticket);
+  s.mail.quota = 1;
+  s.mail.events.length = 0;
+  assert.deepEqual(sendHours(s, q.ticket, q.sendIds).results, [
+    { id: MARIA.id, result: "sent" },
+    { id: JAMES.id, result: R_QUOTA },
+  ]);
+  assert.deepEqual(s.mail.events, [
+    { what: "quota", held: false },
+    { what: "send", to: MARIA.email, held: false },
+    { what: "quota", held: false },
+  ]);
+  assert.deepEqual(
+    hoursEmailRows(s).map((r) => r.Result),
+    ["sent", R_QUOTA],
+  );
+});
+
+test("Email hours: refusals before the take leave the ticket for the next Send", () => {
+  const s = emailServer();
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  const item = s.cache.get(ticketKey(p.ticket));
+  // Bad initials.
+  for (const initials of ["", "  ", "J1", "toolong"]) {
+    assert.deepEqual(
+      sendHours(s, p.ticket, p.sendIds, initials),
+      plain(s.ctx.refusal("ADMIN_INITIALS")),
+    );
+  }
+  // Eleven ids in one call.
+  const eleven = [MARIA.id, ...Array.from({ length: 10 }, (_, i) => "f".repeat(15) + i)];
+  assert.deepEqual(sendHours(s, p.ticket, eleven), plain(s.ctx.refusal("HOURS_EMAIL_TOO_MANY")));
+  // The lock held elsewhere.
+  s.lock.busy = true;
+  assert.deepEqual(sendHours(s, p.ticket, p.sendIds), plain(s.ctx.refusal("BUSY")));
+  s.lock.busy = false;
+  assert.equal(s.cache.get(ticketKey(p.ticket)), item);
+  assert.deepEqual(s.mail.sent, []);
+  assert.equal(s.sheets["Hours emails"], undefined);
+  assert.equal(s.lock.held, false);
+  // The same ticket then sends; an id named twice is handled once.
+  assert.deepEqual(sendHours(s, p.ticket, [MARIA.id, MARIA.id], "j.p.").results, [
+    { id: MARIA.id, result: "sent" },
+  ]);
+  assert.deepEqual(sendHours(s, p.ticket, [JAMES.id]).results, [{ id: JAMES.id, result: "sent" }]);
+  assert.deepEqual(sentTo(s), [MARIA.email, JAMES.email]);
+  assert.deepEqual(
+    hoursEmailRows(s).map((r) => [r["Volunteer ID"], r["Sent by"]]),
+    [
+      [MARIA.id, "JP"],
+      [JAMES.id, "JP"],
+    ],
+  );
+});
+
+// Twenty-three sample volunteers with a shift each, for the runs of three calls.
+const CROWD = Array.from({ length: 23 }, (_, i) => {
+  const n = String(i + 1).padStart(2, "0");
+  return person(
+    "Sample",
+    "Person " + n,
+    "615-555-02" + n,
+    "sample.person" + n + "@example.org",
+    "sample-token-2" + n,
+  );
+});
+const crowdServer = (opts = {}) =>
+  emailServer({
+    profiles: [EMAIL_PROFILE_HEADER, ...CROWD.map(profileRow)],
+    log: [
+      LOG_HEADER,
+      ...CROWD.map((p, i) =>
+        closedShift("c-" + i, p, "2026-11-0" + (1 + (i % 9)), "09:00", "10:00", 1),
+      ),
+    ],
+    ...opts,
+  });
+const inCalls = (ids) => [ids.slice(0, 10), ids.slice(10, 20), ids.slice(20)];
+
+test("Email hours: a preview of 23 sent in calls of 10, 10 and 3 sends each once", () => {
+  const s = crowdServer();
+  const p = previewHours(
+    s,
+    CROWD.map((c) => c.id),
+  );
+  assert.equal(p.sendIds.length, 23);
+  const sendId = ticketItem(s, p.ticket).sendId;
+  for (const ids of inCalls(p.sendIds)) {
+    const reply = sendHours(s, p.ticket, ids);
+    assert.deepEqual(
+      reply.results,
+      ids.map((id) => ({ id, result: "sent" })),
+    );
+  }
+  assert.equal(new Set(sentTo(s)).size, 23);
+  assert.equal(s.mail.sent.length, 23);
+  const rows = hoursEmailRows(s);
+  assert.equal(rows.length, 23);
+  assert.equal(new Set(rows.map((r) => r["Volunteer ID"])).size, 23);
+  assert.deepEqual([...new Set(rows.map((r) => r["Send ID"]))], [sendId]);
+  assert.equal(s.cache.has(ticketKey(p.ticket)), false);
+});
+
+test("Email hours: one volunteer's MailApp failure doesn't stop the rest", () => {
+  const s = emailServer();
+  const p = previewHours(s, [MARIA.id, JAMES.id, DEV.id]);
+  const sendId = ticketItem(s, p.ticket).sendId;
+  s.faults.sendEmail = (m) => (m.to === JAMES.email ? "Service unavailable: Gmail" : null);
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.deepEqual(reply, {
+    ok: true,
+    results: [
+      { id: MARIA.id, result: "sent" },
+      { id: JAMES.id, result: "failed: Service unavailable: Gmail" },
+      { id: DEV.id, result: "sent" },
+    ],
+    recordFailed: false,
+  });
+  assert.deepEqual(sentTo(s), [MARIA.email, DEV.email]);
+  // A failed row carries the hours, as a sent one does.
+  assert.deepEqual(hoursEmailRows(s).map(rowOf), [
+    expectedRow(sendId, MARIA, "sent", MARIA_HOURS),
+    expectedRow(sendId, JAMES, "failed: Service unavailable: Gmail", JAMES_HOURS),
+    expectedRow(sendId, DEV, "sent", DEV_HOURS),
+  ]);
+});
+
+test("Email hours: Google's message is logged with any address masked, and the Result cell keeps it whole", () => {
+  const said = "Invalid email: " + JAMES.email;
+  const masked = "failed: Invalid email: [address]";
+  // The rows can't be written, so the result also goes to the error log.
+  const s = emailServer();
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  s.faults.sendEmail = (m) => (m.to === JAMES.email ? said : null);
+  s.faults.insertSheet = () => true;
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.deepEqual(reply.results, [
+    { id: MARIA.id, result: "sent" },
+    { id: JAMES.id, result: "failed: " + said },
+  ]);
+  assert.equal(reply.recordFailed, true);
+  assert.ok(
+    s.logs.includes("Hours email: failed (volunteer " + JAMES.id + "): " + masked.slice(8)),
+  );
+  assert.equal(s.errors.length, 1);
+  assert.ok(s.errors[0].includes("volunteer " + JAMES.id + ": " + masked), s.errors[0]);
+  for (const line of [...s.logs, ...s.errors]) assert.doesNotMatch(line, /@/);
+
+  // The tab's Result cell has the message as Google gave it.
+  const t = emailServer();
+  const q = previewHours(t, [JAMES.id]);
+  t.faults.sendEmail = () => said;
+  assert.equal(sendHours(t, q.ticket, [JAMES.id]).results[0].result, "failed: " + said);
+  assert.equal(hoursEmailRows(t)[0].Result, "failed: " + said);
+  for (const line of t.logs) assert.doesNotMatch(line, /@/);
+});
+
+test("Email hours: with the box ticked, a volunteer with no counted shifts gets no file and no file line", () => {
+  const s = emailServer({
+    profiles: [EMAIL_PROFILE_HEADER, profileRow(MARIA), profileRow(ANA)],
+  });
+  const p = previewHours(s, [MARIA.id, ANA.id], { attach: true });
+  const [maria, shown] = p.volunteers;
+  assert.equal(shown.id, ANA.id);
+  assert.deepEqual(maria.attachment, { name: "volunteer-hours-to-2026-11-14.csv", shifts: 3 });
+  assert.equal(shown.attachment, null);
+  assert.equal(shown.totals.all.shifts, 0);
+  assert.doesNotMatch(shown.body, /attached|spreadsheet/);
+  assert.deepEqual(
+    shown.warnings.map((w) => w.text),
+    [
+      "This volunteer has no counted hours yet; the email will say so. The shifts file is left out, since there are no shifts to list.",
+    ],
+  );
+  // The digest covers the email with no file: an empty csv.
+  const digest = s.ctx.sha256Hex_(
+    s.ctx.hoursEmailDigestText({
+      id: ANA.id,
+      to: ANA.email,
+      choice: "this",
+      month: "2026-11",
+      asOf: EMAIL_TODAY,
+      attach: true,
+      subject: shown.subject,
+      body: shown.body,
+      csv: "",
+    }),
+  );
+  assert.equal(ticketItem(s, p.ticket).entries[ANA.id].digest, digest);
+
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.deepEqual(
+    reply.results.map((r) => r.result),
+    ["sent", "sent"],
+  );
+  const [toMaria, toAna] = s.mail.sent.map((m) => m.message);
+  assert.equal(toMaria.attachments.length, 1);
+  assert.equal(toAna.to, ANA.email);
+  assert.equal(toAna.body, shown.body);
+  assert.equal("attachments" in toAna, false);
+  assert.equal(s.blobs.length, 1);
+  // Shifts file says whether the email carried the file: yes for Maria, no for Ana.
+  assert.deepEqual(
+    hoursEmailRows(s).map((r) => r["Shifts file"]),
+    ["yes", "no"],
+  );
+});
+
+/** Asserts errors holds one entry, naming the Send ID and each id with its result, and no name or address. */
+const assertRowsLogged = (s, sendId, results) => {
+  assert.equal(s.errors.length, 1, s.errors.join("\n"));
+  const line = s.errors[0];
+  assert.ok(line.includes(sendId), line);
+  for (const { id, result } of results)
+    assert.ok(line.includes("volunteer " + id + ": " + result), line);
+  assert.doesNotMatch(line, /Maria|James|Dev|Alvarez|Okafor|Patel|@/);
+};
+
+test("Email hours: rows that can't be written are reported, and the emails still went", () => {
+  // The write throws.
+  const s = emailServer();
+  const p = previewHours(s, [MARIA.id, JAMES.id, DEV.id]);
+  const sendId = ticketItem(s, p.ticket).sendId;
+  s.faults.insertSheet = () => true;
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.recordFailed, true);
+  assert.equal(s.mail.sent.length, 3);
+  assert.equal(s.sheets["Hours emails"], undefined);
+  assertRowsLogged(s, sendId, reply.results);
+
+  // The rows step's lock is busy.
+  const t = emailServer();
+  const q = previewHours(t, [MARIA.id, JAMES.id, DEV.id]);
+  const tSendId = ticketItem(t, q.ticket).sendId;
+  t.lock.busy = (n) => n === 1;
+  const busy = sendHours(t, q.ticket, q.sendIds);
+  assert.equal(busy.ok, true);
+  assert.equal(busy.recordFailed, true);
+  assert.equal(t.mail.sent.length, 3);
+  assert.deepEqual(hoursEmailRows(t), []);
+  assertRowsLogged(t, tSendId, busy.results);
+});
+
+test("Email hours: a read that throws after the take sends nothing and still writes a row each", () => {
+  const breaks = {
+    Log: (s) =>
+      (s.sheets.Log.afterValues = () => {
+        throw new Error("Log read failed");
+      }),
+    Profiles: (s) => (s.faults.openById = () => true),
+    Settings: (s) =>
+      (s.sheets.Settings.afterValues = () => {
+        throw new Error("Settings read failed");
+      }),
+  };
+  const messages = {
+    Log: "Log read failed",
+    Profiles: "Profiles read failed",
+    Settings: "Settings read failed",
+  };
+  for (const [what, breakIt] of Object.entries(breaks)) {
+    const s = emailServer();
+    const p = previewHours(s, [MARIA.id, JAMES.id]);
+    const sendId = ticketItem(s, p.ticket).sendId;
+    breakIt(s);
+    const result = "not sent: " + messages[what];
+    assert.deepEqual(
+      sendHours(s, p.ticket, p.sendIds),
+      {
+        ok: true,
+        results: [
+          { id: MARIA.id, result },
+          { id: JAMES.id, result },
+        ],
+        recordFailed: false,
+      },
+      what,
+    );
+    assert.deepEqual(s.mail.sent, [], what);
+    assert.deepEqual(
+      hoursEmailRows(s).map(rowOf),
+      [expectedRow(sendId, MARIA, result, null), expectedRow(sendId, JAMES, result, null)],
+      what,
+    );
+    // The taken entries are gone from the ticket.
+    assert.deepEqual(
+      sendHours(s, p.ticket, p.sendIds),
+      plain(s.ctx.refusal("HOURS_EMAIL_STALE")),
+      what,
+    );
+  }
+  // A Flags read that throws sends as usual.
+  const f = emailServer();
+  const q = previewHours(f, [MARIA.id, JAMES.id]);
+  f.sheets.Flags.afterValues = () => {
+    throw new Error("Flags read failed");
+  };
+  assert.deepEqual(
+    sendHours(f, q.ticket, q.sendIds).results.map((r) => r.result),
+    ["sent", "sent"],
+  );
+});
+
+test("Email hours: a throw before the take leaves the ticket as it was", () => {
+  // The account read for Sent from: the guard's read is the first, this the second.
+  const s = emailServer();
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  const item = s.cache.get(ticketKey(p.ticket));
+  let reads = 0;
+  s.faults.account = () => ++reads === 2;
+  assert.throws(() => sendHours(s, p.ticket, p.sendIds), /Session read failed/);
+  assert.equal(s.cache.get(ticketKey(p.ticket)), item);
+  assert.deepEqual(s.mail.sent, []);
+  assert.equal(s.sheets["Hours emails"], undefined);
+  s.faults.account = null;
+  assert.deepEqual(
+    sendHours(s, p.ticket, p.sendIds).results.map((r) => r.result),
+    ["sent", "sent"],
+  );
+
+  // The ticket's put inside the take.
+  const t = emailServer();
+  const q = previewHours(t, [MARIA.id, JAMES.id]);
+  const held = t.cache.get(ticketKey(q.ticket));
+  t.faults.cachePut = (k) => k.startsWith("hours-email:");
+  assert.throws(() => sendHours(t, q.ticket, [MARIA.id]), /cache\.put failed/);
+  assert.equal(t.cache.get(ticketKey(q.ticket)), held);
+  assert.equal(t.lock.held, false);
+  assert.deepEqual(t.mail.sent, []);
+  assert.equal(t.sheets["Hours emails"], undefined);
+  assert.deepEqual(t.errors, []);
+  t.faults.cachePut = null;
+  assert.deepEqual(sendHours(t, q.ticket, [MARIA.id]).results, [{ id: MARIA.id, result: "sent" }]);
+  assert.deepEqual(Object.keys(ticketItem(t, q.ticket).entries), [JAMES.id]);
+});
+
+test("Email hours: a lock that throws after its work is read against what the work had done", () => {
+  // The take's flush throws after the put: the entries are taken, sent and written.
+  const s = emailServer();
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  let flushes = 0;
+  s.faults.flush = () => ++flushes === 1;
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.deepEqual(
+    reply.results.map((r) => r.result),
+    ["sent", "sent"],
+  );
+  assert.equal(reply.recordFailed, false);
+  assert.equal(hoursEmailRows(s).length, 2);
+  assert.equal(s.errors.length, 1);
+  assert.match(s.errors[0], /after the take/);
+  assert.equal(s.lock.held, false);
+
+  // The rows' flush throws after the range write: the rows are on the tab.
+  const t = emailServer();
+  const q = previewHours(t, [MARIA.id, JAMES.id]);
+  let tFlushes = 0;
+  t.faults.flush = () => ++tFlushes === 2;
+  const after = sendHours(t, q.ticket, q.sendIds);
+  assert.deepEqual(
+    after.results.map((r) => r.result),
+    ["sent", "sent"],
+  );
+  assert.equal(after.recordFailed, false);
+  assert.equal(hoursEmailRows(t).length, 2);
+  assert.equal(t.errors.length, 1);
+  assert.match(t.errors[0], /rows written for Send ID/);
+  assert.equal(t.lock.held, false);
+});
+
+test("Email hours: across a run with a busy rows lock, a read that throws and a MailApp failure, each id is recorded once", () => {
+  const s = crowdServer();
+  const p = previewHours(
+    s,
+    CROWD.map((c) => c.id),
+  );
+  const [first, second, third] = inCalls(p.sendIds);
+  // The first call's take is try 0 and its rows try 1.
+  s.lock.busy = (n) => n === 1;
+  assert.equal(sendHours(s, p.ticket, first).recordFailed, true);
+  s.sheets.Log.afterValues = () => {
+    throw new Error("Log read failed");
+  };
+  const middle = sendHours(s, p.ticket, second);
+  assert.deepEqual(
+    new Set(middle.results.map((r) => r.result)),
+    new Set(["not sent: Log read failed"]),
+  );
+  s.sheets.Log.afterValues = null;
+  const failing = CROWD.find((c) => c.id === third[1]).email;
+  s.faults.sendEmail = (m) => (m.to === failing ? "Service unavailable" : null);
+  const last = sendHours(s, p.ticket, third);
+  assert.deepEqual(
+    last.results.map((r) => r.result),
+    ["sent", "failed: Service unavailable", "sent"],
+  );
+
+  const written = hoursEmailRows(s).map((r) => r["Volunteer ID"]);
+  const logged = s.errors.flatMap((e) =>
+    [...e.matchAll(/volunteer ([0-9a-f]{16})/g)].map((m) => m[1]),
+  );
+  assert.equal(written.length, 13);
+  assert.equal(logged.length, 10);
+  const all = [...written, ...logged];
+  assert.equal(all.length, 23);
+  assert.deepEqual([...all].sort(), [...p.sendIds].sort());
+  assert.equal(s.cache.has(ticketKey(p.ticket)), false);
+});
+
+test("Email hours: addresses are read by token, a duplicate token stops that volunteer only, and the Profiles cache keeps no email", () => {
+  const s = emailServer();
+  const first = previewHours(s, [MARIA.id, JAMES.id]);
+  // Rows reordered between Preview and Send: still each volunteer's own address.
+  s.profiles.splice(1, 2, profileRow(JAMES), profileRow(MARIA));
+  assert.deepEqual(
+    sendHours(s, first.ticket, first.sendIds).results.map((r) => r.result),
+    ["sent", "sent"],
+  );
+  assert.deepEqual(sentTo(s), [MARIA.email, JAMES.email]);
+  const again = previewHours(s, [MARIA.id, JAMES.id]);
+  assert.deepEqual(
+    again.volunteers.map((v) => [v.to, v.profilesRow]),
+    [
+      [MARIA.email, 3],
+      [JAMES.email, 2],
+    ],
+  );
+
+  // A second row with James's token, typed after the kiosk list was cached.
+  s.profiles.push(withEmail(JAMES, "james.other@example.org"));
+  const dup = previewHours(s, [MARIA.id, JAMES.id]);
+  assert.deepEqual(dup.volunteers[1].problems, [
+    "Volunteer Profiles rows 2 and 5 have the same User Token. Fix it there, then press Preview again.",
+  ]);
+  assert.equal(dup.volunteers[1].to, "");
+  assert.deepEqual(dup.volunteers[0].problems, []);
+  assert.deepEqual(dup.sendIds, [MARIA.id]);
+  assert.ok(dup.ticket);
+
+  // The kiosk list in the cache: the same key and shape as before, with no email.
+  const key = "profiles:v2:file-1:Volunteer Profiles";
+  assert.equal(s.ctx.profilesCacheKey("file-1", "Volunteer Profiles"), key);
+  const cached = JSON.parse(s.cache.get(key));
+  assert.equal(cached.length, 3);
+  for (const v of cached) {
+    assert.deepEqual(Object.keys(v).sort(), [
+      "firstName",
+      "id",
+      "lastName",
+      "needsPhoneCheck",
+      "phoneLast4",
+      "row",
+      "startDate",
+      "token",
+    ]);
+  }
+  assert.ok(!s.cache.get(key).includes("@"));
+});
+
+test("Email hours: the period is worked out on Central dates at Preview and again at Send", () => {
+  const decLog = [LOG_HEADER, closedShift("m-dec", MARIA, "2026-12-31", "09:00", "12:00", 3)];
+  // 2027-01-01 05:30 UTC is 2026-12-31 23:30 Central.
+  const s = emailServer({ log: decLog });
+  s.clock.now = Date.UTC(2027, 0, 1, 5, 30);
+  const thisMonth = previewHours(s, [MARIA.id]).volunteers[0];
+  assert.equal(thisMonth.subject, "Your volunteer hours for December 2026");
+  assert.ok(thisMonth.body.includes("\n  December 2026 so far: 3.00 hours (1 shift)\n"));
+  assert.ok(thisMonth.body.includes("\n  2026 so far: 3.00 hours (1 shift)\n"));
+
+  s.clock.now = Date.UTC(2027, 0, 3, 17, 0);
+  const lastMonth = previewHours(s, [MARIA.id], { choice: "last" });
+  assert.equal(lastMonth.month, "2026-12");
+  assert.equal(lastMonth.asOf, "2026-12-31");
+  assert.equal(lastMonth.volunteers[0].subject, "Your volunteer hours for December 2026");
+  assert.ok(lastMonth.volunteers[0].body.includes("\n  December 2026: 3.00 hours (1 shift)\n"));
+  assert.ok(
+    lastMonth.volunteers[0].body.includes("\n  2026 through December: 3.00 hours (1 shift)\n"),
+  );
+
+  // A Preview just before midnight and a Send just after give different months.
+  const t = emailServer({ log: decLog });
+  t.clock.now = centralMs("2026-12-31 23:59");
+  const p = previewHours(t, [MARIA.id]);
+  t.clock.now = centralMs("2027-01-01 00:01");
+  assert.deepEqual(sendHours(t, p.ticket, [MARIA.id]).results, [
+    { id: MARIA.id, result: R_CHANGED },
+  ]);
+  assert.deepEqual(t.mail.sent, []);
+});
+
+test("Email hours: the Hours emails tab is made once, and every cell from a sheet is written as text", () => {
+  const eq = person("=Pat", "Example", "615-555-0199", "=pat@example.org", "sample-token-99");
+  const profiles = [
+    EMAIL_PROFILE_HEADER,
+    profileRow(MARIA),
+    profileRow(JAMES),
+    profileRow(DEV),
+    profileRow(eq),
+  ];
+  const s = emailServer({
+    profiles,
+    log: [
+      ...emailLog(),
+      closedShift("j-0", JAMES, "2026-10-20", "09:00", "10:30", 1.5),
+      closedShift("d-0", DEV, "2026-10-21", "09:00", "10:00", 1),
+      closedShift("e-0", eq, "2026-10-06", "09:00", "10:00", 1),
+    ],
+  });
+  // Last month, with the file: Maria and Pat sent, James failed, Dev changed.
+  const p = previewHours(s, [MARIA.id, JAMES.id, DEV.id, eq.id], { choice: "last", attach: true });
+  assert.deepEqual(p.sendIds, [MARIA.id, eq.id, JAMES.id, DEV.id]);
+  const sendId = ticketItem(s, p.ticket).sendId;
+  s.faults.sendEmail = (m) => (m.to === JAMES.email ? "Service unavailable" : null);
+  s.sheets.Log.rows[logIndex(s, "d-0")][HOURS_COL] = 4;
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.deepEqual(
+    reply.results.map((r) => r.result),
+    ["sent", "sent", "failed: Service unavailable", R_CHANGED],
+  );
+  const sheet = s.sheets["Hours emails"];
+  assert.deepEqual(sheet.rows[0], plain(s.ctx.hoursEmailHeaders()));
+  assert.equal(sheet.frozenRows, 1);
+  assert.equal(sheet.protections.length, 1);
+  assert.deepEqual(sheet.protections[0].state, {
+    description: "Hours emails: written by Kiosk admin > Email hours…. Edit only to fix a mistake.",
+    warningOnly: true,
+  });
+  const last = { Month: "2026-10", "Shifts file": "yes" };
+  assert.deepEqual(hoursEmailRows(s).map(rowOf), [
+    expectedRow(sendId, MARIA, "sent", [2, 2, 2], last),
+    // A name or address starting "=" is text, not a formula.
+    expectedRow(sendId, eq, "sent", [1, 1, 1], {
+      ...last,
+      "Volunteer Name": "'=Pat Example",
+      Email: "'=pat@example.org",
+    }),
+    expectedRow(sendId, JAMES, "failed: Service unavailable", [1.5, 1.5, 1.5], last),
+    // A failed email was built with the file; one not sent carried nothing.
+    expectedRow(sendId, DEV, R_CHANGED, null, { ...last, "Shifts file": "no" }),
+  ]);
+  // Sent at a date-time, the hours numbers with two places, every other column text.
+  const formats = { date: "yyyy-mm-dd h:mm am/pm", hours: "0.00", text: "@" };
+  const kinds = s.ctx.hoursEmailColumnKinds();
+  for (let row = 2; row <= 5; row++) {
+    sheet.rows[0].forEach((h, i) => {
+      assert.equal(sheet.formats[row + ":" + (i + 1)], formats[kinds[h]], row + " " + h);
+    });
+    assert.equal(sheet.rows[row - 1][0].getTime(), EMAIL_NOW);
+  }
+
+  // A second write adds rows under the first and no second protection.
+  s.faults.sendEmail = null;
+  const q = previewHours(s, [MARIA.id]);
+  const secondId = ticketItem(s, q.ticket).sendId;
+  assert.notEqual(secondId, sendId);
+  assert.equal(q.volunteers[0].lastSent, "2026-11-14 by JP");
+  sendHours(s, q.ticket, [MARIA.id], "ab");
+  assert.equal(sheet.lastRow(), 6);
+  assert.equal(sheet.protections.length, 1);
+  assert.equal(sheet.frozenRows, 1);
+  assert.deepEqual(sheet.rows[0], plain(s.ctx.hoursEmailHeaders()));
+  assert.deepEqual(rowOf(hoursEmailRows(s)[4]), {
+    ...expectedRow(secondId, MARIA, "sent", MARIA_HOURS),
+    "Sent by": "AB",
+  });
+});
+
+/** An Hours emails row as the tab holds it, in the header's order. */
+const sentRow = (date, p, by, result) => [
+  at(date, "09:00"),
+  "s-" + date,
+  p.name,
+  p.id,
+  p.email,
+  "2026-10",
+  2,
+  "2026",
+  2,
+  2,
+  "no",
+  by,
+  "staff@example.org",
+  result,
+];
+
+const HOURS_EMAILS_HEADER = [
+  "Sent at",
+  "Send ID",
+  "Volunteer Name",
+  "Volunteer ID",
+  "Email",
+  "Month",
+  "Month hours",
+  "Year",
+  "Year hours",
+  "All-time hours",
+  "Shifts file",
+  "Sent by",
+  "Sent from",
+  "Result",
+];
+
+test("Email hours: Last emailed is the newest sent row, never with no tab and unknown when the tab can't be read", () => {
+  const hoursEmails = [
+    HOURS_EMAILS_HEADER,
+    sentRow("2026-11-03", MARIA, "JP", "sent"),
+    sentRow("2026-11-05", MARIA, "AB", "failed: Service unavailable"),
+    sentRow("2026-11-06", MARIA, "CD", R_CHANGED),
+    // An older send lower down the tab.
+    sentRow("2026-11-01", MARIA, "EF", "sent"),
+    sentRow("2026-11-07", DEV, "GH", "not sent: " + CONTACT_PROBLEM),
+  ];
+  const s = emailServer({ hoursEmails });
+  const p = previewHours(s, [MARIA.id, JAMES.id, DEV.id]);
+  assert.deepEqual(
+    p.volunteers.map((v) => v.lastSent),
+    ["2026-11-03 by JP", "never", "never"],
+  );
+  assert.ok(p.ticket);
+
+  // No tab: never, and the send makes the tab.
+  const none = emailServer();
+  const q = previewHours(none, [MARIA.id]);
+  assert.equal(q.volunteers[0].lastSent, "never");
+  assert.equal(sendHours(none, q.ticket, [MARIA.id]).results[0].result, "sent");
+
+  // A tab that can't be read: unknown, and the send still goes.
+  const t = emailServer({ hoursEmails });
+  t.sheets["Hours emails"].afterValues = () => {
+    throw new Error("Hours emails read failed");
+  };
+  const r = previewHours(t, [MARIA.id, JAMES.id]);
+  assert.deepEqual(
+    r.volunteers.map((v) => v.lastSent),
+    ["unknown", "unknown"],
+  );
+  assert.deepEqual(r.setProblems, []);
+  assert.ok(r.ticket);
+  t.sheets["Hours emails"].afterValues = null;
+  assert.deepEqual(
+    sendHours(t, r.ticket, r.sendIds).results.map((x) => x.result),
+    ["sent", "sent"],
+  );
+  assert.equal(hoursEmailRows(t).length, 7);
+});
+
+// The window's tests read tests/hours-email-replies.json as the server's preview and send
+// replies. This test holds that file to what the server returns, so a change of shape on
+// either side fails a test. When a change is meant, copy the server's reply (the actual
+// value below) into the file and check the window's test against it.
+test("Email hours: the replies the window's tests use are the server's own", () => {
+  const log = emailLog();
+  const alerts = LOG_HEADER.findIndex((h) => h.replace(/\s+/g, " ") === "Admin Alerts?");
+  const jamesRow = log.findIndex((r) => r[0] === "j-1");
+  log[jamesRow][alerts] = "arrival differs by 24 min";
+  const flagged = FLAG_HEADER.map((h) =>
+    h === "Shift ID" ? "j-1" : h === "Reviewed" ? false : "",
+  );
+  const s = emailServer({
+    log,
+    flags: [FLAG_HEADER, flagged],
+    profiles: [
+      EMAIL_PROFILE_HEADER,
+      profileRow(MARIA),
+      profileRow(JAMES),
+      withEmail(DEV, ""),
+      profileRow(ANA),
+    ],
+    hoursEmails: [HOURS_EMAILS_HEADER, sentRow("2026-11-03", MARIA, "JP", "sent")],
+  });
+  const preview = previewHours(s, [MARIA.id, JAMES.id, DEV.id, ANA.id, "0000aaaa0000bbbb"], {
+    attach: true,
+  });
+  const send = sendHours(s, preview.ticket, preview.sendIds);
+  assert.deepEqual({ preview, send }, JSON.parse(read("tests/hours-email-replies.json")));
+});
+
+test("Email hours: the lock is held only to take and to write the rows, never at a Log read or a send", () => {
+  const s = emailServer();
+  const logReads = [];
+  s.sheets.Log.afterValues = () => logReads.push(s.lock.held);
+  const p = previewHours(s, [MARIA.id, JAMES.id, DEV.id]);
+  assert.deepEqual(logReads, [false]);
+  assert.equal(s.lock.takes, 0);
+  logReads.length = 0;
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.deepEqual(
+    reply.results.map((r) => r.result),
+    ["sent", "sent", "sent"],
+  );
+  assert.deepEqual(logReads, [false]);
+  assert.deepEqual(
+    s.mail.sent.map((m) => m.held),
+    [false, false, false],
+  );
+  assert.ok(s.mail.events.every((e) => e.held === false));
+  assert.equal(s.lock.takes, 2);
+  assert.equal(s.lock.held, false);
+
+  // A call whose Log read throws takes the lock twice too: once to take, once for the rows.
+  const t = emailServer();
+  const q = previewHours(t, [MARIA.id, JAMES.id, DEV.id]);
+  t.sheets.Log.afterValues = () => {
+    throw new Error("Log read failed");
+  };
+  sendHours(t, q.ticket, [MARIA.id, JAMES.id]);
+  assert.equal(t.lock.takes, 2);
+  assert.equal(hoursEmailRows(t).length, 2);
+
+  // A call whose ids were all taken already takes it once, reads nothing and writes no row.
+  t.sheets.Log.afterValues = null;
+  t.sheets.Log.reads.length = 0;
+  t.sheets.Settings.reads.length = 0;
+  t.calls.length = 0;
+  t.journal.length = 0;
+  const again = sendHours(t, q.ticket, [MARIA.id, JAMES.id]);
+  assert.deepEqual(
+    again.results.map((r) => r.result),
+    [R_TAKEN, R_TAKEN],
+  );
+  assert.equal(t.lock.takes, 3);
+  assert.deepEqual(t.sheets.Log.reads, []);
+  assert.deepEqual(t.sheets.Settings.reads, []);
+  assert.ok(!t.calls.includes("SpreadsheetApp.openById"));
+  assert.deepEqual(
+    t.journal.filter((j) => j.startsWith("write ")),
+    [],
+  );
+  assert.equal(hoursEmailRows(t).length, 2);
+});
+
+// ---------------------------------------------------------------------------
 // The admin dialog's calls
 
 test("AdminDialog.html calls only keyed functions, each through call()", () => {
@@ -2531,11 +3848,13 @@ test("AdminDialog.html calls only keyed functions, each through call()", () => {
     "adminAddShift",
     "adminFindShifts",
     "adminFixSignOut",
+    "adminHoursPreview",
     "adminOpenShifts",
     "adminRemoveShift",
     "adminRemovedShifts",
     "adminRestoreShift",
     "adminRoster",
+    "adminSendHours",
   ]);
   for (const name of called) assert.ok(KEYED.includes(name), name);
   assert.equal(html.match(/google\.script\.run/g).length, 1);
