@@ -2025,7 +2025,7 @@ test("the Hours header notes: keyed like the names, one per header shown, one li
     plain(L.hoursHeaderNoteKioskTexts()),
     Object.values(notes).concat(plain(L.hoursHeaderNotePastTexts())),
   );
-  // Neither round's list holds the other's texts.
+  // Neither list holds the other's texts (the Log and Flags notes vs the Hours notes).
   const logs = new Set(L.headerNoteKioskTexts());
   assert.ok(Object.values(notes).every((t) => !logs.has(t)));
 });
