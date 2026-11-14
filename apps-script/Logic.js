@@ -1198,13 +1198,17 @@ function isTabletOpenRow(entry, nowMs, windowMs, todayDate) {
 
 /**
  * This token's open row that the tablet can still check out (isTabletOpenRow), or null.
- * When staff edits left more than one, the latest start wins.
+ * When staff edits left more than one, the latest start wins, a readable start over an
+ * unreadable one, and of equal starts the later row, so row order never decides.
  */
 function findOpenShift(entries, token, nowMs, windowMs, todayDate) {
+  const startOf = (e) => (hasReadableStart(e) ? shiftStartMs(e) : -Infinity);
   let found = null;
   entries.forEach((e) => {
     if (!isTokenRow(e, token) || !isTabletOpenRow(e, nowMs, windowMs, todayDate)) return;
-    if (!found || shiftStartMs(e) > shiftStartMs(found)) found = e;
+    const a = startOf(e);
+    const b = found ? startOf(found) : -Infinity;
+    if (!found || a > b || (a === b && e.row > found.row)) found = e;
   });
   return found;
 }

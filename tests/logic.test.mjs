@@ -1241,6 +1241,24 @@ test("findOpenShift matches by token and ignores rows out of the window and clos
   assert.equal(find(entries).row, 8);
 });
 
+test("findOpenShift: the open row it picks doesn't depend on row order", () => {
+  const find = (entries) => L.findOpenShift(entries, TOKEN, NOW, WINDOW, TODAY).row;
+  // Row 4 has no readable time; row 5 was checked in an hour ago.
+  const noTime = entry(4, { recordedInMs: NaN, statedInMs: NaN });
+  const real = entry(5, { recordedInMs: NOW - HOUR, statedInMs: NOW - HOUR });
+  assert.equal(find([noTime, real]), 5);
+  assert.equal(find([real, noTime]), 5);
+  // Check-out closes the real row, whichever comes first.
+  assert.equal(checkOut({ entries: [noTime, real] }).row, 5);
+  // Equal starts, readable or not, go to the later row.
+  const twin = entry(6, { recordedInMs: NOW - HOUR, statedInMs: NOW - HOUR });
+  assert.equal(find([real, twin]), 6);
+  assert.equal(find([twin, real]), 6);
+  const noTime2 = entry(7, { recordedInMs: NaN, statedInMs: NaN });
+  assert.equal(find([noTime, noTime2]), 7);
+  assert.equal(find([noTime2, noTime]), 7);
+});
+
 test("closedTotals counts this token's closed rows by stated hours, menu rows included", () => {
   const entries = [
     entry(2, { status: "closed", statedHours: 1.5, recordedHours: 9, dateText: "2026-10-01" }),
