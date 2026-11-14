@@ -1,0 +1,171 @@
+{
+  "preview": {
+    "ok": true,
+    "from": "ENCM Volunteer Kiosk, from a no-reply address (sent by staff@example.org)",
+    "month": "2026-11",
+    "asOf": "2026-11-14",
+    "volunteers": [
+      {
+        "id": "76cc61bee0826b1d",
+        "label": "Maria Alvarez",
+        "profilesRow": 2,
+        "startDate": "2026-02-15",
+        "to": "maria.alvarez@example.org",
+        "subject": "Your volunteer hours for November 2026",
+        "body": "Hi Maria,\n\nHere are the volunteer hours we have for you as of Saturday, November 14, 2026:\n\n  November 2026 so far: 6.50 hours (2 shifts)\n  2026 so far: 8.50 hours (3 shifts)\n  All time: 8.50 hours (3 shifts)\n\nYour shifts in November 2026:\n  Mon Nov 2: 3.00 hours\n  Thu Nov 12: 3.50 hours\n\nAll 3 of your shifts are in the attached spreadsheet file, volunteer-hours-to-2026-11-14.csv.\n\nThis email comes from an address that can't take replies. If anything looks wrong, please contact:\nPat Example, pat@example.org\n\nThank you for volunteering.",
+        "totals": {
+          "month": {
+            "key": "2026-11",
+            "hundredths": 650,
+            "shifts": 2
+          },
+          "year": {
+            "key": "2026",
+            "hundredths": 850,
+            "shifts": 3
+          },
+          "all": {
+            "hundredths": 850,
+            "shifts": 3
+          },
+          "paperHundredths": 0,
+          "lines": [
+            "November 2026 so far: 6.50 hours (2 shifts)",
+            "2026 so far: 8.50 hours (3 shifts)",
+            "All time: 8.50 hours (3 shifts)"
+          ]
+        },
+        "attachment": {
+          "name": "volunteer-hours-to-2026-11-14.csv",
+          "shifts": 3
+        },
+        "warnings": [],
+        "problems": [],
+        "lastSent": "2026-11-03 by JP"
+      },
+      {
+        "id": "2239ae48e5f1e982",
+        "label": "James Okafor",
+        "profilesRow": 3,
+        "startDate": "2026-02-15",
+        "to": "james.okafor@example.org",
+        "subject": "Your volunteer hours for November 2026",
+        "body": "Hi James,\n\nHere are the volunteer hours we have for you as of Saturday, November 14, 2026:\n\n  November 2026 so far: 2.25 hours (1 shift)\n  2026 so far: 2.25 hours (1 shift)\n  All time: 2.25 hours (1 shift)\n\nYour shifts in November 2026:\n  Tue Nov 3: 2.25 hours\n\nYour 1 shift is in the attached spreadsheet file, volunteer-hours-to-2026-11-14.csv.\n\nThis email comes from an address that can't take replies. If anything looks wrong, please contact:\nPat Example, pat@example.org\n\nThank you for volunteering.",
+        "totals": {
+          "month": {
+            "key": "2026-11",
+            "hundredths": 225,
+            "shifts": 1
+          },
+          "year": {
+            "key": "2026",
+            "hundredths": 225,
+            "shifts": 1
+          },
+          "all": {
+            "hundredths": 225,
+            "shifts": 1
+          },
+          "paperHundredths": 0,
+          "lines": [
+            "November 2026 so far: 2.25 hours (1 shift)",
+            "2026 so far: 2.25 hours (1 shift)",
+            "All time: 2.25 hours (1 shift)"
+          ]
+        },
+        "attachment": {
+          "name": "volunteer-hours-to-2026-11-14.csv",
+          "shifts": 1
+        },
+        "warnings": [
+          {
+            "kind": "flags",
+            "count": 1,
+            "rows": [5],
+            "text": "1 counted shift with an unreviewed flag (Log row 5): check them on the Flags tab before sending."
+          },
+          {
+            "kind": "alerts",
+            "count": 1,
+            "rows": [5],
+            "text": "1 row with Admin Alerts? set (Log row 5): read the Admin Alerts? cell on those Log rows before sending."
+          }
+        ],
+        "problems": [],
+        "lastSent": "never"
+      },
+      {
+        "id": "b51737b5675c4a18",
+        "label": "Dev Patel",
+        "profilesRow": 4,
+        "startDate": "2026-02-15",
+        "to": "",
+        "subject": "Your volunteer hours for November 2026",
+        "body": "Hi Dev,\n\nHere are the volunteer hours we have for you as of Saturday, November 14, 2026:\n\n  November 2026 so far: 1.00 hours (1 shift)\n  2026 so far: 1.00 hours (1 shift)\n  All time: 1.00 hours (1 shift)\n\nYour shifts in November 2026:\n  Wed Nov 4: 1.00 hours\n\nYour 1 shift is in the attached spreadsheet file, volunteer-hours-to-2026-11-14.csv.\n\nThis email comes from an address that can't take replies. If anything looks wrong, please contact:\nPat Example, pat@example.org\n\nThank you for volunteering.",
+        "totals": {
+          "month": {
+            "key": "2026-11",
+            "hundredths": 100,
+            "shifts": 1
+          },
+          "year": {
+            "key": "2026",
+            "hundredths": 100,
+            "shifts": 1
+          },
+          "all": {
+            "hundredths": 100,
+            "shifts": 1
+          },
+          "paperHundredths": 0,
+          "lines": [
+            "November 2026 so far: 1.00 hours (1 shift)",
+            "2026 so far: 1.00 hours (1 shift)",
+            "All time: 1.00 hours (1 shift)"
+          ]
+        },
+        "attachment": {
+          "name": "volunteer-hours-to-2026-11-14.csv",
+          "shifts": 1
+        },
+        "warnings": [],
+        "problems": [
+          "Volunteer Profiles row 4 has no email. Add it there, then press Preview again."
+        ],
+        "lastSent": "never"
+      },
+      {
+        "id": "0000aaaa0000bbbb",
+        "label": "Not on the volunteer list",
+        "profilesRow": 0,
+        "startDate": "",
+        "to": "",
+        "subject": "",
+        "body": "",
+        "totals": null,
+        "attachment": null,
+        "warnings": [],
+        "problems": ["Not on the volunteer list any more; press Preview again."],
+        "lastSent": "never"
+      }
+    ],
+    "setProblems": [],
+    "sendIds": ["76cc61bee0826b1d", "2239ae48e5f1e982"],
+    "chunkSize": 10,
+    "ticket": "uuid-1"
+  },
+  "send": {
+    "ok": true,
+    "results": [
+      {
+        "id": "76cc61bee0826b1d",
+        "result": "sent"
+      },
+      {
+        "id": "2239ae48e5f1e982",
+        "result": "sent"
+      }
+    ],
+    "recordFailed": false
+  }
+}

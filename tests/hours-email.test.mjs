@@ -213,7 +213,7 @@ const planFor = (choice, today, more = {}) =>
 const totals = (t) => [t.hundredths, t.shifts];
 
 // ---------------------------------------------------------------------------
-// H1 totals
+// Totals
 
 test("hoursEmailPeriod: this month as of today; last month as of its last day, January included", () => {
   assert.deepEqual(plain(L.hoursEmailPeriod("this", "2026-11-14")), {
@@ -242,7 +242,7 @@ test("hoursEmailPeriod: this month as of today; last month as of its last day, J
   }
 });
 
-test("H1: this month on November 14 counts the month, the year and all time to today", () => {
+test("this month on November 14 counts the month, the year and all time to today", () => {
   const p = planFor("this", "2026-11-14");
   assert.deepEqual(totals(p.month), [650, 2]);
   assert.equal(p.month.key, "2026-11");
@@ -262,7 +262,7 @@ test("H1: this month on November 14 counts the month, the year and all time to t
   );
 });
 
-test("H1: last month on November 3 is October as of October 31, without the November rows", () => {
+test("last month on November 3 is October as of October 31, without the November rows", () => {
   const p = planFor("last", "2026-11-03");
   assert.deepEqual(totals(p.month), [1200, 4]);
   assert.equal(p.month.key, "2026-10");
@@ -272,7 +272,7 @@ test("H1: last month on November 3 is October as of October 31, without the Nove
   assert.ok(p.allShifts.every((s) => s.date <= "2026-10-31"));
 });
 
-test("H1: December 31 and January 1 land in different years; last in January is December", () => {
+test("December 31 and January 1 land in different years; last in January is December", () => {
   const jan1 = planFor("this", "2026-01-01");
   assert.deepEqual(totals(jan1.month), [250, 1]);
   assert.deepEqual(totals(jan1.year), [250, 1]);
@@ -296,7 +296,7 @@ test("H1: December 31 and January 1 land in different years; last in January is 
 });
 
 // ---------------------------------------------------------------------------
-// H2 warnings
+// Warnings
 
 const ANA = {
   ...MARIA,
@@ -364,7 +364,7 @@ const wplan = (volunteer, flags = WFLAGS, choice = "this", today = "2026-11-14")
   });
 const byKind = (p) => Object.fromEntries(plain(p.warnings).map((w) => [w.kind, w]));
 
-test("H2: each warning has its count, its Log rows and what to do", () => {
+test("each warning has its count, its Log rows and what to do", () => {
   const w = byKind(wplan(ANA));
   assert.deepEqual(Object.keys(w), [
     "open",
@@ -428,7 +428,7 @@ test("H2: each warning has its count, its Log rows and what to do", () => {
   assert.ok(!p.allShifts.some((s) => [21, 22, 23, 24, 25, 26, 27].includes(s.row)));
 });
 
-test("H2: the same-name sentence only in a same-name group; Flags unreadable; no hours", () => {
+test("the same-name sentence only in a same-name group; Flags unreadable; no hours", () => {
   const alone = byKind(wplan({ ...ANA, needsPhoneCheck: false }));
   assert.ok(!alone["other-token"].text.includes("Two volunteers share this name"));
   assert.ok(!alone["stand-in"].text.includes("Two volunteers share this name"));
@@ -453,13 +453,13 @@ test("H2: the same-name sentence only in a same-name group; Flags unreadable; no
   ]);
 });
 
-test("H2: with last month, a row between the as-of date and today is in no warning", () => {
+test("with last month, a row between the as-of date and today is in no warning", () => {
   const p = wplan(ANA, WFLAGS, "last", "2026-11-03");
   plain(p.warnings).forEach((w) => assert.ok(!w.rows.includes(28), w.kind));
   assert.ok(!p.allShifts.some((s) => s.row === 28));
 });
 
-test("H2: the row list caps at 10 and the rows text reads naturally", () => {
+test("the row list caps at 10 and the rows text reads naturally", () => {
   assert.equal(L.hoursEmailRowsText([7]), "Log row 7");
   assert.equal(L.hoursEmailRowsText([9, 3]), "Log rows 3 and 9");
   assert.equal(L.hoursEmailRowsText([1, 2, 3]), "Log rows 1, 2 and 3");
@@ -472,11 +472,11 @@ test("H2: the row list caps at 10 and the rows text reads naturally", () => {
 });
 
 // ---------------------------------------------------------------------------
-// H3 the email
+// The email
 
 const CONTACT = "Pat Example\npat@example.org";
 
-test("H3: this month on November 14 with the file: the email's text exactly", () => {
+test("this month on November 14 with the file: the email's text exactly", () => {
   const m = plain(
     L.hoursEmailMessage({
       firstName: " Maria ",
@@ -512,7 +512,7 @@ test("H3: this month on November 14 with the file: the email's text exactly", ()
   );
 });
 
-test("H3: last month on November 3: the email's text exactly", () => {
+test("last month on November 3: the email's text exactly", () => {
   const m = plain(
     L.hoursEmailMessage({
       firstName: "Maria",
@@ -566,7 +566,7 @@ const fakePlan = (choice, monthShifts, all, paper = 0) => ({
   warnings: [],
 });
 
-test("H3: no hours at all, none in the month, one shift, paper only above 0, the file line", () => {
+test("no hours at all, none in the month, one shift, paper only above 0, the file line", () => {
   const msg = (plan, attach = false, contact = CONTACT, signature = "") =>
     L.hoursEmailMessage({ firstName: "Pat", plan, attach, contact, signature });
   const none = msg(fakePlan("this", [], { hundredths: 0, shifts: 0 }), true).body;
@@ -625,7 +625,7 @@ test("H3: no hours at all, none in the month, one shift, paper only above 0, the
   );
 });
 
-test("H3: the email holds no token, Shift ID, Log row, flag, note or other name", () => {
+test("the email holds no token, Shift ID, Log row, flag, note or other name", () => {
   for (const choice of ["this", "last"]) {
     const today = choice === "this" ? "2026-11-14" : "2026-11-03";
     const m = L.hoursEmailMessage({
@@ -646,9 +646,9 @@ test("H3: the email holds no token, Shift ID, Log row, flag, note or other name"
 });
 
 // ---------------------------------------------------------------------------
-// H4 addresses
+// Addresses
 
-test("H4: the address check", () => {
+test("the address check", () => {
   const ok = (text, email) =>
     assert.deepEqual(plain(L.hoursEmailAddress(text)), { email, problem: "" }, text);
   const bad = (text, problem) =>
@@ -676,7 +676,7 @@ const PROFILE_HEADER = [
   "Onboarding\nToken",
 ];
 
-test("H4: profileEmailsFrom finds each volunteer's row by token, with the problem texts", () => {
+test("profileEmailsFrom finds each volunteer's row by token, with the problem texts", () => {
   const rows = [
     ["Maria", "Alvarez", " maria.alvarez@example.org ", "tok-maria"],
     ["James", "Okafor", "", "tok-james"],
@@ -747,9 +747,9 @@ test("H4: profileEmailsFrom finds each volunteer's row by token, with the proble
 });
 
 // ---------------------------------------------------------------------------
-// H5 the contact
+// The contact
 
-test("H5: a blank contact is a set problem; the contact's lines are trimmed and joined", () => {
+test("a blank contact is a set problem; the contact's lines are trimmed and joined", () => {
   const problems = (contact) =>
     plain(A.hoursEmailSetProblems_({ emails: { a: { problem: "" } }, contact }));
   const blank = [
@@ -784,9 +784,9 @@ test("H5: a blank contact is a set problem; the contact's lines are trimmed and 
 });
 
 // ---------------------------------------------------------------------------
-// H6 agreement with the Hours tab
+// Agreement with the Hours tab
 
-test("H6: the email's totals equal the Hours tab's rows for this token up to the month", () => {
+test("the email's totals equal the Hours tab's rows for this token up to the month", () => {
   const log = LOG.filter((e) => !FUTURE.includes(e.dateText));
   const table = L.hoursTable(log, [], hhmm);
   const label = L.hoursLabels(log).get(MARIA.token);
@@ -820,7 +820,7 @@ test("H6: the email's totals equal the Hours tab's rows for this token up to the
 });
 
 // ---------------------------------------------------------------------------
-// H7 the shifts file
+// The shifts file
 
 const CSV_LAST = [
   "Date,Check-in,Check-out,Hours",
@@ -873,7 +873,7 @@ const CSV_LAST = [
   "2026-10-24,9:00 AM,12:30 PM,3.50",
 ];
 
-test("H7: the shifts file's exact text, its rows the all-time line's shifts", () => {
+test("the shifts file's exact text, its rows the all-time line's shifts", () => {
   const last = planFor("last", "2026-11-03");
   const csv = L.hoursEmailCsv(last.allShifts, clock);
   assert.equal(csv, CSV_LAST.map((l) => l + "\r\n").join(""));
@@ -902,7 +902,7 @@ test("H7: the shifts file's exact text, its rows the all-time line's shifts", ()
   assert.equal(L.hoursEmailFileName("2026-11-14"), "volunteer-hours-to-2026-11-14.csv");
 });
 
-test("H7: shifts on one Date go by check-in time, then Log row, an unknown time last", () => {
+test("shifts on one Date go by check-in time, then Log row, an unknown time last", () => {
   const rows = [
     entry(2, shift("2026-03-07", 1, { statedInMs: centralMs("2026-03-07 13:00") })),
     entry(3, { ...shift("2026-03-07", 2), statedInMs: NaN, statedOutMs: NaN }),

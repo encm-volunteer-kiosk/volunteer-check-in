@@ -2727,9 +2727,9 @@ const closedShift = (shiftId, p, date, from, to, hours) =>
   });
 const emailLog = () => [
   LOG_HEADER,
-  closedShift("m-1", MARIA, "2026-10-05", "09:00", "11:00", 2),
-  closedShift("m-2", MARIA, "2026-11-02", "09:00", "12:00", 3),
-  closedShift("m-3", MARIA, "2026-11-12", "13:00", "16:30", 3.5),
+  closedShift("maria-1", MARIA, "2026-10-05", "09:00", "11:00", 2),
+  closedShift("maria-2", MARIA, "2026-11-02", "09:00", "12:00", 3),
+  closedShift("maria-3", MARIA, "2026-11-12", "13:00", "16:30", 3.5),
   closedShift("j-1", JAMES, "2026-11-03", "10:00", "12:15", 2.25),
   closedShift("d-1", DEV, "2026-11-04", "14:00", "15:00", 1),
 ];
@@ -3608,24 +3608,26 @@ const sentRow = (date, p, by, result) => [
   result,
 ];
 
+const HOURS_EMAILS_HEADER = [
+  "Sent at",
+  "Send ID",
+  "Volunteer Name",
+  "Volunteer ID",
+  "Email",
+  "Month",
+  "Month hours",
+  "Year",
+  "Year hours",
+  "All-time hours",
+  "Shifts file",
+  "Sent by",
+  "Sent from",
+  "Result",
+];
+
 test("Email hours: Last emailed is the newest sent row, never with no tab and unknown when the tab can't be read", () => {
   const hoursEmails = [
-    [
-      "Sent at",
-      "Send ID",
-      "Volunteer Name",
-      "Volunteer ID",
-      "Email",
-      "Month",
-      "Month hours",
-      "Year",
-      "Year hours",
-      "All-time hours",
-      "Shifts file",
-      "Sent by",
-      "Sent from",
-      "Result",
-    ],
+    HOURS_EMAILS_HEADER,
     sentRow("2026-11-03", MARIA, "JP", "sent"),
     sentRow("2026-11-05", MARIA, "AB", "failed: Service unavailable"),
     sentRow("2026-11-06", MARIA, "CD", R_CHANGED),
@@ -3665,6 +3667,31 @@ test("Email hours: Last emailed is the newest sent row, never with no tab and un
     ["sent", "sent"],
   );
   assert.equal(hoursEmailRows(t).length, 7);
+});
+
+// The window's tests read tests/hours-email-replies.json as the server's preview and send
+// replies. This test holds that file to what the server returns, so a change of shape on
+// either side fails a test. When a change is meant, copy the server's reply (the actual
+// value below) into the file and check the window's test against it.
+test("Email hours: the replies the window's tests use are the server's own", () => {
+  const log = emailLog();
+  const alerts = LOG_HEADER.findIndex((h) => h.replace(/\s+/g, " ") === "Admin Alerts?");
+  const jamesRow = log.findIndex((r) => r[0] === "j-1");
+  log[jamesRow][alerts] = "arrival differs by 24 min";
+  const flagged = FLAG_HEADER.map((h) =>
+    h === "Shift ID" ? "j-1" : h === "Reviewed" ? false : "",
+  );
+  const s = emailServer({
+    log,
+    flags: [FLAG_HEADER, flagged],
+    profiles: [EMAIL_PROFILE_HEADER, profileRow(MARIA), profileRow(JAMES), withEmail(DEV, "")],
+    hoursEmails: [HOURS_EMAILS_HEADER, sentRow("2026-11-03", MARIA, "JP", "sent")],
+  });
+  const preview = previewHours(s, [MARIA.id, JAMES.id, DEV.id, "0000aaaa0000bbbb"], {
+    attach: true,
+  });
+  const send = sendHours(s, preview.ticket, preview.sendIds);
+  assert.deepEqual({ preview, send }, JSON.parse(read("tests/hours-email-replies.json")));
 });
 
 test("Email hours: the lock is held only to take and to write the rows, never at a Log read or a send", () => {

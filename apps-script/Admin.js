@@ -344,7 +344,7 @@ function adminRestoreShift(key, form) {
 }
 
 /**
- * Email hours…' preview of the ticked volunteers. request is {ids, choice, attach}: ids
+ * The Email hours… preview of the ticked volunteers. request is {ids, choice, attach}: ids
  * are deduplicated, choice is "this" or "last" (anything else is "this") and attach is
  * true or false. Reads once for the set, with no lock: Settings, the volunteer list, the
  * addresses (profileEmails_), the Log, Flags, the Hours emails tab's sends and the quota.

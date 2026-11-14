@@ -737,6 +737,110 @@ for (const [mode, [name, reply]] of Object.entries(LOADS)) {
 }
 
 // ---------------------------------------------------------------------------
+// The server's own replies
+//
+// tests/hours-email-replies.json holds a preview reply and a send reply as the server
+// builds them; admin.test.mjs checks the file against adminHoursPreview and adminSendHours
+// on its stand-in server. Here the window reads them: Maria Alvarez and James Okafor sent,
+// James with a flag and an Admin Alerts? cell on one Log row, Dev Patel with no email, and
+// one id no longer on the volunteer list, with the attach box ticked.
+
+const REPLIES = JSON.parse(
+  readFileSync(new URL("./hours-email-replies.json", import.meta.url), "utf8"),
+);
+
+const blocks = (d) => d.$("email-detail").children;
+
+test("email window: the server's own preview and send replies show line by line", () => {
+  const { preview, send } = REPLIES;
+  const d = dialog("email");
+  d.last().answer({
+    ok: true,
+    today: preview.asOf,
+    volunteers: preview.volunteers.map((v) => ({ id: v.id, label: v.label })),
+  });
+  click(d, d.$("email-attach"));
+  click(d, d.$("email-tick-all"));
+  click(d, d.$("email-preview"));
+  const call = d.last();
+  assert.equal(call.name, "adminHoursPreview");
+  assert.deepEqual(plain(call.args[1]), {
+    ids: preview.volunteers.map((v) => v.id),
+    choice: "this",
+    attach: true,
+  });
+  call.answer(preview);
+  assert.equal(sendOff(d), false);
+  assert.deepEqual(plain(ticketOf(d).pending), preview.sendIds);
+  const shown = [...blocks(d)];
+  assert.equal(shown.length, 5);
+  assert.deepEqual(shown[0].text.split("\n"), [
+    "From: ENCM Volunteer Kiosk, from a no-reply address (sent by staff@example.org)",
+    "4 ticked: 2 will be sent, 2 won't.",
+  ]);
+  assert.deepEqual(shown[1].text.split("\n"), [
+    "To: Maria Alvarez <maria.alvarez@example.org>",
+    "Volunteer Profiles row 2 · started 2026-02-15",
+    "Last emailed: 2026-11-03 by JP",
+    "November 2026 so far: 6.50 hours (2 shifts)",
+    "2026 so far: 8.50 hours (3 shifts)",
+    "All time: 8.50 hours (3 shifts)",
+    "Attached: volunteer-hours-to-2026-11-14.csv (3 shifts)",
+  ]);
+  assert.deepEqual(shown[2].text.split("\n"), [
+    "To: James Okafor <james.okafor@example.org>",
+    "Volunteer Profiles row 3 · started 2026-02-15",
+    "Last emailed: never",
+    "November 2026 so far: 2.25 hours (1 shift)",
+    "2026 so far: 2.25 hours (1 shift)",
+    "All time: 2.25 hours (1 shift)",
+    "Attached: volunteer-hours-to-2026-11-14.csv (1 shift)",
+    "Check: 1 counted shift with an unreviewed flag (Log row 5): check them on the Flags tab before sending.",
+    "Check: 1 row with Admin Alerts? set (Log row 5): read the Admin Alerts? cell on those Log rows before sending.",
+  ]);
+  assert.deepEqual(shown[3].text.split("\n"), [
+    "Dev Patel: won't be sent. Volunteer Profiles row 4 has no email. Add it there, then press Preview again.",
+    "Volunteer Profiles row 4 · started 2026-02-15",
+    "Last emailed: never",
+    "November 2026 so far: 1.00 hours (1 shift)",
+    "2026 so far: 1.00 hours (1 shift)",
+    "All time: 1.00 hours (1 shift)",
+    "Attached: volunteer-hours-to-2026-11-14.csv (1 shift)",
+  ]);
+  assert.deepEqual(shown[4].text.split("\n"), [
+    "Not on the volunteer list: won't be sent. Not on the volunteer list any more; press Preview again.",
+    "Last emailed: never",
+  ]);
+  // Each sendable block opens to the email exactly as the server built it; the one not on
+  // the list has none.
+  preview.volunteers.forEach((v, i) => {
+    const details = shown[i + 1].children;
+    if (!v.body) return assert.equal(details.length, 0);
+    assert.equal(details[0].children[0].textContent, "Email text");
+    assert.equal(details[0].children[1].textContent, "Subject: " + v.subject + "\n\n" + v.body);
+  });
+
+  d.$("initials").value = "JP";
+  const sent = pressSend(d);
+  assert.deepEqual(plain(sent.args[1]), {
+    ticket: preview.ticket,
+    ids: preview.sendIds,
+    initials: "JP",
+  });
+  sent.answer(send);
+  assert.equal(message(d), "Sent 2 of 2.");
+  assert.deepEqual(detail(d).split("\n"), [
+    "Maria Alvarez: sent to maria.alvarez@example.org",
+    "James Okafor: sent to james.okafor@example.org",
+    "Left out at Preview:",
+    "Dev Patel: Volunteer Profiles row 4 has no email. Add it there, then press Preview again.",
+    "Not on the volunteer list: Not on the volunteer list any more; press Preview again.",
+  ]);
+  assert.equal(ticketOf(d), "");
+  assert.equal(sendOff(d), true);
+});
+
+// ---------------------------------------------------------------------------
 // The one writer
 
 test("AdminDialog.html sets a button's disabled only inside buttonState()", () => {
