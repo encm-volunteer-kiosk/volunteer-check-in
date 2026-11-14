@@ -10,9 +10,12 @@ import {
   canNudge,
   centralMinutes,
   clockText,
+  floorQuarter,
   fromTimeValue,
   nudge,
   pickMinutes,
+  pickTime,
+  pickedTimeToIso,
   quickAnswers,
   quickRange,
   toTimeValue,
@@ -206,4 +209,37 @@ test("a quick answer whose shown time left the range counts back from the tap", 
   assert.equal(pickMinutes(23 * 60 + 30, 15, tapped), null);
   // A shown time still in range is sent as shown.
   assert.equal(pickMinutes(23 * 60, 45, drawn), 23 * 60);
+});
+
+// A picked time is sent when Check In or Check Out is tapped, which can be after Central
+// midnight. It keeps the day it was picked on.
+
+test("a time picked before Central midnight and sent after it keeps the day it was picked on", (t) => {
+  // The picker opens at 11:52 PM Central on Nov 13 and holds 11:45 PM; the tap comes at
+  // 12:00:30 AM on Nov 14.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-14T05:52:00Z") });
+  const picked = pickTime(toTimeValue(floorQuarter(centralMinutes())));
+  assert.equal(picked.time, "23:45");
+  t.mock.timers.setTime(Date.parse("2026-11-14T06:00:30Z"));
+  const sent = pickedTimeToIso(picked);
+  assert.equal(sent, "2026-11-14T05:45:00.000Z");
+  assert.ok(Date.parse(sent) <= Date.now());
+});
+
+test("a time picked after Central midnight is on the new day", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-14T06:05:00Z") });
+  const picked = pickTime("00:00");
+  t.mock.timers.setTime(Date.parse("2026-11-14T06:07:00Z"));
+  assert.equal(pickedTimeToIso(picked), "2026-11-14T06:00:00.000Z");
+});
+
+test("a picked time on a clock-change day uses that time's own offset", () => {
+  // Spring forward, 2026-03-08: 2 AM CST becomes 3 AM CDT.
+  const spring = new Date("2026-03-08T08:30:00Z"); // 3:30 AM CDT
+  assert.equal(pickedTimeToIso(pickTime("01:45", spring)), "2026-03-08T07:45:00.000Z");
+  assert.equal(pickedTimeToIso(pickTime("03:15", spring)), "2026-03-08T08:15:00.000Z");
+  // Fall back, 2026-11-01: 2 AM CDT becomes 1 AM CST.
+  const fall = new Date("2026-11-01T09:00:00Z"); // 3:00 AM CST
+  assert.equal(pickedTimeToIso(pickTime("00:30", fall)), "2026-11-01T05:30:00.000Z");
+  assert.equal(pickedTimeToIso(pickTime("02:00", fall)), "2026-11-01T08:00:00.000Z");
 });
