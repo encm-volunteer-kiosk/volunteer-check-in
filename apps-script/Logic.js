@@ -1027,10 +1027,18 @@ function clockText(text) {
  * on day by read.at, and counts when the result is on day: a time skipped when daylight
  * time starts reads as the later time read.at gives, and NaN only if that is another day.
  * A read without at reads every time with no date as NaN.
+ *
+ * startMs is given for an end time only: the shift's start (shiftStartMs). A full
+ * date-time on the day after day then counts too when the start reads and it isn't before
+ * it, so a check-out after midnight ends the shift that started the day before.
  */
-function rowTimeMs(t, day, read) {
+function rowTimeMs(t, day, read, startMs) {
   if (!t || !day) return NaN;
-  if (t.date === day) return typeof t.ms === "number" && isFinite(t.ms) ? t.ms : NaN;
+  const ms = typeof t.ms === "number" && isFinite(t.ms) ? t.ms : NaN;
+  if (t.date === day) return ms;
+  if (typeof startMs === "number" && isFinite(startMs) && t.date === addDays(day, 1)) {
+    return ms >= startMs ? ms : NaN;
+  }
   const clock = cellString(t.clock);
   const noDate = t.date === timeOnlyDate() || cellString(t.date) === "";
   if (!clock || !noDate || !read || typeof read.at !== "function") return NaN;
@@ -1053,8 +1061,10 @@ function rowTimeMs(t, day, read) {
  * Every time on a row is on that row's Date (rowTimeMs). A full date-time whose Central
  * date is the row's Date is kept. A time with no date, such as "9:00 AM" typed into the
  * cell (Sheets stores it on 1899-12-30) or typed as text, is read as that time on the
- * row's Date, to the minute. Anything else reads as NaN (unreadable), so a full date-time
- * on another day can't make a shift days long. Hours are NaN when blank.
+ * row's Date, to the minute. The one exception is a check-out: a full date-time on the
+ * next day is kept when the start reads, since a shift can be checked out after
+ * midnight. Anything else reads as NaN (unreadable), so a full date-time on another day
+ * can't make a shift days long. Hours are NaN when blank.
  */
 function logEntry(cells, row, cols, read) {
   const H = logHeaderNames();
@@ -1065,21 +1075,24 @@ function logEntry(cells, row, cols, read) {
   const text = (header) => cellString(read.text(raw(header)));
   const dateText = text(H.date);
   const day = rowDate(dateText);
-  const time = (header) => {
+  const time = (header, startMs) => {
     const value = raw(header);
     if (cellString(value) === "") return NaN;
-    return rowTimeMs(read.time(value), day, read);
+    return rowTimeMs(read.time(value), day, read, startMs);
   };
+  const recordedInMs = time(H.recordedIn);
+  const statedInMs = time(H.statedIn);
+  const startMs = shiftStartMs({ recordedInMs, statedInMs });
   return {
     row,
     shiftId: text(H.shiftId),
     token: text(H.token),
     name: text(H.name),
     dateText,
-    recordedInMs: time(H.recordedIn),
-    statedInMs: time(H.statedIn),
-    recordedOutMs: time(H.recordedOut),
-    statedOutMs: time(H.statedOut),
+    recordedInMs,
+    statedInMs,
+    recordedOutMs: time(H.recordedOut, startMs),
+    statedOutMs: time(H.statedOut, startMs),
     recordedHours: hoursCell(raw(H.recordedHours)),
     statedHours: hoursCell(raw(H.statedHours)),
     alerts: text(H.alerts),
