@@ -16,6 +16,8 @@ import {
   type Milestone,
   type Volunteer,
 } from "./data";
+import { DEFAULT_LONG_SHIFT_HOURS, longShiftHoursOf } from "./cardTime";
+import { nameKey } from "./sameName";
 
 export type Refusal = { refusal: string; message: string };
 
@@ -53,9 +55,13 @@ export type CheckOutResult = {
   milestone: Milestone | null;
 };
 
+// The list reply: the volunteers, and the sheet's "Long shift flag hours", past which a
+// checked-in card turns amber (8 when the server sends none).
+export type VolunteerList = { volunteers: VolunteerSummary[]; longShiftHours: number };
+
 export interface KioskApi {
   checkAccess(code: string): Promise<true | Refusal>;
-  listVolunteers(code: string): Promise<VolunteerSummary[] | Refusal>;
+  listVolunteers(code: string): Promise<VolunteerList | Refusal>;
   // arrivalIso is the time chosen in the arrival picker, or null for now: the server then
   // uses its own clock, so the tablet's clock never reaches the Log.
   checkIn(
@@ -126,7 +132,11 @@ export const gasApi: KioskApi = {
   },
   async listVolunteers(code) {
     const reply = await run((r) => r.apiListVolunteers(code));
-    return reply.ok ? (reply.volunteers as VolunteerSummary[]) : refusalOf(reply);
+    if (!reply.ok) return refusalOf(reply);
+    return {
+      volunteers: reply.volunteers as VolunteerSummary[],
+      longShiftHours: longShiftHoursOf(reply),
+    };
   },
   async checkIn(code, id, arrivalIso, phoneLast4) {
     const reply = await run((r) => r.apiCheckIn(code, id, arrivalIso, phoneLast4));
@@ -197,8 +207,6 @@ function loadLocal(): KioskData {
   return localData;
 }
 
-const nameKey = (v: Volunteer) => `${v.firstName} ${v.lastName}`.trim().toLowerCase();
-
 function sharesName(data: KioskData, volunteer: Volunteer) {
   return data.volunteers.some(
     (v) => v.active && v.id !== volunteer.id && nameKey(v) === nameKey(volunteer),
@@ -242,13 +250,36 @@ function localResolve(
   return matches.length === 1 ? matches[0] : "PHONE_WRONG";
 }
 
+// As on the server, a check-out with no digits for a shared name acts on the tapped member
+// when that member is the only one of the name checked in. Otherwise: nobody of the name in
+// is NOT_IN, and anyone else in asks for the digits (PHONE_MISSING when the tapped member
+// has none on record). With digits, or off a group, it is localResolve.
+function localResolveCheckOut(
+  data: KioskData,
+  tapped: Volunteer,
+  digits: string | null,
+  now: number,
+): Volunteer | string {
+  if (!sharesName(data, tapped) || (digits ?? "").replace(/\D/g, "")) {
+    return localResolve(data, tapped, digits);
+  }
+  const checkedIn = data.volunteers.filter(
+    (v) => v.active && nameKey(v) === nameKey(tapped) && isCheckedInAt(v, now),
+  );
+  if (checkedIn.length === 0) return "NOT_IN";
+  if (checkedIn.length === 1 && checkedIn[0].id === tapped.id) return tapped;
+  return localPhoneLast4[tapped.id] ? "PHONE_NEEDED" : "PHONE_MISSING";
+}
+
 /** The volunteer acted on, or the refusal, common to check-in and check-out. */
-function localLookup(code: string, id: string, digits: string | null) {
+function localLookup(code: string, id: string, digits: string | null, checkout = false) {
   if (!localCodeOk(code)) return { refusal: refuse("ACCESS") };
   const data = loadLocal();
   const tapped = data.volunteers.find((v) => v.id === id && v.active);
   if (!tapped) return { refusal: refuse("NOT_FOUND") };
-  const volunteer = localResolve(data, tapped, digits);
+  const volunteer = checkout
+    ? localResolveCheckOut(data, tapped, digits, Date.now())
+    : localResolve(data, tapped, digits);
   if (typeof volunteer === "string") return { refusal: refuse(volunteer) };
   return { data, volunteer };
 }
@@ -261,7 +292,7 @@ export const localApi: KioskApi & { reset(): void } = {
     if (!localCodeOk(code)) return refuse("ACCESS");
     const data = loadLocal();
     const now = Date.now();
-    return data.volunteers
+    const volunteers = data.volunteers
       .filter((v) => v.active)
       .map((v) => {
         const checkedIn = isCheckedInAt(v, now);
@@ -274,6 +305,7 @@ export const localApi: KioskApi & { reset(): void } = {
           needsPhoneCheck: sharesName(data, v),
         };
       });
+    return { volunteers, longShiftHours: DEFAULT_LONG_SHIFT_HOURS };
   },
   async checkIn(code, id, arrivalIso, phoneLast4) {
     const found = localLookup(code, id, phoneLast4);
@@ -299,7 +331,7 @@ export const localApi: KioskApi & { reset(): void } = {
     };
   },
   async checkOut(code, id, phoneLast4, checkOutIso) {
-    const found = localLookup(code, id, phoneLast4);
+    const found = localLookup(code, id, phoneLast4, true);
     if (found.refusal) return found.refusal;
     const { data, volunteer } = found;
     const now = Date.now();
