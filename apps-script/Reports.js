@@ -236,8 +236,10 @@ function insertHoursTab_(ss, name, value) {
  * setupReports' steps 3 to 7 on the Hours tabs, in one hold: take the lock (60 s; busy:
  * throw, having changed nothing on Hours); make or find Hours data and mark the tables not
  * whole (M1 "writing S", Q1 "building S"); read the Log and work out the table; lay out
- * Hours data with rows for that table, then Hours; Q1 "built S"; write the table inside the
- * hold with mark S; flush and read Hours data back; and only when it
+ * Hours data with rows for that table, then Hours, reading the header notes before the
+ * clear; Q1 "built S"; write the table inside the hold with mark S; write the header notes
+ * (writeHoursNotes_, the last write to the Hours tab, keeping any staff note read before
+ * the clear); flush and read Hours data back; and only when it
  * reads back built and whole at this run's read time with the rows written, delete the old
  * Monthly Hours tab. A throw, or a read-back that doesn't pass, marks the table stopped
  * (when this run's mark is still in M1), keeps Monthly Hours and throws with B1's text.
@@ -268,9 +270,10 @@ function setupHoursTabs_(ss, found, hold) {
     layoutHoursData_(data, run.rows);
 
     if (!tabs.hours) tabs.hours = insertHoursTab_(ss, hoursTabName(), hoursTabMark().hours);
-    layoutHoursTab_(ss, tabs, run.rows);
+    const notesBefore = layoutHoursTab_(ss, tabs, run.rows);
     hoursHoldStep_(tabs, run, { kind: "setup-built" }, null);
     hoursHoldStep_(tabs, run, { kind: "read" }, read);
+    writeHoursNotes_(tabs, notesBefore);
 
     SpreadsheetApp.flush();
     const state = readHoursCells_(data);
@@ -330,14 +333,17 @@ function formatHoursRows_(data, from, to) {
 /**
  * The Hours tab laid out from hoursTabPlan: row 7's sort boxes read first, so each box
  * that holds one of its own choices keeps it (hoursBoxChoices; a new tab, or one laid out
- * before the boxes, gets the starting choices); every slicer, pivot, conditional format
+ * before the boxes, gets the starting choices), and with them the header notes, which it
+ * returns for writeHoursNotes_ (null when they couldn't be read: a failed read is logged
+ * and never stops setupReports); every slicer, pivot, conditional format
  * rule, merge and data validation removed and the tab cleared whole (clear() leaves data
  * validation, so it is cleared on its own and no dropdown is left behind); rows for the
  * Shifts pivot (growHoursTab_) over rows rows, the table setupReports is about to write,
  * or over what Hours data holds now, whichever is more; A1's title, then B1 rendered, then
  * rows 2 to 7's text and the boxes' choices; then the formats, widths, heights, the boxes'
  * dropdowns, rules, pivots and slicers in one batchUpdate through the advanced Sheets
- * service; row 1 frozen; the tab colour.
+ * service; row 1 frozen; the tab colour. The status cells are written blank with the
+ * other cells.
  */
 function layoutHoursTab_(ss, tabs, rows) {
   const hours = tabs.hours;
@@ -347,6 +353,15 @@ function layoutHoursTab_(ss, tabs, rows) {
       ? hours.getRange(7, 1, 1, Math.min(14, hours.getMaxColumns())).getValues()[0]
       : [];
   const choices = hoursBoxChoices(boxRow);
+  let notesBefore = null;
+  try {
+    const cells = hours.getRange(hoursNoteCells().range);
+    if (hours.getMaxRows() >= cells.getRow() && hours.getMaxColumns() >= cells.getLastColumn()) {
+      notesBefore = cells.getNotes()[0];
+    }
+  } catch (err) {
+    console.log("Hours: header notes not read: " + hoursMessage_(err));
+  }
   hours.getSlicers().forEach((s) => s.remove());
   hours.getPivotTables().forEach((p) => p.remove());
   hours.clearConditionalFormatRules();
@@ -368,6 +383,33 @@ function layoutHoursTab_(ss, tabs, rows) {
   Sheets.Spreadsheets.batchUpdate({ requests: plan.requests }, ss.getId());
   hours.setFrozenRows(plan.frozenRows);
   hours.setTabColor(plan.tabColor);
+  return notesBefore;
+}
+
+/**
+ * Puts the kiosk's note on each Hours header (hoursNoteCells) by the header-notes rule
+ * (headerNotesRow, with the Hours lists): a cell whose note is empty or one of the kiosk's
+ * own texts gets its header's note, and a note staff wrote is kept. before is the notes
+ * read before the tab was changed, or null. It reads the notes now and takes, cell by
+ * cell, the note now when it is a staff note, else the before note (hoursNotesExisting),
+ * so a staff note that went missing in between is put back and one written since is
+ * kept. Only cells whose note changes are written. Never throws: a failure is logged and
+ * the caller, which has done its work, goes on.
+ */
+function writeHoursNotes_(tabs, before) {
+  try {
+    const cells = hoursNoteCells();
+    const range = tabs.hours.getRange(cells.range);
+    const now = range.getNotes()[0].map((n) => (n === null || n === undefined ? "" : String(n)));
+    const kiosk = hoursHeaderNoteKioskTexts();
+    const existing = hoursNotesExisting(now, before, kiosk);
+    const want = headerNotesRow(cells.row, cells.names, cells.notes, existing, kiosk);
+    want.forEach((note, i) => {
+      if (note !== now[i]) tabs.hours.getRange(range.getRow(), range.getColumn() + i).setNote(note);
+    });
+  } catch (err) {
+    console.log("Hours: header notes not written: " + hoursMessage_(err));
+  }
 }
 
 /**

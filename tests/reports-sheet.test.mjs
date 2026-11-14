@@ -149,6 +149,22 @@ class FakeRange {
   getColumn() {
     return this.col;
   }
+  getLastColumn() {
+    return this.col + this.cols - 1;
+  }
+  getNotes() {
+    rec({ sheet: this.sheet.name, op: "getNotes", a1: this.getA1Notation() });
+    const out = Array.from({ length: this.rows }, () => Array(this.cols).fill(""));
+    this.each((r, c, i, j) => (out[i][j] = this.sheet.notes.get(r + ":" + c) ?? ""));
+    return out;
+  }
+  setNote(note) {
+    rec({ sheet: this.sheet.name, op: "setNote", a1: this.getA1Notation(), value: note });
+    assert.equal(this.rows * this.cols, 1, "one note per call");
+    if (note === "") this.sheet.notes.delete(this.row + ":" + this.col);
+    else this.sheet.notes.set(this.row + ":" + this.col, note);
+    return this;
+  }
   getValues() {
     const out = Array.from({ length: this.rows }, () => Array(this.cols).fill(""));
     this.each((r, c, i, j) => (out[i][j] = this.sheet.get(r, c)));
@@ -239,6 +255,10 @@ class FakeSheet {
     this.rangeFormats = new Map();
     this.cellFormats = new Map();
     this.validations = new Map();
+    // Cell notes by "row:col". clear() keeps them, as Sheets' does, unless a test says
+    // otherwise.
+    this.notes = new Map();
+    this.clearRemovesNotes = false;
     this.hidden = new Set();
     this.protections = [];
     // Styles set through range lists, as [a1, what, value] in call order; widths by column.
@@ -298,6 +318,7 @@ class FakeSheet {
   }
   clear() {
     rec({ sheet: this.name, op: "clear" });
+    if (this.clearRemovesNotes) this.notes.clear();
     this.cells.clear();
     this.formulas.clear();
     this.rangeFormats.clear();
@@ -406,6 +427,7 @@ class FakeSheet {
       rangeFormats: [...this.rangeFormats],
       cellFormats: [...this.cellFormats],
       validations: [...this.validations],
+      notes: [...this.notes],
       hidden: [...this.hidden],
       protections: this.protections.map((p) => p.state()),
       styles: this.styles,
@@ -1943,7 +1965,9 @@ test("B1 is written only by renderHoursLine_, always hoursLine of the cells, and
       if (c.sheet === "Hours" && c.a1 === "B1" && c.op !== "breakApart") {
         assert.ok(inside, label + ": B1 written outside the render");
       }
-      if (isHoursWrite(c)) lastHoursWrite = i;
+      // setupReports' header notes come after its last render, before its flush: a note
+      // is no state cell, no table and not B1, so B1 still shows what the cells say.
+      if (isHoursWrite(c) && c.op !== "getNotes" && c.op !== "setNote") lastHoursWrite = i;
     });
     const release = s.calls.findIndex((c) => c.op === "docLock.release");
     const last = s.calls[lastHoursWrite];
@@ -2150,4 +2174,135 @@ test("setupReports installs no trigger when Hours isn't filled", () => {
   assert.throws(() => s.ctx.setupReports(), /Hours was not filled/);
   assert.equal(sortTriggers(s).length, 0);
   assert.ok(!s.calls.some((c) => c.op.startsWith("trigger.")));
+});
+
+// ---------------------------------------------------------------------------
+// Row 7's status cells and row 8's header notes
+
+/** The Hours tab's row 8 notes, A to N, "" where there is none. */
+const notesRow = (s) =>
+  Array.from({ length: 14 }, (_, i) => s.sheet("Hours").notes.get("8:" + (i + 1)) ?? "");
+/** The notes the kiosk puts on row 8 with no staff note anywhere. */
+const kioskRow = (s) => {
+  const n = plain(s.ctx.hoursHeaderNotes());
+  return [
+    n.volunteer,
+    n.shifts,
+    n.hours,
+    "",
+    n.month,
+    n.shifts,
+    n.hours,
+    n.volunteers,
+    n.averageShift,
+    "",
+    n.shift,
+    n.roleType,
+    n.activity,
+    n.hours,
+  ];
+};
+
+test("setupReports writes the header notes once, after the table step and before the read-back flush, having read them before the clear", () => {
+  const s = server(LOG, { now: NOW });
+  s.ctx.setupReports();
+  assert.deepEqual(notesRow(s), kioskRow(s));
+  const at = (pred, from = 0) => s.calls.findIndex((c, i) => i >= from && pred(c));
+  const read = at((c) => c.op === "getNotes");
+  const clear = at((c) => c.sheet === "Hours" && c.op === "clear");
+  const table = at((c) => c.sheet === "Hours data" && c.op === "setValues" && c.a1 !== "A1:K1");
+  const notes = s.calls.flatMap((c, i) => (c.op === "setNote" ? [i] : []));
+  assert.ok(read >= 0 && read < clear, "the notes are read before the clear");
+  assert.equal(notes.length, 12, "one write per header, none in the gaps");
+  assert.ok(notes[0] > table, "after the table step");
+  const flush = at((c) => c.op === "flush", notes.at(-1));
+  const release = at((c) => c.op === "docLock.release");
+  assert.ok(flush > notes.at(-1) && flush < release, "before the read-back flush");
+  assert.ok(at((c) => c.op === "deleteSheet" || c.op === "setNote", notes.at(-1) + 1) < 0);
+  checkOneHold(s.calls, "setupReports with notes");
+  // A second run finds every note in place and writes none.
+  s.calls.length = 0;
+  s.ctx.setupReports();
+  assert.equal(s.calls.filter((c) => c.op === "setNote").length, 0);
+  assert.deepEqual(notesRow(s), kioskRow(s));
+});
+
+test("setupReports keeps a staff note across two runs whether or not clear() removes notes, and puts back a kiosk note deleted by hand", () => {
+  for (const removes of [false, true]) {
+    const s = built();
+    const hours = s.sheet("Hours");
+    hours.clearRemovesNotes = removes;
+    const staff = "Staff: checked against the paper sheet in October.";
+    const gap = "Staff: this gap is for notes.";
+    hours.notes.set("8:2", staff); // B8, over the kiosk's Shifts note
+    hours.notes.set("8:4", gap); // D8, a gap
+    hours.notes.delete("8:11"); // K8's kiosk note, deleted by hand
+    s.ctx.setupReports();
+    s.ctx.setupReports();
+    const want = kioskRow(s);
+    want[1] = staff;
+    want[3] = gap;
+    assert.deepEqual(notesRow(s), want, "clear removes notes: " + removes);
+  }
+});
+
+test("a header notes failure is logged and setupReports still finishes, Hours filled", () => {
+  for (const [op, said] of [
+    ["setNote", /Hours: header notes not written: injected/],
+    ["getNotes", /Hours: header notes not (read|written): injected/],
+  ]) {
+    const s = server(LOG, { now: NOW });
+    FAIL = (c) => c.op === op;
+    s.ctx.setupReports();
+    FAIL = null;
+    const text = s.logs.join("\n");
+    assert.match(text, said, op);
+    assert.match(text, /Hours is filled as of 2026-11-13 9:14 AM\./, op);
+    assert.equal(cellsOf(s)[1], "complete", op);
+  }
+  // A failed early read leaves no before: the notes are still written from what is there.
+  const s = server(LOG, { now: NOW });
+  let reads = 0;
+  FAIL = (c) => c.op === "getNotes" && ++reads === 1;
+  s.ctx.setupReports();
+  FAIL = null;
+  assert.match(s.logs.join("\n"), /Hours: header notes not read: injected/);
+  assert.deepEqual(notesRow(s), kioskRow(s));
+});
+
+test("setupReports leaves the status cells blank and merges only the month box in row 7", () => {
+  const s = built();
+  const hours = s.sheet("Hours");
+  const tables = plain(s.ctx.hoursSortChoices());
+  // Text typed into a status cell, and a sort text left by a run that never finished.
+  hours.getRange("B7").setValue("typed by staff");
+  hours.getRange("H7").setValue(s.ctx.hoursSortStatusText());
+  hours.getRange("L7").setValue(s.ctx.hoursSortFailedText());
+  s.ctx.setupReports();
+  assert.deepEqual(
+    tables.map((t) => hours.getRange(t.status).getValue()),
+    ["", "", ""],
+  );
+  assert.ok(
+    tables.every((t) =>
+      s.calls.some((c) => c.op === "setValue" && c.a1 === t.status && c.value === ""),
+    ),
+  );
+  assert.deepEqual(
+    hours.merges.filter((m) => m.startRowIndex === 6),
+    [
+      {
+        sheetId: hours.sheetId,
+        startRowIndex: 6,
+        endRowIndex: 7,
+        startColumnIndex: 4,
+        endColumnIndex: 7,
+      },
+    ],
+  );
+  // The boxes still hold their choices.
+  assert.deepEqual(
+    tables.map((t) => hours.getRange(t.cell).getValue()),
+    tables.map((t) => t.start),
+  );
 });
