@@ -435,7 +435,9 @@ test("How to opens with Problems with the kiosk: one contact line, styled like t
   ]);
 });
 
-const TRIM = "^[\\t\\n\\x{0B}\\f\\r\\p{Z}\\x{FEFF}]+|[\\t\\n\\x{0B}\\f\\r\\p{Z}\\x{FEFF}]+$";
+const TRIM_SET =
+  "[\\t\\n\\x{0B}\\f\\r\\x{20}\\x{A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}]";
+const TRIM = "^" + TRIM_SET + "+|" + TRIM_SET + "+$";
 
 test("the How to contact formula reads the Settings row live, by name, and falls back to the blank text", () => {
   assert.deepEqual(plain(L.howToContactTexts()), { blank: BLANK_TEXT, prefix: PREFIX });
@@ -472,7 +474,8 @@ test("the How to contact formula reads the Settings row live, by name, and falls
 function sheetsTrim(text) {
   const pattern = L.kioskContactTrimPattern();
   // Every piece is one both engines know: anchors, a class, +, |, and these escapes.
-  assert.match(pattern, /^(?:[\^$+|[\]]|\\[tnfr]|\\x\{[0-9A-F]+\}|\\p\{Z\})+$/);
+  // No \p{...} class: Sheets' REGEXREPLACE gives #REF! for every one.
+  assert.match(pattern, /^(?:[\^$+|[\]-]|\\[tnfr]|\\x\{[0-9A-F]+\})+$/);
   const js = new RegExp(pattern.replace(/\\x\{([0-9A-F]+)\}/g, "\\u{$1}"), "gu");
   return String(text).replace(js, "");
 }

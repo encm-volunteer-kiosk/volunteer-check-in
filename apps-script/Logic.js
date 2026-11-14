@@ -6971,10 +6971,12 @@ function howToContactTexts() {
 /**
  * A Sheets (RE2) pattern for REGEXREPLACE that matches the characters trim() removes at
  * either end of a text: tab, line feed, vertical tab, form feed, carriage return, every
- * Unicode space and line or paragraph separator (\p{Z}), and the byte-order mark.
+ * Unicode space and line or paragraph separator, and the byte-order mark. The separators are
+ * listed by code point because Sheets' REGEXREPLACE gives #REF! for any \p{...} class.
  */
 function kioskContactTrimPattern() {
-  const set = "[\\t\\n\\x{0B}\\f\\r\\p{Z}\\x{FEFF}]";
+  const set =
+    "[\\t\\n\\x{0B}\\f\\r\\x{20}\\x{A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}]";
   return "^" + set + "+|" + set + "+$";
 }
 
