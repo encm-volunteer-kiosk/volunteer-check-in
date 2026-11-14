@@ -5,9 +5,9 @@
     <meta charset="utf-8" />
     <!--
       The Kiosk admin dialogs, served by openAdminDialog_ (Admin.js) as a template. The
-      server puts the dialog key, the mode ("add", "fix", "remove" or "restore") and the
-      Kiosk contact line into the body's data attributes, through the escaping print
-      scriptlet; nothing else on the page is filled in by the server. Plain HTML and
+      server puts the dialog key, the mode ("add", "fix", "remove", "restore" or "email")
+      and the Kiosk contact line into the body's data attributes, through the escaping
+      print scriptlet; nothing else on the page is filled in by the server. Plain HTML and
       JavaScript, no build step. Every limit shown here is checked again on the server.
     -->
     <style>
@@ -115,6 +115,60 @@
         justify-content: flex-end;
         margin-top: 8px;
       }
+      .heading {
+        font-weight: bold;
+        margin: 12px 0 4px;
+      }
+      label.tick {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: normal;
+        margin: 0;
+        padding: 2px 0;
+        line-height: 20px;
+      }
+      label.tick input {
+        width: auto;
+        margin: 0;
+      }
+      .ticks {
+        height: 192px;
+        overflow-y: auto;
+        margin-top: 4px;
+        padding: 0 6px;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+      }
+      .tick-buttons {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .tick-buttons .hint {
+        margin-left: auto;
+      }
+      .preview {
+        max-height: 180px;
+        overflow: auto;
+      }
+      .preview > div + div {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid #dadce0;
+      }
+      .preview summary {
+        cursor: pointer;
+        color: #1a73e8;
+      }
+      .check {
+        margin-top: 8px;
+        padding: 8px;
+        border-radius: 4px;
+        background: #fef7e0;
+        color: #7a4f01;
+      }
       [hidden] {
         display: none !important;
       }
@@ -182,6 +236,35 @@
       <div class="detail" id="restore-detail"></div>
     </form>
 
+    <form id="email" hidden>
+      <div class="heading">Month</div>
+      <label class="tick"
+        ><input type="radio" name="email-month" id="email-this" value="this" checked />
+        <span id="email-this-label">This month</span></label
+      >
+      <label class="tick"
+        ><input type="radio" name="email-month" id="email-last" value="last" />
+        <span id="email-last-label">Last month</span></label
+      >
+      <label class="tick"
+        ><input type="checkbox" id="email-attach" /> Attach all shifts as a spreadsheet file
+        (CSV)</label
+      >
+
+      <label for="email-search">Volunteers <span class="hint">(type to search)</span></label>
+      <input id="email-search" type="search" autocomplete="off" />
+      <div id="email-list" class="ticks" role="group" aria-label="Volunteers"></div>
+      <div class="tick-buttons">
+        <button type="button" id="email-tick-all">Tick all shown</button>
+        <button type="button" id="email-clear">Clear</button>
+        <span class="hint" id="email-count">0 ticked</span>
+      </div>
+      <div class="find"><button type="button" id="email-preview">Preview</button></div>
+
+      <div class="check" id="email-check" hidden></div>
+      <div class="detail preview" id="email-detail"></div>
+    </form>
+
     <div id="common" hidden>
       <div id="note-block">
         <label for="note" id="note-label"
@@ -207,21 +290,47 @@
       // Who to ask, added to an error: whatever reaches the failure handler and a reply
       // with no message. A refusal's own message is shown as it is.
       const CONTACT = document.body.dataset.contact || "";
-      const MODES = ["add", "fix", "remove", "restore"];
+      const MODES = ["add", "fix", "remove", "restore", "email"];
       const MODE = MODES.includes(document.body.dataset.mode) ? document.body.dataset.mode : "add";
       const $ = (id) => document.getElementById(id);
       const REFRESH_TEXT =
         " Hours shows this after its next refresh (about 5 AM, or Kiosk admin > Refresh Hours).";
-      // add and remove: the volunteer roster. fix: the open shifts. restore: the Removed rows.
+      // add, remove and email: the volunteer roster. fix: the open shifts. restore: the
+      // Removed rows.
       let choices = [];
       // remove: the rows Find returned.
       let found = [];
+      // True while a call is in flight.
       let busy = false;
+      // email: the ticked Volunteer IDs, kept while the search hides their rows, and the
+      // tick boxes drawn now.
+      const ticked = new Set();
+      let boxes = [];
+      // email: "" or {id, key, pending}, the ticket of the last Preview, the selection key
+      // it was made for and the ids the Send still has to handle. Only setTicket() writes
+      // it, except that a send reply takes the ids it handled out of pending.
+      let ticket = "";
+      // email: the Preview reply the ticket came from, which labels the send results.
+      let shown = null;
+      // email: true from a Send press until its run of calls ends, and that run.
+      let running = false;
+      let run = null;
 
+      // email: how many a send run sent, put before the next message shown, which is the
+      // reply that ended the run.
+      let runCount = "";
+
+      // In email mode every message is scrolled into view, so the result of the last press
+      // is never below the fold.
       function show(text, kind) {
+        if (runCount) {
+          text = text ? runCount + " " + text : runCount;
+          runCount = "";
+        }
         const box = $("message");
         box.textContent = text;
         box.className = "message " + (text ? kind : "");
+        if (MODE === "email") box.scrollIntoView({ block: "nearest" });
       }
 
       function failed(text) {
@@ -285,6 +394,8 @@
         else if (MODE === "fix") fillList($("fix-shift"), $("fix-search"), choices, "shiftId");
         else if (MODE === "remove") {
           fillList($("remove-volunteer"), $("remove-search"), choices, "id");
+        } else if (MODE === "email") {
+          drawTicks();
         } else {
           fillList($("restore-shift"), $("restore-search"), choices, "key");
           showDetail();
@@ -339,20 +450,40 @@
         return reply.name ? reply.name + "'s shift" : "The shift";
       }
 
+      // The one place that writes the primary button's disabled. In email mode it also
+      // turns every control that changes the selection off while a call is in flight or a
+      // send run is under way, so the selection can't change under a pending reply.
+      function buttonState() {
+        if (MODE !== "email") {
+          $("save").disabled = busy;
+          return;
+        }
+        const off = busy || running;
+        $("save").disabled = off || !ticket;
+        const controls = ["email-this", "email-last", "email-attach", "email-search"];
+        controls.push("email-tick-all", "email-clear", "email-preview");
+        controls.forEach((id) => ($(id).disabled = off));
+        boxes.forEach((box) => (box.disabled = off));
+      }
+
+      // In email mode afterReply runs before the button is set: it moves a send run on, or
+      // ends it.
       function call(name, args, onOk) {
         busy = true;
-        $("save").disabled = true;
+        buttonState();
         google.script.run
           .withSuccessHandler((reply) => {
             busy = false;
-            $("save").disabled = false;
+            if (MODE === "email") afterReply(name, reply, false);
+            buttonState();
             if (reply && reply.ok) onOk(reply);
             else if (reply && reply.message) show(reply.message, "error");
             else failed("Something went wrong. Please try again.");
           })
           .withFailureHandler((error) => {
             busy = false;
-            $("save").disabled = false;
+            if (MODE === "email") afterReply(name, null, true, error);
+            buttonState();
             failed((error && error.message) || String(error));
           })
           [name](KEY, ...args);
@@ -379,6 +510,13 @@
             choices = reply.volunteers;
             $("remove-date").value = reply.today;
             $("remove-date").max = reply.today;
+            refill();
+            show("", "");
+          });
+        } else if (MODE === "email") {
+          call("adminRoster", [], (reply) => {
+            choices = reply.volunteers;
+            nameMonths(reply.today);
             refill();
             show("", "");
           });
@@ -416,6 +554,7 @@
 
       function save() {
         if (busy) return;
+        if (MODE === "email") return send();
         const common = { note: $("note").value, initials: $("initials").value };
         if (MODE === "add") {
           const form = {
@@ -510,6 +649,359 @@
         }
       }
 
+      // ---- Email hours ----
+
+      const MONTH_NAMES = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+      ];
+
+      // The two month choices, named from the server's today (yyyy-mm-dd, Central). The
+      // server works the month out again from its own clock at Preview and at Send.
+      function nameMonths(today) {
+        const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(today || ""));
+        if (!m) return;
+        const year = Number(m[1]);
+        const month = Number(m[2]);
+        const last = month === 1 ? [year - 1, 12] : [year, month - 1];
+        $("email-this-label").textContent =
+          "This month (" + MONTH_NAMES[month - 1] + " " + year + ")";
+        $("email-last-label").textContent =
+          "Last month (" + MONTH_NAMES[last[1] - 1] + " " + last[0] + ")";
+      }
+
+      // Redraws the tick boxes from the roster and the ticked set. The search only hides
+      // and shows rows: a ticked row stays ticked, and counted, while it is hidden.
+      function drawTicks() {
+        const list = $("email-list");
+        const query = $("email-search").value;
+        list.textContent = "";
+        boxes = choices.map((volunteer) => {
+          const row = document.createElement("label");
+          row.className = "tick";
+          row.hidden = !labelMatches(volunteer.label, query);
+          const box = document.createElement("input");
+          box.type = "checkbox";
+          box.checked = ticked.has(volunteer.id);
+          box.addEventListener("change", () => {
+            if (box.checked) ticked.add(volunteer.id);
+            else ticked.delete(volunteer.id);
+            selectionChanged();
+          });
+          const name = document.createElement("span");
+          name.textContent = volunteer.label;
+          row.appendChild(box);
+          row.appendChild(name);
+          list.appendChild(row);
+          return box;
+        });
+        buttonState();
+      }
+
+      function tickAllShown() {
+        if (busy || running) return;
+        const query = $("email-search").value;
+        choices.forEach((v) => {
+          if (labelMatches(v.label, query)) ticked.add(v.id);
+        });
+        drawTicks();
+        selectionChanged();
+      }
+
+      function clearTicks() {
+        if (busy || running) return;
+        ticked.clear();
+        drawTicks();
+        selectionChanged();
+      }
+
+      // The ticked ids in roster order.
+      function tickedIds() {
+        return choices.filter((v) => ticked.has(v.id)).map((v) => v.id);
+      }
+
+      function monthChoice() {
+        return $("email-last").checked ? "last" : "this";
+      }
+
+      // The selection a ticket is made for: the ticked ids, the month and the attach box.
+      // The search box is not part of it.
+      function selectionKey() {
+        return JSON.stringify([tickedIds().sort(), monthChoice(), $("email-attach").checked]);
+      }
+
+      function setTicket(t) {
+        ticket = t;
+        buttonState();
+      }
+
+      // Drops the ticket, the preview or result list, and the check line.
+      function forgetPreview() {
+        setTicket("");
+        shown = null;
+        $("email-detail").textContent = "";
+        $("email-check").textContent = "";
+        $("email-check").hidden = true;
+      }
+
+      // Any change of the ticked set, the month or the attach box.
+      function selectionChanged() {
+        forgetPreview();
+        $("email-count").textContent = ticked.size + " ticked";
+        show("", "");
+      }
+
+      function preview() {
+        if (busy || running) return;
+        const ids = tickedIds();
+        if (!ids.length) return show("Please tick at least one volunteer.", "error");
+        forgetPreview();
+        const key = selectionKey();
+        const form = { ids, choice: monthChoice(), attach: $("email-attach").checked };
+        show("Making the preview…", "info");
+        call("adminHoursPreview", [form], (reply) => {
+          if (selectionKey() !== key) {
+            return show("The ticked volunteers changed. Press Preview again.", "info");
+          }
+          shown = reply;
+          drawPreview(reply);
+          const pending = (reply.sendIds || []).slice();
+          setTicket(reply.ticket ? { id: reply.ticket, key, pending } : "");
+          if (ticket) {
+            show("Check the preview, then type your initials and press Send email.", "info");
+          } else {
+            const why = texts(reply.setProblems).join(" ");
+            show(why || "None of the ticked volunteers can be sent; see the preview.", "error");
+          }
+        });
+      }
+
+      // Warnings and problems come as text, or as objects carrying their text.
+      function texts(list) {
+        return (Array.isArray(list) ? list : [])
+          .map((x) => (typeof x === "string" ? x : (x && (x.text || x.message)) || ""))
+          .filter(Boolean);
+      }
+
+      function plural(n, word) {
+        return n + " " + word + (n === 1 ? "" : "s");
+      }
+
+      function lastSentText(last) {
+        if (!last) return "never";
+        if (typeof last === "string") return last;
+        if (last.unknown) return "unknown";
+        const at = last.at || last.date || "";
+        return at ? at + (last.by ? " by " + last.by : "") : "never";
+      }
+
+      function fromLine(from) {
+        if (!from) return "";
+        if (/no-reply/i.test(from)) return "From: " + from;
+        return "From: ENCM Volunteer Kiosk, from a no-reply address (sent by " + from + ")";
+      }
+
+      // The email's total lines: the indented lines that open its body, or its one line
+      // for a volunteer with no counted hours.
+      function totalsLines(v) {
+        if (Array.isArray(v.totals) && v.totals.every((t) => typeof t === "string")) {
+          return v.totals;
+        }
+        const lines = String(v.body || "").split("\n");
+        const start = lines.findIndex((l) => /^ {2}\S/.test(l));
+        if (start === -1) {
+          return lines.filter((l) => /recorded for you yet/.test(l));
+        }
+        const end = lines.findIndex((l, i) => i > start && !/^ {2}\S/.test(l));
+        return lines.slice(start, end === -1 ? undefined : end).map((l) => l.trim());
+      }
+
+      // The flagged shifts a volunteer's warnings name, when the reply says: a count of
+      // its own, or the counts on its Flags and Admin Alerts? warnings. null when unknown.
+      function flaggedCount(v) {
+        if (typeof v.flagged === "number") return v.flagged;
+        const flags = (v.warnings || []).filter(
+          (w) => w && typeof w.count === "number" && /flag|alert/i.test(w.kind || w.code || ""),
+        );
+        return flags.length ? flags.reduce((sum, w) => sum + w.count, 0) : null;
+      }
+
+      function addBlock(box, lines) {
+        const block = document.createElement("div");
+        block.textContent = lines.filter(Boolean).join("\n");
+        box.appendChild(block);
+        return block;
+      }
+
+      function drawPreview(reply) {
+        const box = $("email-detail");
+        box.textContent = "";
+        const people = reply.volunteers || [];
+        const will = reply.ticket ? (reply.sendIds || []).length : 0;
+        addBlock(box, [
+          ...texts(reply.setProblems),
+          fromLine(reply.from),
+          people.length +
+            " ticked: " +
+            will +
+            " will be sent, " +
+            (people.length - will) +
+            " won't.",
+        ]);
+        people.forEach((v) => {
+          const problems = texts(v.problems);
+          const block = addBlock(box, [
+            problems.length
+              ? v.label + ": won't be sent. " + problems.join(" ")
+              : "To: " + v.label + " <" + v.to + ">",
+            v.profilesRow
+              ? "Volunteer Profiles row " +
+                v.profilesRow +
+                (v.startDate ? " · started " + v.startDate : "")
+              : "",
+            "Last emailed: " + lastSentText(v.lastSent),
+            ...totalsLines(v),
+            v.attachment
+              ? "Attached: " + v.attachment.name + " (" + plural(v.attachment.shifts, "shift") + ")"
+              : "",
+            ...texts(v.warnings).map((w) => "Check: " + w),
+          ]);
+          if (v.subject || v.body) {
+            const details = document.createElement("details");
+            const summary = document.createElement("summary");
+            summary.textContent = "Email text";
+            const text = document.createElement("div");
+            text.textContent = "Subject: " + (v.subject || "") + "\n\n" + (v.body || "");
+            details.appendChild(summary);
+            details.appendChild(text);
+            block.appendChild(details);
+          }
+        });
+        const warned = people.filter((v) => texts(v.warnings).length).length;
+        if (warned) {
+          const counts = people.map(flaggedCount).filter((n) => n !== null);
+          const flagged = counts.reduce((sum, n) => sum + n, 0);
+          $("email-check").textContent =
+            "Check before sending: " +
+            plural(warned, "volunteer") +
+            (warned === 1 ? " has" : " have") +
+            " something to check below" +
+            (counts.length ? ", " + plural(flagged, "flagged shift") + " in all" : "") +
+            ".";
+          $("email-check").hidden = false;
+        }
+      }
+
+      function previewed(id) {
+        return ((shown && shown.volunteers) || []).find((v) => v.id === id) || null;
+      }
+
+      function resultLine(id, result) {
+        const v = previewed(id);
+        const label = v ? v.label : id;
+        return result === "sent" ? label + ": sent to " + (v ? v.to : "") : label + ": " + result;
+      }
+
+      // A Send: the initials are read once, then the ticket's pending ids go to the server
+      // in calls of chunkSize, one call at a time, in order.
+      function send() {
+        if (busy || running || !ticket) return;
+        running = true;
+        const initials = $("initials").value;
+        run = { initials, total: ticket.pending.length, sent: 0, lines: [], recordFailed: false };
+        buttonState();
+        sendNext();
+      }
+
+      function sendNext() {
+        run.ids = ticket.pending.slice(0, (shown && shown.chunkSize) || 10);
+        show("Sending… " + (run.total - ticket.pending.length) + " of " + run.total, "info");
+        const form = { ticket: ticket.id, ids: run.ids, initials: run.initials };
+        call("adminSendHours", [form], () => {
+          if (!running) show("", run.kind);
+        });
+      }
+
+      // Runs on every email-mode reply, before the button is set; acts only on a send
+      // reply. A reply that worked hands its results to the list and starts the next call,
+      // or ends the run. A refusal or a thrown error ends the run; the ticket stays only for
+      // BUSY and ADMIN_INITIALS, which come back before the server takes anything.
+      function afterReply(name, reply, thrown, error) {
+        if (name !== "adminSendHours" || !running) return;
+        const ids = run.ids;
+        if (!thrown && reply && reply.ok) {
+          (reply.results || []).forEach((r) => {
+            if (r.result === "sent") run.sent += 1;
+            run.lines.push(resultLine(r.id, r.result));
+          });
+          if (reply.recordFailed) run.recordFailed = true;
+          ticket.pending = ticket.pending.filter((id) => !ids.includes(id));
+          if (ticket.pending.length) return sendNext();
+          return endRun(false);
+        }
+        const why = thrown
+          ? (error && error.message) || String(error)
+          : (reply && reply.message) || "Something went wrong. Please try again.";
+        ticket.pending.forEach((id) => {
+          const lost = thrown && ids.includes(id);
+          run.lines.push(
+            resultLine(
+              id,
+              lost
+                ? "not sent, or sent but the reply was lost: " +
+                    why +
+                    "; check the Hours emails tab before sending again"
+                : "not sent: " + why,
+            ),
+          );
+        });
+        const code = !thrown && reply ? reply.refusal : "";
+        const keep =
+          (code === "BUSY" || code === "ADMIN_INITIALS") && selectionKey() === ticket.key;
+        endRun(keep);
+      }
+
+      // Ends a send run: the result list in the preview box, and the count for the message
+      // line.
+      function endRun(keepTicket) {
+        running = false;
+        if (!keepTicket) setTicket("");
+        const box = $("email-detail");
+        box.textContent = "";
+        addBlock(box, run.lines);
+        const left = ((shown && shown.volunteers) || []).filter(
+          (v) => !(shown.sendIds || []).includes(v.id),
+        );
+        if (left.length) {
+          addBlock(box, [
+            "Left out at Preview:",
+            ...left.map((v) => v.label + ": " + (texts(v.problems).join(" ") || "not sendable")),
+          ]);
+        }
+        $("email-check").hidden = true;
+        const notSent = run.total - run.sent;
+        let text = "Sent " + run.sent + " of " + run.total + ".";
+        if (notSent) {
+          text += " " + notSent + (notSent === 1 ? " wasn't" : " weren't") + " sent; see the list.";
+        }
+        if (run.recordFailed) {
+          text +=
+            " Some couldn't be written on the Hours emails tab; the execution log has the details.";
+        }
+        runCount = text;
+        run.kind = notSent || run.recordFailed ? "error" : "ok";
+      }
+
       function updateCount() {
         $("note-count").textContent = $("note").value.length + " / 500";
       }
@@ -521,10 +1013,23 @@
           'Reason <span class="hint">(required, kept on the Removed shifts tab)</span>';
       }
       if (MODE === "restore") $("note-block").hidden = true;
+      if (MODE === "email") {
+        $("note-block").hidden = true;
+        $("save").textContent = "Send email";
+        $("email-this").checked = true;
+        $("email-attach").checked = false;
+      }
       $("add-search").addEventListener("input", refill);
       $("fix-search").addEventListener("input", refill);
       $("remove-search").addEventListener("input", refill);
       $("restore-search").addEventListener("input", refill);
+      $("email-search").addEventListener("input", refill);
+      $("email-this").addEventListener("change", selectionChanged);
+      $("email-last").addEventListener("change", selectionChanged);
+      $("email-attach").addEventListener("change", selectionChanged);
+      $("email-tick-all").addEventListener("click", tickAllShown);
+      $("email-clear").addEventListener("click", clearTicks);
+      $("email-preview").addEventListener("click", preview);
       $("remove-find").addEventListener("click", find);
       $("remove-shift").addEventListener("change", showDetail);
       $("restore-shift").addEventListener("change", showDetail);
