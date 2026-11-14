@@ -9,6 +9,7 @@ import {
   type Refusal,
 } from "./api";
 import logo from "./assets/encm-logo.png";
+import { cardTime, DEFAULT_LONG_SHIFT_HOURS } from "./cardTime";
 import { appreciationMessages, isToday, type Milestone, type Volunteer } from "./data";
 import {
   clearStoredList,
@@ -24,6 +25,13 @@ import {
 import { searchNames } from "./nameSearch";
 import { QuickPicks } from "./QuickPicks.tsx";
 import { pickTime, pickedTimeToIso } from "./quickPicks";
+import {
+  afterPhoneRefusal,
+  digitsAskedAtTap,
+  digitsMissing,
+  digitsToSend,
+  nameKey,
+} from "./sameName";
 import {
   abandonSave,
   autoHomeMs,
@@ -181,15 +189,51 @@ function isCheckedIn(volunteer: Volunteer) {
   return Boolean(volunteer.checkedIn);
 }
 
-function VolunteerCard({ volunteer, onClick }: { volunteer: Volunteer; onClick: () => void }) {
+/** The tablet's clock, read again at each minute boundary: one clock for every card. */
+function useMinuteNow() {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    let timer = 0;
+    const arm = () => {
+      // A few milliseconds past the boundary, so the new minute has begun when it reads.
+      timer = window.setTimeout(
+        () => {
+          setNow(Date.now());
+          arm();
+        },
+        60_000 - (Date.now() % 60_000) + 50,
+      );
+    };
+    arm();
+    return () => clearTimeout(timer);
+  }, []);
+  return now;
+}
+
+// What a card needs to show a check-in time: the shared minute clock, and the sheet's "Long
+// shift flag hours", past which a checked-in card turns amber.
+type CardClock = { nowMs: number; longShiftHours: number };
+
+function VolunteerCard({
+  volunteer,
+  clock,
+  onClick,
+}: {
+  volunteer: Volunteer;
+  clock: CardClock;
+  onClick: () => void;
+}) {
   const checkedIn = isCheckedIn(volunteer);
+  const time = checkedIn
+    ? cardTime(volunteer.currentCheckIn, clock.nowMs, clock.longShiftHours)
+    : null;
   return (
     <button
-      className={`volunteer-card${checkedIn ? " is-checked-in" : ""}`}
+      className={`volunteer-card${checkedIn ? " is-checked-in" : ""}${time?.late ? " late" : ""}`}
       onClick={onClick}
       aria-label={
-        checkedIn
-          ? `Check out ${volunteer.firstName} ${volunteer.lastName}`
+        time
+          ? `Check out ${volunteer.firstName} ${volunteer.lastName}, ${time.label}`
           : `Check in ${volunteer.firstName} ${volunteer.lastName}`
       }
     >
@@ -199,10 +243,13 @@ function VolunteerCard({ volunteer, onClick }: { volunteer: Volunteer; onClick: 
         </span>
       </span>
       <span className="card-meta">
-        {checkedIn ? (
-          <span className="checkout-action">
-            Check out <Icon name="chevron" size={18} />
-          </span>
+        {time ? (
+          <>
+            <span className="in-time">{time.text}</span>
+            <span className="checkout-action">
+              Check out <Icon name="chevron" size={18} />
+            </span>
+          </>
         ) : (
           <Icon name="chevron" size={23} />
         )}
@@ -214,11 +261,13 @@ function VolunteerCard({ volunteer, onClick }: { volunteer: Volunteer; onClick: 
 function Welcome({
   volunteers,
   listState,
+  clock,
   onSelect,
   onHasQuery,
 }: {
   volunteers: Volunteer[];
   listState: ListState;
+  clock: CardClock;
   onSelect: (v: Volunteer) => void;
   // Told whether the name box holds any text, and false when the screen closes.
   onHasQuery: (hasQuery: boolean) => void;
@@ -312,6 +361,7 @@ function Welcome({
                 <VolunteerCard
                   key={volunteer.id}
                   volunteer={volunteer}
+                  clock={clock}
                   onClick={() => onSelect(volunteer)}
                 />
               ))}
@@ -342,9 +392,11 @@ function Welcome({
 
 function CheckedInSidebar({
   volunteers,
+  clock,
   onSelect,
 }: {
   volunteers: Volunteer[];
+  clock: CardClock;
   onSelect: (v: Volunteer) => void;
 }) {
   // Earliest check-in first. A volunteer whose check-in time can't be read is still
@@ -367,6 +419,7 @@ function CheckedInSidebar({
           <VolunteerCard
             key={volunteer.id}
             volunteer={volunteer}
+            clock={clock}
             onClick={() => {
               onSelect(volunteer);
             }}
@@ -420,6 +473,8 @@ function Confirmation({
   checkout,
   phoneStep = null,
   phoneDigits = "",
+  digitsAsked,
+  anotherIn,
   time,
   picker = false,
   minMinutes = 0,
@@ -436,6 +491,11 @@ function Confirmation({
   checkout: boolean;
   phoneStep?: PhoneStep;
   phoneDigits?: string;
+  // The tap asked for the digits (or a phone refusal did since): Check Out or Check In waits
+  // for four of them.
+  digitsAsked: boolean;
+  // A check-out sent without digits was refused because another of the name is checked in.
+  anotherIn: boolean;
   // The time picker: arrival on the check-in screen, check-out on the check-out screen.
   time?: string;
   picker?: boolean;
@@ -452,7 +512,6 @@ function Confirmation({
 }) {
   const showTimeKeyboard = Boolean(!phoneStep && picker && time && onTimeChange);
   const hasKeyboard = showTimeKeyboard;
-  const digitsMissing = Boolean(volunteer.needsPhoneCheck) && phoneDigits.length !== 4;
 
   return (
     <>
@@ -475,7 +534,7 @@ function Confirmation({
                 <strong>
                   {volunteer.firstName} {volunteer.lastName}
                 </strong>
-                .
+                {anotherIn ? ", and another one is checked in right now." : "."}
                 {phoneStep === "entry" &&
                   " Please enter the last four digits of your phone number."}
               </>
@@ -528,7 +587,10 @@ function Confirmation({
                 </Button>
               )}
               {!phoneStep && (
-                <Button onClick={onConfirm} disabled={saving || digitsMissing}>
+                <Button
+                  onClick={onConfirm}
+                  disabled={saving || digitsMissing(digitsAsked, phoneDigits)}
+                >
                   {saving ? (
                     <>
                       <span className="spinner" /> Saving…
@@ -903,10 +965,6 @@ function centralMinutesOf(ms: number) {
   return part("hour") * 60 + part("minute") + (part("second") + (ms % 1000) / 1000) / 60;
 }
 
-// The server's same-name group key: first and last name, trimmed, spaces collapsed, any case.
-const nameKey = (v: Volunteer) =>
-  [v.firstName, v.lastName].map((name) => name.trim().replace(/\s+/g, " ").toLowerCase()).join("|");
-
 /**
  * The earliest check-out time the server could accept for this entry, in milliseconds: the
  * stated arrival of its open shift. For an entry in a same-name group the digits may
@@ -974,6 +1032,12 @@ export default function App() {
   // A list kept from before the reload shows at once; the refresh below replaces it.
   const [keptList] = useState(() => readStoredList(listStorage(), code, Date.now()));
   const [volunteers, setVolunteers] = useState<Volunteer[]>(() => keptList?.volunteers ?? []);
+  // The sheet's "Long shift flag hours" from the same list reply, set with the volunteers.
+  const [longShiftHours, setLongShiftHours] = useState(
+    () => keptList?.longShiftHours ?? DEFAULT_LONG_SHIFT_HOURS,
+  );
+  const nowMs = useMinuteNow();
+  const cardClock = useMemo(() => ({ nowMs, longShiftHours }), [nowMs, longShiftHours]);
   const [listState, setListState] = useState<ListState>(keptList ? "stored" : "loading");
   // When the server list on screen arrived, or null when there is none to keep.
   const listSavedAt = useRef<number | null>(keptList?.savedAt ?? null);
@@ -1004,6 +1068,11 @@ export default function App() {
   const [checkOutPicker, setCheckOutPicker] = useState(false);
   const [phoneStep, setPhoneStep] = useState<PhoneStep>(null);
   const [phoneDigits, setPhoneDigits] = useState("");
+  // Whether the digits are asked for, fixed at the tap (a list refresh on the open screen
+  // doesn't change it); a phone refusal sets it.
+  const [digitsAsked, setDigitsAsked] = useState(false);
+  // A check-out sent without digits was refused because another of the name is checked in.
+  const [anotherIn, setAnotherIn] = useState(false);
   const inactivityRef = useRef<number | null>(null);
   const selected = volunteers.find((v) => v.id === selectedId) ?? null;
   const checkOutFloorMs = selected ? checkOutLowerBound(selected, volunteers) : null;
@@ -1030,6 +1099,8 @@ export default function App() {
     setCheckOutPicker(false);
     setPhoneStep(null);
     setPhoneDigits("");
+    setDigitsAsked(false);
+    setAnotherIn(false);
   };
   const select = (volunteer: Volunteer) => {
     closeTabletKeyboard();
@@ -1039,7 +1110,10 @@ export default function App() {
     setArrivalPicker(false);
     setCheckOutTime(pickTime(centralTimeValue()));
     setCheckOutPicker(false);
-    setPhoneStep(volunteer.needsPhoneCheck ? "entry" : null);
+    const asked = digitsAskedAtTap(isCheckedIn(volunteer), volunteer, volunteers);
+    setDigitsAsked(asked);
+    setAnotherIn(false);
+    setPhoneStep(asked ? "entry" : null);
     setPhoneDigits("");
     setScreen(isCheckedIn(volunteer) ? "checkout" : "confirm");
   };
@@ -1083,7 +1157,8 @@ export default function App() {
           return;
         }
         listSavedAt.current = Date.now();
-        setVolunteers(reply.map(toVolunteer));
+        setVolunteers(reply.volunteers.map(toVolunteer));
+        setLongShiftHours(reply.longShiftHours);
         setListState("ready");
       },
       () => {
@@ -1141,8 +1216,8 @@ export default function App() {
   useEffect(() => {
     const savedAt = listSavedAt.current;
     if (codeRef.current && savedAt !== null)
-      storeList(listStorage(), codeRef.current, savedAt, volunteers);
-  }, [volunteers]);
+      storeList(listStorage(), codeRef.current, savedAt, volunteers, longShiftHours);
+  }, [volunteers, longShiftHours]);
 
   // Runs again when the screen changes, so a save that ends back on confirm or checkout for
   // a volunteer who left the list meanwhile goes home instead of showing a blank screen.
@@ -1227,18 +1302,17 @@ export default function App() {
       return;
     }
     setScreen(save.from);
-    if (outcome === "phone-entry") {
+    // A check-out sent without digits and refused with PHONE_NEEDED: the prompt says another
+    // of the name is checked in, in place of the server's message.
+    const phone = afterPhoneRefusal(outcome, digitsAsked, save.kind === "out");
+    if (phone) {
       setPhoneDigits("");
-      setPhoneStep("entry");
-    } else if (outcome === "phone-missing") {
-      setPhoneDigits("");
-      setPhoneStep("missing");
+      setPhoneStep(outcome === "phone-missing" ? "missing" : "entry");
+      setDigitsAsked(phone.asked);
+      setAnotherIn(phone.anotherIn);
     }
-    setError(reply.message);
+    setError(!phone || phone.showMessage ? reply.message : "");
   }
-
-  // A same-name volunteer's call always carries exactly four digits.
-  const digitsMissing = () => Boolean(selected?.needsPhoneCheck) && phoneDigits.length !== 4;
 
   /** Shows the save screen for a check-in or check-out of the selected volunteer. */
   function beginSave(kind: SaveKind, volunteer: Volunteer, from: SaveFrom) {
@@ -1269,7 +1343,7 @@ export default function App() {
 
   async function handleConfirm() {
     if (!selected || saveFlow.current.pending || !code) return;
-    if (digitsMissing()) {
+    if (digitsMissing(digitsAsked, phoneDigits)) {
       setPhoneStep("entry");
       return;
     }
@@ -1286,7 +1360,7 @@ export default function App() {
         code,
         selected.id,
         timestamp,
-        selected.needsPhoneCheck ? phoneDigits : null,
+        digitsToSend(digitsAsked, phoneDigits),
       );
     } catch {}
     const ended = endSave(seq);
@@ -1313,7 +1387,7 @@ export default function App() {
 
   async function handleCheckout() {
     if (!selected || saveFlow.current.pending || !code) return;
-    if (digitsMissing()) {
+    if (digitsMissing(digitsAsked, phoneDigits)) {
       setPhoneStep("entry");
       return;
     }
@@ -1338,7 +1412,7 @@ export default function App() {
       reply = await api.checkOut(
         code,
         selected.id,
-        selected.needsPhoneCheck ? phoneDigits : null,
+        digitsToSend(digitsAsked, phoneDigits),
         timestamp,
       );
     } catch {}
@@ -1395,10 +1469,11 @@ export default function App() {
           <Welcome
             volunteers={volunteers}
             listState={listState}
+            clock={cardClock}
             onSelect={select}
             onHasQuery={setHasQuery}
           />
-          <CheckedInSidebar volunteers={volunteers} onSelect={select} />
+          <CheckedInSidebar volunteers={volunteers} clock={cardClock} onSelect={select} />
         </>
       )}
       {code && screen === "confirm" && selected && (
@@ -1413,6 +1488,8 @@ export default function App() {
             setArrivalPicker(true);
           }}
           {...phoneProps}
+          digitsAsked={digitsAsked}
+          anotherIn={anotherIn}
           saving={save !== null}
           error={error}
           onTimeChange={(time) => setArrivalTime(pickTime(time))}
@@ -1437,6 +1514,8 @@ export default function App() {
               : undefined
           }
           {...phoneProps}
+          digitsAsked={digitsAsked}
+          anotherIn={anotherIn}
           saving={save !== null}
           error={error}
           onTimeChange={(time) => setCheckOutTime(pickTime(time))}

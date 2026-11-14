@@ -2137,6 +2137,78 @@ test("the filtered Log read gives the same entries as the whole read filtered by
   assert.deepEqual(plain(s.ctx.readLogTable_("").entries), []);
 });
 
+test("a same-name check-out with no digits closes the row of the only member of the name in", () => {
+  const log = [LOG_HEADER, kioskOpen("s-ann", TODAY, "08:00", ANN.token, "Ann Ruiz")];
+  const s = kiosk({ settings: WINDOW_SETTINGS, volunteers: [SAM, ANN, ANN_TOO], log });
+  // The member who isn't in, with no digits: digits are asked for, and nothing is written.
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, ANN_TOO.id, null, null)).refusal, "PHONE_NEEDED");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+  assert.equal(s.sheets.Log.getLastRow(), 2);
+  assert.equal(s.sheets.Flags.getLastRow(), 1);
+  // The member who is in, at the tap time and after a short shift.
+  const out = plain(s.ctx.apiCheckOut(CODE, ANN.id, null, null));
+  assert.equal(out.ok, true);
+  assert.equal(out.id, ANN.id);
+  assert.equal(out.minutes, 120);
+  const row = s.sheets.Log.rowByHeader(2);
+  assert.equal(row.Status, "closed");
+  assert.equal(row["Check-Out Entered By"], "kiosk");
+  assert.equal(row["Admin Alerts?"], "");
+  assert.equal(s.sheets.Flags.getLastRow(), 1);
+  assert.deepEqual(s.errors, []);
+});
+
+test("the list reply carries the sheet's Long shift flag hours, and 8 when the cell is blank", () => {
+  const withHours = (value) => [...KIOSK_SETTINGS, ["Long shift flag hours", value]];
+  for (const [value, want] of [
+    ["10", 10],
+    ["8", 8],
+    ["", 8],
+  ]) {
+    const s = kiosk({ settings: withHours(value) });
+    const reply = plain(s.ctx.apiListVolunteers(CODE));
+    assert.equal(reply.ok, true);
+    assert.equal(reply.longShiftHours, want, "Long shift flag hours " + JSON.stringify(value));
+  }
+  // No such row at all.
+  assert.equal(plain(kiosk({}).ctx.apiListVolunteers(CODE)).longShiftHours, 8);
+});
+
+test("the Log table read takes one token or a list, and keeps a row whose token is any of them", () => {
+  const cellTokens = ["tok-sam", " tok-ruth", "tok-ann", "TOK-SAM", "", 4321, "tok-ann-2 "];
+  const log = [LOG_HEADER];
+  for (let i = 0; i < 70; i++) {
+    const row = kioskOpen("s-" + i, TODAY, "08:00");
+    row[LOG_HEADER.indexOf("User Token")] = cellTokens[i % cellTokens.length];
+    row[LOG_HEADER.indexOf("Status")] = i % 3 ? "closed" : "open";
+    log.push(row);
+  }
+  const s = kiosk({ log });
+  const whole = s.ctx.readLog_(s.ctx.readLogColumns_());
+  const keeps = (tokens) => whole.filter((e) => tokens.some((t) => s.ctx.isTokenRow(e, t)));
+  // One token as a string, as the admin menu passes it, reads as a list of that one.
+  for (const token of ["tok-sam", "tok-ruth", "4321", "", "nobody"]) {
+    const one = plain(s.ctx.readLogTable_(token));
+    assert.deepEqual(one.entries, plain(keeps([token])), "token " + JSON.stringify(token));
+    assert.deepEqual(one, plain(s.ctx.readLogTable_([token])));
+  }
+  for (const tokens of [
+    ["tok-ann", "tok-ann-2"],
+    ["tok-sam", "tok-ruth", "tok-ann"],
+    ["tok-ann", ""],
+    [],
+  ]) {
+    const table = s.ctx.readLogTable_(tokens);
+    assert.deepEqual(plain(table.entries), plain(keeps(tokens)), JSON.stringify(tokens));
+    assert.equal(table.width, LOG_HEADER.length);
+  }
+  assert.equal(s.ctx.readLogTable_(["tok-ann", "tok-ann-2"]).entries.length, 20);
+  // The admin menu's callers pass one volunteer's token.
+  const admin = read("apps-script/Admin.js");
+  const calls = admin.match(/readLogTable_\([^)]*\)/g);
+  assert.deepEqual(calls, ["readLogTable_(volunteer.token)", "readLogTable_(picked.entry.token)"]);
+});
+
 // ---------------------------------------------------------------------------
 // Nothing read after the Log write
 

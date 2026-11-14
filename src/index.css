@@ -18,6 +18,11 @@
   --green-light: #e9f7ea;
   --error: #b33b38;
   --focus: #d18b00;
+  /* A checked-in card past "Long shift flag hours", or with no check-in time */
+  --late-text: #7a4a00;
+  --late-bg: #fff3d1;
+  --late-border: #d9a21b;
+  --late-action: #9a6200;
   font-family: "Nunito", ui-rounded, system-ui, sans-serif;
   color: var(--text);
   background: var(--warm);
@@ -116,6 +121,7 @@
   box-shadow: -12px 0 40px rgba(8, 47, 88, 0.14);
   padding: 24px 16px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr); /* a long name can't widen the list */
   align-content: start; /* stack items at the top */
   gap: 10px;
 }
@@ -429,6 +435,12 @@
   display: flex;
   align-items: center;
   white-space: nowrap;
+  overflow: hidden;
+}
+/* A long name gives way to the check-in time and ends in "…" */
+.volunteer-name > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .volunteer-card:has(.status) .volunteer-name {
   font-size: 18px;
@@ -462,6 +474,28 @@
   font-size: 14px;
   font-weight: 900;
   white-space: nowrap;
+}
+/* The check-in time on a checked-in card; the whole card turns amber when it needs a look */
+.in-time {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.name-results .in-time {
+  margin-right: 8px;
+  font-size: 15px;
+}
+.volunteer-card.late {
+  border-color: var(--late-border);
+  background: var(--late-bg);
+}
+.volunteer-card.late .in-time {
+  color: var(--late-text);
+  font-weight: 900;
+}
+.volunteer-card.late .checkout-action {
+  background: var(--late-action);
 }
 .lookup-button {
   min-height: 54px;

@@ -26,14 +26,20 @@ so hours can be credited to each volunteer and reported to grantmakers.
   hours (Shift ID starting `import-`) are skipped, so a paper shift is never taken for a
   missed check-out. Nothing is stored for it: the check-in that shows the notice is the
   shift looked at next time, so each missed check-out shows it once.
+- **Check-in time on cards**: each checked-in card shows when the volunteer checked in.
+  Once they have been in more than "Long shift flag hours" (Settings), the whole card
+  turns amber and shows how long instead, so a missed check-out stands out. This needs
+  "Long shift flag hours" below "Auto clock-out after hours", since a card leaves the
+  list when the auto clock-out window has passed.
 - **Server**: Apps Script (`apps-script/`) bound to a Check-In Log spreadsheet with Log
   and Settings tabs. Each shift is one Log row. The Log uses ENCM's own column names from
   their "2026-11 Log" sketch, then four columns of the kiosk's: Status, who entered the
   check-in, who entered the check-out, and Shift ID. Each end of a shift keeps two times:
   the time recorded when the volunteer tapped, and the time they stated.
 - **Names**: read from ENCM's existing Volunteer Profiles sheet. The kiosk never writes
-  to it. Volunteers who share a name confirm the last four digits of their phone, and the
-  digits decide which of them is signed in or out.
+  to it. Volunteers who share a name confirm the last four digits of their phone to check
+  in, and the digits decide which of them is signed in. To check out they confirm the
+  digits only when another volunteer with the same name is checked in too.
 - **Kiosk admin menu**: a menu in the Check-In Log spreadsheet for staff to add a shift a
   volunteer forgot to log, to close one they forgot to sign out of, to move a wrong shift
   out of the Log and back, to check the Log for broken rows, to make a monthly report, or to
@@ -205,7 +211,8 @@ hand, so fix the hours too.
 Like the arrival time at check-in, the check-out time can be changed on the tablet. Most
 volunteers never touch it: Check Out uses the server's clock.
 
-After the phone step (for volunteers who share a name), the check-out screen shows "Forgot
+After the phone step, when there is one (a volunteer who shares a name with someone else
+checked in), the check-out screen shows "Forgot
 to check out earlier? Change your check-out time". It opens the same hour, minute and
 AM/PM buttons as the arrival picker, in 15-minute steps, and disables times later than now
 or earlier than the volunteer's stated arrival. The link shows only when at least one

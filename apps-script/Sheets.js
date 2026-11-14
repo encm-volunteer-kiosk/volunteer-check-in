@@ -730,16 +730,18 @@ function readLog_(cols) {
 }
 
 /**
- * The Log's header map and one volunteer's rows from one range read, so both come from
- * one snapshot: {cols, entries, width}. cols is logColumns (Logic.js) of row 1, entries
- * the rows below it whose User Token is token (logRowHasToken), each as a log entry with
- * its row number, and width the number of columns read. Only those rows are parsed; a
- * blank token gives no entries. The kiosk's check-in and check-out read the Log with
- * this; the admin menu, the jobs and the reports use readLogColumns_ and readLog_.
+ * The Log's header map and the rows of one or more volunteers from one range read, so
+ * both come from one snapshot: {cols, entries, width}. tokens is one User Token or a list
+ * of them (checkOutTokens, Logic.js). cols is logColumns (Logic.js) of row 1, entries the
+ * rows below it whose User Token is any of the tokens (logRowHasToken), each as a log
+ * entry with its row number, and width the number of columns read. Only those rows are
+ * parsed; a blank token keeps no row. The kiosk's check-in and check-out read the Log
+ * with this; the admin menu, the jobs and the reports use readLogColumns_ and readLog_.
  * Throws when a column the kiosk needs is missing or repeated, so an empty tab throws the
  * missing-column error.
  */
-function readLogTable_(token) {
+function readLogTable_(tokens) {
+  const wanted = Array.isArray(tokens) ? tokens : [tokens];
   // The data range runs from A1 to the last used row and column, and is A1 on an empty
   // tab, so the extent needs no getLastRow or getLastColumn call.
   const values = sheet_(LOG_TAB).getDataRange().getValues();
@@ -748,7 +750,9 @@ function readLogTable_(token) {
   const read = logRead_();
   const entries = [];
   values.slice(1).forEach((cells, i) => {
-    if (logRowHasToken(cells, cols, token, read)) entries.push(logEntry(cells, i + 2, cols, read));
+    if (wanted.some((token) => logRowHasToken(cells, cols, token, read))) {
+      entries.push(logEntry(cells, i + 2, cols, read));
+    }
   });
   return { cols, entries, width };
 }

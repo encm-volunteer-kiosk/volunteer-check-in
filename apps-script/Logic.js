@@ -666,6 +666,60 @@ function resolveVolunteer(volunteers, id, digits) {
   return matches.length === 1 ? { volunteer: matches[0] } : { refusal: "PHONE_WRONG" };
 }
 
+/** The members of tapped's same-name group: every needsPhoneCheck volunteer of its name. */
+function sameNameMembers(volunteers, tapped) {
+  const group = volunteerNameKey(tapped);
+  return volunteers.filter((v) => v.needsPhoneCheck && volunteerNameKey(v) === group);
+}
+
+/** True when digits hold at least one digit, as checkPhone reads them. */
+function digitsGiven(digits) {
+  return cellString(digits).replace(/\D/g, "") !== "";
+}
+
+/**
+ * The User Tokens whose Log rows a check-out decides on, as {tokens}, or {refusal}. A
+ * same-name group member's entry tapped with no digits gives every member's token (those
+ * with a blank phoneLast4 too), since resolveCheckOut then looks at the whole name.
+ * Otherwise resolveVolunteer decides: its refusal, or the token of the volunteer it found.
+ */
+function checkOutTokens(volunteers, id, digits) {
+  const tapped = findVolunteer(volunteers, id);
+  if (!tapped) return { refusal: "NOT_FOUND" };
+  if (tapped.needsPhoneCheck && !digitsGiven(digits)) {
+    return { tokens: sameNameMembers(volunteers, tapped).map((v) => v.token) };
+  }
+  const who = resolveVolunteer(volunteers, id, digits);
+  return who.refusal ? { refusal: who.refusal } : { tokens: [who.volunteer.token] };
+}
+
+/**
+ * The volunteer a check-out acts on, as {volunteer}, or {refusal}. Input: {volunteers, id
+ * (the tapped entry), digits, entries (the Log, or the rows of the tokens checkOutTokens
+ * names), nowMs, windowMs, todayDate}.
+ *
+ * With digits, or off a same-name group, this is resolveVolunteer. A group member tapped
+ * with no digits is acted on when, in entries, that member has the only open row the
+ * tablet can check out (findOpenShift) among all members of the name; their phone is not
+ * looked at then. When no member has one: NOT_IN. When another member has one, alone or
+ * besides the tapped member: PHONE_NEEDED, or PHONE_MISSING when the tapped member has no
+ * usable phone, as with no digits before. The tapped member must be the one in, so a
+ * tablet whose list is out of date can never check out someone else from a card.
+ */
+function resolveCheckOut(input) {
+  const tapped = findVolunteer(input.volunteers, input.id);
+  if (!tapped) return { refusal: "NOT_FOUND" };
+  if (!tapped.needsPhoneCheck || digitsGiven(input.digits)) {
+    return resolveVolunteer(input.volunteers, input.id, input.digits);
+  }
+  const open = sameNameMembers(input.volunteers, tapped).filter((v) =>
+    findOpenShift(input.entries, v.token, input.nowMs, input.windowMs, input.todayDate),
+  );
+  if (!open.length) return { refusal: "NOT_IN" };
+  if (open.length === 1 && open[0] === tapped) return { volunteer: tapped };
+  return { refusal: checkPhone(tapped, input.digits) };
+}
+
 // ---------------------------------------------------------------------------
 // Access, phone and arrival checks
 
@@ -1426,22 +1480,24 @@ function decideCheckIn(input) {
 }
 
 /**
- * Checks a check-out in order: NOT_FOUND, phone, NOT_IN (no open row in the window,
- * findOpenShift), then the stated check-out time (validateCheckOut). Input: {volunteers, id
- * (the tapped entry), digits, entries (the Log), todayDate, nowMs, windowMs, outMs
+ * Checks a check-out in order: NOT_FOUND, the phone or the same-name rule
+ * (resolveCheckOut: a phone refusal or NOT_IN), NOT_IN (no open row in the window,
+ * findOpenShift), then the stated check-out time (validateCheckOut). Input: {volunteers,
+ * id (the tapped entry), digits, entries (the Log), todayDate, nowMs, windowMs, outMs
  * (null for server time), outDate, flagMinutes, longShiftHours (parseLongShiftHours),
- * launchDate}. Only the resolved volunteer's rows (isTokenRow) are looked at, so entries
- * may be those rows alone.
+ * launchDate}. Only the rows of the tokens checkOutTokens names are looked at, so entries
+ * may be those rows alone. A check-out made with no digits under the same-name rule
+ * decides and writes exactly what the same check-out with the member's digits would.
  *
  * Returns {refusal} or {volunteer, row, cells, minutes, milestone, statedOutMs, flags,
- * open}: volunteer is the one resolveVolunteer found, row the open row, cells its
+ * open}: volunteer is the one resolveCheckOut found, row the open row, cells its
  * check-out cell map, minutes the whole minutes this shift adds toward milestones, and the
  * milestone is counted from the closed rows before this one. flags is checkOutFlags, the
  * texts the cells add to Admin Alerts? (the long-shift flag among them when the stated
  * hours are more than longShiftHours), and open the open row's entry.
  */
 function decideCheckOut(input) {
-  const who = resolveVolunteer(input.volunteers, input.id, input.digits);
+  const who = resolveCheckOut(input);
   if (who.refusal) return { refusal: who.refusal };
   const volunteer = who.volunteer;
   const open = findOpenShift(
