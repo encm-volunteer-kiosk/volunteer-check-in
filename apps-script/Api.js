@@ -248,7 +248,7 @@ function apiCheckOut(code, id, digits, checkOutIso) {
                 cellString(openId) +
                 "; answered BUSY and wrote nothing.",
             );
-            keepLogMap_(run, log);
+            // The Log changed under the call, so the map its read built is not stored.
             return refusal("BUSY");
           }
           planned = { decision, flagPlan };
@@ -355,7 +355,9 @@ function kioskFullRead_(run, tokens, volunteers, why) {
 
 /**
  * A call that refused with nothing written stores the map built from its whole-Log read.
- * Every refusal comes after such a read: a refusal on a hit is decided again on one.
+ * Every refusal comes after such a read: a refusal on a hit is decided again on one. A
+ * check-out's BUSY is the exception: the Log changed under that call, so its map is known
+ * not to match the sheet and it stores nothing.
  */
 function keepLogMap_(run, log) {
   if (run.on) run.put = log.map;

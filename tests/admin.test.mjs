@@ -2645,6 +2645,37 @@ test("apiCheckOut answers BUSY and writes nothing when its row moved before the 
   assert.equal(s.sheets.Flags.rowByHeader(2)["Log Row"], 2);
 });
 
+test("a check-out that answers BUSY with the Log cache on stores no map from its read", () => {
+  const log = [LOG_HEADER, ruthOpen(), kioskOpen("s-sam", TODAY, "08:00")];
+  const s = kiosk({ volunteers: [SAM, RUTH], log, props: { LOG_CACHE: "on" } });
+  // Staff sort the Log just after the call's whole-Log read: Sam's row moves up.
+  const whole = "getValues 1,1,3," + LOG_HEADER.length;
+  s.sheets.Log.afterValues = (sh) => {
+    if (sh.reads.at(-1) !== whole) return;
+    sh.afterValues = null;
+    [sh.rows[1], sh.rows[2]] = [sh.rows[2], sh.rows[1]];
+  };
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.deepEqual(reply, { ok: false, refusal: "BUSY", message: BUSY_TEXT });
+  assert.deepEqual(
+    s.logs.filter((l) => l.startsWith("Log cache:")),
+    ["Log cache: miss (none)"],
+  );
+  assert.equal(s.cache.has("log:v1"), false, "no map stored");
+  assert.deepEqual(
+    s.puts.filter((p) => p.key === "log:v1"),
+    [],
+  );
+
+  // A retry reads the whole Log again, closes Sam's row where it now is, and stores the map.
+  const retry = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.equal(retry.ok, true);
+  assert.equal(s.logs.filter((l) => l.startsWith("Log cache:")).at(-1), "Log cache: miss (none)");
+  assert.equal(s.sheets.Log.rowByHeader(2)["Shift ID"], "s-sam");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+  assert.ok(s.cache.has("log:v1"), "the retry stores its map");
+});
+
 test("apiCheckOut answers BUSY when its row is gone past the Log's end", () => {
   // Past the grid: Sam's row was the last grid row, and staff deleted it.
   const log = [LOG_HEADER, ruthOpen(), kioskOpen("s-sam", TODAY, "08:00")];
@@ -5121,7 +5152,7 @@ test("every function that can write a cell is classed, and only the stamping one
   assert.deepEqual(callers.sort(), ["appendLogRow_", "updateLogRow_"]);
 });
 
-test("each Log write helper does its whole write inside stampedLogWrite_, and setupLog_ stamps first and last", () => {
+test("each Log write helper does its whole write inside stampedLogWrite_, and setupLog_ stamps first and, in a finally, last", () => {
   const { functions } = scanServer();
   for (const name of STAMPING_HELPERS) {
     const { node, sf } = functions[name];
@@ -5135,11 +5166,18 @@ test("each Log write helper does its whole write inside stampedLogWrite_, and se
     assert.equal(call.arguments[0].getText(sf), "opts", name);
     assert.ok(ts.isArrowFunction(call.arguments[1]), name + " writes inside the arrow function");
   }
-  const setup = functions.setupLog_.node.body.statements.map((st) =>
-    st.getText(functions.setupLog_.sf),
+  // setupLog_ is the stamp, then one try whose finally is the stamp alone, with no catch,
+  // so the closing stamp is written and the error still thrown when a write throws.
+  const { node, sf } = functions.setupLog_;
+  const setup = node.body.statements;
+  assert.equal(setup.length, 2);
+  assert.equal(setup[0].getText(sf), "markLogChanged_();");
+  assert.ok(ts.isTryStatement(setup[1]), "the rest is one try");
+  assert.equal(setup[1].catchClause, undefined, "no catch");
+  assert.deepEqual(
+    setup[1].finallyBlock.statements.map((st) => st.getText(sf)),
+    ["markLogChanged_();"],
   );
-  assert.equal(setup[0], "markLogChanged_();");
-  assert.equal(setup.at(-1), "markLogChanged_();");
 });
 
 test("only apiCheckIn and apiCheckOut pass the kiosk option, and the Log cache's own functions write no cell", () => {

@@ -770,6 +770,28 @@ test("setupSheets writes the Log changed stamp, so the next tap reads the whole 
   }
 });
 
+test("setupSheets writes the Log changed stamp after its Log part even when a Log write throws", () => {
+  const ss = new FakeSpreadsheet();
+  const log = sheetWith(ss, "Log", [LOG_HEADERS]);
+  const events = [];
+  const props = new (class extends Map {
+    set(k, v) {
+      if (k === S.logStampProperty()) events.push("stamp");
+      return super.set(k, v);
+    }
+  })();
+  const S = server(ss, { props });
+  let thrownAt = 0;
+  log.setFrozenRows = () => {
+    events.push("write failed");
+    thrownAt = Date.now();
+    throw new Error("setFrozenRows failed");
+  };
+  assert.throws(() => S.setupSheets(), /setFrozenRows failed/);
+  assert.deepEqual(events, ["stamp", "write failed", "stamp"]);
+  assert.ok(Number(props.get(S.logStampProperty())) >= thrownAt);
+});
+
 test("running setupSheets twice changes nothing", () => {
   const ss = new FakeSpreadsheet();
   const S = server(ss);

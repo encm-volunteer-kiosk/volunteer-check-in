@@ -142,42 +142,45 @@ function applyLook_(sheet, plan) {
  * Then set each kiosk column's format by its header and freeze row 1.
  */
 function setupLog_(ss) {
-  // Stamped first and last, as the Log write helpers are, so no log map read before this
-  // runs is used after it.
+  // Stamped first and last, even when a write throws, as the Log write helpers are, so no
+  // log map read before or during this is used after it.
   markLogChanged_();
-  let log = ss.getSheetByName(LOG_TAB);
-  if (log && isOldLogLayout(logHeaderRow_(log))) {
-    if (ss.getSheetByName(OLD_LOG_TAB)) {
-      throw new Error(
-        'The Log tab is in the old layout and a "' +
-          OLD_LOG_TAB +
-          '" tab already exists. Rename or remove "' +
-          OLD_LOG_TAB +
-          '", then run setupSheets() again.',
-      );
+  try {
+    let log = ss.getSheetByName(LOG_TAB);
+    if (log && isOldLogLayout(logHeaderRow_(log))) {
+      if (ss.getSheetByName(OLD_LOG_TAB)) {
+        throw new Error(
+          'The Log tab is in the old layout and a "' +
+            OLD_LOG_TAB +
+            '" tab already exists. Rename or remove "' +
+            OLD_LOG_TAB +
+            '", then run setupSheets() again.',
+        );
+      }
+      log.setName(OLD_LOG_TAB);
+      log = null;
     }
-    log.setName(OLD_LOG_TAB);
-    log = null;
-  }
-  if (!log) log = ss.insertSheet(LOG_TAB);
+    if (!log) log = ss.insertSheet(LOG_TAB);
 
-  const writes = logHeaderWrites(logHeaderRow_(log));
-  if (writes.length) {
-    const first = writes[0].col;
-    const last = writes[writes.length - 1].col;
-    if (last > log.getMaxColumns()) {
-      log.insertColumnsAfter(log.getMaxColumns(), last - log.getMaxColumns());
+    const writes = logHeaderWrites(logHeaderRow_(log));
+    if (writes.length) {
+      const first = writes[0].col;
+      const last = writes[writes.length - 1].col;
+      if (last > log.getMaxColumns()) {
+        log.insertColumnsAfter(log.getMaxColumns(), last - log.getMaxColumns());
+      }
+      log
+        .getRange(1, first, 1, writes.length)
+        .setNumberFormat("@")
+        .setValues([writes.map((w) => w.header)]);
     }
-    log
-      .getRange(1, first, 1, writes.length)
-      .setNumberFormat("@")
-      .setValues([writes.map((w) => w.header)]);
+    logColumnFormats(logHeaderRow_(log)).forEach((f) =>
+      log.getRange(1, f.col, log.getMaxRows(), 1).setNumberFormat(logFormat_(f.kind)),
+    );
+    log.setFrozenRows(1);
+  } finally {
+    markLogChanged_();
   }
-  logColumnFormats(logHeaderRow_(log)).forEach((f) =>
-    log.getRange(1, f.col, log.getMaxRows(), 1).setNumberFormat(logFormat_(f.kind)),
-  );
-  log.setFrozenRows(1);
-  markLogChanged_();
 }
 
 /**
