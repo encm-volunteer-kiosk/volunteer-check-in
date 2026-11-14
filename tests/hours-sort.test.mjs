@@ -693,9 +693,10 @@ test("a run holds the document lock once, released in runHoursSort's finally, an
     "prop.set",
     "toast",
   ]);
-  // Holding: the stamp check first, then the state cells.
-  assert.deepEqual(o.slice(o.indexOf("docLock.tryLock") + 1).slice(0, 2), [
+  // Holding: the stamp check first, then row 7's layout again, then the state cells.
+  assert.deepEqual(o.slice(o.indexOf("docLock.tryLock") + 1).slice(0, 3), [
     "prop.get",
+    "isPartOfMerge",
     "getValues",
   ]);
   const b1 = s.calls.indexOf(writes[1]);
@@ -1105,7 +1106,8 @@ test("on row 7's old layout a run writes no status anywhere, and its batch carri
   const e = pick(s, 0);
   s.clear();
   s.run(e);
-  assert.equal(s.calls.filter((c) => c.op === "isPartOfMerge").length, 1);
+  // Once before the stamp and once under the lock.
+  assert.equal(s.calls.filter((c) => c.op === "isPartOfMerge").length, 2);
   assert.deepEqual(
     s.calls.filter((c) => c.op === "setValue").map((c) => c.a1),
     ["B1"],
@@ -1141,6 +1143,35 @@ test("on row 7's old layout a run writes no status anywhere, and its batch carri
   unread.run(e4);
   assert.ok(unread.logs.includes("Sort (edit): row 7's layout wasn't read: injected"));
   assert.ok(unread.calls.some((c) => c.op === "setValue" && c.value === SORTING));
+});
+
+test("a run that read the old layout before setupReports laid row 7 out anew reads it again under the lock and blanks every status cell", () => {
+  // Between this run's layout read and its lock, setupReports lays row 7 out anew and a
+  // newer pick's run writes its sorting text; this run then stamps last and sorts.
+  const relaid = (s) =>
+    s.watch((c) => {
+      if (c.op !== "docLock.tryLock") return;
+      s.hours.merges = [[7, 5, 7]];
+      s.hours.cells.set("7:" + statusCol(TABLES[1]), SORTING);
+    });
+  const s = server({ oldLayout: true });
+  const e = pick(s, 0);
+  s.clear();
+  relaid(s);
+  s.run(e);
+  assert.ok(!s.calls.some((c) => c.op === "setValue" && c.value === SORTING));
+  assert.match(s.logs.at(-1), /1 table re-sorted/);
+  assert.deepEqual(statusOf(s), ["", "", ""]);
+  assert.equal(s.calls.filter((c) => c.op === "isPartOfMerge").length, 2);
+  checkMatches(s, "relaid while waiting");
+  // The not-built exit reads the layout again too.
+  const half = server({ oldLayout: true, state: [String(NOW), "complete", "", "", "", ""] });
+  const e2 = pick(half, 0);
+  half.clear();
+  relaid(half);
+  half.run(e2);
+  assert.match(half.logs.at(-1), /Hours isn't built/);
+  assert.deepEqual(statusOf(half), ["", "", ""]);
 });
 
 test("the toast: once per run, naming the covered tables; one that fails is logged and the sort goes on", () => {

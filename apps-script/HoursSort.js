@@ -97,7 +97,8 @@ function runHoursSort(e) {
  * flush, the stamp, the toast; each catches and logs its own error and none stops the
  * sort. Not free within 4 minutes: logs and stops. Holding the lock: a run whose stamp
  * isn't the stored one renders B1, flushes, logs and stops, having read no box and no
- * pivot. Unless Hours data's build state reads built (a cut-off setupReports leaves the
+ * pivot. Otherwise it checks row 7's layout again, and that answer decides the status
+ * blanks from here on, since setupReports may have laid row 7 out anew meanwhile. Unless Hours data's build state reads built (a cut-off setupReports leaves the
  * tab half built), blanks the status cells, renders B1, flushes and logs, having read no
  * pivot. Otherwise reads row 7 and the boxed pivots, sends hoursSortPlan's requests in one
  * batchUpdate (they apply whole or not at all, the status blanks with them), puts the
@@ -147,6 +148,9 @@ function applyHoursSorts_(tabs, hold, e, run) {
     console.log("Sort (edit): a newer pick is waiting; this run stopped. " + hoursSortTail_(run));
     return;
   }
+  // Read again: setupReports may have laid row 7 out anew since the first read, and a newer
+  // pick's run may have written its sorting text there, which this run now owes the clear.
+  run.oldLayout = hoursSortOldLayout_(tabs);
   const state = readHoursCells_(tabs.data);
   if (!state.build || state.build.kind !== "built") {
     if (!run.oldLayout) {
@@ -275,8 +279,9 @@ function setHoursSortStatus_(tabs, cells, text, onlyIf) {
 /**
  * Whether row 7 is still laid out with the old box merges, which cover the status cells:
  * a write into a merged cell other than its first is silently dropped there, so such a
- * run writes no status. setupReports lays row 7 out anew. A failed check is logged and
- * taken as the new layout, where every status write lands.
+ * run writes no status. setupReports lays row 7 out anew, so a run checks before its
+ * sorting text and again under the lock. A failed check is logged and taken as the new
+ * layout, where every status write lands.
  */
 function hoursSortOldLayout_(tabs) {
   try {
