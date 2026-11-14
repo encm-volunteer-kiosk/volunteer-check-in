@@ -189,8 +189,10 @@ Every time on a row is on that row's Date. A time typed alone, such as `9:00 AM`
 `2:30 pm`, is read as that time on the row's Date, in Central time, to the minute. This
 works in a date-time cell, where Sheets stores it as a time on 30 December 1899, and in a
 cell formatted as plain text. A full date and time, such as `2026-11-12 9:00 AM`, must
-still be on the row's Date; one on any other day can't be read. Type a time, not a date
-alone: a date with no time is not a time of day.
+still be on the row's Date, with one exception: a check-out on the day after the row's
+Date counts when the row's check-in reads and the check-out isn't before it, since a shift
+can end after midnight. A full date and time on any other day can't be read. Type a time,
+not a date alone: a date with no time is not a time of day.
 
 The kiosk takes a typed time as typed and never rewrites the cell. A check-out typed
 before the check-in, such as `12:15 AM` for a shift that ran past midnight, is not
@@ -240,12 +242,12 @@ the auto clock-out's (see Daily jobs): the tablet shows the volunteer as not che
 and they can check in again. Check Out with no chosen time uses the server's clock,
 whatever the date.
 
-A check-out past midnight is written as a date and time on its own date. The Log reads
-every time on a row as being on the row's Date, so the kiosk and the reports read that
-check-out as unreadable. The hours are safe: Hours Served (stated) is worked out when the
-row is written, and every report counts that cell. Two things leave the row out: the
-monthly report's adjustments comparison, which needs all four times, and the admin
-overlap check, as for a check-out typed before the check-in.
+A check-out past midnight is written as a date and time on its own date, the day after
+the row's Date. When the row's check-in reads, that check-out is read as the shift's end,
+so the monthly report's adjustments comparison and the admin overlap check count the row
+like any other. Hours Served (stated) is worked out when the row is written, and every
+report counts that cell. A check-out typed by hand as a time alone, such as `12:15 AM`, is
+still read on the row's Date (see Rows typed by hand).
 
 ### Long shifts
 
@@ -326,8 +328,7 @@ Reviewed box is ticked. If you clear a row in the middle, it stays empty: new fl
 under the last used row, not into gaps.
 
 A flag can be missing from this tab only when the tab was broken at the time (renamed,
-deleted or missing a header), or when a row typed by hand with no Shift ID is closed at
-the tablet. The check-in or check-out still goes through, the
+deleted or missing a header). The check-in or check-out still goes through, the
 flag is still in Admin Alerts? and in the `Kiosk: Flagged` view, and the Apps Script
 executions log has a line `Flags: not copied for Shift ID ...`. Run `setupSheets` to repair
 the tab. Flags raised before the Flags tab was added are only in Admin Alerts?.
