@@ -404,7 +404,7 @@ once.
 | Flags email to             | blank                           | Who gets the weekly flags email, as one or more email addresses separated by commas, spaces or new lines; blank sends nothing.                                                                                                                                                         |
 | Flags email day            | Monday                          | The weekday the weekly flags email goes out if there is anything to report, such as Monday or Mon; blank or anything else means Monday, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).                                         |
 | Flags email hour           | 8                               | The hour, Central time, the weekly flags email goes out if there is anything to report, as a whole number from 0 to 23 (8 is 8 AM, 14 is 2 PM); blank or anything else means 8, and the first one after a change, or after turning the email On, can come sooner (see the How to tab). |
-| Flags email last run       | blank                           | Written by the kiosk: when the weekly flags email last checked and whether it sent or had nothing to send; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report.                                  |
+| Flags email last run       | blank                           | Written by the kiosk: when the weekly flags email last checked and whether it sent, had nothing to send or had no valid address to send to; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report. |
 | Daily jobs installed by    | blank                           | Written by the kiosk: the Google account that runs the nightly jobs and the weekly email, so leave it alone.                                                                                                                                                                           |
 | Past hours file ID         | blank                           | The old hours spreadsheet that Kiosk admin > Import past hours… offers first; an import fills it in, and blank just means the window starts empty.                                                                                                                                     |
 | Past hours tab             | Historical Hours                | The tab in that old hours spreadsheet that Import past hours… offers first; blank means Historical Hours.                                                                                                                                                                              |
@@ -661,7 +661,8 @@ and the hours it would add.
 
 A row is **left out** when its Date isn't a day (`yyyy-MM-dd`, `m/d/yyyy` or a date the
 sheet holds as a date), its Date is after today, it has no first or last name, or its
-hours aren't a number above 0 and at most 24. Left-out rows aren't remembered: fix them in
+hours aren't a number above 0 and at most 16, the longest shift the nightly Log check
+accepts. Left-out rows aren't remembered: fix them in
 the old sheet and run the import again.
 
 A Date the old sheet holds as a date is read in that spreadsheet's own time zone (File →
@@ -801,7 +802,10 @@ day" at "Flags email hour" (Central) at or before now. So the first check after 
 the email on, or after changing the day or hour, can run within the hour, on any day;
 after that a check runs once a week, at the first hourly run on or after that day and
 hour. A check sends only if there is something to report (below), and writes "Flags email
-last run" either way: `sent to N`, or `nothing to send` when there was nothing. A run that
+last run" either way: `sent to N`, or `nothing to send` when there was nothing. When
+"Flags email to" holds no address it can read, the due run writes `not sent: no valid
+address in "Flags email to"` instead, and the next hourly run after the address is fixed
+sends. A run that
 couldn't send is caught up by the next hourly run. Clearing "Flags email last run" makes
 the next hourly run check again, which likewise sends only if there is something to
 report.

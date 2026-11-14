@@ -183,7 +183,7 @@ function settingsDescriptions() {
     "Flags email hour":
       "The hour, Central time, the weekly flags email goes out if there is anything to report, as a whole number from 0 to 23 (8 is 8 AM, 14 is 2 PM); blank or anything else means 8, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).",
     "Flags email last run":
-      "Written by the kiosk: when the weekly flags email last checked and whether it sent or had nothing to send; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report.",
+      "Written by the kiosk: when the weekly flags email last checked and whether it sent, had nothing to send or had no valid address to send to; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report.",
     "Daily jobs installed by":
       "Written by the kiosk: the Google account that runs the nightly jobs and the weekly email, so leave it alone.",
     [importFileSetting()]:
