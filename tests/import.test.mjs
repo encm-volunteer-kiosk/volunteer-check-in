@@ -441,10 +441,10 @@ test("every left-out reason, by source row, and none is remembered", () => {
     ["2026-01-05", "", " ", 3, "", ""], // 7: no name
     ["2026-01-05", "Avery", "Quinn", 0, "", ""], // 8: zero hours
     ["2026-01-05", "Avery", "Quinn", -1, "", ""], // 9: negative
-    ["2026-01-05", "Avery", "Quinn", 24.01, "", ""], // 10: over 24
+    ["2026-01-05", "Avery", "Quinn", 16.01, "", ""], // 10: over the Log check's 16
     ["2026-01-05", "Avery", "Quinn", "three", "", ""], // 11: text
     ["2026-01-05", "Avery", "Quinn", "", "", ""], // 12: blank
-    ["2026-01-05", "Avery", "Quinn", 24, "", ""], // 13: 24 is in
+    ["2026-01-05", "Avery", "Quinn", 16, "", ""], // 13: 16 is in
     ["1/6/2026", "Avery", "Quinn", "2.5", "", ""], // 14: m/d/yyyy and hours as text
     ["2026-06-14", "", "Quinn", 1, "", ""], // 15: last name alone
   ]);
@@ -462,7 +462,7 @@ test("every left-out reason, by source row, and none is remembered", () => {
   assert.deepEqual(plain(p.toImport.map((i) => [i.sourceRow, i.date, i.hours])), [
     [5, "2026-06-15", 3],
     [6, "2026-07-01", 3],
-    [13, "2026-01-05", 24],
+    [13, "2026-01-05", 16],
     [14, "2026-01-06", 2.5],
     [15, "2026-06-14", 1],
   ]);
@@ -472,7 +472,7 @@ test("every left-out reason, by source row, and none is remembered", () => {
     { reason: "date can't be read", rows: [2, 3] },
     { reason: "date is after today", rows: [4] },
     { reason: "no first or last name", rows: [7] },
-    { reason: "hours aren't a number above 0 and at most 24", rows: [8, 9, 10, 11, 12] },
+    { reason: "hours aren't a number above 0 and at most 16", rows: [8, 9, 10, 11, 12] },
   ]);
   assert.deepEqual(Object.keys(L.importLeftOutReasons()), ["date", "future", "name", "hours"]);
 });
@@ -591,6 +591,21 @@ test("the ledger and the Log's Shift IDs keep a key from importing twice", () =>
   assert.equal(p.toImport.length, first.toImport.length - 2);
 });
 
+test("the import leaves out the hours the Log check calls impossible", () => {
+  const most = L.logCheckMaxHours();
+  const p = plan([
+    ["2026-01-05", "Avery", "Quinn", most, "", ""], // 2: at the limit: in
+    ["2026-01-06", "Avery", "Quinn", most + 0.01, "", ""], // 3: over it
+    ["2026-01-07", "Avery", "Quinn", 20, "", ""], // 4: over it
+  ]);
+  assert.deepEqual(plain(p.toImport.map((i) => [i.sourceRow, i.hours])), [[2, most]]);
+  assert.deepEqual(plain(p.leftOut), [
+    { row: 3, reason: "hours" },
+    { row: 4, reason: "hours" },
+  ]);
+  assert.equal(L.importLeftOutReasons().hours, "hours aren't a number above 0 and at most " + most);
+});
+
 test("the invented ENCM-layout tab previews as expected", () => {
   const s = plain(L.importSummary(plan(SOURCE_ROWS)));
   assert.deepEqual(s, {
@@ -611,7 +626,7 @@ test("the invented ENCM-layout tab previews as expected", () => {
       { name: "Lee / Max Fenn", rows: 1, matches: 0 },
       { name: "R. Tamsin", rows: 1, matches: 0 },
     ],
-    leftOutRows: [{ reason: "hours aren't a number above 0 and at most 24", rows: [11] }],
+    leftOutRows: [{ reason: "hours aren't a number above 0 and at most 16", rows: [11] }],
   });
 });
 

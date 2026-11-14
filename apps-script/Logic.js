@@ -5564,13 +5564,17 @@ function importLedgerColumns(headerRow) {
   return cols;
 }
 
-/** Why a source row is left out, by code, as the preview lists them. */
+/**
+ * Why a source row is left out, by code, as the preview lists them. The most hours a row
+ * may have is the Log check's limit (logCheckMaxHours), so the import never brings in a
+ * row the Log check would flag as an impossible shift.
+ */
 function importLeftOutReasons() {
   return {
     date: "date can't be read",
     future: "date is after today",
     name: "no first or last name",
-    hours: "hours aren't a number above 0 and at most 24",
+    hours: "hours aren't a number above 0 and at most " + logCheckMaxHours(),
   };
 }
 
@@ -5737,7 +5741,8 @@ function importHours(value) {
  * Log's kiosk days (importKioskDays; missing is empty), and a SHA-256 hex function.
  *
  * A row is importable when its Date reads as a day (parseStartDate) not after today, it
- * has a first or last name, and its hours are a number above 0 and at most 24. Wholly
+ * has a first or last name, and its hours are a number above 0 and at most
+ * logCheckMaxHours(). Wholly
  * blank rows are skipped and not counted. A key counts every row whose date reads and that
  * has a name, left out or not, so fixing one row's hours in the source doesn't change its
  * neighbours' keys.
@@ -5795,7 +5800,7 @@ function importPlan(input) {
     if (!date) reason = "date";
     else if (date > input.todayDate) reason = "future";
     else if (!hasName) reason = "name";
-    else if (!isFinite(hours) || hours <= 0 || hours > 24) reason = "hours";
+    else if (!isFinite(hours) || hours <= 0 || hours > logCheckMaxHours()) reason = "hours";
     if (reason) {
       plan.leftOut.push({ row, reason });
       return;
