@@ -53,6 +53,63 @@ function profilesCacheMaxBytes() {
   return 100000;
 }
 
+/** The script cache key for the Settings tab's values, with the time they were read. */
+function settingsCacheKey() {
+  return "settings:v1";
+}
+
+/** The script cache key for the time of the last Settings edit, in ms since 1970, as text. */
+function settingsStampKey() {
+  return "settings:edited";
+}
+
+/** How long a cached copy of Settings may be used after it was read from the tab. */
+function settingsCacheSeconds() {
+  return 300;
+}
+
+/** Settings are cached only when their cached text is at most this many UTF-8 bytes. */
+function settingsCacheMaxBytes() {
+  return 100000;
+}
+
+/** The cached text for settings ({name: text}) read from the tab at readAtMs. */
+function settingsCacheValue(settings, readAtMs) {
+  return JSON.stringify({ v: 1, readAt: readAtMs, settings });
+}
+
+/**
+ * The settings in a cached Settings text (settingsCacheValue), or null when they may not
+ * be used. They may be used only when they were read from the tab after the last edit
+ * stamp (stampText, null or undefined when there is none) and less than
+ * settingsCacheSeconds() before nowMs. Anything that can't be read as that (not JSON, an
+ * unknown version, a read time that isn't a number, a value that isn't text, a stamp
+ * that isn't a whole number) gives null, and the caller reads the tab.
+ */
+function settingsFromCache(valueText, stampText, nowMs) {
+  if (typeof valueText !== "string" || !valueText) return null;
+  let value;
+  try {
+    value = JSON.parse(valueText);
+  } catch (e) {
+    return null;
+  }
+  if (!value || typeof value !== "object" || value.v !== 1) return null;
+  const readAt = value.readAt;
+  if (typeof readAt !== "number" || !Number.isFinite(readAt)) return null;
+  if (!(nowMs - readAt < settingsCacheSeconds() * 1000)) return null;
+  if (stampText !== null && stampText !== undefined) {
+    if (typeof stampText !== "string" || !/^\d+$/.test(stampText)) return null;
+    if (!(readAt > Number(stampText))) return null;
+  }
+  const settings = value.settings;
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) return null;
+  for (const name of Object.keys(settings)) {
+    if (typeof settings[name] !== "string") return null;
+  }
+  return settings;
+}
+
 /** Settings rows setupSheets creates when missing, as [name, default value]. */
 function settingsDefaults(todayDate) {
   const rows = [

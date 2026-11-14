@@ -537,9 +537,12 @@ function sheetsService(ss, opts = {}) {
 /**
  * A fresh context with Logic.js and Sheets.js loaded and SpreadsheetApp pointing at ss.
  * opts.noSheetsService leaves the advanced Sheets service out, as when it is off;
- * opts.failOn is passed to sheetsService.
+ * opts.failOn is passed to sheetsService. opts.cache is the script cache, a Map of key
+ * to value (a new one by default); opts.onFlush runs on each SpreadsheetApp.flush;
+ * opts.errors collects what the server logs with console.error.
  */
 function server(ss, opts = {}) {
+  const cache = opts.cache || new Map();
   const checkbox = () => {
     const rule = {};
     const b = {
@@ -549,10 +552,21 @@ function server(ss, opts = {}) {
     return b;
   };
   const ctx = {
+    console: {
+      log: () => {},
+      error: (...args) => (opts.errors || []).push(args.join(" ")),
+    },
+    CacheService: {
+      getScriptCache: () => ({
+        get: (k) => (cache.has(k) ? cache.get(k) : null),
+        put: (k, v) => void cache.set(k, v),
+      }),
+    },
     SpreadsheetApp: {
       getActiveSpreadsheet: () => ss,
       newDataValidation: checkbox,
       ProtectionType: { RANGE: "RANGE", SHEET: "SHEET" },
+      flush: () => (opts.onFlush ? opts.onFlush() : undefined),
     },
     Session: {
       getActiveUser: () => ({ getEmail: () => OWNER }),
@@ -691,6 +705,32 @@ test("on a new spreadsheet Settings gets every default, the check-out flag at 15
     "Check-out flag minutes",
     "15",
   ]);
+});
+
+test("setupSheets stamps the Settings cache after its Settings rows reach the sheet", () => {
+  const ss = new FakeSpreadsheet();
+  const cache = new Map();
+  const atFlush = [];
+  const errors = [];
+  const S = server(ss, {
+    cache,
+    errors,
+    onFlush: () =>
+      atFlush.push({
+        stamped: cache.has(S.settingsStampKey()),
+        rows: ss.getSheetByName("Settings").getDataRange().getValues().length,
+      }),
+  });
+  // A copy of Settings cached a second before the run.
+  const before = Date.now() - 1000;
+  cache.set(S.settingsCacheKey(), S.settingsCacheValue({ "Kiosk access code": "x" }, before));
+  S.setupSheets();
+  assert.deepEqual(atFlush, [{ stamped: false, rows: 21 }]);
+  const stamp = cache.get(S.settingsStampKey());
+  assert.match(stamp, /^\d+$/);
+  assert.ok(Number(stamp) >= before + 1000);
+  assert.equal(S.settingsFromCache(cache.get(S.settingsCacheKey()), stamp, Date.now()), null);
+  assert.deepEqual(errors, []);
 });
 
 test("running setupSheets twice changes nothing", () => {

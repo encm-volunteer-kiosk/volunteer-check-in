@@ -191,10 +191,12 @@ function flagRow({
  * none when absent), onFlush (called on each SpreadsheetApp.flush).
  * calls records "Service.method" in order, the script lock's calls as "lock.*" and the
  * document lock's as "docLock.*"; logs what the server logs; alerts what the menu shows.
- * The spreadsheet has no Hours tabs.
+ * The spreadsheet has no Hours tabs. cache is the script cache, a Map of key to value; its
+ * calls are not recorded.
  */
 function server(opts = {}) {
   const calls = [];
+  const cache = new Map();
   const logs = [];
   const mail = [];
   const alerts = [];
@@ -241,6 +243,12 @@ function server(opts = {}) {
     console: {
       log: (...args) => logs.push(args.join(" ")),
       error: (...args) => logs.push(args.join(" ")),
+    },
+    CacheService: {
+      getScriptCache: () => ({
+        get: (k) => (cache.has(k) ? cache.get(k) : null),
+        put: (k, v) => void cache.set(k, v),
+      }),
     },
     Session: service("Session", {
       getActiveUser: () => email(state.account),
@@ -375,6 +383,7 @@ function server(opts = {}) {
   return {
     ctx,
     calls,
+    cache,
     logs,
     mail,
     alerts,
@@ -763,6 +772,8 @@ test("with nothing to send, runFlagsEmail writes the last run and sends nothing"
   s.run(MONDAY_8);
   assert.equal(s.mail.length, 0);
   assert.equal(s.setting("Flags email last run"), "2026-11-16 08:05, nothing to send");
+  // The write stamps the Settings cache, so the kiosk's next tap reads the tab.
+  assert.match(s.cache.get(s.ctx.settingsStampKey()), /^\d+$/);
   // Not again that week.
   s.run("2026-11-16 09:05");
   assert.equal(s.setting("Flags email last run"), "2026-11-16 08:05, nothing to send");

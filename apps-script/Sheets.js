@@ -75,6 +75,9 @@ function setupSheets() {
     settingsDescriptionProtection(),
     () => settings.getRange("C2:C").protect(),
   );
+  // The Settings writes reach the sheet before the stamp, so a read after it sees them.
+  SpreadsheetApp.flush();
+  markSettingsEdited_();
 
   setupFlags_(ss);
   writeHeaderNotes_(sheet_(LOG_TAB), logHeaderNames(), logHeaderNotes());
@@ -507,7 +510,10 @@ function sheet_(name) {
   return sheet;
 }
 
-/** Settings as {name: text}; the first row with a name wins. */
+/**
+ * Settings as {name: text}; the first row with a name wins. Read from the tab on every
+ * call; a check-in or check-out takes Settings from cachedSettings_ instead.
+ */
 function readSettings_() {
   const values = sheet_(SETTINGS_TAB).getDataRange().getValues();
   const settings = {};
@@ -523,7 +529,8 @@ function readSettings_() {
 /**
  * Writes one Settings value, found by its name in column A, appending the row if missing.
  * An appended row also gets its What it does text in column C; an existing row's C is
- * left as it is.
+ * left as it is. Then flushes and stamps the Settings cache (markSettingsEdited_), so the
+ * next check-in or check-out reads the new value.
  */
 function setSetting_(name, value) {
   const sheet = sheet_(SETTINGS_TAB);
@@ -543,6 +550,97 @@ function setSetting_(name, value) {
     sheet.getRange(row, 3).setNumberFormat("@").setValue(what);
   }
   sheet.getRange(row, 2).setNumberFormat("@").setValue(value);
+  // The write reaches the sheet before the stamp, so a read after the stamp sees it.
+  SpreadsheetApp.flush();
+  markSettingsEdited_();
+}
+
+// Settings in the script cache.
+//
+// A copy of Settings is kept in the script cache with the time it was read from the tab,
+// and an edit stamp holds the time of the last Settings edit. A check-in or check-out
+// uses the copy only when it was read after the last stamp and less than
+// settingsCacheSeconds() (5 minutes) ago; otherwise it reads the tab, before the lock, and
+// caches what it read. Every Settings write the script makes (setSetting_, setupSheets)
+// stamps after its write reaches the sheet, and a staff member typing in a Settings cell
+// stamps through onEdit, so such a change applies from the next tap. A change that fires
+// no onEdit (a row inserted, deleted or sorted, a version restored, an edit by another
+// script) applies at the next tab read: usually the tablet's list refresh, and 5 minutes
+// at most. The time is taken before the read, so a read that started before an edit is
+// never used after that edit's stamp. A copy can let a code in but never refuse one: a
+// code that doesn't match the copy is checked against the tab (settingsForCode_, Api.js).
+// A cache miss, a cache error, a copy that can't be read or Settings too big to cache all
+// read the tab, as without the cache.
+
+/**
+ * Reads Settings from the tab, puts them in the cache with the time the read started, and
+ * returns them. Settings too big to cache remove any older copy instead. A cache failure
+ * is logged and changes nothing else.
+ */
+function refreshSettingsCache_() {
+  const readAt = Date.now();
+  const settings = readSettings_();
+  try {
+    const cache = CacheService.getScriptCache();
+    const text = settingsCacheValue(settings, readAt);
+    if (utf8Length(text) <= settingsCacheMaxBytes()) {
+      cache.put(settingsCacheKey(), text, settingsCacheSeconds());
+    } else {
+      cache.remove(settingsCacheKey());
+    }
+  } catch (e) {
+    console.error("Settings not cached: " + (e && e.message ? e.message : String(e)));
+  }
+  return settings;
+}
+
+/**
+ * {settings, cached}: the cached copy of Settings when it may be used (settingsFromCache,
+ * Logic.js), with cached true; else Settings read from the tab (refreshSettingsCache_),
+ * with cached false. One cache call reads the copy and the edit stamp together. A cache
+ * error counts as a miss.
+ */
+function cachedSettings_() {
+  let hit = null;
+  try {
+    const got = CacheService.getScriptCache().getAll([settingsCacheKey(), settingsStampKey()]);
+    hit = settingsFromCache(got[settingsCacheKey()], got[settingsStampKey()], Date.now());
+  } catch (e) {
+    console.error("Settings cache not read: " + (e && e.message ? e.message : String(e)));
+    hit = null;
+  }
+  if (hit) return { settings: hit, cached: true };
+  return { settings: refreshSettingsCache_(), cached: false };
+}
+
+/**
+ * Stamps the time of a Settings edit, so no copy of Settings read before it is used again.
+ * The stamp lasts twice settingsCacheSeconds(), longer than any copy read before it could
+ * be used. A failure is logged and fails nothing: copies then expire on their own within
+ * settingsCacheSeconds().
+ */
+function markSettingsEdited_() {
+  try {
+    CacheService.getScriptCache().put(
+      settingsStampKey(),
+      String(Date.now()),
+      2 * settingsCacheSeconds(),
+    );
+  } catch (e) {
+    console.error("Settings edit not stamped: " + (e && e.message ? e.message : String(e)));
+  }
+}
+
+/**
+ * The simple edit trigger: Sheets runs it after a person edits a cell. An edit on the
+ * Settings tab stamps the Settings cache (markSettingsEdited_); an edit anywhere else
+ * returns at once. It reads no cell. The page can name it through google.script.run, but
+ * can't pass a range, so such a call returns or throws without stamping.
+ */
+function onEdit(e) {
+  if (!e || !e.range) return;
+  if (e.range.getSheet().getName() !== SETTINGS_TAB) return;
+  markSettingsEdited_();
 }
 
 // ---------------------------------------------------------------------------
@@ -634,10 +732,10 @@ function readLog_(cols) {
  * missing-column error.
  */
 function readLogTable_(token) {
-  const sheet = sheet_(LOG_TAB);
-  const last = Math.max(sheet.getLastRow(), 1);
-  const width = Math.max(sheet.getLastColumn(), 1);
-  const values = sheet.getRange(1, 1, last, width).getValues();
+  // The data range runs from A1 to the last used row and column, and is A1 on an empty
+  // tab, so the extent needs no getLastRow or getLastColumn call.
+  const values = sheet_(LOG_TAB).getDataRange().getValues();
+  const width = values[0].length;
   const cols = logColumns(values[0].map(cellText_));
   const read = logRead_();
   const entries = [];

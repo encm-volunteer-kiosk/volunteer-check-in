@@ -247,7 +247,9 @@ class FakeSheet {
  * issued), flags (the Flags tab's rows, FLAG_HEADER alone by default; null for no Flags
  * tab), flagsMaxRows (its last grid row), logMaxRows (the Log's), now (a fixed server
  * clock, in ms), onFlush (run on each SpreadsheetApp.flush), triggers (this account's
- * project triggers, as [{uid, handler}]). errors collects what the server logs with
+ * project triggers, as [{uid, handler}]), settingsCacheFails (every cache call on a
+ * Settings key throws). The cache is a Map of key to value; it never expires an entry, so
+ * a test sets the clock to age one. errors collects what the server logs with
  * console.error. journal lists, in order, every sheet read and write (FakeSheet), each tab
  * the script opens ("read <tab> getSheetByName") and each flush ("flush").
  */
@@ -256,6 +258,12 @@ function server(opts = {}) {
   const cache = new Map();
   const errors = [];
   const journal = [];
+  // With opts.settingsCacheFails, every cache call on a Settings key throws, as in a cache
+  // outage; the Profiles list and the dialog keys stay cached, so a call gets past them.
+  const settingsKey = (k) => String(k).startsWith("settings:");
+  const failSettings = (method) => {
+    if (opts.settingsCacheFails) throw new Error("cache." + method + " failed");
+  };
   const sheets = {
     Log: new FakeSheet(opts.log || [[]], opts.logMaxRows),
     Flags:
@@ -314,7 +322,20 @@ function server(opts = {}) {
       getScriptCache: () =>
         service("cache", {
           get: (k) => (cache.has(k) ? cache.get(k) : null),
-          put: (k, v) => void cache.set(k, v),
+          getAll: (keys) => {
+            if (keys.some(settingsKey)) failSettings("getAll");
+            const out = {};
+            keys.forEach((k) => cache.has(k) && (out[k] = cache.get(k)));
+            return out;
+          },
+          put: (k, v) => {
+            if (settingsKey(k)) failSettings("put");
+            cache.set(k, v);
+          },
+          remove: (k) => {
+            if (settingsKey(k)) failSettings("remove");
+            cache.delete(k);
+          },
         }),
     }),
     ScriptApp: service("ScriptApp", {
@@ -1533,6 +1554,15 @@ const settingsReadsAtLock = (s) => {
   return seen;
 };
 
+/** The Log reads a call made before its first range read: the extent calls, if any. */
+const logReadsBeforeTable = (s) => {
+  const logReads = s.journal.filter((j) => j.startsWith("read Log ") && !/getSheetByName$/.test(j));
+  return logReads.slice(
+    0,
+    logReads.findIndex((j) => j.startsWith("read Log getValues")),
+  );
+};
+
 test("apiCheckIn reads Settings once and the Log once", () => {
   const log = [LOG_HEADER, closedBy("s-old", "2026-11-03", "auto-close")];
   const s = kiosk({ settings: WINDOW_SETTINGS, log });
@@ -1546,7 +1576,7 @@ test("apiCheckIn reads Settings once and the Log once", () => {
   ]);
   // Header and rows in one range.
   assert.deepEqual(valueReads(s.sheets.Log), ["getValues 1,1,2," + LOG_HEADER.length]);
-  assert.equal(s.sheets.Log.reads.filter((r) => r === "getLastColumn").length, 1);
+  assert.deepEqual(logReadsBeforeTable(s), [], "the extent comes with the table");
   assert.equal(s.sheets.Log.rowByHeader(3).Status, "open");
   assert.equal(s.sheets.Log.rowByHeader(3)["Shift ID"], reply.shiftId);
 });
@@ -1571,7 +1601,7 @@ test("apiCheckOut reads Settings once, the Log table once and its row once more"
     "getValues 1,1,3," + LOG_HEADER.length,
     "getValues 3,1,1," + LOG_HEADER.length,
   ]);
-  assert.equal(s.sheets.Log.reads.filter((r) => r === "getLastColumn").length, 1);
+  assert.deepEqual(logReadsBeforeTable(s), [], "the extent comes with the table");
   assert.equal(s.sheets.Log.rowByHeader(3).Status, "closed");
   assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
 });
@@ -1627,6 +1657,320 @@ test("the Log table read gives no entries on a header-only Log and throws the mi
   assert.deepEqual(valueReads(empty.sheets.Log), ["getValues 1,1,1,1"]);
   assert.throws(() => empty.ctx.apiCheckIn(CODE, SAM.id, null, null), missing);
   assert.throws(() => empty.ctx.apiCheckOut(CODE, SAM.id, null, null), missing);
+});
+
+// ---------------------------------------------------------------------------
+// Settings from the script cache
+
+const NEW_CODE = "anothercodeanothercode";
+const CODE_ROW = KIOSK_SETTINGS.findIndex((r) => r[0] === "Kiosk access code");
+const setCode = (s, code) => (s.sheets.Settings.rows[CODE_ROW][1] = code);
+/** A kiosk server whose clock a test can move: set clock.now. */
+const kioskWithClock = (opts = {}) => {
+  const clock = {
+    now: NOW,
+    settings: KIOSK_SETTINGS,
+    volunteers: [SAM],
+    log: [LOG_HEADER],
+    ...opts,
+  };
+  return { s: server(clock), clock };
+};
+/** The edit event Sheets passes onEdit for one cell on the named tab. */
+const editOn = (tab) => ({ range: { getSheet: () => ({ getName: () => tab }) } });
+const settingsReads = (s) => valueReads(s.sheets.Settings).length;
+const sleeps = (s) => s.calls.filter((c) => c === "Utilities.sleep").length;
+
+test("after a list call, check-in and check-out read no Settings and answer as with a cold cache", () => {
+  const log = [LOG_HEADER, closedBy("s-old", "2026-11-03", "auto-close")];
+  const cold = kiosk({ settings: WINDOW_SETTINGS, log });
+  const warm = kiosk({ settings: WINDOW_SETTINGS, log });
+  assert.equal(plain(warm.ctx.apiListVolunteers(CODE)).ok, true);
+  assert.equal(settingsReads(warm), 1);
+
+  const atLock = settingsReadsAtLock(warm);
+  const inCold = plain(cold.ctx.apiCheckIn(CODE, SAM.id, null, null));
+  const inWarm = plain(warm.ctx.apiCheckIn(CODE, SAM.id, null, null));
+  assert.deepEqual(inWarm, inCold);
+  assert.equal(inWarm.missedSignOut, true);
+  const outCold = plain(cold.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  const outWarm = plain(warm.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.deepEqual(outWarm, outCold);
+  assert.equal(outWarm.ok, true);
+
+  assert.equal(settingsReads(warm), 1, "no Settings read after the list call");
+  assert.deepEqual(atLock, [1, 1]);
+  assert.deepEqual(plain(warm.sheets.Log.rows), plain(cold.sheets.Log.rows));
+  assert.deepEqual(plain(warm.sheets.Flags.rows), plain(cold.sheets.Flags.rows));
+  assert.deepEqual(warm.errors, []);
+});
+
+test("a cold check-in, check-out or code check fills the cache, and the next tap reads no Settings", () => {
+  const open = [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")];
+  const cases = [
+    [
+      [LOG_HEADER],
+      (s) => s.ctx.apiCheckIn(CODE, SAM.id, null, null),
+      (s) => s.ctx.apiCheckOut(CODE, SAM.id, null, null),
+    ],
+    [
+      open,
+      (s) => s.ctx.apiCheckOut(CODE, SAM.id, null, null),
+      (s) => s.ctx.apiCheckIn(CODE, SAM.id, null, null),
+    ],
+    [
+      [LOG_HEADER],
+      (s) => s.ctx.apiCheckAccess(CODE),
+      (s) => s.ctx.apiCheckIn(CODE, SAM.id, null, null),
+    ],
+  ];
+  for (const [log, first, next] of cases) {
+    const s = kiosk({ log });
+    assert.equal(plain(first(s)).ok, true);
+    assert.equal(settingsReads(s), 1);
+    const cached = s.cache.get(s.ctx.settingsCacheKey());
+    assert.deepEqual(
+      plain(s.ctx.settingsFromCache(cached, null, NOW)),
+      plain(s.ctx.readSettings_()),
+    );
+    s.sheets.Settings.reads.length = 0;
+    assert.equal(plain(next(s)).ok, true);
+    assert.equal(settingsReads(s), 0, "the tap after it reads no Settings");
+  }
+});
+
+test("the list and the code check read Settings from the tab even with a warm cache", () => {
+  const s = kiosk({});
+  assert.equal(plain(s.ctx.apiCheckAccess(CODE)).ok, true);
+  assert.equal(plain(s.ctx.apiListVolunteers(CODE)).ok, true);
+  assert.equal(plain(s.ctx.apiListVolunteers(CODE)).ok, true);
+  assert.equal(plain(s.ctx.apiCheckAccess(CODE)).ok, true);
+  assert.equal(settingsReads(s), 4);
+  // A code taken away without a stamp is refused at once by the list, which locks the tablet.
+  setCode(s, NEW_CODE);
+  assert.equal(plain(s.ctx.apiListVolunteers(CODE)).refusal, "ACCESS");
+  assert.equal(plain(s.ctx.apiCheckAccess(CODE)).refusal, "ACCESS");
+});
+
+test("a wrong code with a warm cache is refused after one Settings read, before the lock", () => {
+  const message = plain(kiosk({}).ctx.refusalMessages()).ACCESS;
+  const refused = { ok: false, refusal: "ACCESS", message };
+  const calls = [
+    (s) => s.ctx.apiCheckIn(WRONG_CODE, SAM.id, null, null),
+    (s) => s.ctx.apiCheckOut(WRONG_CODE, SAM.id, null, null),
+  ];
+  for (const call of calls) {
+    const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
+    assert.equal(plain(s.ctx.apiCheckAccess(CODE)).ok, true);
+    s.calls.length = 0;
+    s.sheets.Settings.reads.length = 0;
+    assert.deepEqual(plain(call(s)), refused);
+    assert.equal(settingsReads(s), 1, "the tab is read before the refusal");
+    assert.ok(!s.calls.includes("LockService.getScriptLock"), "no lock taken");
+    assert.deepEqual(s.sheets.Log.reads, [], "the Log is not read");
+    assert.equal(sleeps(s), 1, "a wrong code waits");
+    assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+  }
+});
+
+test("a code changed on the tab works at once with a warm cache, and the old one is then refused", () => {
+  const s = kiosk({});
+  assert.equal(plain(s.ctx.apiCheckAccess(CODE)).ok, true);
+  setCode(s, NEW_CODE);
+  const before = settingsReads(s);
+  const reply = plain(s.ctx.apiCheckIn(NEW_CODE, SAM.id, null, null));
+  assert.equal(reply.ok, true);
+  assert.equal(settingsReads(s), before + 1, "the mismatch reads the tab once");
+  assert.equal(sleeps(s), 0, "an accepted code doesn't wait");
+  assert.equal(s.sheets.Log.rowByHeader(2)["Shift ID"], reply.shiftId);
+  // The read refreshed the cache, so the old code no longer matches it.
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).refusal, "ACCESS");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+});
+
+test("an old code works from a warm cache until a Settings edit stamps it", () => {
+  const { s, clock } = kioskWithClock();
+  assert.equal(plain(s.ctx.apiCheckAccess(CODE)).ok, true);
+  setCode(s, NEW_CODE);
+  clock.now += 1000;
+  // The worst case the stamp is there for: the cached copy still holds the old code.
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(settingsReads(s), 1);
+  // Staff typed the new code: onEdit stamps, and the next tap reads the tab.
+  clock.now += 1000;
+  s.ctx.onEdit(editOn("Settings"));
+  clock.now += 1000;
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).refusal, "ACCESS");
+  assert.equal(settingsReads(s), 2);
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+  assert.equal(plain(s.ctx.apiCheckOut(NEW_CODE, SAM.id, null, null)).ok, true);
+  assert.equal(settingsReads(s), 2, "the read after the stamp is cached");
+});
+
+test("a cached copy is used until it is 5 minutes old", () => {
+  const { s, clock } = kioskWithClock();
+  assert.equal(plain(s.ctx.apiCheckAccess(CODE)).ok, true);
+  clock.now = NOW + 300000 - 1;
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(settingsReads(s), 1);
+  clock.now = NOW + 300000;
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(settingsReads(s), 2, "5 minutes old: read the tab");
+});
+
+test("a Settings read that an edit lands during is not used after the edit's stamp", () => {
+  const { s, clock } = kioskWithClock();
+  const settings = s.sheets.Settings;
+  // Staff change the code while the list call's read is on its way back: the read has the
+  // old code, and the stamp comes after the read began but before the copy is cached.
+  settings.afterValues = () => {
+    settings.afterValues = null;
+    setCode(s, NEW_CODE);
+    clock.now += 1000;
+    s.ctx.onEdit(editOn("Settings"));
+    clock.now += 1000;
+  };
+  assert.equal(plain(s.ctx.apiListVolunteers(CODE)).ok, true);
+  assert.ok(s.cache.has(s.ctx.settingsCacheKey()), "the old read was cached");
+  // Had the copy carried the time it was put, it would pass; it carries the time the
+  // read began, before the stamp, so the old code is checked against the tab.
+  clock.now += 1000;
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).refusal, "ACCESS");
+  assert.equal(settingsReads(s), 2);
+  assert.equal(plain(s.ctx.apiCheckIn(NEW_CODE, SAM.id, null, null)).ok, true);
+});
+
+test("setSetting_ writes the value, flushes, then stamps, so the next tap reads the tab", () => {
+  let s;
+  const atFlush = [];
+  ({ s } = kioskWithClock({
+    onFlush: () =>
+      atFlush.push({
+        value: s.sheets.Settings.rows.find((r) => r[0] === "Profiles problems")?.[1],
+        stamped: s.cache.has(s.ctx.settingsStampKey()),
+      }),
+  }));
+  assert.equal(plain(s.ctx.apiCheckAccess(CODE)).ok, true);
+  s.ctx.setSetting_("Profiles problems", "row 5: no phone");
+  assert.deepEqual(atFlush, [{ value: "row 5: no phone", stamped: false }]);
+  assert.ok(s.cache.has(s.ctx.settingsStampKey()), "stamped after the flush");
+  s.sheets.Settings.reads.length = 0;
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(settingsReads(s), 1, "the tap reads the tab after the write");
+});
+
+test("setSetting_ with the cache down still writes and flushes, and logs the missed stamp", () => {
+  const s = kiosk({ settingsCacheFails: true });
+  s.ctx.setSetting_("Auto clock-out last run", "2026-11-12 4:10 AM: closed 0");
+  assert.equal(
+    s.sheets.Settings.rows.find((r) => r[0] === "Auto clock-out last run")[1],
+    "2026-11-12 4:10 AM: closed 0",
+  );
+  assert.ok(s.journal.includes("flush"));
+  assert.deepEqual(s.errors, ["Settings edit not stamped: cache.put failed"]);
+});
+
+test("onEdit stamps only for an edit on the Settings tab, and reads nothing", () => {
+  for (const e of [undefined, null, {}, { range: null }, editOn("Log"), editOn("Flags")]) {
+    const s = kiosk({});
+    s.ctx.onEdit(e);
+    assert.equal(s.cache.has(s.ctx.settingsStampKey()), false, JSON.stringify(e));
+    assert.deepEqual(s.calls, [], JSON.stringify(e));
+    assert.deepEqual(s.journal, [], JSON.stringify(e));
+  }
+  const s = kiosk({});
+  s.ctx.onEdit(editOn("Settings"));
+  assert.equal(s.cache.get(s.ctx.settingsStampKey()), String(NOW));
+  assert.deepEqual(s.calls, ["CacheService.getScriptCache", "cache.put"]);
+  assert.deepEqual(s.journal, []);
+});
+
+test("onEdit with the cache down fails nothing, and the old copy is used for 5 minutes at most", () => {
+  const { s, clock } = kioskWithClock();
+  assert.equal(plain(s.ctx.apiCheckAccess(CODE)).ok, true);
+  setCode(s, NEW_CODE);
+  clock.settingsCacheFails = true;
+  assert.equal(s.ctx.onEdit(editOn("Settings")), undefined);
+  assert.deepEqual(s.errors, ["Settings edit not stamped: cache.put failed"]);
+  clock.settingsCacheFails = false;
+  clock.now = NOW + 300000 - 1;
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true, "the missed stamp");
+  clock.now = NOW + 300000;
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).refusal, "ACCESS");
+  assert.equal(plain(s.ctx.apiCheckOut(NEW_CODE, SAM.id, null, null)).ok, true);
+});
+
+test("a cached copy that can't be read, or a stamp that can't, reads the tab and answers as usual", () => {
+  const good = (s) => s.ctx.settingsCacheValue(plain(s.ctx.readSettings_()), NOW - 1000);
+  const bad = [
+    () => "not json",
+    () => "",
+    () => JSON.stringify({ v: 2, readAt: NOW - 1000, settings: {} }),
+    (s) => good(s).replace(String(NOW - 1000), '"soon"'),
+    (s) =>
+      JSON.stringify({
+        v: 1,
+        readAt: NOW - 1000,
+        settings: { ...plain(s.ctx.readSettings_()), "Kiosk access code": 7 },
+      }),
+    () => JSON.stringify({ v: 1, readAt: NOW - 1000, settings: [] }),
+  ];
+  for (const value of bad) {
+    const s = kiosk({});
+    const text = value(s);
+    s.cache.set(s.ctx.settingsCacheKey(), text);
+    s.sheets.Settings.reads.length = 0;
+    assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true, text);
+    assert.equal(settingsReads(s), 1, text);
+    assert.deepEqual(s.errors, []);
+    // The read replaced it with a copy the next tap can use.
+    assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+    assert.equal(settingsReads(s), 1, text);
+  }
+  const s = kiosk({});
+  const text = good(s);
+  s.cache.set(s.ctx.settingsCacheKey(), text);
+  s.cache.set(s.ctx.settingsStampKey(), "yesterday");
+  s.sheets.Settings.reads.length = 0;
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(settingsReads(s), 1, "an unreadable stamp");
+});
+
+test("with the cache down a tap reads the tab, answers as usual and logs the cache errors", () => {
+  const s = kiosk({ settingsCacheFails: true });
+  const reply = plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null));
+  assert.equal(reply.ok, true);
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(settingsReads(s), 2);
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+  assert.deepEqual(s.errors, [
+    "Settings cache not read: cache.getAll failed",
+    "Settings not cached: cache.put failed",
+    "Settings cache not read: cache.getAll failed",
+    "Settings not cached: cache.put failed",
+  ]);
+  const wrong = kiosk({ settingsCacheFails: true });
+  assert.equal(plain(wrong.ctx.apiCheckIn(WRONG_CODE, SAM.id, null, null)).refusal, "ACCESS");
+  assert.equal(settingsReads(wrong), 1);
+  assert.equal(sleeps(wrong), 1);
+});
+
+test("Settings too big to cache are read on every tap, and an older copy is removed", () => {
+  const big = [...KIOSK_SETTINGS, ["Profiles problems", "x".repeat(100000)]];
+  const s = kiosk({ settings: big });
+  // A copy cached while Settings were small.
+  s.cache.set(
+    s.ctx.settingsCacheKey(),
+    s.ctx.settingsCacheValue(Object.fromEntries(KIOSK_SETTINGS.slice(1)), NOW - 1000),
+  );
+  assert.equal(plain(s.ctx.apiListVolunteers(CODE)).ok, true);
+  assert.equal(s.cache.has(s.ctx.settingsCacheKey()), false, "the older copy is gone");
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(settingsReads(s), 3);
+  assert.equal(s.cache.has(s.ctx.settingsCacheKey()), false, "never put");
+  assert.ok(!s.calls.includes("cache.put"), "nothing put");
+  assert.deepEqual(s.errors, []);
 });
 
 // Two of a same-name group, who must give their phone's last four.

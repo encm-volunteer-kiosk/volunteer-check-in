@@ -2375,6 +2375,71 @@ test("constants", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Settings in the script cache
+
+const SETTINGS = { "Kiosk access code": "lettersonlylettersonly", "Volunteer Profiles tab": "" };
+
+test("the Settings cache's keys and limits", () => {
+  assert.equal(L.settingsCacheKey(), "settings:v1");
+  assert.equal(L.settingsStampKey(), "settings:edited");
+  assert.equal(L.settingsCacheSeconds(), 300);
+  assert.equal(L.settingsCacheMaxBytes(), 100000);
+  assert.notEqual(L.settingsCacheKey(), L.settingsStampKey());
+});
+
+test("a cached Settings copy round-trips and is used with no stamp", () => {
+  const text = L.settingsCacheValue(SETTINGS, NOW - 1000);
+  assert.deepEqual(JSON.parse(text), { v: 1, readAt: NOW - 1000, settings: SETTINGS });
+  assert.deepEqual(plain(L.settingsFromCache(text, null, NOW)), SETTINGS);
+  assert.deepEqual(plain(L.settingsFromCache(text, undefined, NOW)), SETTINGS);
+  assert.deepEqual(plain(L.settingsFromCache(L.settingsCacheValue({}, NOW), null, NOW)), {});
+});
+
+test("a cached Settings copy is used only when read after the stamp", () => {
+  const readAt = NOW - 10000;
+  const text = L.settingsCacheValue(SETTINGS, readAt);
+  assert.deepEqual(plain(L.settingsFromCache(text, String(readAt - 1), NOW)), SETTINGS);
+  assert.equal(L.settingsFromCache(text, String(readAt), NOW), null, "read at the stamp");
+  assert.equal(L.settingsFromCache(text, String(readAt + 1), NOW), null, "read before it");
+});
+
+test("a cached Settings copy is used for less than 5 minutes after its read", () => {
+  const text = L.settingsCacheValue(SETTINGS, NOW);
+  assert.deepEqual(plain(L.settingsFromCache(text, null, NOW + 300000 - 1)), SETTINGS);
+  assert.equal(L.settingsFromCache(text, null, NOW + 300000), null);
+  assert.equal(L.settingsFromCache(text, null, NOW + 3600000), null);
+});
+
+test("a cached Settings copy or stamp that can't be read gives null", () => {
+  const good = { v: 1, readAt: NOW - 1000, settings: SETTINGS };
+  const bad = [
+    null,
+    undefined,
+    "",
+    "not json",
+    "null",
+    "[]",
+    "7",
+    JSON.stringify({ ...good, v: 2 }),
+    JSON.stringify({ ...good, v: "1" }),
+    JSON.stringify({ ...good, readAt: "1" }),
+    JSON.stringify({ ...good, readAt: null }),
+    JSON.stringify({ v: 1, settings: SETTINGS }),
+    JSON.stringify({ ...good, settings: null }),
+    JSON.stringify({ ...good, settings: [] }),
+    JSON.stringify({ ...good, settings: "text" }),
+    JSON.stringify({ ...good, settings: { ...SETTINGS, "Kiosk access code": 7 } }),
+    JSON.stringify({ ...good, settings: { ...SETTINGS, "Kiosk launch date": null } }),
+  ];
+  for (const text of bad) assert.equal(L.settingsFromCache(text, null, NOW), null, String(text));
+  const text = JSON.stringify(good);
+  for (const stamp of ["", "soon", "12.5", "-1", " 1", "1e3", 5]) {
+    assert.equal(L.settingsFromCache(text, stamp, NOW), null, JSON.stringify(stamp));
+  }
+  assert.deepEqual(plain(L.settingsFromCache(text, "0", NOW)), SETTINGS);
+});
+
+// ---------------------------------------------------------------------------
 // The Flags tab
 
 const FLAG_HEADERS = [
