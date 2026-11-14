@@ -2531,11 +2531,13 @@ test("AdminDialog.html calls only keyed functions, each through call()", () => {
     "adminAddShift",
     "adminFindShifts",
     "adminFixSignOut",
+    "adminHoursPreview",
     "adminOpenShifts",
     "adminRemoveShift",
     "adminRemovedShifts",
     "adminRestoreShift",
     "adminRoster",
+    "adminSendHours",
   ]);
   for (const name of called) assert.ok(KEYED.includes(name), name);
   assert.equal(html.match(/google\.script\.run/g).length, 1);

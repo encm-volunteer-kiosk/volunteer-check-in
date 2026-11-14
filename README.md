@@ -42,8 +42,8 @@ so hours can be credited to each volunteer and reported to grantmakers.
   digits only when another volunteer with the same name is checked in too.
 - **Kiosk admin menu**: a menu in the Check-In Log spreadsheet for staff to add a shift a
   volunteer forgot to log, to close one they forgot to sign out of, to move a wrong shift
-  out of the Log and back, to check the Log for broken rows, to make a monthly report, or to
-  refresh the Hours tab (see below).
+  out of the Log and back, to check the Log for broken rows, to make a monthly report, to
+  email volunteers their hours, or to refresh the Hours tab (see below).
 - **Flags tab**: each alert the kiosk writes is also copied to a Flags tab, one row per
   alert, for staff to tick off as reviewed (see Flags tab).
 - **Reports**: the Hours tab, tables and slicers for hours over any period you pick, a
@@ -417,6 +417,8 @@ once.
 | Past hours file ID         | blank                           | The old hours spreadsheet that Kiosk admin > Import past hours… offers first; an import fills it in, and blank just means the window starts empty.                                                                                                                                     |
 | Past hours tab             | Historical Hours                | The tab in that old hours spreadsheet that Import past hours… offers first; blank means Historical Hours.                                                                                                                                                                              |
 | Kiosk contact              | blank                           | Who to ask when the kiosk or this sheet isn't working, such as a name and an email or phone: the How to tab shows it, and so does the Kiosk admin menu when something goes wrong; while it's blank, the How to tab says to ask whoever looks after the kiosk.                          |
+| Hours email contact        | blank                           | Who volunteers should contact about their hours, such as a name and an email or phone: Kiosk admin > Email hours… ends every email with it, because nobody can reply to that email; while it's blank, no hours email can be sent.                                                      |
+| Hours email signature      | blank                           | Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.                                                                                                                                                          |
 
 "Flags email to" also splits on semicolons; the sentence leaves that out to stay short.
 "Daily jobs installed by" is written by `setupDailyJobs`, and the two Past hours rows by an
@@ -437,9 +439,20 @@ as staff like it (a name and an email or phone, on one line or several). The kio
 checks or shortens it. The How to tab's first section shows it, read live from this row
 (see What setupSheets does), and the Kiosk admin menu adds it to an error (see Kiosk admin
 menu). The tablet never shows it or receives it: volunteers use it in a public room and
-are sent to a board member on site. It is the last row, added blank by `setupSheets` on a
-sheet set up before it; this repository holds no real contact, only examples such as
-"Pat Example, pat@example.org" or "555-0100".
+are sent to a board member on site. `setupSheets` adds it blank on a sheet set up before
+it; this repository holds no real contact, only examples such as "Pat Example,
+pat@example.org" or "555-0100".
+
+"Hours email contact" and "Hours email signature" are for Kiosk admin > Email hours…
+(see Email hours). Hours email contact is who volunteers should ask about their hours,
+typed as staff like it, on one line or several. Every hours email ends with it, its lines
+trimmed, empty ones dropped and the rest joined with commas, and while it's blank no hours
+email can be sent. It is a row of its own, not Kiosk contact, because Kiosk contact is
+staff's help line for the kiosk and the sheet and may name a technical helper, while
+this row goes out to every volunteer who is emailed. Hours email signature adds its lines,
+trimmed and without empty ones, under "Thank you for volunteering."; blank adds nothing.
+`setupSheets` adds both blank, last, on a sheet set up before them, and never changes a
+value typed there.
 
 "Check-out flag minutes" is new with the check-out time picker, "Volunteer hour value"
 with the reports, and the rows from "Auto clock-out after hours" down with the daily jobs.
@@ -457,10 +470,10 @@ once.
 
 ## Kiosk admin menu
 
-Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with eight items: Add a
-shift, Fix a sign-out, Remove a shift, Restore a shift, Monthly report, Import past hours,
-Refresh Hours and Check the Log now. Monthly report and Refresh Hours are described under
-Reports. The sheet's How to tab (see What setupSheets does) walks staff through each item
+Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with nine items: Add a
+shift, Fix a sign-out, Remove a shift, Restore a shift, Monthly report, Email hours, Import
+past hours, Refresh Hours and Check the Log now. Monthly report and Refresh Hours are
+described under Reports, and Email hours below. The sheet's How to tab (see What setupSheets does) walks staff through each item
 in plain words. Check the Log now runs the Log check that otherwise runs at about 5 AM (see Daily
 jobs) and says what it found and how many new Flags rows it added. Anyone who can edit the
 spreadsheet can use it. It runs as whoever has the sheet open, which at
@@ -482,7 +495,7 @@ ENCM is the shared account, so:
 Each item except Refresh Hours and Check the Log now opens a small window. Every save asks
 for the admin's **initials**: 1 to 5 letters, with spaces and dots dropped, stored in capitals (`j.p.` is stored as `JP`). The
 initials go in Check-In Entered By and Check-Out Entered By, since everyone at ENCM signs
-in as the same account. A window stops working after 30 minutes; close it and open the
+in as the same account; Email hours writes them on the Hours emails tab. A window stops working after 30 minutes; close it and open the
 menu again. If a save is refused, the window says why and keeps what was typed.
 
 When something goes wrong that isn't a refusal, the window shows the error, and while the
@@ -496,8 +509,8 @@ what to do. With the row blank, the error is shown alone. A Settings tab that ca
 read doesn't stop the shift or Monthly report windows opening; they just have no contact
 line. Import past hours needs Settings to open, so there it stops with Google's error.
 
-The "type to search" box in Add a shift, Fix a sign-out, Remove a shift and Restore a
-shift ignores accents, apostrophes, periods, hyphens, capitals and extra spaces, the same
+The "type to search" box in Add a shift, Fix a sign-out, Remove a shift, Restore a shift
+and Email hours ignores accents, apostrophes, periods, hyphens, capitals and extra spaces, the same
 as the kiosk's name box. Every word
 typed must appear in an entry, in any order.
 
@@ -637,6 +650,177 @@ It refuses, and says why, when:
   with Fix a sign-out first.
 - the row has a value in a column the Log no longer has, or has twice. The message names
   the column: give the Log one column with that header first.
+
+### Email hours
+
+**Kiosk admin > Email hours…** emails volunteers their hours: one plain-text email each,
+with the hours for the month you choose, the year so far and all time. Tick who gets one,
+press Preview, read exactly what will go out and to which address, type your initials and
+press Send email. Nothing else sends it: not the tablet, and no daily job.
+
+**Where the address comes from.** Each email goes to the Email cell of the volunteer's own
+Volunteer Profiles row, found by User Token, read fresh at Preview and again at Send. The
+Profiles column must be headed "Email" or "Email Address". The window can't change an
+address: to send somewhere else, fix the Profiles row first, then press Preview again. The
+cell must hold one plain address and nothing else. A volunteer is left out of the send,
+with the reason in their part of the preview, when:
+
+- their Email cell is blank;
+- it isn't one plain address: two addresses, an address with a name or `<` `>` around it,
+  or text that isn't an address;
+- they are no longer on the volunteer list (press Preview again);
+- two Profiles rows have their User Token.
+
+Only that volunteer is left out; the others can still be sent. The tablet still never
+reads or receives anyone's email.
+
+**The window**, top to bottom:
+
+- **Month**: This month or Last month, each named, such as "This month (November 2026)".
+  This month is chosen when the window opens.
+- **Attach all shifts as a spreadsheet file (CSV)**: unticked when the window opens (see
+  The shifts file below).
+- **Volunteers**: a search box and a list of tick boxes, one per volunteer, named as in
+  Add a shift. The search only hides and shows names: a ticked volunteer stays ticked
+  while hidden, and "N ticked" counts them. **Tick all shown** ticks every name the search
+  shows, volunteers with no shifts this month included; **Clear** unticks everyone. To
+  tick everyone, empty the search box and press Tick all shown.
+- **Preview** shows what will go out (below).
+- **Your initials**, then **Send email**.
+
+Send email works only after a Preview, and only for what was previewed. Ticking or
+unticking anyone, Tick all shown, Clear, choosing the other month or changing the attach
+box turns Send email off; press Preview again. Typing in the search box doesn't.
+
+**The preview** starts with "From: ENCM Volunteer Kiosk, from a no-reply address (sent by
+...)", naming the Google account that will send, and a count such as "12 ticked: 11 will
+be sent, 1 won't." Then, for each ticked volunteer in roster order:
+
+- "To:" with their name and address, or the reason they won't be sent;
+- their Volunteer Profiles row and start date;
+- "Last emailed:" the date and initials of their newest sent row on the Hours emails tab,
+  "never", or "unknown" when the tab can't be read;
+- the email's three total lines, and the file's name and number of shifts when the box is
+  ticked;
+- what to check before sending (below);
+- "Email text", which opens to the subject and the whole email.
+
+"Check before sending", above the preview, says how many volunteers have something to
+check, so a long list doesn't hide it.
+
+**What to check.** For each volunteer the preview lists the Log rows staff would want to
+look at before sending, with a count and up to 10 Log row numbers. None of them stops the
+send; they are there so the admin looks first.
+
+- Open shifts, which aren't counted: use Fix a sign-out… if they're finished.
+- Counted shifts with an unreviewed Flags row: check them on the Flags tab.
+- The volunteer's rows with Admin Alerts? set: read that cell on those rows.
+- Closed rows under the volunteer's name with a User Token no listed volunteer has, with
+  their hours. They aren't in the totals; it may be an old or mistyped token. If they're
+  this volunteer's, change the token on those rows to their current User Token.
+- Auto clock-outs in the totals, whose check-out time was guessed.
+- Rows counted as 0 hours because Hours Served (stated) is blank, negative or not a number.
+- Rows left out because the Date isn't `yyyy-mm-dd`, or is after today.
+- Paper rows under the volunteer's name with an `import:` stand-in token, with their
+  hours. They aren't in the totals; if they're this volunteer's, type their User Token
+  over the `import:` token on those rows.
+- The Flags tab couldn't be read, so flags weren't checked.
+- No counted hours at all: the email will say so.
+
+When two volunteers share the name, the two name warnings say so: check whose the rows
+are.
+
+**What the email says.** The subject is "Your volunteer hours for November 2026". It greets
+the volunteer by first name, then gives three totals, each in hours and shifts:
+
+- for This month, as of today: "November 2026 so far", "2026 so far" and "All time";
+- for Last month, through that month's last day: "October 2026", "2026 through October"
+  and "All time". All three are as of that last day, so shifts since then wait for a later
+  email.
+
+"All time" adds ", including N hours from our paper records" when there are imported paper
+hours. Then the month's shifts, a date and hours each, or "No shifts yet in November
+2026." (or "No shifts in October 2026."). A volunteer with no counted hours gets "We don't
+have any volunteer hours recorded for you yet." instead of the totals and the list. With
+the box ticked, a line names the attached file. Then "This email comes from an address
+that can't take replies. If anything looks wrong, please contact:" and the Settings row
+Hours email contact, then "Thank you for volunteering." and the Hours email signature
+lines, if any. The email holds no User Token, Shift ID, Log row, flag, note or anyone
+else's name.
+
+**What counts** is what the Hours tab and the monthly report count (see Which rows count):
+closed rows with the volunteer's User Token, with their stated hours, by Date. Flagged
+rows and auto clock-outs count; open rows don't. Paper hours imported with a match count
+by their Date; paper rows still under an `import:` stand-in token don't. The email's totals
+can differ from the Hours tab:
+
+- the email reads the Log live, and Hours shows it as of its last refresh;
+- the email leaves out rows dated after the day its totals are as of, and Hours counts
+  future-dated rows;
+- when one volunteer has an old and a new User Token on the Log, Hours shows the old
+  token's hours on the plain name line and the new token's on the "Name (2)" line. The
+  email counts the token in Profiles now, so its totals match the "(2)" line.
+
+**The shifts file.** With the box ticked, each email has a file named
+`volunteer-hours-to-<date>.csv`, such as `volunteer-hours-to-2026-11-14.csv`, which any
+spreadsheet program opens. It has one row per counted shift in all time up to the day the
+totals are as of, the same shifts as the "All time" line, oldest first, with the columns
+Date, Check-in, Check-out and Hours. The times are the stated ones. A time is blank when it
+isn't known: paper hours have only a date and hours, and an auto clock-out's check-out
+time was guessed.
+
+**Sending.** Send email sends one email to each volunteer the preview said will be sent,
+10 at a time, one group after another; the message line shows "Sending… 20 of 63"
+meanwhile. When it ends, the message line says "Sent N of M." and how many weren't, and
+the preview box becomes the result list, one line per volunteer: "sent to" the address,
+"failed:" with Google's message, or "not sent:" and why. Volunteers left out at Preview
+are listed last, with their reason. One volunteer's failure never stops the others. A
+volunteer isn't sent at Send when:
+
+- their hours, the email or their address changed since the Preview ("changed since the
+  preview"): press Preview again to check it;
+- their Profiles row or the Settings went wrong since the Preview: the reason is given;
+- Google's daily email limit ran out (below).
+
+When the kiosk is busy or the initials are missing, the sending stops and Send email stays
+on: wait a moment or fix the initials, and press Send email again. It sends only those not
+handled yet. Any other stop, such as the window or the preview expiring, needs a new
+Preview. If the connection drops during a send, the window can't tell whether that group
+went out, and lists them as "not sent, or sent but the reply was lost". Check the Hours
+emails tab, or the next Preview's "Last emailed", before sending them again.
+
+To send again after a send, whether it worked or not, press Preview again. Closing the
+window during a send stops it after the group under way, which is still recorded.
+
+**Who it comes from.** It is sent the way the weekly flags email is: from the no-reply
+address of the Google account that has the sheet open, named "ENCM Volunteer Kiosk". At
+ENCM that is the shared Workspace account; Google offers a no-reply address to Workspace
+accounts only. Volunteers can't reply, so every email names Hours email contact, and while
+that row is blank nothing can be sent. A bounce (an address that doesn't work) goes to
+that account's inbox and the volunteer's row still says sent, so check that inbox after a
+send.
+
+**Google's daily limit.** A Workspace account may send to 1,500 email recipients a day
+from scripts (a personal Gmail account, 100), and each hours email is one. The weekly flags
+email counts against the same limit when the same account owns the jobs. Preview refuses a
+set bigger than what is left today: untick some, or send the rest tomorrow. If the limit
+runs out during a send, the rest get "not sent: Google's daily email limit for this
+account is used up".
+
+**The Hours emails tab** is the record of what went out. The first send makes it in the
+Check-In Log. Each volunteer a send handles gets one row, whatever happened: Sent at, Send
+ID (the same on every row of one send), Volunteer Name, Volunteer ID (the hashed ID the
+kiosk list uses, never the User Token), Email (the address it went to, or would have),
+Month, Month hours, Year, Year hours, All-time hours, Shifts file (yes or no), Sent by
+(initials), Sent from (the Google account) and Result. The hours are blank on a "not sent"
+row. Volunteers left out at Preview get no row. The tab warns before an edit: edit it only
+to fix a mistake. It holds volunteers' email addresses, one more reason to share the Log as
+narrowly as Profiles (see User Token and who can see the Log). If rows couldn't be written,
+the message line says so, and the script's execution log names each volunteer's ID and
+result so they can be typed in by hand.
+
+The window stops working after 30 minutes, like the others: close it and open the menu
+again.
 
 ### Import past hours
 
@@ -788,8 +972,9 @@ The editor's Triggers page (the clock icon) shows them.
 - **Other accounts are asked too.** Google's permissions belong to the whole script, so
   the account that deploys the web app and the account that uses the Kiosk admin menu are
   also asked to allow sending email and managing triggers the next time they run
-  something. They never send email or install a trigger; accept so the menu and kiosk keep
-  working.
+  something. Neither installs a trigger, and the web app never sends email. The menu's
+  account sends email only through Kiosk admin > Email hours…, which works once that
+  account has accepted. Accept so the menu and kiosk keep working.
 - **Moving the jobs to another account.** Google lets an account see and delete only its
   own triggers. Signed in as the old owner, run `removeDailyJobs`: it deletes that
   account's job triggers and clears "Daily jobs installed by" if it names that account.
@@ -1582,8 +1767,8 @@ nothing, except that it puts its look and its help back.
     kiosk text, since it describes the wrong column. A deleted note comes back at the
     next run.
   - The How to tab, last: who to ask for help, short walkthroughs for staff (review
-    flags, fix a sign-out, add, remove and restore a shift, the monthly report, the flags
-    email, changing a setting, the Hours tab), a "Please don't" list, and every Log and
+    flags, fix a sign-out, add, remove and restore a shift, the monthly report, email
+    volunteers their hours, the flags email, changing a setting, the Hours tab), a "Please don't" list, and every Log and
     Flags header note. Its first section, "Problems with the kiosk", is one cell holding a
     formula (in the General format; every other cell is plain text) that reads the
     Settings row "Kiosk contact" live: it shows "...contact: " and the value, trimmed, or
