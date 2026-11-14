@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { cachedLogMap } from "./log-cache-tap.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -216,6 +217,7 @@ function server(opts = {}) {
   const journal = [];
   const errors = [];
   const cache = new Map();
+  const props = new Map();
   const tabs = {};
   const add = (name, rows) => (tabs[name] = new FakeSheet(name, rows, journal));
   add("Log", opts.log || [LOG_HEADER]);
@@ -237,6 +239,14 @@ function server(opts = {}) {
       getScriptCache: () => ({
         get: (k) => (cache.has(k) ? cache.get(k) : null),
         put: (k, v) => void cache.set(k, v),
+      }),
+    },
+    // Script properties, where Log writes put the Log changed stamp.
+    PropertiesService: {
+      getScriptProperties: () => ({
+        getProperty: (k) => (props.has(k) ? props.get(k) : null),
+        setProperty: (k, v) => void props.set(k, String(v)),
+        deleteProperty: (k) => void props.delete(k),
       }),
     },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
@@ -297,6 +307,7 @@ function server(opts = {}) {
     tabs,
     journal,
     errors,
+    props,
     onFlush: (fn) => (afterFlush = fn),
   };
 }
@@ -940,6 +951,62 @@ test("adminFindShifts finds by Shift ID, or by volunteer and date, and skips row
     shifts: [],
   });
   assert.deepEqual(writes(s), []);
+});
+
+test("Add, Fix, Remove and Restore a shift each write the Log changed stamp, so the next tap reads the whole Log", () => {
+  const open = (shiftId) =>
+    closed(shiftId, "Ruth Okafor", "tok-ruth", {
+      Status: "open",
+      "Check-Out Recorded (timestamp)": "",
+      "Check-Out Stated (user)": "",
+      "Hours Served (timestamps)": "",
+      "Hours Served (stated)": "",
+      "Check-Out Entered By": "",
+    });
+  const writers = [
+    [
+      "Add a shift",
+      (s) =>
+        s.ctx.adminAddShift(KEY, {
+          id: SAM.id,
+          date: "2026-06-02",
+          inTime: "09:00",
+          outTime: "11:30",
+          note: "",
+          initials: "jp",
+        }),
+    ],
+    [
+      "Fix a sign-out",
+      (s) => s.ctx.adminFixSignOut(KEY, { shiftId: "s-open", outTime: "12:00", initials: "jp" }),
+    ],
+    ["Remove a shift", (s) => s.ctx.adminRemoveShift(KEY, REMOVE)],
+    [
+      "Restore a shift",
+      (s) => {
+        assert.equal(s.ctx.adminRemoveShift(KEY, REMOVE).ok, true);
+        s.props.clear();
+        return s.ctx.adminRestoreShift(KEY, { shiftId: "s-2", row: 2, initials: "kb" });
+      },
+    ],
+  ];
+  for (const [label, write] of writers) {
+    const s = server({
+      now: NOW,
+      volunteers: [SAM],
+      log: [LOG_HEADER, closed("s-1"), closed("s-2", "Sam Lee"), open("s-open")],
+    });
+    const before = s.props.get(s.ctx.logStampProperty()) ?? null;
+    // A map of the whole Log read 10 seconds before the write.
+    const readAt = NOW - 10000;
+    assert.equal(plain(write(s)).ok, true, label);
+    const stamp = s.props.get(s.ctx.logStampProperty());
+    assert.ok(Number(stamp) >= readAt + s.ctx.logCacheMarginMs(), label);
+    const nextTap = cachedLogMap(s.ctx, s.tabs.Log.getDataRange().getValues(), readAt);
+    // The map matches the Log as the write left it, so without the stamp it would be used.
+    assert.equal(nextTap(before, NOW + 1000), "hit", label);
+    assert.equal(nextTap(stamp, NOW + 1000), "miss (edited)", label);
+  }
 });
 
 test("cellBack_ writes text so it reads back as text; other values as they are", () => {

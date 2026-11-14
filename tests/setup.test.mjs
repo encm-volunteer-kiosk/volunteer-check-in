@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { cachedLogMap } from "./log-cache-tap.mjs";
 import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
@@ -538,11 +539,13 @@ function sheetsService(ss, opts = {}) {
  * A fresh context with Logic.js and Sheets.js loaded and SpreadsheetApp pointing at ss.
  * opts.noSheetsService leaves the advanced Sheets service out, as when it is off;
  * opts.failOn is passed to sheetsService. opts.cache is the script cache, a Map of key
- * to value (a new one by default); opts.onFlush runs on each SpreadsheetApp.flush;
+ * to value (a new one by default); opts.props the script properties, also a Map (new by
+ * default); opts.onFlush runs on each SpreadsheetApp.flush;
  * opts.errors collects what the server logs with console.error.
  */
 function server(ss, opts = {}) {
   const cache = opts.cache || new Map();
+  const props = opts.props || new Map();
   const checkbox = () => {
     const rule = {};
     const b = {
@@ -560,6 +563,14 @@ function server(ss, opts = {}) {
       getScriptCache: () => ({
         get: (k) => (cache.has(k) ? cache.get(k) : null),
         put: (k, v) => void cache.set(k, v),
+      }),
+    },
+    // Script properties, where Log writes put the Log changed stamp.
+    PropertiesService: {
+      getScriptProperties: () => ({
+        getProperty: (k) => (props.has(k) ? props.get(k) : null),
+        setProperty: (k, v) => void props.set(k, String(v)),
+        deleteProperty: (k) => void props.delete(k),
       }),
     },
     SpreadsheetApp: {
@@ -737,6 +748,48 @@ test("setupSheets stamps the Settings cache after its Settings rows reach the sh
   assert.ok(Number(stamp) >= before + 1000);
   assert.equal(S.settingsFromCache(cache.get(S.settingsCacheKey()), stamp, Date.now()), null);
   assert.deepEqual(errors, []);
+});
+
+test("setupSheets writes the Log changed stamp, so the next tap reads the whole Log", () => {
+  const ss = new FakeSpreadsheet();
+  const props = new Map();
+  const S = server(ss, { props });
+  // First run: a new Log. Second run: nothing changes in the Log's cells, and it still stamps.
+  for (const run of ["first", "second"]) {
+    props.clear();
+    // A map of the whole Log read 10 seconds before the run.
+    const readAt = Date.now() - 10000;
+    S.setupSheets();
+    const stamp = props.get(S.logStampProperty());
+    assert.ok(Number(stamp) >= readAt + S.logCacheMarginMs(), run);
+    const values = ss.getSheetByName("Log").getDataRange().getValues();
+    const nextTap = cachedLogMap(S, values, readAt);
+    // The map matches the Log as the run left it, so without the stamp it would be used.
+    assert.equal(nextTap(null, Date.now() + 1000), "hit", run);
+    assert.equal(nextTap(stamp, Date.now() + 1000), "miss (edited)", run);
+  }
+});
+
+test("setupSheets writes the Log changed stamp after its Log part even when a Log write throws", () => {
+  const ss = new FakeSpreadsheet();
+  const log = sheetWith(ss, "Log", [LOG_HEADERS]);
+  const events = [];
+  const props = new (class extends Map {
+    set(k, v) {
+      if (k === S.logStampProperty()) events.push("stamp");
+      return super.set(k, v);
+    }
+  })();
+  const S = server(ss, { props });
+  let thrownAt = 0;
+  log.setFrozenRows = () => {
+    events.push("write failed");
+    thrownAt = Date.now();
+    throw new Error("setFrozenRows failed");
+  };
+  assert.throws(() => S.setupSheets(), /setFrozenRows failed/);
+  assert.deepEqual(events, ["stamp", "write failed", "stamp"]);
+  assert.ok(Number(props.get(S.logStampProperty())) >= thrownAt);
 });
 
 test("running setupSheets twice changes nothing", () => {

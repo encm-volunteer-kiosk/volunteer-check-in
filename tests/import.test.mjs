@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import vm from "node:vm";
+import { cachedLogMap } from "./log-cache-tap.mjs";
 import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
@@ -246,6 +247,7 @@ const settingsRows = (extra = []) => [
 function server(opts = {}) {
   const calls = [];
   const cache = new Map();
+  const props = new Map();
   const errors = [];
   const logs = [];
   const shown = [];
@@ -292,6 +294,14 @@ function server(opts = {}) {
           put: (k, v) => void cache.set(k, v),
         }),
     }),
+    // Script properties, where Log writes put the Log changed stamp.
+    PropertiesService: {
+      getScriptProperties: () => ({
+        getProperty: (k) => (props.has(k) ? props.get(k) : null),
+        setProperty: (k, v) => void props.set(k, String(v)),
+        deleteProperty: (k) => void props.delete(k),
+      }),
+    },
     LockService: service("LockService", {
       getScriptLock: () => ({
         tryLock: () => (opts.lock ? opts.lock(++locks) : true),
@@ -371,7 +381,7 @@ function server(opts = {}) {
   );
   for (const key of opts.keys || ["k"]) cache.set(ctx.adminKeyCacheKey(key), "1");
   calls.length = 0;
-  return { ctx, calls, cache, sheets, source, shown, errors, logs };
+  return { ctx, calls, cache, props, sheets, source, shown, errors, logs };
 }
 
 const FORM = { file: FILE_LINK, tab: "Historical Hours", initials: "j.p." };
@@ -869,6 +879,20 @@ test("Import writes the rows, the ledger and one Flags row per unmatched name; a
   assert.equal(again.imported, 0);
   assert.equal(again.flags, 0);
   assert.equal(JSON.stringify([s.sheets.Log.rows, ledger.rows, s.sheets.Flags.rows]), before);
+});
+
+test("an import block writes the Log changed stamp, so the next tap reads the whole Log", () => {
+  const s = server({ log: [LOG_HEADER, ["kiosk-1", "tok-avery", "closed", "2026-11-02"]] });
+  // A map of the whole Log read 10 seconds before the import.
+  const readAt = NOW - 10000;
+  assert.equal(plain(s.ctx.adminImportRun("k", FORM)).done, true);
+  assert.equal(s.sheets.Log.records().length, 14);
+  const stamp = s.props.get(s.ctx.logStampProperty());
+  assert.ok(Number(stamp) >= readAt + s.ctx.logCacheMarginMs());
+  const nextTap = cachedLogMap(s.ctx, s.sheets.Log.getDataRange().getValues(), readAt);
+  // The map matches the Log as the import left it, so without the stamp it would be used.
+  assert.equal(nextTap(null, NOW + 1000), "hit");
+  assert.equal(nextTap(stamp, NOW + 1000), "miss (edited)");
 });
 
 test("date cells in the source are read in the source spreadsheet's time zone", () => {

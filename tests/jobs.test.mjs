@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { cachedLogMap } from "./log-cache-tap.mjs";
 import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
@@ -28,6 +29,7 @@ const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 const OWNER = "jobs@example.org";
 const SHEET_URL = "https://docs.google.com/spreadsheets/d/sheet-1/edit";
+const SHEET_ID = "sheet-1";
 const FLAGS_GID = 777;
 // The Flags tab, with a staff column between the script's headers.
 const FLAG_HEADER = [
@@ -186,9 +188,10 @@ function flagRow({
  * A fresh server scope. opts: now (ms, changeable through s.now), account (the Session
  * user, the same active and effective), settings (values over the defaults), flags (rows
  * under FLAG_HEADER; null for no Flags tab; flagHeader to replace the header), triggers
- * ({account: [{uid, handler}]}), lockFree (false: tryLock fails), sendFails, onSend, log
- * (the Log tab's rows, header first; none when absent), shifts (the Shifts tab's rows;
- * none when absent), onFlush (called on each SpreadsheetApp.flush).
+ * ({account: [{uid, handler, eventType}]}, eventType CLOCK when absent), lockFree (false:
+ * tryLock fails), sendFails, onSend, log (the Log tab's rows, header first; none when
+ * absent), shifts (the Shifts tab's rows; none when absent), onFlush (called on each
+ * SpreadsheetApp.flush), onChangeFails (an on-change trigger's builder throws).
  * calls records "Service.method" in order, the script lock's calls as "lock.*" and the
  * document lock's as "docLock.*"; logs what the server logs; alerts what the menu shows.
  * The spreadsheet has no Hours tabs. cache is the script cache, a Map of key to value; its
@@ -197,6 +200,7 @@ function flagRow({
 function server(opts = {}) {
   const calls = [];
   const cache = new Map();
+  const props = new Map();
   const logs = [];
   const mail = [];
   const alerts = [];
@@ -223,6 +227,8 @@ function server(opts = {}) {
       {
         get(_, prop) {
           if (typeof prop !== "string") return undefined;
+          // A plain value beside the methods, such as ScriptApp.EventType.
+          if (prop in methods && typeof methods[prop] !== "function") return methods[prop];
           return (...args) => {
             calls.push(name + "." + prop);
             if (!methods[prop]) throw new Error("unexpected call " + name + "." + prop);
@@ -236,6 +242,7 @@ function server(opts = {}) {
   const triggerObject = (t) => ({
     getUniqueId: () => t.uid,
     getHandlerFunction: () => t.handler,
+    getEventType: () => t.eventType || "CLOCK",
     t,
   });
 
@@ -250,11 +257,20 @@ function server(opts = {}) {
         put: (k, v) => void cache.set(k, v),
       }),
     },
+    // Script properties, where Log writes put the Log changed stamp.
+    PropertiesService: {
+      getScriptProperties: () => ({
+        getProperty: (k) => (props.has(k) ? props.get(k) : null),
+        setProperty: (k, v) => void props.set(k, String(v)),
+        deleteProperty: (k) => void props.delete(k),
+      }),
+    },
     Session: service("Session", {
       getActiveUser: () => email(state.account),
       getEffectiveUser: () => email(state.account),
     }),
     ScriptApp: service("ScriptApp", {
+      EventType: { CLOCK: "CLOCK", ON_CHANGE: "ON_CHANGE", ON_EDIT: "ON_EDIT" },
       getProjectTriggers: () => own().map(triggerObject),
       deleteTrigger: (obj) => {
         const list = own();
@@ -266,9 +282,19 @@ function server(opts = {}) {
         const spec = { handler };
         const make = () => {
           created.push(spec);
-          own().push({ uid: "new-" + ++state.uid, handler, spec });
+          own().push({ uid: "new-" + ++state.uid, handler, spec, eventType: spec.eventType });
         };
         return {
+          forSpreadsheet: (file) => {
+            spec.spreadsheet = file.getId();
+            return {
+              onChange: () => {
+                if (opts.onChangeFails) throw new Error("Too many triggers.");
+                spec.eventType = "ON_CHANGE";
+                return { create: make };
+              },
+            };
+          },
           timeBased: () => ({
             everyHours: (n) => ((spec.everyHours = n), { create: make }),
             atHour: (h) => {
@@ -310,6 +336,7 @@ function server(opts = {}) {
       getActiveSpreadsheet: () => ({
         getSheetByName: (name) => sheets[name] || null,
         getUrl: () => SHEET_URL,
+        getId: () => SHEET_ID,
         // No developer metadata: no Hours tabs.
         createDeveloperMetadataFinder: () => {
           const finder = { withKey: () => finder, find: () => [] };
@@ -384,6 +411,7 @@ function server(opts = {}) {
     ctx,
     calls,
     cache,
+    props,
     logs,
     mail,
     alerts,
@@ -1006,10 +1034,11 @@ test("setupDailyJobs replaces only this account's daily-job triggers and creates
     { handler: "runFlagsEmail", everyHours: 1 },
     { handler: "runAutoClockOut", atHour: 4, everyDays: 1, timeZone: TZ },
     { handler: "runHoursRefresh", atHour: 5, everyDays: 1, timeZone: TZ },
+    { handler: "onSheetChange", spreadsheet: SHEET_ID, eventType: "ON_CHANGE" },
   ]);
   assert.deepEqual(
     s.triggers[OWNER].map((t) => t.uid),
-    ["keep", "new-1", "new-2", "new-3"],
+    ["keep", "new-1", "new-2", "new-3", "new-4"],
   );
   assert.deepEqual(
     s.triggers["second@example.org"].map((t) => t.uid),
@@ -1018,14 +1047,15 @@ test("setupDailyJobs replaces only this account's daily-job triggers and creates
   assert.equal(s.setting("Daily jobs installed by"), OWNER);
   assert.match(
     s.logs.join("\n"),
-    /removed 2 old trigger\(s\) and installed runFlagsEmail every 1 hour\(s\); runAutoClockOut daily at 4:00 Central; runHoursRefresh daily at 5:00 Central, owned by jobs@example\.org/,
+    /removed 2 old trigger\(s\) and installed runFlagsEmail every 1 hour\(s\); runAutoClockOut daily at 4:00 Central; runHoursRefresh daily at 5:00 Central, owned by jobs@example\.org\. Installed the Log change trigger \(onSheetChange\)\./,
   );
-  // Again: still one of each.
+  // Again: still one of each, the Log change trigger kept.
   s.ctx.setupDailyJobs();
   assert.deepEqual(
     s.triggers[OWNER].map((t) => t.handler),
-    ["someOtherFunction", "runFlagsEmail", "runAutoClockOut", "runHoursRefresh"],
+    ["someOtherFunction", "onSheetChange", "runFlagsEmail", "runAutoClockOut", "runHoursRefresh"],
   );
+  assert.match(s.logs.at(-2), /Kept the Log change trigger \(onSheetChange\)\.$/);
 });
 
 test("setupDailyJobs makes a daily job's trigger at its hour, Central", () => {
@@ -1038,10 +1068,11 @@ test("setupDailyJobs makes a daily job's trigger at its hour, Central", () => {
   assert.deepEqual(plain(s.created), [
     { handler: "runFlagsEmail", everyHours: 1 },
     { handler: "runNightly", atHour: 4, everyDays: 1, timeZone: TZ },
+    { handler: "onSheetChange", spreadsheet: SHEET_ID, eventType: "ON_CHANGE" },
   ]);
   assert.deepEqual(
     s.triggers[OWNER].map((t) => t.handler),
-    ["runFlagsEmail", "runNightly"],
+    ["runFlagsEmail", "runNightly", "onSheetChange"],
   );
 });
 
@@ -1090,6 +1121,97 @@ test("removeDailyJobs deletes this account's job triggers and clears Daily jobs 
   );
   assert.equal(t.setting("Daily jobs installed by"), "second@example.org");
   assert.match(t.logs.join("\n"), /names second@example\.org, so it was left as it is/);
+});
+
+test("setupDailyJobs leaves this account exactly one on-change trigger for onSheetChange, run once or twice", () => {
+  const onChange = (uid) => ({ uid, handler: "onSheetChange", eventType: "ON_CHANGE" });
+  const cases = [
+    ["none", [], "Installed"],
+    ["one kept", [onChange("lc-1")], "Kept"],
+    ["two", [onChange("lc-1"), onChange("lc-2")], "Installed"],
+    [
+      "the wrong kind",
+      [{ uid: "lc-1", handler: "onSheetChange", eventType: "ON_EDIT" }],
+      "Installed",
+    ],
+  ];
+  for (const [label, mine, said] of cases) {
+    const s = server({
+      triggers: { [OWNER]: mine, "second@example.org": [onChange("theirs")] },
+    });
+    s.ctx.setupDailyJobs();
+    const lines = s.logs.filter((l) => l.startsWith("Daily jobs:"));
+    assert.match(
+      lines[0],
+      new RegExp(said + " the Log change trigger \\(onSheetChange\\)\\.$"),
+      label,
+    );
+    for (let run = 1; run <= 2; run++) {
+      const ours = s.triggers[OWNER].filter((t) => t.handler === "onSheetChange");
+      assert.equal(ours.length, 1, label + ", run " + run);
+      assert.equal(ours[0].eventType, "ON_CHANGE", label);
+      if (said === "Kept") assert.equal(ours[0].uid, "lc-1", label);
+      else assert.equal(ours[0].spec.spreadsheet, SHEET_ID, label);
+      if (run === 1) s.ctx.setupDailyJobs();
+    }
+    // The second run keeps the one it found.
+    assert.match(
+      s.logs.filter((l) => l.startsWith("Daily jobs:"))[1],
+      /Kept the Log change trigger/,
+    );
+    // Another account's trigger is never touched.
+    assert.deepEqual(
+      s.triggers["second@example.org"].map((t) => t.uid),
+      ["theirs"],
+      label,
+    );
+  }
+});
+
+test("a Log change trigger that can't be made is named in setupDailyJobs' line, and the jobs still install", () => {
+  const s = server({ onChangeFails: true });
+  s.ctx.setupDailyJobs();
+  assert.match(
+    s.logs.join("\n"),
+    /owned by jobs@example\.org\. The Log change trigger \(onSheetChange\) wasn't installed: Too many triggers\./,
+  );
+  assert.deepEqual(
+    s.triggers[OWNER].map((t) => t.handler),
+    ["runFlagsEmail", "runAutoClockOut", "runHoursRefresh"],
+  );
+  assert.equal(s.setting("Daily jobs installed by"), OWNER);
+});
+
+test("removeDailyJobs deletes this account's onSheetChange triggers with the jobs", () => {
+  const s = server({
+    triggers: {
+      [OWNER]: [
+        { uid: "job", handler: "runFlagsEmail" },
+        { uid: "lc-1", handler: "onSheetChange", eventType: "ON_CHANGE" },
+        { uid: "lc-2", handler: "onSheetChange", eventType: "ON_EDIT" },
+        { uid: "keep", handler: "someOtherFunction" },
+      ],
+      "second@example.org": [{ uid: "theirs", handler: "onSheetChange", eventType: "ON_CHANGE" }],
+    },
+  });
+  s.ctx.removeDailyJobs();
+  assert.deepEqual(
+    s.triggers[OWNER].map((t) => t.uid),
+    ["keep"],
+  );
+  assert.deepEqual(
+    s.triggers["second@example.org"].map((t) => t.uid),
+    ["theirs"],
+  );
+  assert.match(
+    s.logs.join("\n"),
+    /removed 1 trigger\(s\) and 2 Log change trigger\(s\) owned by jobs@example\.org\./,
+  );
+  // After setupDailyJobs and removeDailyJobs, none is left.
+  const t = server();
+  t.ctx.setupDailyJobs();
+  t.ctx.removeDailyJobs();
+  assert.deepEqual(t.triggers[OWNER], []);
 });
 
 // ---------------------------------------------------------------------------
@@ -1199,6 +1321,20 @@ test("runAutoClockOut closes only rows old enough since launch, each flagged, an
   assert.equal(row(3)["Check-Out Stated (user)"].getTime(), centralMs("2026-11-12 17:30"));
   assert.equal(row(3)["Admin Alerts?"], "auto clock-out at 5:30 PM, time of the check-in tap");
   assert.equal(s.setting("Auto clock-out last run"), "2026-11-14 04:00, closed 1");
+});
+
+test("the auto clock-out writes the Log changed stamp, so the next tap reads the whole Log", () => {
+  const s = server({ settings: AUTO_SETTINGS, triggers: AUTO_OWN, log: autoLog(), shifts: SHIFTS });
+  // A map of the whole Log read 10 seconds before the run.
+  const readAt = centralMs(FRIDAY_4) - 10000;
+  s.runAuto(FRIDAY_4);
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+  const stamp = s.props.get(s.ctx.logStampProperty());
+  assert.ok(Number(stamp) >= readAt + s.ctx.logCacheMarginMs());
+  const nextTap = cachedLogMap(s.ctx, s.sheets.Log.getDataRange().getValues(), readAt);
+  // The map matches the Log as the run left it, so without the stamp it would be used.
+  assert.equal(nextTap(null, centralMs(FRIDAY_4) + 1000), "hit");
+  assert.equal(nextTap(stamp, centralMs(FRIDAY_4) + 1000), "miss (edited)");
 });
 
 test("runAutoClockOut with no Shifts tab logs one line and guesses arrival + 3 h", () => {

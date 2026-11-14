@@ -23,6 +23,17 @@
  * member of the name, and acts only when the tapped member is the one of the name
  * checked in (checkOutTokens and resolveCheckOut, Logic.js).
  *
+ * With the Log cache switched on (the LOG_CACHE script property, Sheets.js), the call
+ * reads the Log's extent and row 1 and takes every volunteer's Log state from the cached
+ * log map instead, when the map may be used (a hit; readLogState_, Sheets.js). A refusal
+ * on a hit is never returned from the map: the call reads the whole Log and decides again.
+ * A check-out on a hit still reads its row again before the write and decides again with
+ * that row, so the cells written come from the sheet. When the map can't be used (a miss)
+ * the call reads the whole Log, decides as without the cache, and builds the map from the
+ * same read. Just before its Log write the call removes the map, and after the write is
+ * flushed it stores the map with the write folded in. Each such call logs one "Log cache:"
+ * line saying which path it took, and no volunteer data.
+ *
  * Each flag a check-in or check-out writes to Admin Alerts? is also copied to the Flags
  * tab (raiseFlags_), after the Log write and under the same lock. Every Flags read comes
  * before the Log write (planFlags_), so after that write the call only writes and
@@ -89,62 +100,81 @@ function apiListVolunteers(code) {
 function apiCheckIn(code, id, arrivalIso, digits) {
   const { settings, denied } = settingsForCode_(code);
   if (denied) return denied;
-  return withLock_(() => {
-    const now = new Date();
-    const today = centralDate_(now);
-    const volunteers = getProfiles_(settings);
-    const who = resolveVolunteer(volunteers, id, digits);
-    if (who.refusal) return refusal(who.refusal);
-    const log = readLogTable_(who.volunteer.token);
-    const arrivedMs = arrivalMsFromIso(arrivalIso);
-    const decision = decideCheckIn({
-      volunteers,
-      id,
-      digits,
-      entries: log.entries,
-      todayDate: today,
-      nowMs: now.getTime(),
-      windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
-      arrivedMs,
-      arrivedDate: Number.isFinite(arrivedMs) ? centralDate_(new Date(arrivedMs)) : "",
-      flagMinutes: parseFlagMinutes(settings["Arrival flag minutes"]),
-      launchDate: settings["Kiosk launch date"],
-    });
-    if (decision.refusal) return refusal(decision.refusal);
-    const flagPlan = planFlags_(decision.flags);
-    const shiftId = Utilities.getUuid();
-    const logRow = appendLogRow_(
-      checkInCells(
-        decision.volunteer,
-        today,
-        now.getTime(),
-        decision.arrivedMs,
-        decision.flag,
-        shiftId,
-      ),
-      log.cols,
-    );
-    raiseFlags_(
-      {
-        date: today,
-        name: volunteerFullName(decision.volunteer),
-        shiftId,
-        raisedAtMs: now.getTime(),
-        source: flagSources().checkIn,
-        logRow,
-      },
-      decision.flags,
-      flagPlan,
-    );
-    return {
-      ok: true,
-      id: decision.volunteer.id,
-      shiftId,
-      arrivedAt: new Date(decision.arrivedMs).toISOString(),
-      tappedAt: now.toISOString(),
-      missedSignOut: decision.missedSignOut,
-    };
-  });
+  const run = logCacheRun_();
+  return withLock_(
+    () =>
+      withLogCacheLine_(run, () => {
+        const now = new Date();
+        const today = centralDate_(now);
+        const volunteers = getProfiles_(settings);
+        const who = resolveVolunteer(volunteers, id, digits);
+        if (who.refusal) return refusal(who.refusal);
+        const tokens = [who.volunteer.token];
+        let log = kioskLogRead_(run, tokens, volunteers);
+        const arrivedMs = arrivalMsFromIso(arrivalIso);
+        const input = {
+          volunteers,
+          id,
+          digits,
+          todayDate: today,
+          nowMs: now.getTime(),
+          windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
+          arrivedMs,
+          arrivedDate: Number.isFinite(arrivedMs) ? centralDate_(new Date(arrivedMs)) : "",
+          flagMinutes: parseFlagMinutes(settings["Arrival flag minutes"]),
+          launchDate: settings["Kiosk launch date"],
+        };
+        let decision = log.hit
+          ? decideCheckIn({ ...input, states: log.map.states })
+          : decideCheckIn({ ...input, entries: log.entries });
+        if (decision.refusal && log.hit) {
+          // A refusal is never answered from the map: read the whole Log and decide again.
+          log = kioskFullRead_(run, tokens, volunteers, "refused " + decision.refusal);
+          decision = decideCheckIn({ ...input, entries: log.entries });
+        }
+        if (decision.refusal) {
+          keepLogMap_(run, log);
+          return refusal(decision.refusal);
+        }
+        const flagPlan = planFlags_(decision.flags);
+        const shiftId = Utilities.getUuid();
+        const cells = checkInCells(
+          decision.volunteer,
+          today,
+          now.getTime(),
+          decision.arrivedMs,
+          decision.flag,
+          shiftId,
+        );
+        if (run.on) forgetLogMap_();
+        const logRow = appendLogRow_(cells, log.cols, { kiosk: true });
+        if (run.on) {
+          run.put = logStateAfterCheckIn(log.map, logEntryFromCells(logRow, cells));
+          run.why = "the row written is not the row after the map's last";
+        }
+        raiseFlags_(
+          {
+            date: today,
+            name: volunteerFullName(decision.volunteer),
+            shiftId,
+            raisedAtMs: now.getTime(),
+            source: flagSources().checkIn,
+            logRow,
+          },
+          decision.flags,
+          flagPlan,
+        );
+        return {
+          ok: true,
+          id: decision.volunteer.id,
+          shiftId,
+          arrivedAt: new Date(decision.arrivedMs).toISOString(),
+          tappedAt: now.toISOString(),
+          missedSignOut: decision.missedSignOut,
+        };
+      }),
+    () => fillLogMap_(run),
+  );
 }
 
 /**
@@ -168,70 +198,175 @@ function apiCheckIn(code, id, arrivalIso, digits) {
 function apiCheckOut(code, id, digits, checkOutIso) {
   const { settings, denied } = settingsForCode_(code);
   if (denied) return denied;
-  return withLock_(() => {
-    const now = new Date();
-    const volunteers = getProfiles_(settings);
-    const wanted = checkOutTokens(volunteers, id, digits);
-    if (wanted.refusal) return refusal(wanted.refusal);
-    const log = readLogTable_(wanted.tokens);
-    const outMs = arrivalMsFromIso(checkOutIso);
-    const decision = decideCheckOut({
-      volunteers,
-      id,
-      digits,
-      entries: log.entries,
-      todayDate: centralDate_(now),
-      nowMs: now.getTime(),
-      windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
-      outMs,
-      outDate: Number.isFinite(outMs) ? centralDate_(new Date(outMs)) : "",
-      flagMinutes: parseFlagMinutes(settings["Check-out flag minutes"]),
-      longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
-      launchDate: settings["Kiosk launch date"],
-    });
-    if (decision.refusal) return refusal(decision.refusal);
-    const flagPlan = planFlags_(decision.flags);
-    // Staff may sort, insert or delete Log rows while the call runs, which moves rows
-    // under their numbers. Read the row again, last before the write, and write only if
-    // it is still the open row decided on; else BUSY, and a retry reads the Log again.
-    const openId = decision.open.shiftId;
-    const current = readLogRowAt_(decision.row, log.width, log.cols, logRead_(), openId);
-    if (!autoClockOutRowUnchanged(decision.open, current)) {
-      console.error(
-        "Check-out: Log row " +
-          decision.row +
-          " no longer holds open Shift ID " +
-          cellString(openId) +
-          "; answered BUSY and wrote nothing.",
-      );
-      return refusal("BUSY");
-    }
-    // A row staff typed with no Shift ID gets one, as the auto clock-out gives it, so its
-    // Flags rows can be written and find it.
-    const shiftId = cellString(openId) || Utilities.getUuid();
-    if (!cellString(openId)) decision.cells[logHeaderNames().shiftId] = sheetText(shiftId);
-    updateLogRow_(decision.row, decision.cells, log.cols);
-    raiseFlags_(
-      {
-        date: rowDate(decision.open.dateText),
-        name: decision.open.name,
-        shiftId,
-        raisedAtMs: now.getTime(),
-        source: flagSources().checkOut,
-        logRow: decision.row,
-      },
-      decision.flags,
-      flagPlan,
-    );
-    return {
-      ok: true,
-      id: decision.volunteer.id,
-      signedOutAt: new Date(decision.statedOutMs).toISOString(),
-      tappedAt: now.toISOString(),
-      minutes: decision.minutes,
-      milestone: decision.milestone,
-    };
-  });
+  const run = logCacheRun_();
+  return withLock_(
+    () =>
+      withLogCacheLine_(run, () => {
+        const now = new Date();
+        const volunteers = getProfiles_(settings);
+        const wanted = checkOutTokens(volunteers, id, digits);
+        if (wanted.refusal) return refusal(wanted.refusal);
+        let log = kioskLogRead_(run, wanted.tokens, volunteers);
+        const outMs = arrivalMsFromIso(checkOutIso);
+        const input = {
+          volunteers,
+          id,
+          digits,
+          todayDate: centralDate_(now),
+          nowMs: now.getTime(),
+          windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
+          outMs,
+          outDate: Number.isFinite(outMs) ? centralDate_(new Date(outMs)) : "",
+          flagMinutes: parseFlagMinutes(settings["Check-out flag minutes"]),
+          longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
+          launchDate: settings["Kiosk launch date"],
+        };
+        let planned = null;
+        if (log.hit) {
+          const hit = checkOutOnHit_(input, log);
+          if (hit.why) log = kioskFullRead_(run, wanted.tokens, volunteers, hit.why);
+          else planned = hit;
+        }
+        if (!planned) {
+          const decision = decideCheckOut({ ...input, entries: log.entries });
+          if (decision.refusal) {
+            keepLogMap_(run, log);
+            return refusal(decision.refusal);
+          }
+          const flagPlan = planFlags_(decision.flags);
+          // Staff may sort, insert or delete Log rows while the call runs, which moves rows
+          // under their numbers. Read the row again, last before the write, and write only
+          // if it is still the open row decided on; else BUSY, and a retry reads the Log
+          // again.
+          const openId = decision.open.shiftId;
+          const current = readLogRowAt_(decision.row, log.width, log.cols, logRead_(), openId);
+          if (!autoClockOutRowUnchanged(decision.open, current)) {
+            console.error(
+              "Check-out: Log row " +
+                decision.row +
+                " no longer holds open Shift ID " +
+                cellString(openId) +
+                "; answered BUSY and wrote nothing.",
+            );
+            // The Log changed under the call, so the map its read built is not stored.
+            return refusal("BUSY");
+          }
+          planned = { decision, flagPlan };
+        }
+        const { decision, flagPlan } = planned;
+        const openId = decision.open.shiftId;
+        // A row staff typed with no Shift ID gets one, as the auto clock-out gives it, so
+        // its Flags rows can be written and find it.
+        const shiftId = cellString(openId) || Utilities.getUuid();
+        if (!cellString(openId)) decision.cells[logHeaderNames().shiftId] = sheetText(shiftId);
+        if (run.on) forgetLogMap_();
+        updateLogRow_(decision.row, decision.cells, log.cols, { kiosk: true });
+        if (run.on) {
+          run.put = logStateAfterCheckOut(log.map, decision);
+          run.why = "the row closed is not open in the map";
+        }
+        raiseFlags_(
+          {
+            date: rowDate(decision.open.dateText),
+            name: decision.open.name,
+            shiftId,
+            raisedAtMs: now.getTime(),
+            source: flagSources().checkOut,
+            logRow: decision.row,
+          },
+          decision.flags,
+          flagPlan,
+        );
+        return {
+          ok: true,
+          id: decision.volunteer.id,
+          signedOutAt: new Date(decision.statedOutMs).toISOString(),
+          tappedAt: now.toISOString(),
+          minutes: decision.minutes,
+          milestone: decision.milestone,
+        };
+      }),
+    () => fillLogMap_(run),
+  );
+}
+
+/**
+ * A check-out on a hit: {decision, flagPlan} to write, or {why} when the call must read
+ * the whole Log and decide again. The first decision, on the map's states, picks the open
+ * row and plans the flags; a refusal, or an open row with no Shift ID (one staff typed,
+ * which can't be told from another such row without the whole Log), goes to the whole
+ * Log. Then the row is read again, last before the write: it must still be open with the
+ * same Shift ID and User Token, and a decision made again with that row in place of the
+ * cached one must close the same row with the same flags. That second decision is the one
+ * written, so its cells keep the row's Admin Alerts? and its Flags rows carry the row's
+ * Name and Date.
+ */
+function checkOutOnHit_(input, log) {
+  const first = decideCheckOut({ ...input, states: log.map.states });
+  if (first.refusal) return { why: "refused " + first.refusal };
+  if (!cellString(first.open.shiftId)) return { why: "no Shift ID" };
+  const flagPlan = planFlags_(first.flags);
+  const current = readLogRowAt_(first.row, log.width, log.cols, logRead_(), first.open.shiftId);
+  if (!cachedOpenRowUnchanged(first.open, current)) return { why: "row changed" };
+  const states = logStatesWithEntry(log.map.states, current);
+  const second = states ? decideCheckOut({ ...input, states }) : null;
+  if (!sameCheckOutPlan(first, second)) return { why: "decided differently" };
+  return { decision: second, flagPlan };
+}
+
+/**
+ * What a kiosk call does with the Log cache: on, whether the switch read on; line, the
+ * "Log cache:" line it logs; put, the map to store after the flush; why, why put is null.
+ */
+function logCacheRun_() {
+  return { on: false, line: "", put: null, why: "" };
+}
+
+/** Runs fn, then logs run's "Log cache:" line, if the call got that far, even on a throw. */
+function withLogCacheLine_(run, fn) {
+  try {
+    return fn();
+  } finally {
+    if (run.line) console.log("Log cache: " + run.line);
+  }
+}
+
+/**
+ * The Log for a kiosk call's decision. Reads the switch once (logCacheSwitchOn_); off, the
+ * whole Log for tokens as without the cache (readLogTable_). On, readLogState_: a hit
+ * gives the map, a miss the whole Log and the map built from it.
+ */
+function kioskLogRead_(run, tokens, volunteers) {
+  run.on = logCacheSwitchOn_();
+  if (!run.on) {
+    run.line = "off";
+    return readLogTable_(tokens);
+  }
+  const log = readLogState_(tokens, volunteers);
+  run.line = log.hit ? "hit" : "miss (" + log.reason + ")";
+  return log;
+}
+
+/** After a hit that can't be used for why: the whole Log and the map built from it. */
+function kioskFullRead_(run, tokens, volunteers, why) {
+  run.line = "hit, then full read (" + why + ")";
+  return { hit: false, ...readLogMiss_(tokens, volunteers) };
+}
+
+/**
+ * A call that refused with nothing written stores the map built from its whole-Log read.
+ * Every refusal comes after such a read: a refusal on a hit is decided again on one. A
+ * check-out's BUSY is the exception: the Log changed under that call, so its map is known
+ * not to match the sheet and it stores nothing.
+ */
+function keepLogMap_(run, log) {
+  if (run.on) run.put = log.map;
+}
+
+/** After the flush: stores run's map when the switch read on and the call has one to store. */
+function fillLogMap_(run) {
+  if (!run.on || (!run.put && !run.why)) return;
+  putLogMap_(run.put, run.why);
 }
 
 /**
@@ -265,17 +400,33 @@ function settingsForCode_(code) {
   return denied ? { denied } : { settings };
 }
 
-/** Runs fn under the script lock, or returns BUSY if the lock isn't free within 10 seconds. */
-function withLock_(fn) {
+/**
+ * Runs fn under the script lock, or returns BUSY if the lock isn't free within 10 seconds.
+ * Flushes before it releases the lock, whether fn returned or threw. after, when given,
+ * runs only when fn returned and the flush went through, still under the lock; its errors
+ * are logged and never change the reply.
+ */
+function withLock_(fn, after) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return refusal("BUSY");
+  let returned = false;
+  let result;
   try {
-    return fn();
+    result = fn();
+    returned = true;
   } finally {
     try {
       SpreadsheetApp.flush();
+      if (returned && after) {
+        try {
+          after(result);
+        } catch (e) {
+          console.error("After the write: " + (e && e.message ? e.message : String(e)));
+        }
+      }
     } finally {
       lock.releaseLock();
     }
   }
+  return result;
 }

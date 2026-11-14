@@ -18,11 +18,15 @@
 //   the kiosk's check-in and check-out copy their flags to an in-memory Flags tab.
 // - Email hours: the preview and the send against stand-in MailApp, lock, cache and Hours
 //   emails tab, each of which a test can make busy or throw at the point it names.
+// - The Log cache: the kiosk's check-in and check-out with the cached Log state, and a scan
+//   of every apps-script file that holds each function able to write a cell to a class, so
+//   a new Log writer can't skip the Log changed stamp.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import vm from "node:vm";
+import ts from "typescript";
 import { createHash } from "node:crypto";
 import { formatInZone } from "./zoneFormat.mjs";
 
@@ -193,7 +197,19 @@ class FakeSheet {
   }
   getDataRange() {
     // Sheets gives an empty tab a data range of one cell, A1.
-    return this.getRange(1, 1, Math.max(this.lastRow(), 1), Math.max(this.lastColumn(), 1));
+    const range = this.getRange(1, 1, Math.max(this.lastRow(), 1), Math.max(this.lastColumn(), 1));
+    // Asking the data range its size is the extent read, noted once as "getDataRange".
+    let noted = false;
+    const extent = (value) => {
+      if (!noted) this.noteRead("getDataRange");
+      noted = true;
+      return value;
+    };
+    const rows = Math.max(this.lastRow(), 1);
+    const cols = Math.max(this.lastColumn(), 1);
+    range.getLastRow = () => extent(rows);
+    range.getLastColumn = () => extent(cols);
+    return range;
   }
   getRange(row, col, rows = 1, cols = 1) {
     if (!(rows >= 1)) throw new Error("The number of rows in the range must be at least 1.");
@@ -297,12 +313,26 @@ class FakeSheet {
  * Profiles throw, flush() true to make SpreadsheetApp.flush throw (after it is journaled)
  * and insertSheet() true to make a new tab fail. The other reads are made to throw through
  * a sheet's afterValues.
+ *
+ * For the Log cache: opts.props gives the script properties ({LOG_CACHE: "on"} switches
+ * the cache on; none by default, so off). props is the Map of them. stores lists, in
+ * order, every cache and property call with its key: "cache.get <key>", "cache.getAll
+ * <keys>", "cache.put <key>", "cache.remove <key>", "props.get <key>", "props.set <key>"
+ * and "props.delete <key>"; puts lists each cache put as {key, seconds}. logs collects
+ * what the server logs with console.log. More faults: cacheGet(key) returns true to make
+ * a cache get throw (it may also act, as a hook, and return false), cacheRemoveIgnored(key)
+ * true to make a remove do nothing without an error, and propGet(key), propSet(key) and
+ * propDelete(key) true to make that property call throw.
  */
 function server(opts = {}) {
   const calls = [];
   const cache = new Map();
   const errors = [];
+  const logs = [];
   const journal = [];
+  const props = new Map(Object.entries(opts.props || {}));
+  const stores = [];
+  const puts = [];
   // With opts.settingsCacheFails, every cache call on a Settings key throws, as in a cache
   // outage; the Profiles list and the dialog keys stay cached, so a call gets past them.
   const settingsKey = (k) => String(k).startsWith("settings:");
@@ -375,7 +405,10 @@ function server(opts = {}) {
   });
 
   const ctx = {
-    console: { log: console.log, error: (...args) => errors.push(args.join(" ")) },
+    console: {
+      log: (...args) => logs.push(args.join(" ")),
+      error: (...args) => errors.push(args.join(" ")),
+    },
     Session: service("Session", {
       getActiveUser: () => {
         if (faults.account && faults.account()) throw new Error("Session read failed");
@@ -387,27 +420,56 @@ function server(opts = {}) {
       getScriptCache: () =>
         service("cache", {
           get: (k) => {
+            stores.push("cache.get " + k);
             failProfiles(k, "get");
+            if (faults.cacheGet && faults.cacheGet(k)) throw new Error("cache.get failed");
             return cache.has(k) ? cache.get(k) : null;
           },
           getAll: (keys) => {
+            stores.push("cache.getAll " + keys.join(","));
             if (keys.some(settingsKey)) failSettings("getAll");
             const out = {};
             keys.forEach((k) => cache.has(k) && (out[k] = cache.get(k)));
             return out;
           },
-          put: (k, v) => {
+          put: (k, v, seconds) => {
+            stores.push("cache.put " + k);
+            puts.push({ key: k, seconds });
             if (settingsKey(k)) failSettings("put");
             failProfiles(k, "put");
             if (faults.cachePut && faults.cachePut(k)) throw new Error("cache.put failed");
             cache.set(k, v);
           },
           remove: (k) => {
+            stores.push("cache.remove " + k);
             if (settingsKey(k)) failSettings("remove");
             if (faults.cacheRemove && faults.cacheRemove(k)) {
               throw new Error("cache.remove failed");
             }
+            if (faults.cacheRemoveIgnored && faults.cacheRemoveIgnored(k)) return;
             cache.delete(k);
+          },
+        }),
+    }),
+    PropertiesService: service("PropertiesService", {
+      getScriptProperties: () =>
+        service("props", {
+          getProperty: (k) => {
+            stores.push("props.get " + k);
+            if (faults.propGet && faults.propGet(k)) throw new Error("getProperty failed");
+            return props.has(k) ? props.get(k) : null;
+          },
+          setProperty: (k, v) => {
+            stores.push("props.set " + k);
+            if (faults.propSet && faults.propSet(k)) throw new Error("setProperty failed");
+            props.set(k, String(v));
+          },
+          deleteProperty: (k) => {
+            stores.push("props.delete " + k);
+            if (faults.propDelete && faults.propDelete(k)) {
+              throw new Error("deleteProperty failed");
+            }
+            props.delete(k);
           },
         }),
     }),
@@ -557,7 +619,26 @@ function server(opts = {}) {
   for (const key of opts.keys || []) cache.set(ctx.adminKeyCacheKey(key), "1");
   calls.length = 0;
   journal.length = 0;
-  return { ctx, calls, cache, sheets, shown, menu, errors, journal, mail, lock, faults, blobs };
+  stores.length = 0;
+  puts.length = 0;
+  return {
+    ctx,
+    calls,
+    cache,
+    sheets,
+    shown,
+    menu,
+    errors,
+    logs,
+    journal,
+    mail,
+    lock,
+    faults,
+    blobs,
+    props,
+    stores,
+    puts,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2564,6 +2645,37 @@ test("apiCheckOut answers BUSY and writes nothing when its row moved before the 
   assert.equal(s.sheets.Flags.rowByHeader(2)["Log Row"], 2);
 });
 
+test("a check-out that answers BUSY with the Log cache on stores no map from its read", () => {
+  const log = [LOG_HEADER, ruthOpen(), kioskOpen("s-sam", TODAY, "08:00")];
+  const s = kiosk({ volunteers: [SAM, RUTH], log, props: { LOG_CACHE: "on" } });
+  // Staff sort the Log just after the call's whole-Log read: Sam's row moves up.
+  const whole = "getValues 1,1,3," + LOG_HEADER.length;
+  s.sheets.Log.afterValues = (sh) => {
+    if (sh.reads.at(-1) !== whole) return;
+    sh.afterValues = null;
+    [sh.rows[1], sh.rows[2]] = [sh.rows[2], sh.rows[1]];
+  };
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.deepEqual(reply, { ok: false, refusal: "BUSY", message: BUSY_TEXT });
+  assert.deepEqual(
+    s.logs.filter((l) => l.startsWith("Log cache:")),
+    ["Log cache: miss (none)"],
+  );
+  assert.equal(s.cache.has("log:v1"), false, "no map stored");
+  assert.deepEqual(
+    s.puts.filter((p) => p.key === "log:v1"),
+    [],
+  );
+
+  // A retry reads the whole Log again, closes Sam's row where it now is, and stores the map.
+  const retry = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.equal(retry.ok, true);
+  assert.equal(s.logs.filter((l) => l.startsWith("Log cache:")).at(-1), "Log cache: miss (none)");
+  assert.equal(s.sheets.Log.rowByHeader(2)["Shift ID"], "s-sam");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+  assert.ok(s.cache.has("log:v1"), "the retry stores its map");
+});
+
 test("apiCheckOut answers BUSY when its row is gone past the Log's end", () => {
   // Past the grid: Sam's row was the last grid row, and staff deleted it.
   const log = [LOG_HEADER, ruthOpen(), kioskOpen("s-sam", TODAY, "08:00")];
@@ -3859,4 +3971,1229 @@ test("AdminDialog.html calls only keyed functions, each through call()", () => {
   for (const name of called) assert.ok(KEYED.includes(name), name);
   assert.equal(html.match(/google\.script\.run/g).length, 1);
   assert.match(html, /\[name\]\(KEY, \.\.\.args\)/);
+});
+
+// ---------------------------------------------------------------------------
+// The Log cache
+//
+// With the LOG_CACHE script property "on", a check-in or check-out takes each volunteer's
+// Log state from the cached log map when it may be used (a hit), else reads the whole Log
+// and builds the map from that read (a miss). These tests switch it on through the fake's
+// script properties, unless they say otherwise.
+
+const LOG_KEY = "log:v1";
+const STAMP = "logChangedAt";
+const WIDTH = LOG_HEADER.length;
+/** A kiosk server with the Log cache on and a clock a test can move: set clock.now. */
+const cacheKiosk = (opts = {}) => {
+  const clock = {
+    now: NOW,
+    settings: WINDOW_SETTINGS,
+    volunteers: [SAM, RUTH],
+    log: [LOG_HEADER],
+    props: { LOG_CACHE: "on" },
+    ...opts,
+  };
+  return { s: server(clock), clock };
+};
+const cacheLines = (s) => s.logs.filter((l) => l.startsWith("Log cache:"));
+const lastLine = (s) => cacheLines(s).at(-1);
+/** Runs call and returns the "Log cache:" lines it logged. */
+const linesOf = (s, call) => {
+  const before = cacheLines(s).length;
+  call();
+  return cacheLines(s).slice(before);
+};
+const storedMap = (s) => s.ctx.decodeLogMap(s.cache.has(LOG_KEY) ? s.cache.get(LOG_KEY) : null);
+/** A map's states as the cached text holds them, for comparing two maps. */
+const tokensOf = (s, map) => JSON.parse(s.ctx.encodeLogMap(map)).tokens;
+/** Every Profiles token's state rebuilt from the fake Log as it is now, by readLog_. */
+const rebuilt = (s, volunteers) =>
+  s.ctx.volunteerLogStates(
+    s.ctx.readLog_(s.ctx.readLogColumns_()),
+    volunteers.map((v) => v.token),
+  );
+const closedFor = (who, shiftId, date, hours) =>
+  logRow({
+    "Shift ID": shiftId,
+    "User Token": who.token,
+    Status: "closed",
+    Date: date,
+    "Volunteer Name": who.firstName + " " + who.lastName,
+    "Check-In Recorded (timestamp)": at(date, "09:00"),
+    "Check-In Stated (user)": at(date, "09:00"),
+    "Check-Out Stated (user)": new Date(at(date, "09:00").getTime() + hours * 3600000),
+    "Hours Served (stated)": hours,
+    "Check-In Entered By": "kiosk",
+    "Check-Out Entered By": "kiosk",
+  });
+const ALERTS = LOG_HEADER.indexOf("Admin\nAlerts?");
+const NAME = LOG_HEADER.indexOf("Volunteer\nName");
+const STATUS = LOG_HEADER.indexOf("Status");
+const withCell = (row, at, value) => Object.assign(row.slice(), { [at]: value });
+const logValueReads = (s) => valueReads(s.sheets.Log);
+/** Clears the Log's read list, so a test reads one call's reads. */
+const freshReads = (s) => (s.sheets.Log.reads.length = 0);
+/** Stores a map without writing the Log: a check-in refused on a miss stores what it read. */
+const storeMapWith = (s, who = SAM) => {
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, who.id, null, null)).refusal, "ALREADY_IN");
+  assert.ok(storedMap(s), "a map is stored");
+};
+
+test("with the Log cache on, a hit reads only the Log's extent and row 1, and a check-out its one row more", () => {
+  const log = [LOG_HEADER, closedFor(SAM, "s-old", "2026-11-03", 3), ruthOpen()];
+  const { s } = cacheKiosk({ log });
+  // A miss: the extent and row 1, then the whole Log in one range.
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: miss (none)");
+  assert.deepEqual(s.sheets.Log.reads.slice(0, 3), [
+    "getDataRange",
+    "getValues 1,1,1," + WIDTH,
+    "getValues 1,1,3," + WIDTH,
+  ]);
+  assert.deepEqual(logValueReads(s), ["getValues 1,1,1," + WIDTH, "getValues 1,1,3," + WIDTH]);
+
+  // A check-out on a hit: the extent, row 1, and its row again before the write.
+  freshReads(s);
+  const out = plain(s.ctx.apiCheckOut(CODE, RUTH.id, null, null));
+  assert.equal(out.ok, true);
+  assert.equal(lastLine(s), "Log cache: hit");
+  assert.deepEqual(s.sheets.Log.reads.slice(0, 2), ["getDataRange", "getValues 1,1,1," + WIDTH]);
+  assert.deepEqual(logValueReads(s), ["getValues 1,1,1," + WIDTH, "getValues 3,1,1," + WIDTH]);
+  assert.equal(s.sheets.Log.rowByHeader(3).Status, "closed");
+
+  // A check-in on a hit: the extent and row 1 only.
+  freshReads(s);
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, RUTH.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: hit");
+  assert.deepEqual(logValueReads(s), ["getValues 1,1,1," + WIDTH]);
+  assert.equal(s.sheets.Log.rowByHeader(5).Status, "open");
+  assert.equal(s.sheets.Log.rowByHeader(5)["User Token"], RUTH.token);
+  assert.deepEqual(s.errors, []);
+});
+
+test("a miss stores the map of every volunteer's rows as the Log is after the write", () => {
+  const log = [LOG_HEADER, closedFor(SAM, "s-old", "2026-11-03", 3), ruthOpen()];
+  const volunteers = [SAM, RUTH, ANN];
+  for (const call of [
+    (s) => s.ctx.apiCheckIn(CODE, SAM.id, null, null),
+    (s) => s.ctx.apiCheckOut(CODE, RUTH.id, null, null),
+  ]) {
+    const { s } = cacheKiosk({ log, volunteers });
+    assert.equal(plain(call(s)).ok, true);
+    assert.equal(lastLine(s), "Log cache: miss (none)");
+    const map = storedMap(s);
+    assert.equal(map.readAt, NOW);
+    assert.equal(map.lastRow, s.sheets.Log.getLastRow());
+    assert.equal(map.layout, s.ctx.logLayout(s.ctx.readLogColumns_()));
+    assert.deepEqual(tokensOf(s, map), tokensOf(s, { ...map, states: rebuilt(s, volunteers) }));
+    // Ann has no Log rows and still has a state.
+    assert.deepEqual(plain(map.states[ANN.token]), { shifts: 0, minutes: 0, last: null, open: [] });
+  }
+});
+
+test("a script of check-ins and check-outs gives the same replies, Log and Flags on hits, on misses and with the cache off", () => {
+  const ruthAlerted = withCell(ruthOpen(), ALERTS, "staff note");
+  const log = [
+    LOG_HEADER,
+    closedBy("s-old", "2026-11-03", "auto-close"),
+    // Nine closed shifts, so Ruth's check-out is her tenth.
+    ...Array.from({ length: 9 }, (_, i) => closedFor(RUTH, "r-" + i, "2026-11-0" + (i + 1), 2)),
+    ruthAlerted,
+    kioskOpen("s-ann", TODAY, "08:00", ANN.token, "Ann Ruiz"),
+  ];
+  const volunteers = [SAM, RUTH, ANN, ANN_TOO];
+  const run = (opts, setup = () => {}) => {
+    const { s, clock } = cacheKiosk({ log, volunteers, ...opts });
+    setup(s);
+    const replies = [
+      s.ctx.apiCheckOut(CODE, RUTH.id, null, minutesBefore(30)),
+      s.ctx.apiCheckIn(CODE, SAM.id, null, null),
+      s.ctx.apiCheckOut(CODE, ANN.id, null, null),
+    ];
+    clock.now = NOW + 5 * 60000;
+    replies.push(s.ctx.apiCheckOut(CODE, SAM.id, null, null));
+    replies.push(s.ctx.apiCheckIn(CODE, ANN_TOO.id, null, "2222"));
+    return {
+      s,
+      replies: plain(replies),
+      log: JSON.stringify(s.sheets.Log.rows),
+      flags: JSON.stringify(s.sheets.Flags.rows),
+    };
+  };
+  const hits = run({});
+  assert.deepEqual(cacheLines(hits.s), [
+    "Log cache: miss (none)",
+    "Log cache: hit",
+    "Log cache: hit",
+    "Log cache: hit",
+    "Log cache: hit",
+  ]);
+  assert.deepEqual(hits.s.errors, []);
+  assert.ok(hits.replies.every((r) => r.ok));
+  assert.ok(hits.replies[0].milestone, "Ruth's check-out crosses a milestone");
+  assert.equal(hits.replies[1].missedSignOut, true);
+  assert.equal(hits.replies[0].milestone.id, "shift-10");
+  assert.equal(
+    hits.s.sheets.Log.rowByHeader(12)["Admin Alerts?"],
+    "staff note; check-out differs by 30 min",
+  );
+
+  const misses = run({}, (s) => (s.faults.cacheGet = (k) => k === LOG_KEY));
+  assert.ok(cacheLines(misses.s).every((l) => l === "Log cache: miss (error)"));
+  assert.equal(misses.s.errors.length, 5);
+  const off = run({ props: {} });
+  assert.ok(cacheLines(off.s).every((l) => l === "Log cache: off"));
+  for (const other of [misses, off]) {
+    assert.deepEqual(other.replies, hits.replies);
+    assert.equal(other.log, hits.log);
+    assert.equal(other.flags, hits.flags);
+  }
+});
+
+test("a fill that fails leaves no map, and the next tap reads the whole Log", () => {
+  const log = [LOG_HEADER, ruthOpen()];
+  const { s } = cacheKiosk({ log });
+  s.faults.cachePut = (k) => k === LOG_KEY;
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(s.cache.has(LOG_KEY), false);
+  assert.deepEqual(cacheLines(s), [
+    "Log cache: miss (none)",
+    "Log cache: not stored (cache.put failed)",
+  ]);
+  s.faults.cachePut = null;
+  freshReads(s);
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, RUTH.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: miss (none)");
+  assert.ok(logValueReads(s).includes("getValues 1,1,3," + WIDTH), "the whole Log");
+
+  // A check-out on a hit whose fill fails: the map from before it was removed before the
+  // write, so none is left, and the next tap reads the whole Log.
+  const out = cacheKiosk({ log }).s;
+  storeMapWith(out, RUTH);
+  out.faults.cachePut = (k) => k === LOG_KEY;
+  assert.equal(plain(out.ctx.apiCheckOut(CODE, RUTH.id, null, null)).ok, true);
+  assert.equal(out.sheets.Log.rowByHeader(2).Status, "closed");
+  assert.equal(out.cache.has(LOG_KEY), false, "the map from before the check-out is gone");
+  assert.deepEqual(cacheLines(out).slice(-2), [
+    "Log cache: hit",
+    "Log cache: not stored (cache.put failed)",
+  ]);
+  out.faults.cachePut = null;
+  freshReads(out);
+  assert.equal(plain(out.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(out), "Log cache: miss (none)");
+  assert.ok(logValueReads(out).includes("getValues 1,1,2," + WIDTH), "the whole Log");
+
+  // A flush that throws: the call fails as before, and nothing is put after it.
+  assert.ok(s.cache.has(LOG_KEY));
+  s.faults.flush = () => true;
+  s.puts.length = 0;
+  assert.throws(() => s.ctx.apiCheckIn(CODE, RUTH.id, null, null), /flush failed/);
+  assert.deepEqual(s.puts, []);
+  assert.equal(s.cache.has(LOG_KEY), false, "the map was removed before the write");
+  s.faults.flush = null;
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, RUTH.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: miss (none)");
+
+  // A Log write that throws after the map was removed: nothing is put after it.
+  assert.ok(s.cache.has(LOG_KEY));
+  s.puts.length = 0;
+  const put = s.sheets.Log.put;
+  s.sheets.Log.put = () => {
+    throw new Error("Log write failed");
+  };
+  assert.throws(() => s.ctx.apiCheckIn(CODE, RUTH.id, null, null), /Log write failed/);
+  s.sheets.Log.put = put;
+  assert.deepEqual(s.puts, []);
+  assert.equal(s.cache.has(LOG_KEY), false);
+
+  // A map over the size limit isn't stored, and the one stored before is removed.
+  const big = cacheKiosk({ log: [LOG_HEADER, ruthOpen()] }).s;
+  storeMapWith(big, RUTH);
+  big.ctx.logCacheMaxBytes = () => 10;
+  big.puts.length = 0;
+  assert.equal(plain(big.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.deepEqual(big.puts, []);
+  assert.equal(big.cache.has(LOG_KEY), false);
+  assert.match(big.logs.at(-1), /^Log cache: not stored \(\d+ bytes, over the limit\)$/);
+
+  // withLock_'s second argument runs only after fn returned and the flush went through,
+  // under the lock; its errors are logged.
+  const lock = cacheKiosk({}).s;
+  const ran = [];
+  const after = (result) => ran.push([result, lock.lock.held]);
+  assert.equal(
+    lock.ctx.withLock_(() => "done", after),
+    "done",
+  );
+  assert.throws(
+    () =>
+      lock.ctx.withLock_(() => {
+        throw new Error("fn failed");
+      }, after),
+    /fn failed/,
+  );
+  lock.faults.flush = () => true;
+  assert.throws(() => lock.ctx.withLock_(() => "done", after), /flush failed/);
+  lock.faults.flush = null;
+  assert.deepEqual(ran, [["done", true]]);
+  const failing = () => {
+    throw new Error("put failed");
+  };
+  assert.equal(
+    lock.ctx.withLock_(() => "kept", failing),
+    "kept",
+  );
+  assert.deepEqual(lock.errors, ["After the write: put failed"]);
+  assert.equal(lock.lock.held, false);
+});
+
+test("before its write the kiosk removes the map, or stamps when the remove fails, or writes nothing", () => {
+  const log = [LOG_HEADER, ruthOpen()];
+  // Each kiosk write, and a tap after it that sees the Log as that write left it.
+  const calls = {
+    "check-in": {
+      write: (s, arrival = null) => s.ctx.apiCheckIn(CODE, SAM.id, arrival, null),
+      next: (s) => s.ctx.apiCheckOut(CODE, RUTH.id, null, null),
+    },
+    "check-out": {
+      write: (s, out = null) => s.ctx.apiCheckOut(CODE, RUTH.id, null, out),
+      next: (s) => s.ctx.apiCheckIn(CODE, SAM.id, null, null),
+    },
+  };
+  for (const [name, call] of Object.entries(calls)) {
+    const { s } = cacheKiosk({ log });
+    storeMapWith(s, RUTH);
+    const seen = [];
+    const put = s.sheets.Log.put.bind(s.sheets.Log);
+    s.sheets.Log.put = (...args) => (
+      seen.push([s.cache.has(LOG_KEY), s.props.get(STAMP)]),
+      put(...args)
+    );
+    s.faults.cacheRemove = (k) => k === LOG_KEY;
+    assert.equal(plain(call.write(s)).ok, true, name);
+    assert.equal(lastLine(s), "Log cache: hit", name);
+    assert.equal(seen.length > 0, true, name);
+    assert.deepEqual(
+      seen[0],
+      [true, String(NOW)],
+      name + ": the stamp is written before the Log write",
+    );
+    assert.deepEqual(s.errors, ["Log cache not removed: cache.remove failed"], name);
+    // The map stored after the write is under that stamp, so the next tap misses.
+    s.faults.cacheRemove = null;
+    assert.equal(plain(call.next(s)).ok, true, name);
+    assert.equal(lastLine(s), "Log cache: miss (edited)", name);
+
+    // The remove and the stamp both fail: the call throws and writes nothing.
+    const both = cacheKiosk({ log }).s;
+    storeMapWith(both, RUTH);
+    both.faults.cacheRemove = (k) => k === LOG_KEY;
+    both.faults.propSet = (k) => k === STAMP;
+    const rows = JSON.stringify(both.sheets.Log.rows);
+    const flags = JSON.stringify(both.sheets.Flags.rows);
+    assert.throws(
+      () => call.write(both, minutesBefore(30)),
+      /The Log cache could not be cleared before the Log write, so nothing was written\./,
+      name,
+    );
+    assert.equal(JSON.stringify(both.sheets.Log.rows), rows, name);
+    assert.equal(JSON.stringify(both.sheets.Flags.rows), flags, name);
+    assert.equal(both.sheets.Log.rowByHeader(2).Status, "open", name);
+    assert.equal(both.journal.filter((e) => isLogWrite(e)).length, 0, name + ": no Log write");
+  }
+});
+
+test("a second check-in of the same volunteer is refused, whatever the cache does between them", () => {
+  const variants = {
+    "the fill works": () => {},
+    "the put fails": (s) => (s.faults.cachePut = (k) => k === LOG_KEY),
+    "the remove fails": (s) => (s.faults.cacheRemove = (k) => k === LOG_KEY),
+    "the remove does nothing and the put fails": (s) => {
+      s.faults.cacheRemoveIgnored = (k) => k === LOG_KEY;
+      s.faults.cachePut = (k) => k === LOG_KEY;
+    },
+  };
+  for (const [name, fault] of Object.entries(variants)) {
+    const { s } = cacheKiosk({ log: [LOG_HEADER, ruthOpen()] });
+    // A map from before the first check-in.
+    storeMapWith(s, RUTH);
+    fault(s);
+    assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true, name);
+    assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).refusal, "ALREADY_IN", name);
+    const open = s.sheets.Log.rows.filter((r) => r[1] === SAM.token && r[STATUS] === "open");
+    assert.equal(open.length, 1, name);
+  }
+});
+
+test("a check-out on a hit whose row moved, changed or has no Shift ID is decided on the whole Log", () => {
+  // Staff sort the Log with no stamp: the cached row number now holds Ruth's row.
+  const sorted = cacheKiosk({
+    log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00"), ruthOpen()],
+  }).s;
+  storeMapWith(sorted);
+  const rows = sorted.sheets.Log.rows;
+  [rows[1], rows[2]] = [rows[2], rows[1]];
+  assert.equal(plain(sorted.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(sorted), "Log cache: hit, then full read (row changed)");
+  assert.equal(sorted.sheets.Log.rowByHeader(3)["Shift ID"], "s-sam");
+  assert.equal(sorted.sheets.Log.rowByHeader(3).Status, "closed");
+  assert.equal(sorted.sheets.Log.rowByHeader(2).Status, "open", "Ruth's row is untouched");
+
+  // Admin Alerts? edited on the open row with no stamp: the row is still Sam's, and the
+  // alerts written keep the edit.
+  const edited = cacheKiosk({ log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")] }).s;
+  storeMapWith(edited);
+  edited.sheets.Log.rows[1][ALERTS] = "seen by staff";
+  assert.equal(plain(edited.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30))).ok, true);
+  assert.equal(lastLine(edited), "Log cache: hit");
+  assert.equal(
+    edited.sheets.Log.rowByHeader(2)["Admin Alerts?"],
+    "seen by staff; check-out differs by 30 min",
+  );
+
+  // Check-In Stated edited in place, so the shift is now a long one: the decision made
+  // again with the row read again plans other flags, so the whole Log decides.
+  const longer = cacheKiosk({ log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")] }).s;
+  storeMapWith(longer);
+  longer.sheets.Log.rows[1][LOG_HEADER.indexOf("Check-In\nStated\n(user)")] = at(TODAY, "00:30");
+  assert.equal(plain(longer.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(longer), "Log cache: hit, then full read (decided differently)");
+  assert.match(longer.sheets.Log.rowByHeader(2)["Admin Alerts?"], /^long shift: /);
+  assert.equal(longer.sheets.Flags.getLastRow(), 2);
+
+  // A row staff typed with no Shift ID: never closed on the map's word.
+  const typed = logRow({
+    "User Token": SAM.token,
+    Status: "open",
+    Date: TODAY,
+    "Volunteer Name": "Sam Lee",
+    "Check-In Stated (user)": at(TODAY, "08:00"),
+  });
+  const blank = cacheKiosk({ log: [LOG_HEADER, typed] }).s;
+  storeMapWith(blank);
+  freshReads(blank);
+  assert.equal(plain(blank.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(blank), "Log cache: hit, then full read (no Shift ID)");
+  assert.ok(logValueReads(blank).includes("getValues 1,1,2," + WIDTH), "the whole Log");
+  assert.equal(blank.sheets.Log.rowByHeader(2).Status, "closed");
+  assert.equal(blank.sheets.Log.rowByHeader(2)["Shift ID"], "uuid-1");
+});
+
+test("a refusal on a hit is decided again on the whole Log", () => {
+  // The map says Sam is in; staff closed the row by hand with no stamp.
+  const closed = cacheKiosk({ log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")] }).s;
+  storeMapWith(closed);
+  closed.sheets.Log.rows[1][STATUS] = "closed";
+  assert.equal(plain(closed.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(closed), "Log cache: hit, then full read (refused ALREADY_IN)");
+  assert.equal(closed.sheets.Log.rowByHeader(3).Status, "open");
+
+  // The map says Sam is out; staff typed an open row in place of an old one, no stamp.
+  const typed = cacheKiosk({
+    log: [LOG_HEADER, closedFor(SAM, "s-old", "2026-11-03", 3), ruthOpen()],
+  }).s;
+  storeMapWith(typed, RUTH);
+  typed.sheets.Log.rows[1] = kioskOpen("s-sam", TODAY, "08:00");
+  const out = plain(typed.ctx.apiCheckOut(CODE, SAM.id, null, null));
+  assert.equal(out.ok, true);
+  assert.equal(lastLine(typed), "Log cache: hit, then full read (refused NOT_IN)");
+  assert.equal(typed.sheets.Log.rowByHeader(2).Status, "closed");
+  assert.equal(out.minutes, 120);
+});
+
+const CHANGE_TYPES = [
+  "EDIT",
+  "INSERT_ROW",
+  "REMOVE_ROW",
+  "INSERT_COLUMN",
+  "REMOVE_COLUMN",
+  "INSERT_GRID",
+  "REMOVE_GRID",
+  "FORMAT",
+  "OTHER",
+];
+
+test("onSheetChange writes the stamp and nothing else, whatever it is given", () => {
+  const events = [
+    ...CHANGE_TYPES.map((changeType) => ({ changeType, authMode: "FULL", triggerUid: "t-1" })),
+    {},
+    undefined,
+    { triggerUid: "forged" },
+  ];
+  for (const e of events) {
+    const { s } = cacheKiosk({});
+    assert.equal(s.ctx.onSheetChange(e), undefined);
+    assert.equal(s.props.get(STAMP), String(NOW), JSON.stringify(e));
+    assert.deepEqual(s.calls, ["PropertiesService.getScriptProperties", "props.setProperty"]);
+    assert.deepEqual(s.stores, ["props.set " + STAMP]);
+    assert.deepEqual(s.journal, []);
+  }
+
+  // The next tap misses: the map's read began before the stamp.
+  const { s, clock } = cacheKiosk({ log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")] });
+  storeMapWith(s);
+  clock.now = NOW + 60000;
+  s.ctx.onSheetChange({ changeType: "EDIT" });
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: miss (edited)");
+
+  // A stamp that can't be written is logged, and nothing throws.
+  const failing = cacheKiosk({}).s;
+  failing.faults.propSet = () => true;
+  assert.equal(failing.ctx.onSheetChange({ changeType: "EDIT" }), undefined);
+  assert.deepEqual(failing.errors, ["Log change not stamped: setProperty failed"]);
+
+  // onEdit still never stamps the Log.
+  const edit = cacheKiosk({}).s;
+  edit.ctx.onEdit(editOn("Log"));
+  assert.deepEqual(edit.stores, []);
+});
+
+test("a column inserted or deleted in the Log with no stamp makes the next tap miss, and writes land by header", () => {
+  const { s } = cacheKiosk({ log: [LOG_HEADER, ruthOpen()] });
+  storeMapWith(s, RUTH);
+  // A column before column A.
+  s.sheets.Log.rows.forEach((r, i) => r.unshift(i === 0 ? "Staff first" : ""));
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: miss (layout)");
+  const row = s.sheets.Log.rowByHeader(3);
+  assert.equal(row["User Token"], SAM.token);
+  assert.equal(row.Status, "open");
+  assert.equal(row["Staff first"], "");
+  // The map now holds that layout; deleting the column again is another miss.
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, RUTH.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: hit");
+  s.sheets.Log.rows.forEach((r) => r.shift());
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).refusal, "ALREADY_IN");
+  assert.equal(lastLine(s), "Log cache: miss (layout)");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+});
+
+test("a cache read that fails, a stamp read that fails or a map that isn't JSON is a miss that answers as usual", () => {
+  const cases = {
+    "Log cache: miss (error)|Log cache not read: cache.get failed": (s) =>
+      (s.faults.cacheGet = (k) => k === LOG_KEY),
+    "Log cache: miss (error)|Log cache not read: getProperty failed": (s) =>
+      (s.faults.propGet = (k) => k === STAMP),
+    "Log cache: miss (unreadable)|": (s) => s.cache.set(LOG_KEY, "not json"),
+  };
+  for (const [want, fault] of Object.entries(cases)) {
+    const [line, error] = want.split("|");
+    const { s } = cacheKiosk({ log: [LOG_HEADER, ruthOpen()] });
+    storeMapWith(s, RUTH);
+    fault(s);
+    freshReads(s);
+    assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true, want);
+    assert.equal(lastLine(s), line);
+    assert.deepEqual(s.errors, error ? [error] : []);
+    assert.ok(logValueReads(s).includes("getValues 1,1,2," + WIDTH), "the whole Log");
+    assert.equal(s.sheets.Log.rowByHeader(3)["User Token"], SAM.token);
+  }
+});
+
+test("a map is used for less than 600 seconds from its read, and every put asks 600 seconds", () => {
+  const { s, clock } = cacheKiosk({ log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")] });
+  storeMapWith(s);
+  clock.now = NOW + 599999;
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).refusal, "ALREADY_IN");
+  assert.equal(lastLine(s), "Log cache: hit, then full read (refused ALREADY_IN)");
+  // That full read stored a map read at NOW + 599999.
+  assert.equal(storedMap(s).readAt, NOW + 599999);
+  clock.now = NOW + 599999 + 600000;
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: miss (old)");
+  const logPuts = s.puts.filter((p) => p.key === LOG_KEY);
+  assert.ok(logPuts.length >= 3);
+  assert.ok(logPuts.every((p) => p.seconds === 600));
+});
+
+test("each kiosk call that reaches the Log logs one Log cache line, with no volunteer in it", () => {
+  const { s, clock } = cacheKiosk({ log: [LOG_HEADER, ruthOpen()] });
+  const calls = [
+    [() => s.ctx.apiCheckIn(CODE, SAM.id, null, null), ["Log cache: miss (none)"]],
+    [() => s.ctx.apiCheckOut(CODE, RUTH.id, null, null), ["Log cache: hit"]],
+    [
+      () => s.ctx.apiCheckIn(CODE, SAM.id, null, null),
+      ["Log cache: hit, then full read (refused ALREADY_IN)"],
+    ],
+    // Refused before the Log: no line.
+    [() => s.ctx.apiCheckIn(CODE, "ffffffffffffffff", null, null), []],
+    [() => s.ctx.apiCheckIn(WRONG_CODE, SAM.id, null, null), []],
+  ];
+  for (const [call, want] of calls) assert.deepEqual(linesOf(s, call), want);
+  s.props.set("LOG_CACHE", "off");
+  clock.now = NOW + 60000;
+  assert.deepEqual(
+    linesOf(s, () => s.ctx.apiCheckOut(CODE, SAM.id, null, null)),
+    ["Log cache: off"],
+  );
+  for (const line of [...s.logs, ...s.errors]) {
+    assert.doesNotMatch(line, /tok-|Sam|Ruth|Lee|Okafor/);
+  }
+});
+
+test("a check-out's cells and Flags rows come from the sheet's own row, on a miss and on a hit", () => {
+  // The Log row's Name differs from the Profiles name, so the Flags row shows where it came from.
+  const row = withCell(
+    withCell(kioskOpen("s-sam", TODAY, "08:00"), ALERTS, "staff note"),
+    NAME,
+    "Samuel Lee",
+  );
+  for (const path of ["miss", "hit"]) {
+    const { s } = cacheKiosk({ log: [LOG_HEADER, row] });
+    if (path === "hit") {
+      storeMapWith(s);
+      // Edited in place with no stamp after the map was read.
+      s.sheets.Log.rows[1][ALERTS] = "staff note, edited";
+      s.sheets.Log.rows[1][NAME] = "Samuel A. Lee";
+    }
+    assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30))).ok, true, path);
+    assert.equal(lastLine(s), path === "hit" ? "Log cache: hit" : "Log cache: miss (none)");
+    const name = path === "hit" ? "Samuel A. Lee" : "Samuel Lee";
+    const alerts = path === "hit" ? "staff note, edited" : "staff note";
+    assert.equal(
+      s.sheets.Log.rowByHeader(2)["Admin Alerts?"],
+      alerts + "; check-out differs by 30 min",
+      path,
+    );
+    const flag = s.sheets.Flags.rowByHeader(2);
+    assert.equal(flag["Volunteer Name"], name, path);
+    assert.equal(flag.Date, TODAY, path);
+    assert.equal(flag.Reason, "check-out differs by 30 min", path);
+  }
+});
+
+test("a fill keeps the time its map's read started, on a hit and on a miss", () => {
+  const { s, clock } = cacheKiosk({ log: [LOG_HEADER, ruthOpen()] });
+  // A miss whose read starts at NOW + 1000 and ends a second later.
+  clock.now = NOW + 1000;
+  s.sheets.Log.afterValues = (sh) => {
+    if (sh.reads.at(-1) === "getValues 1,1,2," + WIDTH) clock.now = NOW + 2000;
+  };
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  s.sheets.Log.afterValues = null;
+  assert.equal(lastLine(s), "Log cache: miss (none)");
+  assert.equal(storedMap(s).readAt, NOW + 1000);
+  // A hit a minute later keeps it.
+  clock.now = NOW + 60000;
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, RUTH.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: hit");
+  assert.equal(storedMap(s).readAt, NOW + 1000);
+});
+
+test("a stamp written part-way through a kiosk call makes the next tap miss", () => {
+  // On a miss: the stamp lands during the whole-Log read.
+  const miss = cacheKiosk({ log: [LOG_HEADER, ruthOpen()] }).s;
+  miss.sheets.Log.afterValues = (sh) => {
+    if (sh.reads.at(-1) === "getValues 1,1,2," + WIDTH) {
+      sh.afterValues = null;
+      miss.ctx.onSheetChange({ changeType: "EDIT" });
+    }
+  };
+  assert.equal(plain(miss.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(miss), "Log cache: miss (none)");
+  assert.equal(plain(miss.ctx.apiCheckOut(CODE, RUTH.id, null, null)).ok, true);
+  assert.equal(lastLine(miss), "Log cache: miss (edited)");
+
+  // On a hit: the stamp lands while the map is read from the cache.
+  const { s, clock } = cacheKiosk({ log: [LOG_HEADER, ruthOpen()] });
+  storeMapWith(s, RUTH);
+  clock.now = NOW + 10000;
+  let stamped = false;
+  s.faults.cacheGet = (k) => {
+    if (k === LOG_KEY && !stamped) {
+      stamped = true;
+      s.ctx.onSheetChange({ changeType: "EDIT" });
+    }
+    return false;
+  };
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.ok(stamped);
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, RUTH.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: miss (edited)");
+});
+
+test("a Log row appended, inserted or deleted with no stamp makes the next tap miss", () => {
+  const { s } = cacheKiosk({ log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")] });
+  const tap = () =>
+    assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).refusal, "ALREADY_IN");
+  tap();
+  assert.equal(lastLine(s), "Log cache: miss (none)");
+  // Appended below the last row.
+  s.sheets.Log.rows.push(ruthOpen());
+  tap();
+  assert.equal(lastLine(s), "Log cache: miss (rows)");
+  // Inserted above Sam's row.
+  s.sheets.Log.rows.splice(1, 0, closedFor(RUTH, "r-1", "2026-11-03", 2));
+  tap();
+  assert.equal(lastLine(s), "Log cache: miss (rows)");
+  // Deleted.
+  s.sheets.Log.rows.splice(1, 1);
+  tap();
+  assert.equal(lastLine(s), "Log cache: miss (rows)");
+  tap();
+  assert.equal(lastLine(s), "Log cache: hit, then full read (refused ALREADY_IN)");
+});
+
+test("clearLogCache stamps and removes the map from the editor, and refuses a web-app caller", () => {
+  const { s, clock } = cacheKiosk({ log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")] });
+  storeMapWith(s);
+  clock.now = NOW + 60000;
+  s.ctx.clearLogCache();
+  assert.equal(s.props.get(STAMP), String(NOW + 60000));
+  assert.ok(Number(s.props.get(STAMP)) > NOW + s.ctx.logCacheMarginMs());
+  assert.equal(s.cache.has(LOG_KEY), false);
+  assert.equal(s.props.get("LOG_CACHE"), "on");
+  assert.deepEqual(s.logs.at(-1), "clearLogCache: stamp written, map removed");
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: miss (none)");
+
+  for (const active of ["", "someone@example.org"]) {
+    const web = cacheKiosk({ active, effective: "owner@example.org" }).s;
+    assert.throws(() => web.ctx.clearLogCache(), /Run this from the Apps Script editor/);
+    assert.deepEqual(web.stores, []);
+    assert.deepEqual(
+      web.calls,
+      ["Session.getActiveUser", "Session.getEffectiveUser"].slice(0, active ? 2 : 1),
+    );
+  }
+});
+
+test("with the switch off a tap reads, decides and writes as without the cache, and touches neither the map nor the stamp", () => {
+  const log = [LOG_HEADER, closedFor(SAM, "s-old", "2026-11-03", 3), ruthOpen()];
+  const script = (s, clock) => {
+    const replies = [s.ctx.apiCheckIn(CODE, SAM.id, null, null)];
+    clock.now = NOW + 60000;
+    replies.push(s.ctx.apiCheckOut(CODE, RUTH.id, null, null));
+    return plain(replies);
+  };
+  const reference = (() => {
+    const { s, clock } = cacheKiosk({ log, props: {} });
+    return {
+      replies: script(s, clock),
+      log: JSON.stringify(s.sheets.Log.rows),
+      flags: JSON.stringify(s.sheets.Flags.rows),
+    };
+  })();
+  const offs = {
+    absent: (s) => s.props.delete("LOG_CACHE"),
+    off: (s) => s.props.set("LOG_CACHE", "off"),
+    ON: (s) => s.props.set("LOG_CACHE", "ON"),
+    "on ": (s) => s.props.set("LOG_CACHE", "on "),
+    true: (s) => s.props.set("LOG_CACHE", "true"),
+    "a read that throws": (s) => (s.faults.propGet = (k) => k === "LOG_CACHE"),
+  };
+  for (const [name, setOff] of Object.entries(offs)) {
+    const { s, clock } = cacheKiosk({ log });
+    // A map that would be a hit for both calls, stored with the switch on.
+    storeMapWith(s, RUTH);
+    const stored = s.cache.get(LOG_KEY);
+    setOff(s);
+    s.stores.length = 0;
+    freshReads(s);
+    const replies = [s.ctx.apiCheckIn(CODE, SAM.id, null, null)];
+    // The whole Log once, as without the cache.
+    assert.deepEqual(logValueReads(s), ["getValues 1,1,3," + WIDTH], name);
+    clock.now = NOW + 60000;
+    freshReads(s);
+    replies.push(s.ctx.apiCheckOut(CODE, RUTH.id, null, null));
+    assert.deepEqual(
+      logValueReads(s),
+      ["getValues 1,1,4," + WIDTH, "getValues 3,1,1," + WIDTH],
+      name,
+    );
+    // Per call, one switch read and nothing else on the map or the properties.
+    assert.deepEqual(
+      s.stores.filter((e) => e.includes(LOG_KEY) || e.startsWith("props.")),
+      ["props.get LOG_CACHE", "props.get LOG_CACHE"],
+      name,
+    );
+    assert.equal(s.cache.get(LOG_KEY), stored, name);
+    assert.equal(s.props.has(STAMP), false, name);
+    assert.deepEqual(plain(replies), reference.replies, name);
+    assert.equal(JSON.stringify(s.sheets.Log.rows), reference.log, name);
+    assert.equal(JSON.stringify(s.sheets.Flags.rows), reference.flags, name);
+    assert.deepEqual(cacheLines(s).slice(-2), ["Log cache: off", "Log cache: off"], name);
+    assert.deepEqual(
+      s.errors,
+      name === "a read that throws"
+        ? [
+            "Log cache switch not read: getProperty failed",
+            "Log cache switch not read: getProperty failed",
+          ]
+        : [],
+      name,
+    );
+  }
+
+  // On, the same calls take the cache path.
+  const { s, clock } = cacheKiosk({ log });
+  storeMapWith(s, RUTH);
+  assert.deepEqual(script(s, clock), reference.replies);
+  assert.deepEqual(cacheLines(s).slice(-2), ["Log cache: hit", "Log cache: hit"]);
+});
+
+test("logCacheOn stamps before it sets the switch, so a map from before it is never used", () => {
+  const { s, clock } = cacheKiosk({ log: [LOG_HEADER, ruthOpen()] });
+  // On: a map that holds Sam in.
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(storedMap(s).states[SAM.token].open.length, 1);
+  // Off by hand, so nothing is cleared; Sam checks out with the switch off.
+  s.props.set("LOG_CACHE", "off");
+  clock.now = NOW + 30000;
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(storedMap(s).states[SAM.token].open.length, 1, "the map still says in");
+  s.stores.length = 0;
+  clock.now = NOW + 60000;
+  s.ctx.logCacheOn();
+  assert.deepEqual(s.stores, ["props.set " + STAMP, "props.set LOG_CACHE"]);
+  assert.equal(s.props.get("LOG_CACHE"), "on");
+  clock.now = NOW + 70000;
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: miss (edited)");
+
+  // A stamp that fails leaves the switch unset.
+  const failing = cacheKiosk({ props: {} }).s;
+  failing.faults.propSet = (k) => k === STAMP;
+  assert.throws(() => failing.ctx.logCacheOn(), /stamp wasn't written, so the Log cache stays off/);
+  assert.equal(failing.props.has("LOG_CACHE"), false);
+});
+
+test("logCacheOff takes the lock, deletes the switch, stamps and removes the map, or changes nothing", () => {
+  const { s, clock } = cacheKiosk({ log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")] });
+  storeMapWith(s);
+  clock.now = NOW + 60000;
+  s.stores.length = 0;
+  const takes = s.lock.takes;
+  s.ctx.logCacheOff();
+  assert.equal(s.lock.takes, takes + 1);
+  assert.equal(s.lock.held, false);
+  assert.deepEqual(s.stores, [
+    "props.delete LOG_CACHE",
+    "props.set " + STAMP,
+    "cache.remove " + LOG_KEY,
+  ]);
+  assert.equal(s.props.has("LOG_CACHE"), false);
+  assert.equal(s.props.get(STAMP), String(NOW + 60000));
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).refusal, "ALREADY_IN");
+  assert.equal(lastLine(s), "Log cache: off");
+
+  // The lock held elsewhere: it throws and changes nothing.
+  const busy = cacheKiosk({}).s;
+  busy.lock.busy = true;
+  assert.throws(() => busy.ctx.logCacheOff(), /^Error: Kiosk busy, run it again$/);
+  assert.equal(busy.props.get("LOG_CACHE"), "on");
+  assert.deepEqual(busy.stores, []);
+
+  // The remove does nothing, so the map stays; the switch set on by hand still misses.
+  const stale = cacheKiosk({ log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")] });
+  storeMapWith(stale.s);
+  stale.s.faults.cacheRemoveIgnored = (k) => k === LOG_KEY;
+  stale.clock.now = NOW + 60000;
+  stale.s.ctx.logCacheOff();
+  assert.ok(stale.s.cache.has(LOG_KEY), "the old map is still there");
+  stale.s.props.set("LOG_CACHE", "on");
+  stale.clock.now = NOW + 120000;
+  assert.equal(plain(stale.s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(stale.s), "Log cache: miss (edited)");
+});
+
+test("logCacheOn and logCacheOff refuse a web-app caller and write nothing", () => {
+  for (const name of ["logCacheOn", "logCacheOff"]) {
+    const { s } = cacheKiosk({ active: "", effective: "owner@example.org", props: {} });
+    assert.throws(() => s.ctx[name](), /Run this from the Apps Script editor/, name);
+    assert.deepEqual(s.stores, [], name);
+    assert.equal(s.lock.tries, 0, name);
+    assert.equal(s.props.size, 0, name);
+  }
+});
+
+test("a switch read that fails while the switch is on writes without forgetting, and the next tap still sees the change", () => {
+  // A check-in: the next tap's last-row check sees the new row.
+  const { s } = cacheKiosk({ log: [LOG_HEADER, ruthOpen()] });
+  storeMapWith(s, RUTH);
+  s.faults.propGet = (k) => k === "LOG_CACHE";
+  s.stores.length = 0;
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(s), "Log cache: off");
+  assert.deepEqual(
+    s.stores.filter((e) => e.includes(LOG_KEY)),
+    [],
+    "the map is neither used nor forgotten",
+  );
+  s.faults.propGet = null;
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).refusal, "ALREADY_IN");
+  assert.equal(lastLine(s), "Log cache: miss (rows)");
+
+  // A check-out: the next tap's row read again sees the row closed.
+  const out = cacheKiosk({ log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")] });
+  storeMapWith(out.s);
+  out.s.faults.propGet = (k) => k === "LOG_CACHE";
+  out.clock.now = NOW + 60000;
+  assert.equal(plain(out.s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(storedMap(out.s).states[SAM.token].open.length, 1, "the map still says in");
+  out.s.faults.propGet = null;
+  assert.equal(plain(out.s.ctx.apiCheckOut(CODE, SAM.id, null, null)).refusal, "NOT_IN");
+  assert.equal(lastLine(out.s), "Log cache: hit, then full read (row changed)");
+});
+
+test("the Log write helpers stamp before and after their write, unless the kiosk option is given", () => {
+  const log = [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00"), ruthOpen()];
+  const writes = {
+    appendLogRow_: (c, cols, opts) => c.appendLogRow_({ Status: "open" }, cols, opts),
+    updateLogRow_: (c, cols, opts) => c.updateLogRow_(2, { Notes: "x" }, cols, opts),
+    appendLogRows_: (c, cols, opts) => c.appendLogRows_([{ Status: "open" }], cols, opts),
+    deleteLogRow_: (c, cols, opts) => c.deleteLogRow_(3, opts),
+    appendLogValues_: (c, cols, opts) =>
+      c.appendLogValues_(
+        LOG_HEADER.map(() => ""),
+        LOG_HEADER.map(() => null),
+        cols,
+        opts,
+      ),
+  };
+  for (const [name, write] of Object.entries(writes)) {
+    for (const opts of [undefined, {}, { kiosk: true }]) {
+      const { s } = cacheKiosk({ log });
+      const cols = s.ctx.readLogColumns_();
+      // Each Log write goes into the same list as the stamps.
+      const put = s.sheets.Log.put.bind(s.sheets.Log);
+      s.sheets.Log.put = (...args) => (s.stores.push("write"), put(...args));
+      s.sheets.Log.deleteRow = (n) => (s.stores.push("write"), s.sheets.Log.rows.splice(n - 1, 1));
+      s.stores.length = 0;
+      write(s.ctx, cols, opts);
+      const seen = s.stores.filter((e, i, all) => e !== "write" || all[i - 1] !== "write");
+      const label = name + " " + JSON.stringify(opts);
+      if (opts && opts.kiosk) assert.deepEqual(seen, ["write"], label);
+      else assert.deepEqual(seen, ["props.set " + STAMP, "write", "props.set " + STAMP], label);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Every write to the Log stamps
+//
+// The Log cache is only right if every script write to the Log writes the Log changed
+// stamp. So every function in apps-script that calls a method able to change a cell's value
+// (or a tab's name, its rows or columns, or the spreadsheet's time zone), or any method of
+// the advanced Sheets service, is named below with what it writes and why that is safe. A
+// new one fails the test until someone puts it in a class by hand.
+
+/** The Range, Sheet, Spreadsheet and TextFinder methods that can change what a cell reads; a
+ * trailing * takes every name that starts so. Arrays' and Maps' sort and clear match too. */
+const WRITE_METHODS = [
+  "setValue",
+  "setValues",
+  "setFormula",
+  "setFormulas",
+  "setFormulaR1C1",
+  "setFormulasR1C1",
+  "setRichTextValue",
+  "setRichTextValues",
+  "check",
+  "uncheck",
+  "insertCheckboxes",
+  "removeCheckboxes",
+  "appendRow",
+  "insertRow*",
+  "insertColumn*",
+  "insertCells",
+  "deleteRow*",
+  "deleteColumn*",
+  "deleteCells",
+  "sort",
+  "randomize",
+  "clear*",
+  "removeDuplicates",
+  "trimWhitespace",
+  "splitTextToColumns",
+  "autoFill",
+  "autoFillToNeighbor",
+  "merge*",
+  "moveRows",
+  "moveColumns",
+  "moveTo",
+  "copyTo",
+  "copyValuesToRange",
+  "replaceWith",
+  "replaceAllWith",
+  "createPivotTable",
+  "createDataSourcePivotTable",
+  "createDataSourceTable",
+  "setName",
+  "renameActiveSheet",
+  "insertSheet*",
+  "insertDataSourceSheet",
+  "deleteSheet",
+  "deleteActiveSheet",
+  "duplicateActiveSheet",
+  "setNumberFormat",
+  "setNumberFormats",
+  "setNote",
+  "setNotes",
+  "protect",
+  "batchUpdate",
+  "setSpreadsheetTimeZone",
+];
+const isWriteMethod = (name) =>
+  WRITE_METHODS.some((m) => (m.endsWith("*") ? name.startsWith(m.slice(0, -1)) : name === m));
+
+// The Log write helpers: each wraps its whole write in stampedLogWrite_, which stamps before
+// and after it unless the kiosk option is given.
+const STAMPING_HELPERS = [
+  "appendLogRow_",
+  "updateLogRow_",
+  "appendLogRows_",
+  "deleteLogRow_",
+  "appendLogValues_",
+];
+// The only callers that pass the kiosk option: the kiosk forgets the map before its write and
+// fills it after.
+const KIOSK_CALLS = ["apiCheckIn", "apiCheckOut"];
+const SORTS_AN_ARRAY = "sorts an array, not a range";
+const HOURS_TABS = { tab: "hoursTabName()", in: "setupHoursTabs_" };
+const HOURS_DATA = { tab: "hoursDataTabName()", in: "setupHoursTabs_" };
+
+/**
+ * Every function that calls a write method, by class:
+ * - log: writes Log values, and stamps (a helper, setupLog_).
+ * - log, no value change: reaches the Log but changes no value, or writes only inside a
+ *   stamping helper.
+ * - tab: writes another tab, named by tab (an expression) in its own source or in the
+ *   function in names.
+ * - array: the call is on an array, not a sheet.
+ */
+const LOG_WRITE_CLASSES = {
+  appendLogRow_: { class: "log", why: "a stamping helper" },
+  appendLogRows_: { class: "log", why: "a stamping helper" },
+  deleteLogRow_: { class: "log", why: "a stamping helper" },
+  appendLogValues_: { class: "log", why: "a stamping helper" },
+  setupLog_: { class: "log", why: "stamps first and last" },
+
+  writeLogCells_: {
+    class: "log, no value change",
+    why: "called only inside appendLogRow_ and updateLogRow_, which stamp around it",
+  },
+  writeHeaderNotes_: { class: "log, no value change", why: "header notes only" },
+  applyLook_: {
+    class: "log, no value change",
+    why: "setupSheets' look: colours, widths, banding and conditional formats",
+  },
+  setupFilterViews_: { class: "log, no value change", why: "setupReports' filter views" },
+  setupKioskWarnings_: {
+    class: "log, no value change",
+    why: "setupReports' warning-only protections",
+  },
+
+  setupSheets: {
+    class: "tab",
+    tab: "SETTINGS_TAB",
+    why: "writes Settings; its time zone change comes just before setupLog_, which stamps first",
+  },
+  setupFlags_: { class: "tab", tab: "FLAGS_TAB" },
+  setSetting_: { class: "tab", tab: "SETTINGS_TAB" },
+  writeSettingsDescriptions_: { class: "tab", tab: "SETTINGS_TAB", in: "setupSheets" },
+  planFlagRows_: { class: "tab", tab: "FLAGS_TAB" },
+  writeFlagRows_: { class: "tab", tab: "FLAGS_TAB", in: "planFlagRows_" },
+  markShiftFlags_: { class: "tab", tab: "FLAGS_TAB" },
+  removedSheet_: { class: "tab", tab: "removedTabName()" },
+  appendRemovedRow_: { class: "tab", tab: "removedTabName()", in: "removedSheet_" },
+  adminRemoveShift: { class: "tab", tab: "removedTabName()", in: "removedSheet_" },
+  adminRestoreShift: { class: "tab", tab: "removedTabName()", in: "removedSheet_" },
+  hoursEmailSheet_: { class: "tab", tab: "hoursEmailTab()" },
+  appendHoursEmailRows_: { class: "tab", tab: "hoursEmailTab()", in: "hoursEmailSheet_" },
+  setupHowTo_: { class: "tab", tab: "howToTabName()" },
+  setupSampleProfiles: {
+    class: "tab",
+    tab: '"Volunteer Profiles"',
+    why: "a new spreadsheet file",
+  },
+  importLedgerSheet_: { class: "tab", tab: "importLedgerTab()" },
+  appendLedgerLines_: { class: "tab", tab: "importLedgerTab()", in: "importLedgerSheet_" },
+  insertHoursTab_: { class: "tab", ...HOURS_TABS, why: "the Hours tab and its data tab" },
+  setupHoursTabs_: { class: "tab", ...HOURS_DATA },
+  layoutHoursData_: { class: "tab", ...HOURS_DATA },
+  formatHoursRows_: { class: "tab", ...HOURS_DATA },
+  layoutHoursTab_: { class: "tab", ...HOURS_TABS },
+  writeHoursNotes_: { class: "tab", ...HOURS_TABS },
+  growHoursTab_: { class: "tab", ...HOURS_TABS },
+  writeHours_: { class: "tab", ...HOURS_DATA },
+  renderHoursLine_: { class: "tab", ...HOURS_TABS },
+  applyHoursSorts_: { class: "tab", ...HOURS_TABS },
+  setHoursSortStatus_: { class: "tab", ...HOURS_TABS },
+  deleteMonthlyHours_: { class: "tab", tab: "monthlyHoursTabName()" },
+  writeReportTab_: { class: "tab", tab: "reportTabName(" },
+
+  adminRemovedShifts: { class: "array", why: SORTS_AN_ARRAY },
+  adminHoursPreview: { class: "array", why: SORTS_AN_ARRAY },
+  parseProfiles: { class: "array", why: SORTS_AN_ARRAY },
+  logColumnFormats: { class: "array", why: SORTS_AN_ARRAY },
+  missedSignOut: { class: "array", why: SORTS_AN_ARRAY },
+  volunteerLogStates: { class: "array", why: SORTS_AN_ARRAY },
+  adminRosterLabels: { class: "array", why: SORTS_AN_ARRAY },
+  openShiftChoices: { class: "array", why: SORTS_AN_ARRAY },
+  hoursEmailRowsText: { class: "array", why: SORTS_AN_ARRAY },
+  hoursEmailPlan: { class: "array", why: SORTS_AN_ARRAY },
+  milestonesCrossedIn: { class: "array", why: SORTS_AN_ARRAY },
+  reviewGroups: { class: "array", why: SORTS_AN_ARRAY },
+  groupTable: { class: "array", why: SORTS_AN_ARRAY },
+  monthReport: { class: "array", why: SORTS_AN_ARRAY },
+  reportMonths: { class: "array", why: SORTS_AN_ARRAY },
+  hoursRows: { class: "array", why: SORTS_AN_ARRAY },
+  hoursLabels: { class: "array", why: SORTS_AN_ARRAY },
+  flagColumnFormats: { class: "array", why: SORTS_AN_ARRAY },
+  flagsSummary: { class: "array", why: SORTS_AN_ARRAY },
+  importSummary: { class: "array", why: SORTS_AN_ARRAY },
+  autoClockOutRows: { class: "array", why: SORTS_AN_ARRAY },
+  usualLength: { class: "array", why: SORTS_AN_ARRAY },
+};
+
+/**
+ * Every apps-script/*.js file parsed: its top-level functions by name, with their nodes and
+ * source, and what each calls: write methods, the advanced Sheets service, other functions by
+ * name, and object literals with a kiosk property.
+ */
+function scanServer() {
+  const dir = new URL("apps-script/", root);
+  const functions = {};
+  const loose = [];
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".js"))) {
+    const text = readFileSync(new URL(file, dir), "utf8");
+    const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+    for (const statement of sf.statements) {
+      const found = { writes: new Set(), calls: new Set(), kiosk: 0 };
+      const visit = (node) => {
+        if (ts.isCallExpression(node)) {
+          const callee = node.expression;
+          let name = null;
+          if (ts.isPropertyAccessExpression(callee)) name = callee.name.text;
+          if (
+            ts.isElementAccessExpression(callee) &&
+            ts.isStringLiteral(callee.argumentExpression)
+          ) {
+            name = callee.argumentExpression.text;
+          }
+          if (name && isWriteMethod(name)) found.writes.add(name);
+          if (ts.isIdentifier(callee)) found.calls.add(callee.text);
+          let base = callee;
+          while (
+            ts.isPropertyAccessExpression(base) ||
+            ts.isElementAccessExpression(base) ||
+            ts.isCallExpression(base)
+          ) {
+            base = base.expression;
+          }
+          if (ts.isIdentifier(base) && base.text === "Sheets") found.writes.add("Sheets.*");
+        }
+        if (
+          (ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) &&
+          node.name.getText(sf).replace(/["']/g, "") === "kiosk"
+        ) {
+          found.kiosk++;
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(statement);
+      if (ts.isFunctionDeclaration(statement) && statement.name) {
+        functions[statement.name.text] = {
+          file,
+          node: statement,
+          sf,
+          source: statement.getText(sf),
+          ...found,
+        };
+      } else if (found.writes.size || found.kiosk) {
+        loose.push(file + ": " + statement.getText(sf).slice(0, 60));
+      }
+    }
+  }
+  return { functions, loose };
+}
+
+test("every function that can write a cell is classed, and only the stamping ones write Log values", () => {
+  const { functions, loose } = scanServer();
+  assert.deepEqual(loose, [], "a write outside any function");
+  const writers = Object.keys(functions).filter((n) => functions[n].writes.size);
+  const listed = Object.keys(LOG_WRITE_CLASSES);
+  assert.deepEqual(
+    writers.filter((n) => !listed.includes(n)),
+    [],
+    "functions that write and aren't classed: add each with its class and why",
+  );
+  assert.deepEqual(
+    listed.filter((n) => !writers.includes(n)),
+    [],
+    "classed functions that no longer write: take them out",
+  );
+  const s = server();
+  const logNames = ["LOG_TAB", '"Log"', "'Log'"];
+  for (const [name, entry] of Object.entries(LOG_WRITE_CLASSES)) {
+    const fn = functions[name];
+    if (entry.class === "log") {
+      assert.ok(STAMPING_HELPERS.includes(name) || name === "setupLog_", name);
+    } else if (entry.class === "array") {
+      assert.deepEqual([...fn.writes], ["sort"], name + " calls only sort");
+    } else if (entry.class === "tab") {
+      const where = functions[entry.in || name];
+      assert.ok(where, name + ": no function " + entry.in);
+      assert.ok(where.source.includes(entry.tab), name + " names " + entry.tab);
+      assert.ok(!logNames.includes(entry.tab), name + " writes another tab, not the Log");
+      if (/^[A-Z_]+$|^\w+\(\)$/.test(entry.tab)) {
+        assert.notEqual(vm.runInContext(entry.tab, s.ctx), "Log", name);
+      }
+    } else {
+      assert.equal(entry.class, "log, no value change", name);
+    }
+  }
+  // writeLogCells_ is called only by the two helpers that stamp around it.
+  const callers = Object.keys(functions).filter((n) => functions[n].calls.has("writeLogCells_"));
+  assert.deepEqual(callers.sort(), ["appendLogRow_", "updateLogRow_"]);
+});
+
+test("each Log write helper does its whole write inside stampedLogWrite_, and setupLog_ stamps first and, in a finally, last", () => {
+  const { functions } = scanServer();
+  for (const name of STAMPING_HELPERS) {
+    const { node, sf } = functions[name];
+    const params = node.parameters.map((p) => p.name.getText(sf));
+    assert.equal(params.at(-1), "opts", name + " takes the option last");
+    const body = node.body.statements;
+    assert.equal(body.length, 1, name + " is one statement");
+    const call = ts.isReturnStatement(body[0]) ? body[0].expression : body[0].expression;
+    assert.ok(call && ts.isCallExpression(call), name);
+    assert.equal(call.expression.getText(sf), "stampedLogWrite_", name);
+    assert.equal(call.arguments[0].getText(sf), "opts", name);
+    assert.ok(ts.isArrowFunction(call.arguments[1]), name + " writes inside the arrow function");
+  }
+  // setupLog_ is the stamp, then one try whose finally is the stamp alone, with no catch,
+  // so the closing stamp is written and the error still thrown when a write throws.
+  const { node, sf } = functions.setupLog_;
+  const setup = node.body.statements;
+  assert.equal(setup.length, 2);
+  assert.equal(setup[0].getText(sf), "markLogChanged_();");
+  assert.ok(ts.isTryStatement(setup[1]), "the rest is one try");
+  assert.equal(setup[1].catchClause, undefined, "no catch");
+  assert.deepEqual(
+    setup[1].finallyBlock.statements.map((st) => st.getText(sf)),
+    ["markLogChanged_();"],
+  );
+});
+
+test("only apiCheckIn and apiCheckOut pass the kiosk option, and the Log cache's own functions write no cell", () => {
+  const { functions } = scanServer();
+  const passing = Object.keys(functions).filter((n) => functions[n].kiosk);
+  assert.deepEqual(passing.sort(), KIOSK_CALLS);
+  for (const name of KIOSK_CALLS) assert.equal(functions[name].kiosk, 1, name);
+  for (const name of [
+    "logCacheOn",
+    "logCacheOff",
+    "clearLogCache",
+    "onSheetChange",
+    "markLogChanged_",
+    "stampedLogWrite_",
+  ]) {
+    assert.ok(functions[name], name);
+    assert.deepEqual([...functions[name].writes], [], name);
+  }
 });

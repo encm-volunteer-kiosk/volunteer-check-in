@@ -206,6 +206,13 @@ refused: its hours are whatever the hours cell holds, and the menu's overlap che
 over that row. Hours already in a row are not worked out again when a time is fixed by
 hand, so fix the hours too.
 
+When the Log cache is on, the kiosk keeps a short-lived copy of each volunteer's shift
+state, so a tap needn't read the whole Log. A change made by hand anywhere in the
+spreadsheet is picked up within a few seconds, and an added or deleted Log row at the next
+tap. A change made another way (version history, an add-on or another script) is picked
+up within 10 minutes, or at once after running `clearLogCache` from the Apps Script
+editor. The cache ships turned off; see Updating a sheet that's already in use.
+
 ## Check-out time
 
 Like the arrival time at check-in, the check-out time can be changed on the tablet. Most
@@ -988,6 +995,13 @@ The editor's Triggers page (the clock icon) shows them.
 only from their own triggers: run from the editor or the kiosk page they refuse. Two
 accounts' triggers running side by side would not send twice; each job checks its
 last-run row first, under the kiosk's lock.
+
+`setupDailyJobs` also installs the Log change trigger for the same account: an on-change
+trigger that runs `onSheetChange` after any change made by hand to the spreadsheet, so the
+Log cache is never used across it. Running it again keeps the one trigger. `removeDailyJobs`
+deletes it with the jobs. The trigger came after the jobs, so on a sheet whose jobs were
+installed earlier the owner runs `setupDailyJobs` once more to add it; the Triggers page
+then shows it beside the jobs.
 
 ### Weekly flags email
 
@@ -1821,6 +1835,46 @@ written only by `setupSheets`, so:
   and never updated. `tests/header-notes-shipped.json` is the record of every note text a
   release has written: add the new texts to it after the release that writes them, and
   never remove one. A test fails while any text in it is unknown to the kiosk.
+
+#### The Log cache
+
+The Log cache saves a check-in or check-out from reading the whole Log, which on a large
+Log is most of a tap's time. It keeps, in Apps Script's script cache, what the two
+decisions need from the Log for every volunteer: their open rows, their closed shifts and
+hours, and whether their last check-out was missed. A tap that may use it reads no Log
+rows; any other tap reads the whole Log as before and stores a fresh copy. Every Log write
+the script makes, and every change made by hand (through the Log change trigger
+`setupDailyJobs` installs), marks the copy as out of date, and no copy is used more than
+10 minutes after the read that made it.
+
+It ships turned off and staff never see it: no tab, Settings row or menu item shows it.
+The script property `LOG_CACHE` turns it on, and only when it reads exactly `on`. A
+developer sets it from the Apps Script editor, never by hand in Project Settings:
+
+- `logCacheOn()` first marks any copy as out of date, then sets `LOG_CACHE`, so no copy
+  made before it is used.
+- `logCacheOff()` takes the kiosk's lock, deletes `LOG_CACHE`, marks the copy as out of
+  date and removes it. From the next tap the kiosk reads the whole Log every time. This is
+  the rollback for anything the cache does wrong; no deploy or reload is needed.
+- `clearLogCache()` marks the copy as out of date and removes it, and leaves the switch
+  as it is. Run it after changing the Log in a way the trigger doesn't see, such as another
+  script's writes.
+
+Each kiosk call that reaches the Log writes one `Log cache:` line in Executions: `off`,
+`hit`, or `miss` with the reason.
+
+A release that carries a change to the cache follows this order:
+
+1. If the cache is on, run `logCacheOff()`. Then `pnpm push`, and, as the account that
+   owns the daily jobs, run `setupDailyJobs` so the Log change trigger is there.
+2. Update the versioned deployment with the switch off.
+3. Reload every kiosk page, so no page still runs the old code.
+4. Only then, and only where it is to be on, run `logCacheOn()`.
+
+To take the code itself back, run `logCacheOff()` first, deploy the old version, and, as
+the owner of the daily jobs, delete the `onSheetChange` trigger by hand on the Triggers
+page: older code has no `onSheetChange`, so each change would log a failed run. The cache
+item and the `logChangedAt` script property can stay; older code ignores them.
 
 ## Commands
 
