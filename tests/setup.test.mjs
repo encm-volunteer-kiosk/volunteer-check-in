@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { cachedLogMap } from "./log-cache-tap.mjs";
 import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
@@ -747,6 +748,26 @@ test("setupSheets stamps the Settings cache after its Settings rows reach the sh
   assert.ok(Number(stamp) >= before + 1000);
   assert.equal(S.settingsFromCache(cache.get(S.settingsCacheKey()), stamp, Date.now()), null);
   assert.deepEqual(errors, []);
+});
+
+test("setupSheets writes the Log changed stamp, so the next tap reads the whole Log", () => {
+  const ss = new FakeSpreadsheet();
+  const props = new Map();
+  const S = server(ss, { props });
+  // First run: a new Log. Second run: nothing changes in the Log's cells, and it still stamps.
+  for (const run of ["first", "second"]) {
+    props.clear();
+    // A map of the whole Log read 10 seconds before the run.
+    const readAt = Date.now() - 10000;
+    S.setupSheets();
+    const stamp = props.get(S.logStampProperty());
+    assert.ok(Number(stamp) >= readAt + S.logCacheMarginMs(), run);
+    const values = ss.getSheetByName("Log").getDataRange().getValues();
+    const nextTap = cachedLogMap(S, values, readAt);
+    // The map matches the Log as the run left it, so without the stamp it would be used.
+    assert.equal(nextTap(null, Date.now() + 1000), "hit", run);
+    assert.equal(nextTap(stamp, Date.now() + 1000), "miss (edited)", run);
+  }
 });
 
 test("running setupSheets twice changes nothing", () => {

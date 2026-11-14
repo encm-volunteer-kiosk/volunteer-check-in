@@ -18,11 +18,15 @@
 //   the kiosk's check-in and check-out copy their flags to an in-memory Flags tab.
 // - Email hours: the preview and the send against stand-in MailApp, lock, cache and Hours
 //   emails tab, each of which a test can make busy or throw at the point it names.
+// - The Log cache: the kiosk's check-in and check-out with the cached Log state, and a scan
+//   of every apps-script file that holds each function able to write a cell to a class, so
+//   a new Log writer can't skip the Log changed stamp.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import vm from "node:vm";
+import ts from "typescript";
 import { createHash } from "node:crypto";
 import { formatInZone } from "./zoneFormat.mjs";
 
@@ -4796,5 +4800,324 @@ test("the Log write helpers stamp before and after their write, unless the kiosk
       if (opts && opts.kiosk) assert.deepEqual(seen, ["write"], label);
       else assert.deepEqual(seen, ["props.set " + STAMP, "write", "props.set " + STAMP], label);
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Every write to the Log stamps
+//
+// The Log cache is only right if every script write to the Log writes the Log changed
+// stamp. So every function in apps-script that calls a method able to change a cell's value
+// (or a tab's name, its rows or columns, or the spreadsheet's time zone), or any method of
+// the advanced Sheets service, is named below with what it writes and why that is safe. A
+// new one fails the test until someone puts it in a class by hand.
+
+/** The Range, Sheet, Spreadsheet and TextFinder methods that can change what a cell reads; a
+ * trailing * takes every name that starts so. Arrays' and Maps' sort and clear match too. */
+const WRITE_METHODS = [
+  "setValue",
+  "setValues",
+  "setFormula",
+  "setFormulas",
+  "setFormulaR1C1",
+  "setFormulasR1C1",
+  "setRichTextValue",
+  "setRichTextValues",
+  "check",
+  "uncheck",
+  "insertCheckboxes",
+  "removeCheckboxes",
+  "appendRow",
+  "insertRow*",
+  "insertColumn*",
+  "insertCells",
+  "deleteRow*",
+  "deleteColumn*",
+  "deleteCells",
+  "sort",
+  "randomize",
+  "clear*",
+  "removeDuplicates",
+  "trimWhitespace",
+  "splitTextToColumns",
+  "autoFill",
+  "autoFillToNeighbor",
+  "merge*",
+  "moveRows",
+  "moveColumns",
+  "moveTo",
+  "copyTo",
+  "copyValuesToRange",
+  "replaceWith",
+  "replaceAllWith",
+  "createPivotTable",
+  "createDataSourcePivotTable",
+  "createDataSourceTable",
+  "setName",
+  "renameActiveSheet",
+  "insertSheet*",
+  "insertDataSourceSheet",
+  "deleteSheet",
+  "deleteActiveSheet",
+  "duplicateActiveSheet",
+  "setNumberFormat",
+  "setNumberFormats",
+  "setNote",
+  "setNotes",
+  "protect",
+  "batchUpdate",
+  "setSpreadsheetTimeZone",
+];
+const isWriteMethod = (name) =>
+  WRITE_METHODS.some((m) => (m.endsWith("*") ? name.startsWith(m.slice(0, -1)) : name === m));
+
+// The Log write helpers: each wraps its whole write in stampedLogWrite_, which stamps before
+// and after it unless the kiosk option is given.
+const STAMPING_HELPERS = [
+  "appendLogRow_",
+  "updateLogRow_",
+  "appendLogRows_",
+  "deleteLogRow_",
+  "appendLogValues_",
+];
+// The only callers that pass the kiosk option: the kiosk forgets the map before its write and
+// fills it after.
+const KIOSK_CALLS = ["apiCheckIn", "apiCheckOut"];
+const SORTS_AN_ARRAY = "sorts an array, not a range";
+const HOURS_TABS = { tab: "hoursTabName()", in: "setupHoursTabs_" };
+const HOURS_DATA = { tab: "hoursDataTabName()", in: "setupHoursTabs_" };
+
+/**
+ * Every function that calls a write method, by class:
+ * - log: writes Log values, and stamps (a helper, setupLog_).
+ * - log, no value change: reaches the Log but changes no value, or writes only inside a
+ *   stamping helper.
+ * - tab: writes another tab, named by tab (an expression) in its own source or in the
+ *   function in names.
+ * - array: the call is on an array, not a sheet.
+ */
+const LOG_WRITE_CLASSES = {
+  appendLogRow_: { class: "log", why: "a stamping helper" },
+  appendLogRows_: { class: "log", why: "a stamping helper" },
+  deleteLogRow_: { class: "log", why: "a stamping helper" },
+  appendLogValues_: { class: "log", why: "a stamping helper" },
+  setupLog_: { class: "log", why: "stamps first and last" },
+
+  writeLogCells_: {
+    class: "log, no value change",
+    why: "called only inside appendLogRow_ and updateLogRow_, which stamp around it",
+  },
+  writeHeaderNotes_: { class: "log, no value change", why: "header notes only" },
+  applyLook_: {
+    class: "log, no value change",
+    why: "setupSheets' look: colours, widths, banding and conditional formats",
+  },
+  setupFilterViews_: { class: "log, no value change", why: "setupReports' filter views" },
+  setupKioskWarnings_: {
+    class: "log, no value change",
+    why: "setupReports' warning-only protections",
+  },
+
+  setupSheets: {
+    class: "tab",
+    tab: "SETTINGS_TAB",
+    why: "writes Settings; its time zone change comes just before setupLog_, which stamps first",
+  },
+  setupFlags_: { class: "tab", tab: "FLAGS_TAB" },
+  setSetting_: { class: "tab", tab: "SETTINGS_TAB" },
+  writeSettingsDescriptions_: { class: "tab", tab: "SETTINGS_TAB", in: "setupSheets" },
+  planFlagRows_: { class: "tab", tab: "FLAGS_TAB" },
+  writeFlagRows_: { class: "tab", tab: "FLAGS_TAB", in: "planFlagRows_" },
+  markShiftFlags_: { class: "tab", tab: "FLAGS_TAB" },
+  removedSheet_: { class: "tab", tab: "removedTabName()" },
+  appendRemovedRow_: { class: "tab", tab: "removedTabName()", in: "removedSheet_" },
+  adminRemoveShift: { class: "tab", tab: "removedTabName()", in: "removedSheet_" },
+  adminRestoreShift: { class: "tab", tab: "removedTabName()", in: "removedSheet_" },
+  hoursEmailSheet_: { class: "tab", tab: "hoursEmailTab()" },
+  appendHoursEmailRows_: { class: "tab", tab: "hoursEmailTab()", in: "hoursEmailSheet_" },
+  setupHowTo_: { class: "tab", tab: "howToTabName()" },
+  setupSampleProfiles: {
+    class: "tab",
+    tab: '"Volunteer Profiles"',
+    why: "a new spreadsheet file",
+  },
+  importLedgerSheet_: { class: "tab", tab: "importLedgerTab()" },
+  appendLedgerLines_: { class: "tab", tab: "importLedgerTab()", in: "importLedgerSheet_" },
+  insertHoursTab_: { class: "tab", ...HOURS_TABS, why: "the Hours tab and its data tab" },
+  setupHoursTabs_: { class: "tab", ...HOURS_DATA },
+  layoutHoursData_: { class: "tab", ...HOURS_DATA },
+  formatHoursRows_: { class: "tab", ...HOURS_DATA },
+  layoutHoursTab_: { class: "tab", ...HOURS_TABS },
+  writeHoursNotes_: { class: "tab", ...HOURS_TABS },
+  growHoursTab_: { class: "tab", ...HOURS_TABS },
+  writeHours_: { class: "tab", ...HOURS_DATA },
+  renderHoursLine_: { class: "tab", ...HOURS_TABS },
+  applyHoursSorts_: { class: "tab", ...HOURS_TABS },
+  setHoursSortStatus_: { class: "tab", ...HOURS_TABS },
+  deleteMonthlyHours_: { class: "tab", tab: "monthlyHoursTabName()" },
+  writeReportTab_: { class: "tab", tab: "reportTabName(" },
+
+  adminRemovedShifts: { class: "array", why: SORTS_AN_ARRAY },
+  adminHoursPreview: { class: "array", why: SORTS_AN_ARRAY },
+  parseProfiles: { class: "array", why: SORTS_AN_ARRAY },
+  logColumnFormats: { class: "array", why: SORTS_AN_ARRAY },
+  missedSignOut: { class: "array", why: SORTS_AN_ARRAY },
+  volunteerLogStates: { class: "array", why: SORTS_AN_ARRAY },
+  adminRosterLabels: { class: "array", why: SORTS_AN_ARRAY },
+  openShiftChoices: { class: "array", why: SORTS_AN_ARRAY },
+  hoursEmailRowsText: { class: "array", why: SORTS_AN_ARRAY },
+  hoursEmailPlan: { class: "array", why: SORTS_AN_ARRAY },
+  milestonesCrossedIn: { class: "array", why: SORTS_AN_ARRAY },
+  reviewGroups: { class: "array", why: SORTS_AN_ARRAY },
+  groupTable: { class: "array", why: SORTS_AN_ARRAY },
+  monthReport: { class: "array", why: SORTS_AN_ARRAY },
+  reportMonths: { class: "array", why: SORTS_AN_ARRAY },
+  hoursRows: { class: "array", why: SORTS_AN_ARRAY },
+  hoursLabels: { class: "array", why: SORTS_AN_ARRAY },
+  flagColumnFormats: { class: "array", why: SORTS_AN_ARRAY },
+  flagsSummary: { class: "array", why: SORTS_AN_ARRAY },
+  importSummary: { class: "array", why: SORTS_AN_ARRAY },
+  autoClockOutRows: { class: "array", why: SORTS_AN_ARRAY },
+  usualLength: { class: "array", why: SORTS_AN_ARRAY },
+};
+
+/**
+ * Every apps-script/*.js file parsed: its top-level functions by name, with their nodes and
+ * source, and what each calls: write methods, the advanced Sheets service, other functions by
+ * name, and object literals with a kiosk property.
+ */
+function scanServer() {
+  const dir = new URL("apps-script/", root);
+  const functions = {};
+  const loose = [];
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".js"))) {
+    const text = readFileSync(new URL(file, dir), "utf8");
+    const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+    for (const statement of sf.statements) {
+      const found = { writes: new Set(), calls: new Set(), kiosk: 0 };
+      const visit = (node) => {
+        if (ts.isCallExpression(node)) {
+          const callee = node.expression;
+          let name = null;
+          if (ts.isPropertyAccessExpression(callee)) name = callee.name.text;
+          if (
+            ts.isElementAccessExpression(callee) &&
+            ts.isStringLiteral(callee.argumentExpression)
+          ) {
+            name = callee.argumentExpression.text;
+          }
+          if (name && isWriteMethod(name)) found.writes.add(name);
+          if (ts.isIdentifier(callee)) found.calls.add(callee.text);
+          let base = callee;
+          while (
+            ts.isPropertyAccessExpression(base) ||
+            ts.isElementAccessExpression(base) ||
+            ts.isCallExpression(base)
+          ) {
+            base = base.expression;
+          }
+          if (ts.isIdentifier(base) && base.text === "Sheets") found.writes.add("Sheets.*");
+        }
+        if (
+          (ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) &&
+          node.name.getText(sf).replace(/["']/g, "") === "kiosk"
+        ) {
+          found.kiosk++;
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(statement);
+      if (ts.isFunctionDeclaration(statement) && statement.name) {
+        functions[statement.name.text] = {
+          file,
+          node: statement,
+          sf,
+          source: statement.getText(sf),
+          ...found,
+        };
+      } else if (found.writes.size || found.kiosk) {
+        loose.push(file + ": " + statement.getText(sf).slice(0, 60));
+      }
+    }
+  }
+  return { functions, loose };
+}
+
+test("every function that can write a cell is classed, and only the stamping ones write Log values", () => {
+  const { functions, loose } = scanServer();
+  assert.deepEqual(loose, [], "a write outside any function");
+  const writers = Object.keys(functions).filter((n) => functions[n].writes.size);
+  const listed = Object.keys(LOG_WRITE_CLASSES);
+  assert.deepEqual(
+    writers.filter((n) => !listed.includes(n)),
+    [],
+    "functions that write and aren't classed: add each with its class and why",
+  );
+  assert.deepEqual(
+    listed.filter((n) => !writers.includes(n)),
+    [],
+    "classed functions that no longer write: take them out",
+  );
+  const s = server();
+  const logNames = ["LOG_TAB", '"Log"', "'Log'"];
+  for (const [name, entry] of Object.entries(LOG_WRITE_CLASSES)) {
+    const fn = functions[name];
+    if (entry.class === "log") {
+      assert.ok(STAMPING_HELPERS.includes(name) || name === "setupLog_", name);
+    } else if (entry.class === "array") {
+      assert.deepEqual([...fn.writes], ["sort"], name + " calls only sort");
+    } else if (entry.class === "tab") {
+      const where = functions[entry.in || name];
+      assert.ok(where, name + ": no function " + entry.in);
+      assert.ok(where.source.includes(entry.tab), name + " names " + entry.tab);
+      assert.ok(!logNames.includes(entry.tab), name + " writes another tab, not the Log");
+      if (/^[A-Z_]+$|^\w+\(\)$/.test(entry.tab)) {
+        assert.notEqual(vm.runInContext(entry.tab, s.ctx), "Log", name);
+      }
+    } else {
+      assert.equal(entry.class, "log, no value change", name);
+    }
+  }
+  // writeLogCells_ is called only by the two helpers that stamp around it.
+  const callers = Object.keys(functions).filter((n) => functions[n].calls.has("writeLogCells_"));
+  assert.deepEqual(callers.sort(), ["appendLogRow_", "updateLogRow_"]);
+});
+
+test("each Log write helper does its whole write inside stampedLogWrite_, and setupLog_ stamps first and last", () => {
+  const { functions } = scanServer();
+  for (const name of STAMPING_HELPERS) {
+    const { node, sf } = functions[name];
+    const params = node.parameters.map((p) => p.name.getText(sf));
+    assert.equal(params.at(-1), "opts", name + " takes the option last");
+    const body = node.body.statements;
+    assert.equal(body.length, 1, name + " is one statement");
+    const call = ts.isReturnStatement(body[0]) ? body[0].expression : body[0].expression;
+    assert.ok(call && ts.isCallExpression(call), name);
+    assert.equal(call.expression.getText(sf), "stampedLogWrite_", name);
+    assert.equal(call.arguments[0].getText(sf), "opts", name);
+    assert.ok(ts.isArrowFunction(call.arguments[1]), name + " writes inside the arrow function");
+  }
+  const setup = functions.setupLog_.node.body.statements.map((st) =>
+    st.getText(functions.setupLog_.sf),
+  );
+  assert.equal(setup[0], "markLogChanged_();");
+  assert.equal(setup.at(-1), "markLogChanged_();");
+});
+
+test("only apiCheckIn and apiCheckOut pass the kiosk option, and the Log cache's own functions write no cell", () => {
+  const { functions } = scanServer();
+  const passing = Object.keys(functions).filter((n) => functions[n].kiosk);
+  assert.deepEqual(passing.sort(), KIOSK_CALLS);
+  for (const name of KIOSK_CALLS) assert.equal(functions[name].kiosk, 1, name);
+  for (const name of [
+    "logCacheOn",
+    "logCacheOff",
+    "clearLogCache",
+    "onSheetChange",
+    "markLogChanged_",
+    "stampedLogWrite_",
+  ]) {
+    assert.ok(functions[name], name);
+    assert.deepEqual([...functions[name].writes], [], name);
   }
 });

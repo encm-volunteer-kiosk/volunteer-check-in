@@ -9,7 +9,9 @@
  * One account owns the triggers. Signed in as it, someone runs setupDailyJobs once from
  * the Apps Script editor; the triggers then run as that account, which sends the email and writes the Log.
  * Google lets each account see and delete only its own triggers, so removeDailyJobs, run
- * as the owner, is how ownership moves to another account.
+ * as the owner, is how ownership moves to another account. setupDailyJobs also installs
+ * the Log change trigger (onSheetChange, Sheets.js) for the same account, and
+ * removeDailyJobs deletes it with the jobs.
  *
  * Every public name here can also be called by the kiosk page through google.script.run,
  * so each checks its caller before it reads or writes anything (tests/admin.test.mjs
@@ -40,7 +42,9 @@
  * Installs the daily jobs for the account running it: deletes this account's triggers in
  * this project whose handler is a daily job's, then creates one trigger for each entry of
  * dailyJobs (Logic.js) and nothing else, and writes the account into Settings "Daily jobs
- * installed by". Then it logs how many open rows the auto clock-out would close if it ran
+ * installed by". It also makes sure this account has the Log change trigger
+ * (ensureLogChangeTrigger_) and says in its log line whether it kept, installed or failed
+ * to install it. Then it logs how many open rows the auto clock-out would close if it ran
  * now, since a first run may close a backlog. Running it again replaces this account's
  * triggers, so one account never has two copies. Runs only from the Apps Script editor.
  */
@@ -50,6 +54,7 @@ function setupDailyJobs() {
   const removed = deleteJobTriggers_();
   const jobs = dailyJobs();
   jobs.forEach(createJobTrigger_);
+  const logTrigger = ensureLogChangeTrigger_();
   const owner = Session.getEffectiveUser().getEmail();
   setSetting_("Daily jobs installed by", owner);
   console.log(
@@ -59,21 +64,23 @@ function setupDailyJobs() {
       jobs.map(jobLabel_).join("; ") +
       ", owned by " +
       owner +
-      ".",
+      ". " +
+      logChangeTriggerLine_(logTrigger),
   );
   console.log(autoClockOutCountLine_(new Date()));
 }
 
 /**
- * Deletes this account's daily-job triggers in this project and clears Settings "Daily
- * jobs installed by" when it names this account. Another account's triggers can't be seen
- * or deleted from here: that account runs this itself. Runs only from the Apps Script
- * editor.
+ * Deletes this account's daily-job triggers and Log change triggers in this project and
+ * clears Settings "Daily jobs installed by" when it names this account. Another account's
+ * triggers can't be seen or deleted from here: that account runs this itself. Runs only
+ * from the Apps Script editor.
  */
 function removeDailyJobs() {
   requireEditorRun_();
   const settings = readSettings_();
   const removed = deleteJobTriggers_();
+  const removedLog = deleteLogChangeTriggers_();
   const me = Session.getEffectiveUser().getEmail();
   const installedBy = cellString(settings["Daily jobs installed by"]);
   const cleared = installedBy !== "" && installedBy.toLowerCase() === cellString(me).toLowerCase();
@@ -81,7 +88,9 @@ function removeDailyJobs() {
   console.log(
     "Daily jobs: removed " +
       removed +
-      " trigger(s) owned by " +
+      " trigger(s) and " +
+      removedLog +
+      " Log change trigger(s) owned by " +
       me +
       "." +
       (cleared
@@ -328,6 +337,53 @@ function deleteJobTriggers_() {
     }
   });
   return removed;
+}
+
+/**
+ * Makes sure this account has exactly one Log change trigger: an on-change trigger for
+ * this spreadsheet that runs onSheetChange (Sheets.js), which stamps every change made by
+ * hand so the Log cache is not used across it. One such trigger is kept; otherwise every
+ * onSheetChange trigger of this account is deleted and one is created. Google lists only
+ * this account's own triggers, so another account's is never touched. Never throws: a
+ * failure comes back as {kind: "failed", message} for setupDailyJobs' log line; otherwise
+ * {kind: "kept" or "installed"}.
+ */
+function ensureLogChangeTrigger_() {
+  try {
+    const mine = ScriptApp.getProjectTriggers().filter(
+      (t) => t.getHandlerFunction() === "onSheetChange",
+    );
+    if (mine.length === 1 && mine[0].getEventType() === ScriptApp.EventType.ON_CHANGE) {
+      return { kind: "kept" };
+    }
+    mine.forEach((t) => ScriptApp.deleteTrigger(t));
+    ScriptApp.newTrigger("onSheetChange")
+      .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+      .onChange()
+      .create();
+    return { kind: "installed" };
+  } catch (err) {
+    return { kind: "failed", message: (err && err.message) || String(err) };
+  }
+}
+
+/** Deletes this account's onSheetChange triggers in this project. Returns how many. */
+function deleteLogChangeTriggers_() {
+  let removed = 0;
+  ScriptApp.getProjectTriggers().forEach((t) => {
+    if (t.getHandlerFunction() === "onSheetChange") {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  });
+  return removed;
+}
+
+/** setupDailyJobs' words for ensureLogChangeTrigger_'s answer. */
+function logChangeTriggerLine_(result) {
+  if (result.kind === "kept") return "Kept the Log change trigger (onSheetChange).";
+  if (result.kind === "installed") return "Installed the Log change trigger (onSheetChange).";
+  return "The Log change trigger (onSheetChange) wasn't installed: " + result.message;
 }
 
 /** Creates the trigger for one dailyJobs entry: every few hours, or daily at an hour Central. */
