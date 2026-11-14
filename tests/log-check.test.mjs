@@ -443,14 +443,28 @@ test("closed-no-out: both check-out cells blank; an unreadable one isn't this pr
   assert.deepEqual(found([noOut]), [
     [2, "closed-no-out", "Closed with no check-out: both check-out cells blank"],
   ]);
-  // The auto clock-out's next-day guess doesn't read on the row's Date.
-  const guess = shift({
+  // A check-out two days on doesn't read on the row's Date.
+  const unreadable = shift({
     recordedOut: "",
-    statedOut: at("2026-11-13", "09:00"),
+    statedOut: at("2026-11-14", "09:00"),
     recordedHours: "",
     statedHours: "",
   });
+  assert.deepEqual(found([unreadable]), []);
+  // The auto clock-out's next-day guess reads as the end of the shift it closed.
+  const guess = shift({
+    recordedIn: at("2026-11-12", "21:00"),
+    statedIn: at("2026-11-12", "21:00"),
+    recordedOut: "",
+    statedOut: at("2026-11-13", "01:00"),
+    recordedHours: "",
+    statedHours: 4,
+  });
   assert.deepEqual(found([guess]), []);
+  assert.deepEqual(
+    found([{ ...guess, statedHours: 2 }]).map((p) => p[1]),
+    ["hours-mismatch"],
+  );
   const imported = {
     ...noOut,
     recordedIn: "",

@@ -19,6 +19,9 @@
  * lock a call finds the volunteer in Profiles first, so a wrong name or phone returns
  * without reading the Log. Then it reads the Log once, header and rows in one range, and
  * parses only that volunteer's rows (readLogTable_), the only rows the decisions look at.
+ * A check-out with no digits for a volunteer who shares a name reads the rows of every
+ * member of the name, and acts only when the tapped member is the one of the name
+ * checked in (checkOutTokens and resolveCheckOut, Logic.js).
  *
  * Each flag a check-in or check-out writes to Admin Alerts? is also copied to the Flags
  * tab (raiseFlags_), after the Log write and under the same lock. Every Flags read comes
@@ -43,12 +46,14 @@ function apiCheckAccess(code) {
 
 /**
  * {ok: true, volunteers: [{id, firstName, lastName, checkedIn, openShiftArrival,
- * needsPhoneCheck}]}. checkedIn is true when the volunteer has an open row the tablet can
- * still check out: one checked in less than "Auto clock-out after hours" ago, past
- * midnight too, or one dated today whose check-in time can't be read. openShiftArrival is
- * the ISO stated arrival of that row, else null; it is also null when the row's check-in
- * time can't be read, and the volunteer is still checked in. id is the hashed Volunteer
- * ID; the raw User Token never leaves the server. Reads only yesterday's and today's rows.
+ * needsPhoneCheck}], longShiftHours}. checkedIn is true when the volunteer has an open row
+ * the tablet can still check out: one checked in less than "Auto clock-out after hours"
+ * ago, past midnight too, or one dated today whose check-in time can't be read.
+ * openShiftArrival is the ISO stated arrival of that row, else null; it is also null when
+ * the row's check-in time can't be read, and the volunteer is still checked in. id is the
+ * hashed Volunteer ID; the raw User Token never leaves the server. longShiftHours is "Long
+ * shift flag hours" (parseLongShiftHours), the time in past which the page marks a card.
+ * Reads only yesterday's and today's rows.
  */
 function apiListVolunteers(code) {
   const settings = refreshSettingsCache_();
@@ -65,6 +70,7 @@ function apiListVolunteers(code) {
       autoClockOutWindowMs(settings["Auto clock-out after hours"]),
       today,
     ),
+    longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
   };
 }
 
@@ -142,7 +148,11 @@ function apiCheckIn(code, id, arrivalIso, digits) {
 }
 
 /**
- * Checks a volunteer out. id and digits are as for apiCheckIn. checkOutIso is the
+ * Checks a volunteer out. id and digits are as for apiCheckIn, but for one case: a
+ * check-out with no digits for a volunteer who shares a name reads the rows of every
+ * member of the name, and checks the tapped member out when they are the only one of the
+ * name checked in; when another member is in it answers PHONE_NEEDED (PHONE_MISSING when
+ * the tapped member has no usable phone), and NOT_IN when none is. checkOutIso is the
  * check-out time the volunteer chose, or null when they didn't choose one; then the
  * check-out is the server's time of the call. It comes last so a page loaded before the
  * check-out picker existed, which sends three arguments, still checks out at server time.
@@ -161,9 +171,9 @@ function apiCheckOut(code, id, digits, checkOutIso) {
   return withLock_(() => {
     const now = new Date();
     const volunteers = getProfiles_(settings);
-    const who = resolveVolunteer(volunteers, id, digits);
-    if (who.refusal) return refusal(who.refusal);
-    const log = readLogTable_(who.volunteer.token);
+    const wanted = checkOutTokens(volunteers, id, digits);
+    if (wanted.refusal) return refusal(wanted.refusal);
+    const log = readLogTable_(wanted.tokens);
     const outMs = arrivalMsFromIso(checkOutIso);
     const decision = decideCheckOut({
       volunteers,
@@ -184,18 +194,22 @@ function apiCheckOut(code, id, digits, checkOutIso) {
     // Staff may sort, insert or delete Log rows while the call runs, which moves rows
     // under their numbers. Read the row again, last before the write, and write only if
     // it is still the open row decided on; else BUSY, and a retry reads the Log again.
-    const shiftId = decision.open.shiftId;
-    const current = readLogRowAt_(decision.row, log.width, log.cols, logRead_(), shiftId);
+    const openId = decision.open.shiftId;
+    const current = readLogRowAt_(decision.row, log.width, log.cols, logRead_(), openId);
     if (!autoClockOutRowUnchanged(decision.open, current)) {
       console.error(
         "Check-out: Log row " +
           decision.row +
           " no longer holds open Shift ID " +
-          cellString(shiftId) +
+          cellString(openId) +
           "; answered BUSY and wrote nothing.",
       );
       return refusal("BUSY");
     }
+    // A row staff typed with no Shift ID gets one, as the auto clock-out gives it, so its
+    // Flags rows can be written and find it.
+    const shiftId = cellString(openId) || Utilities.getUuid();
+    if (!cellString(openId)) decision.cells[logHeaderNames().shiftId] = sheetText(shiftId);
     updateLogRow_(decision.row, decision.cells, log.cols);
     raiseFlags_(
       {

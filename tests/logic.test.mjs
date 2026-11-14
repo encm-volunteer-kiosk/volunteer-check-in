@@ -1241,6 +1241,24 @@ test("findOpenShift matches by token and ignores rows out of the window and clos
   assert.equal(find(entries).row, 8);
 });
 
+test("findOpenShift: the open row it picks doesn't depend on row order", () => {
+  const find = (entries) => L.findOpenShift(entries, TOKEN, NOW, WINDOW, TODAY).row;
+  // Row 4 has no readable time; row 5 was checked in an hour ago.
+  const noTime = entry(4, { recordedInMs: NaN, statedInMs: NaN });
+  const real = entry(5, { recordedInMs: NOW - HOUR, statedInMs: NOW - HOUR });
+  assert.equal(find([noTime, real]), 5);
+  assert.equal(find([real, noTime]), 5);
+  // Check-out closes the real row, whichever comes first.
+  assert.equal(checkOut({ entries: [noTime, real] }).row, 5);
+  // Equal starts, readable or not, go to the later row.
+  const twin = entry(6, { recordedInMs: NOW - HOUR, statedInMs: NOW - HOUR });
+  assert.equal(find([real, twin]), 6);
+  assert.equal(find([twin, real]), 6);
+  const noTime2 = entry(7, { recordedInMs: NaN, statedInMs: NaN });
+  assert.equal(find([noTime, noTime2]), 7);
+  assert.equal(find([noTime2, noTime]), 7);
+});
+
 test("closedTotals counts this token's closed rows by stated hours, menu rows included", () => {
   const entries = [
     entry(2, { status: "closed", statedHours: 1.5, recordedHours: 9, dateText: "2026-10-01" }),
@@ -1326,6 +1344,8 @@ const VOL = {
   row: 4,
 };
 const TWIN = { ...VOL, needsPhoneCheck: true };
+// The other member of TWIN's name: another token and other digits.
+const TWIN2 = { ...TWIN, id: "bbbbbbbbbbbbbbbb", phoneLast4: "0199", token: "tok-sam-2", row: 5 };
 
 test("checkInCells: a no-picker check-in", () => {
   const cells = plain(L.checkInCells(VOL, TODAY, NOW, NOW, "", "shift-9"));
@@ -1662,7 +1682,17 @@ test("an open row today with both check-in times unreadable still shows as check
 test("decideCheckOut refuses in order", () => {
   const future = { outMs: NOW + HOUR, outDate: TODAY };
   assert.deepEqual(checkOut({ id: "zzzzzzzzzzzzzzzz", ...future }), { refusal: "NOT_FOUND" });
-  assert.deepEqual(checkOut({ volunteers: [TWIN], ...future }), { refusal: "PHONE_NEEDED" });
+  // The only member of the name in, with no digits: the rule acts and the time is checked.
+  assert.deepEqual(checkOut({ volunteers: [TWIN], ...future }), { refusal: "CHECKOUT_FUTURE" });
+  // Another member of the name in too: the phone step comes before the time.
+  assert.deepEqual(
+    checkOut({
+      volunteers: [TWIN, TWIN2],
+      entries: [entry(9, {}), entry(10, { token: TWIN2.token })],
+      ...future,
+    }),
+    { refusal: "PHONE_NEEDED" },
+  );
   assert.deepEqual(checkOut({ volunteers: [TWIN], digits: "0000", ...future }), {
     refusal: "PHONE_WRONG",
   });
@@ -1806,6 +1836,149 @@ test("check-in and check-out act on the member the digits pick", () => {
   assert.deepEqual(checkOut({ volunteers: list, id: right, digits: "0131", entries: openRight }), {
     refusal: "NOT_IN",
   });
+});
+
+// A check-out with no digits for a member of a same-name group acts on the tapped member
+// when that member has the only open row of the name; otherwise digits are asked for.
+const BLANK_DIGITS = [null, "", "--"];
+
+test("checkOutTokens: the rows a check-out reads", () => {
+  const list = group();
+  const tokens = (id, digits) => plain(L.checkOutTokens(list, id, digits));
+  assert.deepEqual(tokens("zzzzzzzzzzzzzzzz", null), { refusal: "NOT_FOUND" });
+  assert.deepEqual(tokens("zzzzzzzzzzzzzzzz", "0131"), { refusal: "NOT_FOUND" });
+  // Ruth is in no group: her own token, with digits or without.
+  assert.deepEqual(tokens(idOf("tok-2"), null), { tokens: ["tok-2"] });
+  assert.deepEqual(tokens(idOf("tok-2"), "0131"), { tokens: ["tok-2"] });
+  // A Sam Lee with no digits: every Sam Lee's token, the one with no usable phone too, and
+  // not Ruth's.
+  for (const digits of BLANK_DIGITS) {
+    for (const id of [idOf("tok-1"), idOf("tok-3"), idOf("tok-4")]) {
+      assert.deepEqual(tokens(id, digits), { tokens: ["tok-1", "tok-3", "tok-4"] });
+    }
+  }
+  // With digits, as resolveVolunteer decides.
+  assert.deepEqual(tokens(idOf("tok-1"), "0131"), { tokens: ["tok-1"] });
+  assert.deepEqual(tokens(idOf("tok-1"), "0132"), { tokens: ["tok-3"] });
+  assert.deepEqual(tokens(idOf("tok-1"), "9999"), { refusal: "PHONE_WRONG" });
+  assert.deepEqual(tokens(idOf("tok-4"), "0131"), { refusal: "PHONE_MISSING" });
+});
+
+test("decideCheckOut with no digits in a group of two acts only when the tapped member is the one in", () => {
+  const pair = [TWIN, TWIN2];
+  const noPhone = [{ ...TWIN, phoneLast4: "" }, TWIN2];
+  const mine = entry(9, {});
+  const theirs = entry(10, { token: TWIN2.token });
+  for (const digits of BLANK_DIGITS) {
+    const out = (fields) => checkOut({ volunteers: pair, digits, ...fields });
+    // Only the tapped member open: their row is closed.
+    const closed = out({ entries: [mine] });
+    assert.equal(closed.row, 9);
+    assert.equal(closed.volunteer.id, TWIN.id);
+    assert.equal(closed.cells[H.status], "closed");
+    // Both open.
+    assert.deepEqual(out({ entries: [mine, theirs] }), { refusal: "PHONE_NEEDED" });
+    assert.deepEqual(out({ volunteers: noPhone, entries: [mine, theirs] }), {
+      refusal: "PHONE_MISSING",
+    });
+    // Only the other member open.
+    assert.deepEqual(out({ entries: [theirs] }), { refusal: "PHONE_NEEDED" });
+    assert.deepEqual(out({ volunteers: noPhone, entries: [theirs] }), {
+      refusal: "PHONE_MISSING",
+    });
+    // Neither open, with a closed row for each.
+    const shut = { status: "closed", statedHours: 1 };
+    for (const entries of [[], [entry(9, shut), entry(10, { ...shut, token: TWIN2.token })]]) {
+      assert.deepEqual(out({ entries }), { refusal: "NOT_IN" });
+      assert.deepEqual(out({ volunteers: noPhone, entries }), { refusal: "NOT_IN" });
+    }
+  }
+});
+
+test("a check-out with no digits writes what the same check-out with the tapped member's digits writes", () => {
+  const pair = [TWIN, TWIN2];
+  const cases = [
+    { entries: [entry(9, {})] },
+    { entries: [entry(9, {})], outMs: NOW - 30 * MIN, outDate: TODAY },
+    // Stated hours past "Long shift flag hours".
+    { entries: [entry(9, { recordedInMs: NOW - 9 * HOUR, statedInMs: NOW - 9 * HOUR })] },
+    { entries: [entry(9, { recordedInMs: NaN, statedInMs: NaN, alerts: "staff text" })] },
+    // The other member's closed row is read too, and changes nothing.
+    {
+      entries: [entry(9, {}), entry(10, { token: TWIN2.token, status: "closed", statedHours: 1 })],
+    },
+  ];
+  let flagged = 0;
+  cases.forEach((fields, i) => {
+    const withDigits = checkOut({ volunteers: pair, digits: "0131", ...fields });
+    assert.equal(withDigits.row, 9);
+    for (const digits of BLANK_DIGITS) {
+      assert.deepEqual(
+        checkOut({ volunteers: pair, digits, ...fields }),
+        withDigits,
+        "case " + i + ", digits " + JSON.stringify(digits),
+      );
+    }
+    if (withDigits.flags.length) flagged += 1;
+  });
+  const long = checkOut({ volunteers: pair, digits: null, ...cases[2] });
+  assert.match(long.flags.join(";"), /^long shift: 9 h stated, over 8 h$/);
+  assert.equal(long.cells[H.alerts], long.flags[0]);
+  assert.equal(flagged, 3);
+});
+
+test("the only member of the name in checks out with no digits even without a usable phone", () => {
+  const list = [{ ...TWIN, phoneLast4: "" }, TWIN2];
+  const out = checkOut({ volunteers: list, digits: null, entries: [entry(9, {})] });
+  assert.equal(out.row, 9);
+  assert.equal(out.volunteer.id, TWIN.id);
+  // Digits still give PHONE_MISSING: they can't be matched.
+  assert.deepEqual(checkOut({ volunteers: list, digits: "0131", entries: [entry(9, {})] }), {
+    refusal: "PHONE_MISSING",
+  });
+});
+
+test("a group of three: only rows the tablet can still check out count as in", () => {
+  const TWIN3 = { ...TWIN, id: "cccccccccccccccc", phoneLast4: "0177", token: "tok-sam-3" };
+  const trio = [TWIN, TWIN2, TWIN3];
+  const mine = entry(9, {});
+  const shut = (row, token) => entry(row, { token, status: "closed", statedHours: 1 });
+  // Checked in 13 hours ago, yesterday: past the 12-hour window.
+  const stale = (row, token) =>
+    entry(row, {
+      token,
+      dateText: "2026-11-11",
+      recordedInMs: NOW - 13 * HOUR,
+      statedInMs: NOW - 13 * HOUR,
+    });
+  const out = (entries) => checkOut({ volunteers: trio, digits: null, entries });
+  assert.equal(out([mine, shut(10, TWIN2.token), shut(11, TWIN3.token)]).row, 9);
+  assert.equal(out([mine, stale(10, TWIN2.token), stale(11, TWIN3.token)]).row, 9);
+  assert.equal(out([mine, shut(10, TWIN2.token), stale(11, TWIN3.token)]).row, 9);
+  // The other two in and the tapped member's row closed: digits are asked for.
+  const both = [
+    shut(9, TOKEN),
+    entry(10, { token: TWIN2.token }),
+    entry(11, { token: TWIN3.token }),
+  ];
+  assert.deepEqual(out(both), { refusal: "PHONE_NEEDED" });
+  // One other in as well as the tapped member.
+  assert.deepEqual(out([mine, entry(10, { token: TWIN3.token })]), { refusal: "PHONE_NEEDED" });
+  // The tapped member's own row past the window doesn't count either.
+  assert.deepEqual(out([stale(9, TOKEN)]), { refusal: "NOT_IN" });
+});
+
+test("decideCheckIn in a group still asks for digits when nobody of the name is in", () => {
+  for (const digits of BLANK_DIGITS) {
+    assert.deepEqual(checkIn({ volunteers: [TWIN, TWIN2], digits, entries: [] }), {
+      refusal: "PHONE_NEEDED",
+    });
+    assert.deepEqual(
+      checkIn({ volunteers: [{ ...TWIN, phoneLast4: "" }, TWIN2], digits, entries: [] }),
+      { refusal: "PHONE_MISSING" },
+    );
+  }
+  assert.equal(checkIn({ volunteers: [TWIN, TWIN2], digits: "0131" }).volunteer.id, TWIN.id);
 });
 
 // ---------------------------------------------------------------------------
@@ -2095,6 +2268,52 @@ test("findOverlap skips a closed row whose check-out reads before its check-in",
   const refused = add([pastMidnight, normal], "13:00", "15:00");
   assert.equal(refused.refusal, "ADMIN_OVERLAP");
   assert.equal(refused.conflict.row, 7);
+});
+
+test("a kiosk check-out written on the day after the row's Date ends that shift", () => {
+  // Checked in 11:00 PM on the 11th, checked out at the kiosk 12:30 AM on the 12th.
+  const day = "2026-11-11";
+  const Y = (hhmm) => Date.parse(day + "T" + hhmm + ":00-06:00");
+  const N = (hhmm) => Date.parse("2026-11-12T" + hhmm + ":00-06:00");
+  const cols = L.logColumns(LOG_HEADERS);
+  const row = (extra = {}) =>
+    L.logEntry(
+      closedRow(LOG_HEADERS, {
+        Date: day,
+        "User Token": TOKEN,
+        "Check-In Recorded (timestamp)": new Date(Y("23:00")),
+        "Check-In Stated (user)": new Date(Y("23:00")),
+        "Check-Out Recorded (timestamp)": new Date(N("00:30")),
+        "Check-Out Stated (user)": new Date(N("00:30")),
+        "Hours Served (timestamps)": 1.5,
+        "Hours Served (stated)": 1.5,
+        ...extra,
+      }),
+      6,
+      cols,
+      READ,
+    );
+  const overnight = row();
+  assert.equal(overnight.recordedOutMs, N("00:30"));
+  assert.equal(overnight.statedOutMs, N("00:30"));
+  // Add a shift inside it that night is refused.
+  assert.equal(L.findOverlap([overnight], TOKEN, day, Y("23:15"), Y("23:45")).row, 6);
+  const added = addShift({
+    entries: [overnight],
+    date: day,
+    inMs: Y("23:15"),
+    inDate: day,
+    outMs: Y("23:45"),
+    outDate: day,
+  });
+  assert.equal(added.refusal, "ADMIN_OVERLAP");
+  // Only an end time belongs to the day before: a check-in on the next day is unreadable.
+  assert.ok(Number.isNaN(row({ "Check-In Stated (user)": new Date(N("00:10")) }).statedInMs));
+  // With no readable start there is no shift to end, and two days on is still unreadable.
+  const noStart = row({ "Check-In Recorded (timestamp)": "", "Check-In Stated (user)": "" });
+  assert.ok(Number.isNaN(noStart.statedOutMs));
+  const later = row({ "Check-Out Stated (user)": new Date(N("00:30") + 24 * HOUR) });
+  assert.ok(Number.isNaN(later.statedOutMs));
 });
 
 test("handShiftCells throws on an empty token or Shift ID", () => {
@@ -3512,18 +3731,62 @@ test("decisions on the volunteer's own rows equal decisions on the whole Log", (
     if (who.refusal) {
       // The kiosk returns this refusal before it reads the Log.
       assert.equal(exact(wholeIn), exact({ refusal: who.refusal }), where);
-      assert.equal(exact(wholeOut), exact({ refusal: who.refusal }), where);
       count(who.refusal);
+    } else {
+      const token = who.volunteer.token;
+      const own_ = all.filter((_, i) => L.logRowHasToken(rows[i], cols, token, READ));
+      assert.equal(exact(own_), exact(all.filter((e) => L.isTokenRow(e, token))), where);
+      assert.equal(exact(L.decideCheckIn({ ...inArgs, entries: own_ })), exact(wholeIn), where);
+      if (who.volunteer.id !== tapped) count("another member");
+      count("in: " + (wholeIn.refusal || (wholeIn.missedSignOut ? "ok, missed sign-out" : "ok")));
+    }
+    // A check-out reads the rows of the tokens checkOutTokens names: the tapped member's
+    // whole name when it sends no digits for a same-name group, else the one volunteer's.
+    const t = L.checkOutTokens(volunteers, tapped, digits);
+    if (t.refusal) {
+      // The kiosk returns this refusal before it reads the Log.
+      assert.equal(exact(wholeOut), exact({ refusal: t.refusal }), where);
       continue;
     }
-    const token = who.volunteer.token;
-    const own_ = all.filter((_, i) => L.logRowHasToken(rows[i], cols, token, READ));
-    assert.equal(exact(own_), exact(all.filter((e) => L.isTokenRow(e, token))), where);
-    assert.equal(exact(L.decideCheckIn({ ...inArgs, entries: own_ })), exact(wholeIn), where);
-    assert.equal(exact(L.decideCheckOut({ ...outArgs, entries: own_ })), exact(wholeOut), where);
-    if (who.volunteer.id !== tapped) count("another member");
-    count("in: " + (wholeIn.refusal || (wholeIn.missedSignOut ? "ok, missed sign-out" : "ok")));
-    count("out: " + (wholeOut.refusal || (wholeOut.milestone ? "ok, milestone" : "ok")));
+    const read_ = all.filter((_, i) =>
+      t.tokens.some((token) => L.logRowHasToken(rows[i], cols, token, READ)),
+    );
+    assert.equal(exact(L.decideCheckOut({ ...outArgs, entries: read_ })), exact(wholeOut), where);
+    const tappedVol = volunteers.find((v) => v.id === tapped);
+    if (tappedVol.needsPhoneCheck && !String(digits ?? "").replace(/\D/g, "")) {
+      const blank = {
+        PHONE_NEEDED: "PHONE_NEEDED, another in",
+        PHONE_MISSING: "PHONE_MISSING, no digits",
+        NOT_IN: "NOT_IN, none of the name in",
+      };
+      count(
+        "out: " +
+          (wholeOut.refusal
+            ? blank[wholeOut.refusal] || wholeOut.refusal + ", no digits"
+            : "ok, no digits"),
+      );
+      // The rule's answers, against the Log itself.
+      const inNow = volunteers.filter(
+        (v) =>
+          v.needsPhoneCheck &&
+          L.volunteerNameKey(v) === L.volunteerNameKey(tappedVol) &&
+          L.findOpenShift(all, v.token, nowMs, base.windowMs, today),
+      );
+      if (!inNow.length) assert.equal(wholeOut.refusal, "NOT_IN", where);
+      else if (inNow.length === 1 && inNow[0].id === tapped) {
+        assert.notEqual(wholeOut.refusal, "PHONE_NEEDED", where);
+        assert.notEqual(wholeOut.refusal, "PHONE_MISSING", where);
+        assert.notEqual(wholeOut.refusal, "NOT_IN", where);
+      } else {
+        assert.equal(
+          wholeOut.refusal,
+          tappedVol.phoneLast4 ? "PHONE_NEEDED" : "PHONE_MISSING",
+          where,
+        );
+      }
+    } else {
+      count("out: " + (wholeOut.refusal || (wholeOut.milestone ? "ok, milestone" : "ok")));
+    }
   }
   // The cases reach every path the decisions have.
   for (const key of [
@@ -3540,6 +3803,10 @@ test("decisions on the volunteer's own rows equal decisions on the whole Log", (
     "out: ok",
     "out: ok, milestone",
     "out: NOT_IN",
+    "out: ok, no digits",
+    "out: PHONE_NEEDED, another in",
+    "out: PHONE_MISSING, no digits",
+    "out: NOT_IN, none of the name in",
   ]) {
     assert.ok(tally[key] > 0, "no case reached " + key + ": " + exact(tally));
   }

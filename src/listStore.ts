@@ -21,7 +21,7 @@ export type ListStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 export const LIST_STORE_KEY = "encm-kiosk-volunteer-list";
 // Bump when the stored shape changes, so old entries are ignored and removed.
-export const LIST_STORE_VERSION = 1;
+export const LIST_STORE_VERSION = 2;
 export const STORED_LIST_MAX_AGE_MS = 10 * 60_000;
 
 const TZ = "America/Chicago";
@@ -41,6 +41,8 @@ type StoredList = {
   code: string;
   savedAt: number;
   volunteers: StoredVolunteer[];
+  // The sheet's "Long shift flag hours" from the same list reply: when a card turns amber.
+  longShiftHours: number;
 };
 
 /** The Central calendar day of an instant, as YYYY-MM-DD. */
@@ -90,21 +92,24 @@ const isStoredVolunteer = (v: unknown): v is StoredVolunteer => {
 };
 
 /**
- * Keeps the list. savedAt is when its server list arrived: a write after the page marks a
- * volunteer passes the same savedAt, so the list doesn't look newer than the server's.
- * A storage error is ignored; the page then loads as it would without a kept list.
+ * Keeps the list and its reply's long-shift number. savedAt is when its server list arrived:
+ * a write after the page marks a volunteer passes the same savedAt, so the list doesn't look
+ * newer than the server's. A storage error is ignored; the page then loads as it would
+ * without a kept list.
  */
 export function storeList(
   storage: ListStorage | null,
   code: string,
   savedAt: number,
   volunteers: Volunteer[],
+  longShiftHours: number,
 ): void {
   const entry: StoredList = {
     version: LIST_STORE_VERSION,
     code,
     savedAt,
     volunteers: volunteers.map(toStored),
+    longShiftHours,
   };
   try {
     storage?.setItem(LIST_STORE_KEY, JSON.stringify(entry));
@@ -119,15 +124,15 @@ export function clearStoredList(storage: ListStorage | null): void {
 }
 
 /**
- * The kept list and when its server list arrived, when it was saved for this code, on now's
- * Central day, and 0 <= now - savedAt < 10 minutes. Otherwise null, and an entry that is
- * there is removed. A storage error gives null.
+ * The kept list, when its server list arrived, and its long-shift number, when it was saved
+ * for this code, on now's Central day, and 0 <= now - savedAt < 10 minutes. Otherwise null,
+ * and an entry that is there is removed. A storage error gives null.
  */
 export function readStoredList(
   storage: ListStorage | null,
   code: string | null,
   now: number,
-): { savedAt: number; volunteers: Volunteer[] } | null {
+): { savedAt: number; volunteers: Volunteer[]; longShiftHours: number } | null {
   let raw: string | null;
   try {
     raw = storage ? storage.getItem(LIST_STORE_KEY) : null;
@@ -144,7 +149,11 @@ export function readStoredList(
     clearStoredList(storage);
     return null;
   }
-  return { savedAt: usable.savedAt, volunteers: usable.volunteers.map(fromStored) };
+  return {
+    savedAt: usable.savedAt,
+    volunteers: usable.volunteers.map(fromStored),
+    longShiftHours: usable.longShiftHours,
+  };
 }
 
 function usableEntry(entry: unknown, code: string | null, now: number): StoredList | null {
@@ -156,6 +165,8 @@ function usableEntry(entry: unknown, code: string | null, now: number): StoredLi
   if (age < 0 || age >= STORED_LIST_MAX_AGE_MS) return null;
   if (centralDay(e.savedAt) !== centralDay(now)) return null;
   if (!Array.isArray(e.volunteers) || !e.volunteers.every(isStoredVolunteer)) return null;
+  const hours = e.longShiftHours;
+  if (typeof hours !== "number" || !Number.isFinite(hours) || hours <= 0) return null;
   return entry as StoredList;
 }
 

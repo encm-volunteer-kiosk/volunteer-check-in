@@ -183,7 +183,7 @@ function settingsDescriptions() {
     "Flags email hour":
       "The hour, Central time, the weekly flags email goes out if there is anything to report, as a whole number from 0 to 23 (8 is 8 AM, 14 is 2 PM); blank or anything else means 8, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).",
     "Flags email last run":
-      "Written by the kiosk: when the weekly flags email last checked and whether it sent or had nothing to send; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report.",
+      "Written by the kiosk: when the weekly flags email last checked and whether it sent, had nothing to send or had no valid address to send to; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report.",
     "Daily jobs installed by":
       "Written by the kiosk: the Google account that runs the nightly jobs and the weekly email, so leave it alone.",
     [importFileSetting()]:
@@ -666,6 +666,60 @@ function resolveVolunteer(volunteers, id, digits) {
   return matches.length === 1 ? { volunteer: matches[0] } : { refusal: "PHONE_WRONG" };
 }
 
+/** The members of tapped's same-name group: every needsPhoneCheck volunteer of its name. */
+function sameNameMembers(volunteers, tapped) {
+  const group = volunteerNameKey(tapped);
+  return volunteers.filter((v) => v.needsPhoneCheck && volunteerNameKey(v) === group);
+}
+
+/** True when digits hold at least one digit, as checkPhone reads them. */
+function digitsGiven(digits) {
+  return cellString(digits).replace(/\D/g, "") !== "";
+}
+
+/**
+ * The User Tokens whose Log rows a check-out decides on, as {tokens}, or {refusal}. A
+ * same-name group member's entry tapped with no digits gives every member's token (those
+ * with a blank phoneLast4 too), since resolveCheckOut then looks at the whole name.
+ * Otherwise resolveVolunteer decides: its refusal, or the token of the volunteer it found.
+ */
+function checkOutTokens(volunteers, id, digits) {
+  const tapped = findVolunteer(volunteers, id);
+  if (!tapped) return { refusal: "NOT_FOUND" };
+  if (tapped.needsPhoneCheck && !digitsGiven(digits)) {
+    return { tokens: sameNameMembers(volunteers, tapped).map((v) => v.token) };
+  }
+  const who = resolveVolunteer(volunteers, id, digits);
+  return who.refusal ? { refusal: who.refusal } : { tokens: [who.volunteer.token] };
+}
+
+/**
+ * The volunteer a check-out acts on, as {volunteer}, or {refusal}. Input: {volunteers, id
+ * (the tapped entry), digits, entries (the Log, or the rows of the tokens checkOutTokens
+ * names), nowMs, windowMs, todayDate}.
+ *
+ * With digits, or off a same-name group, this is resolveVolunteer. A group member tapped
+ * with no digits is acted on when, in entries, that member has the only open row the
+ * tablet can check out (findOpenShift) among all members of the name; their phone is not
+ * looked at then. When no member has one: NOT_IN. When another member has one, alone or
+ * besides the tapped member: PHONE_NEEDED, or PHONE_MISSING when the tapped member has no
+ * usable phone, as with no digits before. The tapped member must be the one in, so a
+ * tablet whose list is out of date can never check out someone else from a card.
+ */
+function resolveCheckOut(input) {
+  const tapped = findVolunteer(input.volunteers, input.id);
+  if (!tapped) return { refusal: "NOT_FOUND" };
+  if (!tapped.needsPhoneCheck || digitsGiven(input.digits)) {
+    return resolveVolunteer(input.volunteers, input.id, input.digits);
+  }
+  const open = sameNameMembers(input.volunteers, tapped).filter((v) =>
+    findOpenShift(input.entries, v.token, input.nowMs, input.windowMs, input.todayDate),
+  );
+  if (!open.length) return { refusal: "NOT_IN" };
+  if (open.length === 1 && open[0] === tapped) return { volunteer: tapped };
+  return { refusal: checkPhone(tapped, input.digits) };
+}
+
 // ---------------------------------------------------------------------------
 // Access, phone and arrival checks
 
@@ -1027,10 +1081,18 @@ function clockText(text) {
  * on day by read.at, and counts when the result is on day: a time skipped when daylight
  * time starts reads as the later time read.at gives, and NaN only if that is another day.
  * A read without at reads every time with no date as NaN.
+ *
+ * startMs is given for an end time only: the shift's start (shiftStartMs). A full
+ * date-time on the day after day then counts too when the start reads and it isn't before
+ * it, so a check-out after midnight ends the shift that started the day before.
  */
-function rowTimeMs(t, day, read) {
+function rowTimeMs(t, day, read, startMs) {
   if (!t || !day) return NaN;
-  if (t.date === day) return typeof t.ms === "number" && isFinite(t.ms) ? t.ms : NaN;
+  const ms = typeof t.ms === "number" && isFinite(t.ms) ? t.ms : NaN;
+  if (t.date === day) return ms;
+  if (typeof startMs === "number" && isFinite(startMs) && t.date === addDays(day, 1)) {
+    return ms >= startMs ? ms : NaN;
+  }
   const clock = cellString(t.clock);
   const noDate = t.date === timeOnlyDate() || cellString(t.date) === "";
   if (!clock || !noDate || !read || typeof read.at !== "function") return NaN;
@@ -1053,8 +1115,10 @@ function rowTimeMs(t, day, read) {
  * Every time on a row is on that row's Date (rowTimeMs). A full date-time whose Central
  * date is the row's Date is kept. A time with no date, such as "9:00 AM" typed into the
  * cell (Sheets stores it on 1899-12-30) or typed as text, is read as that time on the
- * row's Date, to the minute. Anything else reads as NaN (unreadable), so a full date-time
- * on another day can't make a shift days long. Hours are NaN when blank.
+ * row's Date, to the minute. The one exception is a check-out: a full date-time on the
+ * next day is kept when the start reads, since a shift can be checked out after
+ * midnight. Anything else reads as NaN (unreadable), so a full date-time on another day
+ * can't make a shift days long. Hours are NaN when blank.
  */
 function logEntry(cells, row, cols, read) {
   const H = logHeaderNames();
@@ -1065,21 +1129,24 @@ function logEntry(cells, row, cols, read) {
   const text = (header) => cellString(read.text(raw(header)));
   const dateText = text(H.date);
   const day = rowDate(dateText);
-  const time = (header) => {
+  const time = (header, startMs) => {
     const value = raw(header);
     if (cellString(value) === "") return NaN;
-    return rowTimeMs(read.time(value), day, read);
+    return rowTimeMs(read.time(value), day, read, startMs);
   };
+  const recordedInMs = time(H.recordedIn);
+  const statedInMs = time(H.statedIn);
+  const startMs = shiftStartMs({ recordedInMs, statedInMs });
   return {
     row,
     shiftId: text(H.shiftId),
     token: text(H.token),
     name: text(H.name),
     dateText,
-    recordedInMs: time(H.recordedIn),
-    statedInMs: time(H.statedIn),
-    recordedOutMs: time(H.recordedOut),
-    statedOutMs: time(H.statedOut),
+    recordedInMs,
+    statedInMs,
+    recordedOutMs: time(H.recordedOut, startMs),
+    statedOutMs: time(H.statedOut, startMs),
     recordedHours: hoursCell(raw(H.recordedHours)),
     statedHours: hoursCell(raw(H.statedHours)),
     alerts: text(H.alerts),
@@ -1185,13 +1252,17 @@ function isTabletOpenRow(entry, nowMs, windowMs, todayDate) {
 
 /**
  * This token's open row that the tablet can still check out (isTabletOpenRow), or null.
- * When staff edits left more than one, the latest start wins.
+ * When staff edits left more than one, the latest start wins, a readable start over an
+ * unreadable one, and of equal starts the later row, so row order never decides.
  */
 function findOpenShift(entries, token, nowMs, windowMs, todayDate) {
+  const startOf = (e) => (hasReadableStart(e) ? shiftStartMs(e) : -Infinity);
   let found = null;
   entries.forEach((e) => {
     if (!isTokenRow(e, token) || !isTabletOpenRow(e, nowMs, windowMs, todayDate)) return;
-    if (!found || shiftStartMs(e) > shiftStartMs(found)) found = e;
+    const a = startOf(e);
+    const b = found ? startOf(found) : -Infinity;
+    if (!found || a > b || (a === b && e.row > found.row)) found = e;
   });
   return found;
 }
@@ -1409,22 +1480,24 @@ function decideCheckIn(input) {
 }
 
 /**
- * Checks a check-out in order: NOT_FOUND, phone, NOT_IN (no open row in the window,
- * findOpenShift), then the stated check-out time (validateCheckOut). Input: {volunteers, id
- * (the tapped entry), digits, entries (the Log), todayDate, nowMs, windowMs, outMs
+ * Checks a check-out in order: NOT_FOUND, the phone or the same-name rule
+ * (resolveCheckOut: a phone refusal or NOT_IN), NOT_IN (no open row in the window,
+ * findOpenShift), then the stated check-out time (validateCheckOut). Input: {volunteers,
+ * id (the tapped entry), digits, entries (the Log), todayDate, nowMs, windowMs, outMs
  * (null for server time), outDate, flagMinutes, longShiftHours (parseLongShiftHours),
- * launchDate}. Only the resolved volunteer's rows (isTokenRow) are looked at, so entries
- * may be those rows alone.
+ * launchDate}. Only the rows of the tokens checkOutTokens names are looked at, so entries
+ * may be those rows alone. A check-out made with no digits under the same-name rule
+ * decides and writes exactly what the same check-out with the member's digits would.
  *
  * Returns {refusal} or {volunteer, row, cells, minutes, milestone, statedOutMs, flags,
- * open}: volunteer is the one resolveVolunteer found, row the open row, cells its
+ * open}: volunteer is the one resolveCheckOut found, row the open row, cells its
  * check-out cell map, minutes the whole minutes this shift adds toward milestones, and the
  * milestone is counted from the closed rows before this one. flags is checkOutFlags, the
  * texts the cells add to Admin Alerts? (the long-shift flag among them when the stated
  * hours are more than longShiftHours), and open the open row's entry.
  */
 function decideCheckOut(input) {
-  const who = resolveVolunteer(input.volunteers, input.id, input.digits);
+  const who = resolveCheckOut(input);
   if (who.refusal) return { refusal: who.refusal };
   const volunteer = who.volunteer;
   const open = findOpenShift(
@@ -5502,6 +5575,19 @@ function lastRunText(nowText, what) {
   return nowText + ", " + what;
 }
 
+/** What the weekly email's last run says when it was due but had no address to send to. */
+function flagsEmailNoAddress() {
+  return 'not sent: no valid address in "Flags email to"';
+}
+
+/**
+ * True when a "Flags email last run" value is that of a run that was due but had no
+ * address to send to (flagsEmailNoAddress).
+ */
+function flagsEmailNotSent(lastRunValue) {
+  return cellString(lastRunValue).endsWith(", " + flagsEmailNoAddress());
+}
+
 /**
  * The weekly email's due slot: the latest "yyyy-MM-dd HH:00" at or before nowText that
  * falls on weekday (a name from parseWeekdaySetting) at hour (0-23).
@@ -5756,13 +5842,17 @@ function importLedgerColumns(headerRow) {
   return cols;
 }
 
-/** Why a source row is left out, by code, as the preview lists them. */
+/**
+ * Why a source row is left out, by code, as the preview lists them. The most hours a row
+ * may have is the Log check's limit (logCheckMaxHours), so the import never brings in a
+ * row the Log check would flag as an impossible shift.
+ */
 function importLeftOutReasons() {
   return {
     date: "date can't be read",
     future: "date is after today",
     name: "no first or last name",
-    hours: "hours aren't a number above 0 and at most 24",
+    hours: "hours aren't a number above 0 and at most " + logCheckMaxHours(),
   };
 }
 
@@ -5846,6 +5936,106 @@ function importSourceKey(date, nameKey, n) {
   return date + "|" + nameKey + "|" + n;
 }
 
+/** The date and name part of a source key: all of it before its count. */
+function importKeyGroup(key) {
+  const s = cellString(key);
+  return s.slice(0, s.lastIndexOf("|"));
+}
+
+/**
+ * The source row a ledger line's Source names ("<file ID>, <tab>, row 12"), or 0 when it
+ * names another file or tab, or no row.
+ */
+function importLedgerSourceRow(source, fileId, tab) {
+  const s = cellString(source);
+  const start = cellString(fileId) + ", " + cellString(tab) + ", row ";
+  if (!s.startsWith(start)) return 0;
+  const rest = s.slice(start.length);
+  return /^[1-9]\d*$/.test(rest) ? Number(rest) : 0;
+}
+
+/**
+ * The ledger lines [{key, source}] that came from this file and tab, as [{key, row}] with
+ * the source row each was imported from.
+ */
+function importLedgerRows(lines, fileId, tab) {
+  return (lines || [])
+    .map((line) => ({
+      key: cellString(line.key),
+      row: importLedgerSourceRow(line.source, fileId, tab),
+    }))
+    .filter((line) => line.key !== "" && line.row > 0);
+}
+
+/**
+ * The count each keyed source row gets in its key (importSourceKey), as a Map of source
+ * row to count. rows is [{row, group}] in source order: every row whose date reads and
+ * that has a name, left out or not, with group its date and name key ("date|nameKey").
+ * ledgerKeys is a Set of every key in the ledger, ledgerRows the ledger's lines from this
+ * file and tab (importLedgerRows).
+ *
+ * A row's count is its place among the rows with its date and name, unless the ledger
+ * says otherwise. When every ledger line from this tab names a row that still has that
+ * line's date and name, no imported row has moved, and each keeps the count it came in
+ * under. That matters when a row left out for its date or name is fixed where it is: it
+ * joins a date and name above rows already imported, and by place it would take the key
+ * of the row below it. Instead, a row whose place is taken gets the lowest count no other
+ * row has and no ledger key uses. When some line's row no longer matches (rows were added
+ * or removed above imported ones), every row is counted by its place.
+ */
+function importRowCounts(rows, ledgerKeys, ledgerRows) {
+  const groupAt = new Map((rows || []).map((r) => [r.row, r.group]));
+  let claims = new Map();
+  const keyRows = new Map();
+  for (const line of ledgerRows || []) {
+    const key = cellString(line.key);
+    const group = importKeyGroup(key);
+    const n = Number(key.slice(group.length + 1));
+    const held = claims.get(line.row);
+    const fits = groupAt.get(line.row) === group && Number.isInteger(n) && n > 0;
+    const clash =
+      (held !== undefined && held !== n) || (keyRows.has(key) && keyRows.get(key) !== line.row);
+    if (!fits || clash) {
+      claims = new Map();
+      break;
+    }
+    claims.set(line.row, n);
+    keyRows.set(key, line.row);
+  }
+
+  const groups = new Map();
+  (rows || []).forEach((r) => {
+    if (!groups.has(r.group)) groups.set(r.group, []);
+    groups.get(r.group).push(r.row);
+  });
+  const counts = new Map();
+  groups.forEach((members, group) => {
+    const used = new Set();
+    members.forEach((row) => {
+      if (claims.has(row)) used.add(claims.get(row));
+    });
+    const unplaced = [];
+    const placed = [];
+    members.forEach((row, i) => {
+      if (claims.has(row)) counts.set(row, claims.get(row));
+      else if (!used.has(i + 1)) placed.push([row, i + 1]);
+      else unplaced.push(row);
+    });
+    placed.forEach(([row, n]) => {
+      counts.set(row, n);
+      used.add(n);
+    });
+    let n = 0;
+    unplaced.forEach((row) => {
+      do n++;
+      while (used.has(n) || ledgerKeys.has(group + "|" + n));
+      used.add(n);
+      counts.set(row, n);
+    });
+  });
+  return counts;
+}
+
 /** An imported row's Shift ID: "import-" and the first 16 hex of the key's SHA-256. */
 function importShiftId(key, hashFn) {
   return "import-" + String(hashFn(key)).toLowerCase().slice(0, 16);
@@ -5923,16 +6113,19 @@ function importHours(value) {
 
 /**
  * Works out what an import would do. input is {header, rows, todayDate, volunteers,
- * ledgerKeys, logShiftIds, kioskDays, hashFn}: the source header row, its data rows (data
- * row i is source row i + 2; a date cell already as yyyy-MM-dd text, hours as read),
- * today, the Profiles list, the source keys in the ledger, the Shift IDs on the Log, the
+ * ledgerKeys, ledgerRows, logShiftIds, kioskDays, hashFn}: the source header row, its data
+ * rows (data row i is source row i + 2; a date cell already as yyyy-MM-dd text, hours as
+ * read), today, the Profiles list, the source keys in the ledger, the ledger's lines from
+ * this file and tab (importLedgerRows; missing is none), the Shift IDs on the Log, the
  * Log's kiosk days (importKioskDays; missing is empty), and a SHA-256 hex function.
  *
  * A row is importable when its Date reads as a day (parseStartDate) not after today, it
- * has a first or last name, and its hours are a number above 0 and at most 24. Wholly
+ * has a first or last name, and its hours are a number above 0 and at most
+ * logCheckMaxHours(). Wholly
  * blank rows are skipped and not counted. A key counts every row whose date reads and that
  * has a name, left out or not, so fixing one row's hours in the source doesn't change its
- * neighbours' keys.
+ * neighbours' keys; importRowCounts keeps an imported row's key when a row left out for
+ * its date or name is fixed above it.
  *
  * A name matches when exactly one Profiles volunteer has its name key. Returns {refusal}
  * (headers), or {rowsRead, toImport, alreadyImported, onLog, leftOut}: the
@@ -5963,36 +6156,45 @@ function importPlan(input) {
   const ledger = new Set((input.ledgerKeys || []).map(cellString));
   const onLogIds = new Set((input.logShiftIds || []).map(cellString));
   const kioskDays = input.kioskDays || new Set();
-  const counts = new Map();
   const plan = { rowsRead: 0, toImport: [], alreadyImported: [], onLog: [], leftOut: [] };
 
+  const read = [];
   (input.rows || []).forEach((cells, i) => {
-    const row = i + 2;
     if ((cells || []).every((v) => cellString(v) === "")) return;
-    plan.rowsRead++;
     const cell = (at) => (at >= 0 ? cells[at] : "");
-    const date = parseStartDate(cell(c.date));
     const firstName = cellString(cell(c.firstName));
     const lastName = cellString(cell(c.lastName));
+    read.push({
+      row: i + 2,
+      cell,
+      date: parseStartDate(cell(c.date)),
+      firstName,
+      lastName,
+      hasName: firstName !== "" || lastName !== "",
+      nameKey: importNameKey(firstName, lastName),
+    });
+  });
+  const counts = importRowCounts(
+    read
+      .filter((r) => r.date && r.hasName)
+      .map((r) => ({ row: r.row, group: r.date + "|" + r.nameKey })),
+    ledger,
+    input.ledgerRows,
+  );
+
+  read.forEach(({ row, cell, date, firstName, lastName, hasName, nameKey }) => {
+    plan.rowsRead++;
     const hours = importHours(cell(c.hours));
-    const hasName = firstName !== "" || lastName !== "";
-    const nameKey = importNameKey(firstName, lastName);
-    let n = 0;
-    if (date && hasName) {
-      const at = date + "|" + nameKey;
-      n = (counts.get(at) || 0) + 1;
-      counts.set(at, n);
-    }
     let reason = "";
     if (!date) reason = "date";
     else if (date > input.todayDate) reason = "future";
     else if (!hasName) reason = "name";
-    else if (!isFinite(hours) || hours <= 0 || hours > 24) reason = "hours";
+    else if (!isFinite(hours) || hours <= 0 || hours > logCheckMaxHours()) reason = "hours";
     if (reason) {
       plan.leftOut.push({ row, reason });
       return;
     }
-    const key = importSourceKey(date, nameKey, n);
+    const key = importSourceKey(date, nameKey, counts.get(row));
     const shiftId = importShiftId(key, input.hashFn);
     const same = byName.get(nameKey) || [];
     const item = {

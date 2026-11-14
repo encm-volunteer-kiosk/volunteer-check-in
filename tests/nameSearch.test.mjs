@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { compact, fold, nameTier, rankNames, searchNames } from "../src/nameSearch.ts";
+import { nameKey } from "../src/sameName.ts";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -273,11 +274,7 @@ test("José Díaz and Jose Diaz are still two names, on the server and the table
   assert.equal(fold("Jos\u00E9 D\u00EDaz"), fold("Jose Diaz"));
   assert.notEqual(L.volunteerNameKey(accented), L.volunteerNameKey(plainName));
 
-  // The tablet's group key, taken from App.tsx without its type annotation.
-  const source = read("src/App.tsx");
-  const body = /const nameKey = \(v: Volunteer\) =>\n([^;]+);/.exec(source);
-  assert.ok(body, "nameKey not found in App.tsx");
-  const nameKey = vm.runInNewContext("(v) => " + body[1]);
+  // The tablet's group key.
   assert.notEqual(nameKey(accented), nameKey(plainName));
   assert.equal(nameKey({ firstName: " Jose ", lastName: "DIAZ" }), nameKey(plainName));
 });

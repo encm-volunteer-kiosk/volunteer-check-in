@@ -159,7 +159,7 @@ function importJob_(form) {
   if (!sheet) return { refusal: importRefusal("IMPORT_TAB", tab) };
   const values = sheet.getDataRange().getValues();
   const zone = file.getSpreadsheetTimeZone() || kioskTimeZone();
-  const ledger = readImportLedger_();
+  const ledger = readImportLedger_(true);
   const view = readLogDays_(readLogColumns_());
   const plan = importPlan({
     header: (values[0] || []).map(cellText_),
@@ -167,6 +167,7 @@ function importJob_(form) {
     todayDate: centralDate_(new Date()),
     volunteers: getProfiles_(settings),
     ledgerKeys: ledger.keys,
+    ledgerRows: importLedgerRows(ledger.lines, fileId, tab),
     logShiftIds: view.shiftIds,
     kioskDays: view.kioskDays,
     hashFn: sha256Hex_,
@@ -220,24 +221,33 @@ function readLogDays_(cols) {
 }
 
 /**
- * The ledger as {keys}: every Source key on the Import ledger tab. No tab, or a tab whose
- * row 1 is empty, is an empty ledger. Throws when row 1 has text but lacks a ledger header.
+ * The ledger as {keys, lines}: every Source key on the Import ledger tab, and, when
+ * withSources, every line as {key, source} with its Source text (lines is empty
+ * otherwise). No tab, or a tab whose row 1 is empty, is an empty ledger. Throws when row 1
+ * has text but lacks a ledger header.
  */
-function readImportLedger_() {
+function readImportLedger_(withSources) {
+  const none = { keys: [], lines: [] };
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(importLedgerTab());
-  if (!sheet) return { keys: [] };
+  if (!sheet) return none;
   const header = logHeaderRow_(sheet);
-  if (header.every((h) => h === "")) return { keys: [] };
+  if (header.every((h) => h === "")) return none;
   const cols = importLedgerColumns(header);
   const last = sheet.getLastRow();
-  if (last < 2) return { keys: [] };
-  const at = cols[importLedgerHeaderNames().key] + 1;
-  return {
-    keys: sheet
-      .getRange(2, at, last - 1, 1)
+  if (last < 2) return none;
+  const L = importLedgerHeaderNames();
+  const column = (h) =>
+    sheet
+      .getRange(2, cols[h] + 1, last - 1, 1)
       .getValues()
-      .map((cells) => cellText_(cells[0]))
-      .filter((k) => k !== ""),
+      .map((cells) => cellText_(cells[0]));
+  const keys = column(L.key);
+  const sources = withSources ? column(L.source) : [];
+  return {
+    keys: keys.filter((k) => k !== ""),
+    lines: withSources
+      ? keys.map((key, i) => ({ key, source: sources[i] })).filter((l) => l.key !== "")
+      : [],
   };
 }
 

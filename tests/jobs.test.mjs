@@ -713,12 +713,11 @@ test("runFlagsEmail sends at the due slot to the Settings addresses, from the no
   assert.equal(s.setting("Flags email last run"), "2026-11-16 08:05, sent to 2");
 });
 
-test("runFlagsEmail does nothing while Flags email is Off or has no address it can read", () => {
+test("runFlagsEmail does nothing while Flags email is Off or Flags email to is blank", () => {
   for (const settings of [
     { ...EMAIL_ON, "Flags email": "Off" },
     { ...EMAIL_ON, "Flags email": "" },
     { ...EMAIL_ON, "Flags email to": "" },
-    { ...EMAIL_ON, "Flags email to": "the board, staff at example dot org" },
   ]) {
     const s = server({ settings, flags: WEEK_FLAGS, triggers: OWN_TRIGGER });
     s.run(MONDAY_8);
@@ -726,6 +725,43 @@ test("runFlagsEmail does nothing while Flags email is Off or has no address it c
     assert.equal(s.setting("Flags email last run"), "");
     assert.ok(!s.calls.includes("MailApp.sendEmail"));
   }
+});
+
+test("runFlagsEmail with no address it can read says so in the last run, once a slot, and sends once one is fixed", () => {
+  const notSent = (time) => time + ', not sent: no valid address in "Flags email to"';
+  for (const to of ["jane@example", "the board, staff at example dot org"]) {
+    const s = server({
+      settings: { ...EMAIL_ON, "Flags email to": to },
+      flags: WEEK_FLAGS,
+      triggers: OWN_TRIGGER,
+    });
+    s.run(MONDAY_8);
+    assert.equal(s.mail.length, 0, to);
+    assert.ok(!s.calls.includes("MailApp.sendEmail"));
+    assert.equal(s.setting("Flags email last run"), notSent(MONDAY_8), to);
+    // Not written again within the slot.
+    s.run("2026-11-16 09:05");
+    assert.equal(s.setting("Flags email last run"), notSent(MONDAY_8), to);
+    // The next week's slot writes it again.
+    s.run("2026-11-23 08:05");
+    assert.equal(s.setting("Flags email last run"), notSent("2026-11-23 08:05"), to);
+  }
+
+  // A fixed address sends at the next hourly run, without waiting for the next slot.
+  const s = server({
+    settings: { ...EMAIL_ON, "Flags email to": "jane@example" },
+    flags: WEEK_FLAGS,
+    triggers: OWN_TRIGGER,
+  });
+  s.run(MONDAY_8);
+  s.sheets.Settings.rows.find((r) => r[0] === "Flags email to")[1] = "jane@example.org";
+  s.run("2026-11-16 10:05");
+  assert.equal(s.mail.length, 1);
+  assert.equal(s.mail[0].to, "jane@example.org");
+  assert.equal(s.setting("Flags email last run"), "2026-11-16 10:05, sent to 1");
+  // Then not again that week.
+  s.run("2026-11-16 11:05");
+  assert.equal(s.mail.length, 1);
 });
 
 test("runFlagsEmail sends to the addresses it can read and names the rest in the email", () => {

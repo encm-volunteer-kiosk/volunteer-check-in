@@ -65,7 +65,7 @@ const list = [
 
 test("a list saved for this code today and under 10 minutes ago is used", () => {
   const storage = fakeStorage();
-  storeList(storage, "4417", T0, list);
+  storeList(storage, "4417", T0, list, 8);
   for (const age of [0, 1, 5 * MINUTE, 10 * MINUTE - 1]) {
     const kept = readStoredList(storage, "4417", T0 + age);
     assert.ok(kept, `age ${age} ms`);
@@ -89,7 +89,7 @@ test("a list 10 minutes old, from yesterday, with a savedAt in the future, or fo
   ];
   for (const [name, readCode, savedAt, now] of cases) {
     const storage = fakeStorage();
-    storeList(storage, "4417", savedAt, list);
+    storeList(storage, "4417", savedAt, list, 8);
     assert.equal(readStoredList(storage, readCode, now), null, name);
     assert.equal(storage.items.has(LIST_STORE_KEY), false, `${name}: removed`);
     // Gone for good: the right code and time can't bring it back.
@@ -98,11 +98,11 @@ test("a list 10 minutes old, from yesterday, with a savedAt in the future, or fo
 });
 
 test("an entry that is not a kept list is ignored and removed", () => {
-  const good = { version: 1, code: "4417", savedAt: T0, volunteers: [] };
+  const good = { version: 2, code: "4417", savedAt: T0, volunteers: [], longShiftHours: 8 };
   const bad = [
     "not json",
     "null",
-    JSON.stringify({ ...good, version: 2 }),
+    JSON.stringify({ ...good, version: 3 }),
     JSON.stringify({ ...good, savedAt: "yesterday" }),
     JSON.stringify({ ...good, volunteers: "none" }),
     JSON.stringify({ ...good, volunteers: [{ id: "h-ana", firstName: "Ana" }] }),
@@ -115,16 +115,52 @@ test("an entry that is not a kept list is ignored and removed", () => {
   }
   const storage = fakeStorage();
   storage.setItem(LIST_STORE_KEY, JSON.stringify(good));
-  assert.deepEqual(readStoredList(storage, "4417", T0 + MINUTE), { savedAt: T0, volunteers: [] });
+  assert.deepEqual(readStoredList(storage, "4417", T0 + MINUTE), {
+    savedAt: T0,
+    volunteers: [],
+    longShiftHours: 8,
+  });
+});
+
+test("a kept list keeps the long-shift number", () => {
+  const storage = fakeStorage();
+  storeList(storage, "4417", T0, list, 10);
+  const kept = readStoredList(storage, "4417", T0 + MINUTE);
+  assert.ok(kept);
+  assert.equal(kept.longShiftHours, 10);
+  assert.deepEqual(kept.volunteers, list);
+});
+
+test("a list kept before the long-shift number, or without a good one, is ignored and removed", () => {
+  const good = { version: 2, code: "4417", savedAt: T0, volunteers: [], longShiftHours: 8 };
+  const { longShiftHours, ...noNumber } = good;
+  const bad = [
+    ["version 1", { version: 1, code: "4417", savedAt: T0, volunteers: [] }],
+    ["missing", noNumber],
+    ["0", { ...good, longShiftHours: 0 }],
+    ["a string", { ...good, longShiftHours: "8" }],
+    ["below 0", { ...good, longShiftHours: -1 }],
+    ["null", { ...good, longShiftHours: null }],
+  ];
+  for (const [name, entry] of bad) {
+    const storage = fakeStorage();
+    storage.setItem(LIST_STORE_KEY, JSON.stringify(entry));
+    assert.equal(readStoredList(storage, "4417", T0 + MINUTE), null, name);
+    assert.equal(storage.items.has(LIST_STORE_KEY), false, `${name}: removed`);
+  }
+  // A list stored with a bad number is not used either.
+  const storage = fakeStorage();
+  storeList(storage, "4417", T0, list, Number.NaN);
+  assert.equal(readStoredList(storage, "4417", T0 + MINUTE), null);
 });
 
 test("storage that throws on read or write is ignored", () => {
   const storage = throwingStorage();
-  assert.doesNotThrow(() => storeList(storage, "4417", T0, list));
+  assert.doesNotThrow(() => storeList(storage, "4417", T0, list, 8));
   assert.equal(readStoredList(storage, "4417", T0), null);
   assert.doesNotThrow(() => clearStoredList(storage));
   // No storage at all, as when the page can't reach localStorage.
-  assert.doesNotThrow(() => storeList(null, "4417", T0, list));
+  assert.doesNotThrow(() => storeList(null, "4417", T0, list, 8));
   assert.equal(readStoredList(null, "4417", T0), null);
   assert.doesNotThrow(() => clearStoredList(null));
 
@@ -135,16 +171,16 @@ test("storage that throws on read or write is ignored", () => {
     throw new Error("QuotaExceededError");
   };
   assert.equal(readStoredList(readOnly, "4417", T0), null);
-  assert.doesNotThrow(() => storeList(readOnly, "4417", T0, list));
+  assert.doesNotThrow(() => storeList(readOnly, "4417", T0, list, 8));
 });
 
 test("a stored list keeps its server list's age when written again after a mark", () => {
   const storage = fakeStorage();
-  storeList(storage, "4417", T0, list);
+  storeList(storage, "4417", T0, list, 8);
   // Nine minutes later the page checks Ana in and writes the marked list with the same savedAt.
   const arrival = "2026-11-13T16:09:00.000Z";
   const marked = markVolunteerIn(list, "h-ana", arrival);
-  storeList(storage, "4417", T0, marked);
+  storeList(storage, "4417", T0, marked, 8);
   const kept = readStoredList(storage, "4417", T0 + 9 * MINUTE + 30_000);
   assert.ok(kept);
   assert.equal(kept.savedAt, T0);
@@ -172,19 +208,19 @@ test("a check-out mark clears the flag and the arrival of that volunteer only", 
 
 test("changing or clearing the code clears the stored list", () => {
   const storage = fakeStorage();
-  storeList(storage, "4417", T0, list);
+  storeList(storage, "4417", T0, list, 8);
   clearStoredList(storage);
   assert.equal(storage.items.has(LIST_STORE_KEY), false);
   assert.equal(readStoredList(storage, "4417", T0 + MINUTE), null);
 
   // A list kept for the old code is removed when the page reads with the new code, so
   // going back to the old code doesn't find it either.
-  storeList(storage, "4417", T0, list);
+  storeList(storage, "4417", T0, list, 8);
   assert.equal(readStoredList(storage, "5521", T0 + MINUTE), null);
   assert.equal(readStoredList(storage, "4417", T0 + MINUTE), null);
 
   // No code at all: the kept list is removed.
-  storeList(storage, "4417", T0, list);
+  storeList(storage, "4417", T0, list, 8);
   assert.equal(readStoredList(storage, null, T0 + MINUTE), null);
   assert.equal(storage.items.has(LIST_STORE_KEY), false);
 });
@@ -198,9 +234,15 @@ test("a stored entry holds names, hashed id, the checked-in flag and arrival, an
     completedShiftCount: 12,
     totalVolunteerMinutes: 900,
   });
-  storeList(storage, "4417", T0, [local]);
+  storeList(storage, "4417", T0, [local], 8);
   const entry = JSON.parse(storage.items.get(LIST_STORE_KEY));
-  assert.deepEqual(Object.keys(entry).sort(), ["code", "savedAt", "version", "volunteers"]);
+  assert.deepEqual(Object.keys(entry).sort(), [
+    "code",
+    "longShiftHours",
+    "savedAt",
+    "version",
+    "volunteers",
+  ]);
   assert.deepEqual(entry.volunteers, [
     {
       id: "h-dee",
