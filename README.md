@@ -1015,8 +1015,10 @@ the old Monthly Hours tab, so there is no month to pick in B1 any more.
 - **Row 5**: five slicers: Year, Month, Role/Type, Activity and Volunteer.
 - **Row 6**: two more slicers, From date and To date, for a range of days. The note in F6
   says how to use them.
-- **Row 7**: a sort box above each table (see Sorting).
-- **From row 8**, three tables side by side, each with a Grand Total row:
+- **Row 7**: a sort box above each table, and just right of each box a status cell, B7, H7
+  and L7, that says when a sort is on its way (see Sorting).
+- **From row 8**, three tables side by side, each with a Grand Total row. Hover over a
+  column header for a short note on what it shows (see Header notes):
   - **Hours by volunteer**: shifts and hours per volunteer;
   - **Hours by month**: shifts, hours, volunteers and average shift per month;
   - **Shifts**: one line per shift with its role/type, activity and hours (see The Shifts
@@ -1069,11 +1071,26 @@ A sort is shared. It changes the order for everyone who has the sheet open, not 
 you. Only people who can edit the spreadsheet can change a box: with view-only access you
 can't.
 
+**While it sorts.** A few seconds after you pick, the status cell beside the box says
+"Sorting... up to 20 seconds", for everyone with the sheet open, and you get a small
+message in the corner of your window saying which table is being re-sorted. The status
+cell goes blank as the new order shows. If it says "Not sorted. Pick again.", the sort
+couldn't run: pick the order again.
+
+- If "Sorting..." stays for more than a minute, pick the order again.
+- During a refresh a sort waits for it, so "Sorting..." can stay up to two minutes.
+- If several picks come within a few seconds, one sort covers them all, using every box
+  as it then stands; the sorts it makes unneeded stop early.
+- B7, H7 and L7 are the kiosk's. Anything typed there is cleared by the next sort or the
+  next `setupReports`.
+
 A sort stays through every refresh and through `setupReports`. To go back to a table's
 first order, pick its first choice.
 
 - If a table doesn't follow its box, pick the order again.
 - A pick made while Hours is refreshing waits for the refresh to finish, then sorts.
+- After the kiosk is updated, the status cells say nothing until `setupReports` has run
+  (until then they sit hidden under the old, wider boxes); the boxes still sort.
 - The box takes only its own choices: typing anything else is refused. If a box is emptied,
   or something else is pasted into it, it goes back to its first choice and its table
   follows.
@@ -1084,6 +1101,16 @@ first order, pick its first choice.
   nothing until you rename it back.
 - If no pick ever re-sorts a table, the boxes' trigger may be missing (see Setting up the
   reports).
+
+**Header notes.** Each column header of the three tables (row 8) has a short note: hover
+over it to read it. The kiosk writes them when `setupReports` builds the tab, and they
+stay through sorts, refreshes and slicer picks.
+
+- You can replace a header's note with your own text. The kiosk keeps it from then on and
+  never writes over it.
+- If you delete a kiosk note, it comes back at the next `setupReports`, or at the next
+  sort that re-orders a table: a header with no note gets the kiosk's.
+- The gaps between the tables (D8 and J8) get no kiosk note.
 
 **The Shifts table.** One line per shift. Its first column, Shift, is a label made from the
 shift's date, weekday, start time and volunteer: "2026-11-13 Fri 09:00 · Ann Lee". A shift
@@ -1189,7 +1216,8 @@ refresh writes the whole table again, which every refresh from the menu, at nigh
 `setupReports` does. Its cells L1 to Q1 are the refresh's own record of what it wrote, and
 B1 is worked out from them; leave them alone. Neither tab warns before an edit (a warning
 would pop up at every slicer click), and `setupReports` clears the Hours tab and builds it
-again, so anything typed on it is lost. The sort boxes' choices are the one thing it keeps.
+again, so anything typed on it is lost. It keeps the sort boxes' choices and any note you
+put on a row 8 header.
 
 **Where Hours and the monthly report differ.** Both count with the same code, so for a
 month, with Hours refreshed since the Log last changed, they give the same hours and
