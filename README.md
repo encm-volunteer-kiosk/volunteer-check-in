@@ -209,7 +209,8 @@ hand, so fix the hours too.
 Like the arrival time at check-in, the check-out time can be changed on the tablet. Most
 volunteers never touch it: Check Out uses the server's clock.
 
-After the phone step (for volunteers who share a name), the check-out screen shows "Forgot
+After the phone step, when there is one (a volunteer who shares a name with someone else
+checked in), the check-out screen shows "Forgot
 to check out earlier? Change your check-out time". It opens the same hour, minute and
 AM/PM buttons as the arrival picker, in 15-minute steps, and disables times later than now
 or earlier than the volunteer's stated arrival. The link shows only when at least one
