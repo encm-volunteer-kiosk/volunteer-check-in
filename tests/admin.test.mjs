@@ -1403,6 +1403,45 @@ test("apiCheckOut on a row whose Date was typed as text writes the Flags Date as
   assert.equal(s.sheets.Log.rowByHeader(2).Date, "11/12/2026");
 });
 
+test("apiCheckOut on a hand-typed open row with no Shift ID gives it one and copies its flags", () => {
+  // Staff typed the row for a volunteer who forgot to tap in: no Shift ID.
+  const typed = logRow({
+    "User Token": "tok-sam",
+    Status: "open",
+    Date: TODAY,
+    "Volunteer Name": "Sam Lee",
+    "Check-In Stated (user)": at(TODAY, "00:30"),
+  });
+  const s = kiosk({ settings: WINDOW_SETTINGS, log: [LOG_HEADER, typed] });
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30))).ok, true);
+  const log = s.sheets.Log.rowByHeader(2);
+  assert.equal(log.Status, "closed");
+  assert.equal(log["Shift ID"], "uuid-1");
+  assert.equal(
+    log["Admin Alerts?"],
+    "check-out differs by 30 min; long shift: 9 h stated, over 8 h",
+  );
+  const flags = [2, 3].map((r) => s.sheets.Flags.rowByHeader(r));
+  assert.deepEqual(
+    flags.map((f) => [f.Reason, f["Shift ID"], f["Log Row"]]),
+    [
+      ["check-out differs by 30 min", "uuid-1", 2],
+      ["long shift: 9 h stated, over 8 h", "uuid-1", 2],
+    ],
+  );
+  assert.deepEqual(s.errors, []);
+
+  // A row that has a Shift ID keeps it.
+  const kept = kiosk({
+    settings: WINDOW_SETTINGS,
+    log: [LOG_HEADER, kioskOpen("s-k", TODAY, "00:30")],
+  });
+  assert.equal(plain(kept.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(kept.sheets.Log.rowByHeader(2)["Shift ID"], "s-k");
+  assert.equal(kept.sheets.Flags.rowByHeader(2)["Shift ID"], "s-k");
+  assert.ok(!kept.calls.includes("Utilities.getUuid"));
+});
+
 test("adminFixSignOut closes a row whose check-in was typed as a time with no date", () => {
   const typed = kioskOpen("s-1", DAY, "09:00");
   // Sheets keeps "9:00 AM" typed into the cell as 9:00 on 1899-12-30.
