@@ -437,6 +437,30 @@ test("email window: Check before sending shows only when a volunteer has warning
   );
 });
 
+test("email window: flagged shifts in all counts every row past the 10 a warning names", () => {
+  const d = withTicket(25, 2);
+  click(d, d.$("email-preview"));
+  const rows = Array.from({ length: 12 }, (_, k) => k + 2);
+  const flags = {
+    kind: "flags",
+    count: 12,
+    rows,
+    text: "12 counted shifts with an unreviewed flag (Log rows 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 and 2 more): check them on the Flags tab before sending.",
+  };
+  const alerts = {
+    kind: "alerts",
+    count: 12,
+    rows,
+    text: "12 rows with Admin Alerts? set (Log rows 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 and 2 more): read the Admin Alerts? cell on those Log rows before sending.",
+  };
+  d.last().answer(previewReply(["v1", "v2"], { warnings: { v1: [flags, alerts] } }));
+  // Each of the 12 rows has a flag and an alert: 12, not 10 and not 24.
+  assert.equal(
+    d.$("email-check").textContent,
+    "Check before sending: 1 volunteer has something to check below, 12 flagged shifts in all.",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // The selection
 

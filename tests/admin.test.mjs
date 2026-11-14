@@ -3307,10 +3307,10 @@ test("Email hours: with the box ticked, a volunteer with no counted shifts gets 
   assert.equal(toAna.body, shown.body);
   assert.equal("attachments" in toAna, false);
   assert.equal(s.blobs.length, 1);
-  // Shifts file records the box, as ticked for the send.
+  // Shifts file says whether the email carried the file: yes for Maria, no for Ana.
   assert.deepEqual(
     hoursEmailRows(s).map((r) => r["Shifts file"]),
-    ["yes", "yes"],
+    ["yes", "no"],
   );
 });
 
@@ -3644,7 +3644,8 @@ test("Email hours: the Hours emails tab is made once, and every cell from a shee
       Email: "'=pat@example.org",
     }),
     expectedRow(sendId, JAMES, "failed: Service unavailable", [1.5, 1.5, 1.5], last),
-    expectedRow(sendId, DEV, R_CHANGED, null, last),
+    // A failed email was built with the file; one not sent carried nothing.
+    expectedRow(sendId, DEV, R_CHANGED, null, { ...last, "Shifts file": "no" }),
   ]);
   // Sent at a date-time, the hours numbers with two places, every other column text.
   const formats = { date: "yyyy-mm-dd h:mm am/pm", hours: "0.00", text: "@" };

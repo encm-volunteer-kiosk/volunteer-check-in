@@ -531,8 +531,8 @@ function adminSendHours(key, request) {
   let recordFailed = false;
   if (took.taken.length) {
     const takenIds = took.taken.map((t) => t.id);
-    const settle = (id, result, totals, reason) => {
-      results[id] = { result, totals: totals || null, reason: reason || "" };
+    const settle = (id, result, totals, reason, file) => {
+      results[id] = { result, totals: totals || null, reason: reason || "", file: file === true };
       console.log(hoursEmailLogLine(id, result, reason));
     };
     // 4 and 5. Reads, then each volunteer, inside one try.
@@ -568,9 +568,9 @@ function adminSendHours(key, request) {
             try {
               MailApp.sendEmail(mail);
             } catch (err) {
-              return settle(id, "failed: " + errorMessage_(err), totals);
+              return settle(id, "failed: " + errorMessage_(err), totals, "", b.file);
             }
-            return settle(id, R.sent, totals);
+            return settle(id, R.sent, totals, "", b.file);
           } catch (err) {
             if (!results[id]) settle(id, "not sent: " + errorMessage_(err));
           }
@@ -596,7 +596,7 @@ function adminSendHours(key, request) {
           to: entry.to,
           month: ticket.month,
           asOf: ticket.asOf,
-          attach: ticket.attach === true,
+          file: results[id].file,
           initials,
           account,
           result: results[id].result,

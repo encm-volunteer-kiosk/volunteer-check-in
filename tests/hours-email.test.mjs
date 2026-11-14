@@ -474,6 +474,37 @@ test("the same-name sentence only in a same-name group; Flags unreadable; no hou
   assert.equal(L.hoursEmailHasFile(wplan(ANA), false), false);
 });
 
+test("a warning's rows list every Log row, past the 10 its text names", () => {
+  const log = [];
+  for (let k = 0; k < 12; k++) {
+    const row = k + 2;
+    log.push(
+      entry(row, {
+        token: ANA.token,
+        name: "Ana Diaz",
+        ...shift(addDays("2026-10-01", k), 2),
+        alerts: "arrival differs by 20 min",
+      }),
+    );
+  }
+  const p = L.hoursEmailPlan({
+    volunteer: ANA,
+    entries: log,
+    flags: log.map((e) => ({ shiftId: e.shiftId, reviewed: false, name: "Ana Diaz" })),
+    period: L.hoursEmailPeriod("this", "2026-11-14"),
+    todayDate: "2026-11-14",
+    listedTokens: [ANA.token],
+  });
+  const w = byKind(p);
+  assert.equal(w.flags.count, 12);
+  assert.equal(w.alerts.count, 12);
+  assert.match(w.flags.text, /Log rows 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 and 2 more/);
+  // The window counts flagged shifts from these lists, so they must hold all 12 rows.
+  const all = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+  assert.deepEqual(w.flags.rows, all);
+  assert.deepEqual(w.alerts.rows, all);
+});
+
 test("with last month, a row between the as-of date and today is in no warning", () => {
   const p = wplan(ANA, WFLAGS, "last", "2026-11-03");
   plain(p.warnings).forEach((w) => assert.ok(!w.rows.includes(28), w.kind));
@@ -1013,7 +1044,7 @@ test("an Hours emails row: text through sheetText, hours blank on a not-sent row
     to: "=pat@example.org",
     month: "2026-10",
     asOf: "2026-10-31",
-    attach: true,
+    file: true,
     initials: "JP",
     account: "staff@example.org",
   };
@@ -1037,9 +1068,7 @@ test("an Hours emails row: text through sheetText, hours blank on a not-sent row
     "Sent from": "staff@example.org",
     Result: "sent",
   });
-  const not = plain(
-    L.hoursEmailRow({ ...base, attach: false, result: "not sent: x", totals: null }),
-  );
+  const not = plain(L.hoursEmailRow({ ...base, file: false, result: "not sent: x", totals: null }));
   assert.equal(not["Month hours"], "");
   assert.equal(not["Year hours"], "");
   assert.equal(not["All-time hours"], "");

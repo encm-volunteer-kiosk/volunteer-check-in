@@ -2569,9 +2569,11 @@ function hoursEmailTake(ticket, ids, nowMs) {
 /**
  * One Hours emails row as {header: value}, built only from the ticket, the taken entry, the
  * call's own values and the result. item is {sentAtMs, sendId, name, id, to, month, asOf,
- * attach, initials, account, result, totals}: totals ({month, year, all} hundredths) on a
- * sent or failed row, null on a "not sent" one, whose hours cells are blank. Every text goes
- * through sheetText, so a name or address starting "=" stays text. Sent at is milliseconds.
+ * file, initials, account, result, totals}: totals ({month, year, all} hundredths) on a
+ * sent or failed row, null on a "not sent" one, whose hours cells are blank. file is
+ * whether the email was built with the shifts file (hoursEmailHasFile), so Shifts file says
+ * "yes" only for a sent or failed row whose email carried it. Every text goes through
+ * sheetText, so a name or address starting "=" stays text. Sent at is milliseconds.
  */
 function hoursEmailRow(item) {
   const hours = (h) => (item.totals ? h / 100 : "");
@@ -2587,7 +2589,7 @@ function hoursEmailRow(item) {
     Year: sheetText(cellString(item.asOf).slice(0, 4)),
     "Year hours": hours(t.year),
     "All-time hours": hours(t.all),
-    "Shifts file": item.attach ? "yes" : "no",
+    "Shifts file": item.file === true ? "yes" : "no",
     "Sent by": sheetText(item.initials),
     "Sent from": sheetText(item.account),
     Result: sheetText(item.result),
