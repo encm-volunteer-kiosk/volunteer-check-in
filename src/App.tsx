@@ -23,6 +23,7 @@ import {
 } from "./listStore";
 import { searchNames } from "./nameSearch";
 import { QuickPicks } from "./QuickPicks.tsx";
+import { pickTime, pickedTimeToIso } from "./quickPicks";
 import {
   abandonSave,
   autoHomeMs,
@@ -924,54 +925,6 @@ function checkOutLowerBound(volunteer: Volunteer, volunteers: Volunteer[]) {
   return arrivals.length ? Math.min(...arrivals) : null;
 }
 
-function centralTimeToIso(time: string) {
-  const [hour, minute] = time.split(":").map(Number);
-  const dateParts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const datePart = (type: Intl.DateTimeFormatPartTypes) =>
-    Number(dateParts.find((item) => item.type === type)?.value);
-  const desiredUtc = Date.UTC(
-    datePart("year"),
-    datePart("month") - 1,
-    datePart("day"),
-    hour,
-    minute,
-  );
-  const zonedParts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  });
-  const offsetAt = (timestamp: number) => {
-    const parts = zonedParts.formatToParts(new Date(timestamp));
-    const value = (type: Intl.DateTimeFormatPartTypes) =>
-      Number(parts.find((item) => item.type === type)?.value);
-    return (
-      Date.UTC(
-        value("year"),
-        value("month") - 1,
-        value("day"),
-        value("hour"),
-        value("minute"),
-        value("second"),
-      ) -
-      Math.floor(timestamp / 1000) * 1000
-    );
-  };
-  let timestamp = desiredUtc - offsetAt(desiredUtc);
-  timestamp = desiredUtc - offsetAt(timestamp);
-  return new Date(timestamp).toISOString();
-}
-
 function formatDuration(minutes: number) {
   if (minutes < 1) return "Less than a minute";
   const hours = Math.floor(minutes / 60);
@@ -1040,12 +993,14 @@ export default function App() {
   const saveFlow = useRef(noSaves);
   const [error, setError] = useState("");
   const [result, setResult] = useState<Result | null>(null);
-  const [arrivalTime, setArrivalTime] = useState(() => centralTimeValue());
+  // A picked time keeps the Central day it was picked on, so a tap after midnight sends it
+  // on that day.
+  const [arrivalTime, setArrivalTime] = useState(() => pickTime(centralTimeValue()));
   // Check-in sends no time, so the server uses its own clock, unless the volunteer opens
   // the arrival-time picker.
   const [arrivalPicker, setArrivalPicker] = useState(false);
   // Check-out likewise sends no time unless the volunteer opens the check-out picker.
-  const [checkOutTime, setCheckOutTime] = useState(() => centralTimeValue());
+  const [checkOutTime, setCheckOutTime] = useState(() => pickTime(centralTimeValue()));
   const [checkOutPicker, setCheckOutPicker] = useState(false);
   const [phoneStep, setPhoneStep] = useState<PhoneStep>(null);
   const [phoneDigits, setPhoneDigits] = useState("");
@@ -1069,9 +1024,9 @@ export default function App() {
     setSelectedId(null);
     setError("");
     setResult(null);
-    setArrivalTime(centralTimeValue());
+    setArrivalTime(pickTime(centralTimeValue()));
     setArrivalPicker(false);
-    setCheckOutTime(centralTimeValue());
+    setCheckOutTime(pickTime(centralTimeValue()));
     setCheckOutPicker(false);
     setPhoneStep(null);
     setPhoneDigits("");
@@ -1080,9 +1035,9 @@ export default function App() {
     closeTabletKeyboard();
     setSelectedId(volunteer.id);
     setError("");
-    setArrivalTime(centralTimeValue());
+    setArrivalTime(pickTime(centralTimeValue()));
     setArrivalPicker(false);
-    setCheckOutTime(centralTimeValue());
+    setCheckOutTime(pickTime(centralTimeValue()));
     setCheckOutPicker(false);
     setPhoneStep(volunteer.needsPhoneCheck ? "entry" : null);
     setPhoneDigits("");
@@ -1319,7 +1274,7 @@ export default function App() {
       return;
     }
     setError("");
-    const timestamp = arrivalPicker ? centralTimeToIso(arrivalTime) : null;
+    const timestamp = arrivalPicker ? pickedTimeToIso(arrivalTime) : null;
     if (timestamp && new Date(timestamp).getTime() > Date.now() + 60_000) {
       setError("Your arrival time cannot be in the future. Please choose an earlier time.");
       return;
@@ -1365,7 +1320,7 @@ export default function App() {
     setError("");
     // The page's own checks use the server's messages. The server checks again against its
     // clock and the shift it acts on.
-    const timestamp = checkOutPicker ? centralTimeToIso(checkOutTime) : null;
+    const timestamp = checkOutPicker ? pickedTimeToIso(checkOutTime) : null;
     if (timestamp) {
       const chosen = Date.parse(timestamp);
       if (chosen > Date.now() + 60_000) {
@@ -1450,17 +1405,17 @@ export default function App() {
         <Confirmation
           volunteer={selected}
           checkout={false}
-          time={arrivalTime}
+          time={arrivalTime.time}
           picker={arrivalPicker}
           onOpenPicker={() => {
             setError("");
-            setArrivalTime(latestQuarterHour());
+            setArrivalTime(pickTime(latestQuarterHour()));
             setArrivalPicker(true);
           }}
           {...phoneProps}
           saving={save !== null}
           error={error}
-          onTimeChange={setArrivalTime}
+          onTimeChange={(time) => setArrivalTime(pickTime(time))}
           onConfirm={handleConfirm}
           onBack={goHome}
         />
@@ -1469,14 +1424,14 @@ export default function App() {
         <Confirmation
           volunteer={selected}
           checkout
-          time={checkOutTime}
+          time={checkOutTime.time}
           picker={checkOutPicker}
           minMinutes={checkOutMinMinutes ?? 0}
           onOpenPicker={
             checkOutPickable
               ? () => {
                   setError("");
-                  setCheckOutTime(latestQuarterHour());
+                  setCheckOutTime(pickTime(latestQuarterHour()));
                   setCheckOutPicker(true);
                 }
               : undefined
@@ -1484,7 +1439,7 @@ export default function App() {
           {...phoneProps}
           saving={save !== null}
           error={error}
-          onTimeChange={setCheckOutTime}
+          onTimeChange={(time) => setCheckOutTime(pickTime(time))}
           onConfirm={handleCheckout}
           onBack={goHome}
         />
