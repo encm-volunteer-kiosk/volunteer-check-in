@@ -231,7 +231,9 @@ test("settingsDefaults", () => {
   assert.equal(defaults["Past hours file ID"], "");
   assert.equal(defaults["Past hours tab"], "Historical Hours");
   assert.equal(defaults["Kiosk contact"], "");
-  assert.equal(rows.length, 20);
+  assert.equal(defaults["Hours email contact"], "");
+  assert.equal(defaults["Hours email signature"], "");
+  assert.equal(rows.length, 22);
   const names = rows.map((r) => r[0]);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
@@ -2539,6 +2541,8 @@ test("refusal gives each code its exact message", () => {
       "This shift is open and the volunteer already has an open shift in the Log. Close that one with Fix a sign-out first.",
     ADMIN_RESTORE_HEADERS:
       "This row has a value in a column the Log doesn't have exactly once, or whose header is blank or repeated, so it can't go back without losing that value. Give the Log one column with that header first.",
+    HOURS_EMAIL_STALE: "This preview has expired or was already sent. Press Preview again.",
+    HOURS_EMAIL_TOO_MANY: "Too many volunteers in one send. Press Preview again.",
   };
   for (const [code, message] of Object.entries(expected)) {
     assert.deepEqual(plain(L.refusal(code)), { ok: false, refusal: code, message });

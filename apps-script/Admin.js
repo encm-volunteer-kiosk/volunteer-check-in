@@ -4,9 +4,9 @@
  * check out, Remove a shift to move one Log row, found by its Shift ID, to the Removed
  * shifts tab, and Restore a shift to put one back. Each item opens a dialog from
  * AdminDialog.html, which calls the admin* functions below through google.script.run. The
- * menu's other items follow the same rule: Monthly report (Reports.js), Import past hours
- * (Import.js), Refresh Hours (refreshHoursNow, Reports.js) and Check the Log now
- * (checkLogNow, Jobs.js). Refresh Hours and Check the Log now open no dialog, so they need
+ * menu's other items follow the same rule: Monthly report (Reports.js), Email hours (below:
+ * adminHoursPreview and adminSendHours), Import past hours (Import.js), Refresh Hours
+ * (refreshHoursNow, Reports.js) and Check the Log now (checkLogNow, Jobs.js). Refresh Hours and Check the Log now open no dialog, so they need
  * no key: they check requireEditorRun_ and SpreadsheetApp.getUi() before they read
  * anything.
  *
@@ -46,6 +46,7 @@ function onOpen() {
     .addItem("Remove a shift…", "openRemoveShiftDialog")
     .addItem("Restore a shift…", "openRestoreShiftDialog")
     .addItem("Monthly report…", "openMonthlyReportDialog")
+    .addItem("Email hours…", "openEmailHoursDialog")
     .addItem("Import past hours…", "openImportDialog")
     .addItem("Refresh Hours", "refreshHoursNow")
     .addItem("Check the Log now", "checkLogNow")
@@ -74,6 +75,10 @@ function openRemoveShiftDialog() {
 
 function openRestoreShiftDialog() {
   openAdminDialog_("restore", "Restore a shift");
+}
+
+function openEmailHoursDialog() {
+  openAdminDialog_("email", "Email volunteers their hours", 720);
 }
 
 /** {ok: true, today, volunteers: [{id, label}]} for the volunteer picker, or a refusal. */
@@ -338,6 +343,431 @@ function adminRestoreShift(key, form) {
   });
 }
 
+/**
+ * Email hours…' preview of the ticked volunteers. request is {ids, choice, attach}: ids
+ * are deduplicated, choice is "this" or "last" (anything else is "this") and attach is
+ * true or false. Reads once for the set, with no lock: Settings, the volunteer list, the
+ * addresses (profileEmails_), the Log, Flags, the Hours emails tab's sends and the quota.
+ * Returns {ok: true, from, month, asOf, volunteers: [{id, label, profilesRow, startDate,
+ * to, subject, body, totals, attachment, warnings, problems, lastSent}], setProblems,
+ * sendIds, chunkSize, ticket}, the volunteers in roster order; or a refusal.
+ *
+ * A volunteer with a problem (hoursEmailAddress, or not on the list) is shown and left out.
+ * A problem for the whole set (no Email column, Hours email contact blank, nobody left to
+ * send, the quota short) means no ticket (""). Otherwise one ticket goes in the script
+ * cache for the sendable volunteers, kept as long as a dialog key, and its id comes back.
+ */
+function adminHoursPreview(key, request) {
+  const denied = adminGuard_(key);
+  if (denied) return denied;
+  const r = request || {};
+  const ids = hoursEmailIds(r.ids);
+  const attach = r.attach === true;
+  const now = new Date();
+  const account = Session.getActiveUser().getEmail();
+  const base = readHoursEmailBase_(ids, hoursEmailChoice(r.choice), attach, now);
+  let sends = null;
+  let sendsRead = true;
+  try {
+    sends = readHoursEmailSends_();
+  } catch (err) {
+    sendsRead = false;
+    console.log("Hours emails not read: " + errorMessage_(err));
+  }
+  const quota = MailApp.getRemainingDailyQuota();
+
+  const roster = adminRosterLabels(base.volunteers);
+  const order = new Map(roster.map((v, i) => [v.id, i]));
+  const labels = new Map(roster.map((v) => [v.id, v.label]));
+  const at = (b) => (order.has(b.id) ? order.get(b.id) : roster.length);
+  const built = ids
+    .map((id, i) => Object.assign(hoursEmailBuild_(base, id), { asked: i }))
+    .sort((a, b) => at(a) - at(b) || a.asked - b.asked);
+  const sendable = built.filter((b) => !b.problem);
+
+  const setProblems = hoursEmailSetProblems_(base);
+  const noColumn = hoursEmailProblemText("no-email-column");
+  if (!sendable.length && setProblems.indexOf(noColumn) < 0) {
+    setProblems.push(hoursEmailNoneProblem());
+  }
+  const quotaProblem = hoursEmailQuotaProblem(sendable.length, quota);
+  if (quotaProblem) setProblems.push(quotaProblem);
+
+  let ticket = "";
+  if (!setProblems.length) {
+    ticket = Utilities.getUuid();
+    const entries = {};
+    sendable.forEach((b) => {
+      entries[b.id] = {
+        digest: b.digest,
+        name: volunteerFullName(b.volunteer),
+        label: labels.get(b.id) || volunteerFullName(b.volunteer),
+        to: b.address.email,
+      };
+    });
+    const stored = hoursEmailTicket({
+      sendId: Utilities.getUuid().replace(/-/g, "").slice(0, 8),
+      expiresMs: now.getTime() + adminKeySeconds() * 1000,
+      choice: base.period.choice,
+      month: base.period.month,
+      asOf: base.period.asOf,
+      attach,
+      entries,
+    });
+    CacheService.getScriptCache().put(
+      hoursEmailTicketKey(ticket),
+      JSON.stringify(stored),
+      adminKeySeconds(),
+    );
+  }
+
+  return {
+    ok: true,
+    from: hoursEmailFromLine(account),
+    month: base.period.month,
+    asOf: base.period.asOf,
+    volunteers: built.map((b) => {
+      const v = b.volunteer;
+      const plan = b.plan;
+      return {
+        id: b.id,
+        label: labels.get(b.id) || "Not on the volunteer list",
+        profilesRow: b.address && b.address.row ? b.address.row : v ? v.row : 0,
+        startDate: v ? v.startDate || "" : "",
+        to: b.problem ? "" : b.address.email,
+        subject: b.message ? b.message.subject : "",
+        body: b.message ? b.message.body : "",
+        totals: plan
+          ? {
+              month: plan.month,
+              year: plan.year,
+              all: plan.all,
+              paperHundredths: plan.paperHundredths,
+              lines: hoursEmailTotalLines(plan),
+            }
+          : null,
+        attachment:
+          plan && attach
+            ? { name: hoursEmailFileName(base.period.asOf), shifts: plan.all.shifts }
+            : null,
+        warnings: plan ? plan.warnings : [],
+        problems: b.problem ? [b.problemText] : [],
+        lastSent: sendsRead ? hoursEmailLastSent(sends || [], b.id) : "unknown",
+      };
+    }),
+    setProblems,
+    sendIds: sendable.map((b) => b.id),
+    chunkSize: hoursEmailChunkSize(),
+    ticket,
+  };
+}
+
+/**
+ * Sends the emails of up to hoursEmailChunkSize() volunteers of a preview's ticket.
+ * request is {ticket, ids, initials}. Returns {ok: true, results: [{id, result}],
+ * recordFailed}, one result per id in the call's order, or a refusal: ADMIN_INITIALS or
+ * HOURS_EMAIL_TOO_MANY before anything is taken, BUSY when the lock isn't free to take, and
+ * HOURS_EMAIL_STALE when the ticket is gone or past its time.
+ *
+ * The rules it keeps:
+ * 1. Every entry the call takes from the ticket is in exactly one Hours emails row, written
+ *    by this call at the end, whatever happened after the take. A row is built from the
+ *    ticket, the entry and the call's own values, never from a read at Send.
+ * 2. The ticket in the cache decides. An id whose entry it no longer holds gets "not sent:
+ *    … already sent for them", with no mail and no row; a missing ticket refuses the call.
+ * 3. Nothing is taken before the take's write returns; once something is taken, the call
+ *    doesn't throw: reads, the rebuild and the send run inside a try, and the rows are
+ *    written on every path.
+ * 4. One volunteer's failure never stops the rest. A read that throws becomes the result
+ *    of every volunteer taken, and nothing is sent.
+ * 5. The lock is held only to take (step 3) and to write the rows (step 6), never across a
+ *    read of the Log or a send.
+ * 6. Every withLock_ return is read as a refusal or a success, and a throw from it (its
+ *    flush or release, after the work) is read against what the work had already done.
+ */
+function adminSendHours(key, request) {
+  const denied = adminGuard_(key);
+  if (denied) return denied;
+  const r = request || {};
+  // 1. Initials. Nothing is taken.
+  const initials = normalizeInitials(r.initials);
+  if (!initials) return refusal("ADMIN_INITIALS");
+  // 2. The ids and the account. Nothing is taken; a throw here goes back as it is.
+  const ids = hoursEmailIds(r.ids);
+  if (ids.length > hoursEmailChunkSize()) return refusal("HOURS_EMAIL_TOO_MANY");
+  const account = Session.getActiveUser().getEmail();
+  const ticketKey = hoursEmailTicketKey(r.ticket);
+  const R = hoursEmailResults();
+
+  // 3. The take, under the lock. took is set only once the cache write has returned.
+  let took = null;
+  let held;
+  try {
+    held = withLock_(() => {
+      const cache = CacheService.getScriptCache();
+      const nowMs = Date.now();
+      const ticket = hoursEmailTicketRead(ticketKey ? cache.get(ticketKey) : null, nowMs);
+      if (!ticket) return refusal("HOURS_EMAIL_STALE");
+      const split = hoursEmailTake(ticket, ids, nowMs);
+      if (split.taken.length) {
+        if (split.rest) cache.put(ticketKey, JSON.stringify(split.rest), split.seconds);
+        else cache.remove(ticketKey);
+      }
+      took = { ticket, taken: split.taken };
+      return { ok: true };
+    });
+  } catch (err) {
+    if (!took) throw err;
+    console.error(
+      "Hours email: the lock ended with an error after the take (Send ID " +
+        took.ticket.sendId +
+        "): " +
+        errorMessage_(err),
+    );
+  }
+  if (!took) return held;
+
+  const ticket = took.ticket;
+  const results = {};
+  let recordFailed = false;
+  if (took.taken.length) {
+    const takenIds = took.taken.map((t) => t.id);
+    const settle = (id, result, totals, reason) => {
+      results[id] = { result, totals: totals || null, reason: reason || "" };
+      console.log(hoursEmailLogLine(id, result, reason));
+    };
+    // 4 and 5. Reads, then each volunteer, inside one try.
+    try {
+      const base = readHoursEmailBase_(takenIds, ticket.choice, ticket.attach === true, new Date());
+      const setProblems = hoursEmailSetProblems_(base);
+      if (setProblems.length) {
+        takenIds.forEach((id) => settle(id, "not sent: " + setProblems[0]));
+      } else {
+        took.taken.forEach(({ id, entry }) => {
+          try {
+            const b = hoursEmailBuild_(base, id);
+            if (b.problem) return settle(id, "not sent: " + b.problemText, null, b.problem);
+            if (b.digest !== entry.digest) return settle(id, R.changed);
+            const totals = {
+              month: b.plan.month.hundredths,
+              year: b.plan.year.hundredths,
+              all: b.plan.all.hundredths,
+            };
+            const mail = {
+              to: b.address.email,
+              subject: b.message.subject,
+              body: b.message.body,
+              name: flagsEmailSenderName(),
+              noReply: true,
+            };
+            if (base.attach) {
+              mail.attachments = [
+                Utilities.newBlob(b.csv, "text/csv", hoursEmailFileName(base.period.asOf)),
+              ];
+            }
+            if (!(MailApp.getRemainingDailyQuota() >= 1)) return settle(id, R.quota);
+            try {
+              MailApp.sendEmail(mail);
+            } catch (err) {
+              return settle(id, "failed: " + errorMessage_(err), totals);
+            }
+            return settle(id, R.sent, totals);
+          } catch (err) {
+            if (!results[id]) settle(id, "not sent: " + errorMessage_(err));
+          }
+        });
+      }
+    } catch (err) {
+      takenIds.forEach((id) => {
+        if (!results[id]) settle(id, "not sent: " + errorMessage_(err));
+      });
+    }
+
+    // 6. The rows, one per taken entry, in one write under the lock, on every path.
+    let wrote = false;
+    let failure = "";
+    try {
+      const sentAtMs = Date.now();
+      const rows = took.taken.map(({ id, entry }) =>
+        hoursEmailRow({
+          sentAtMs,
+          sendId: ticket.sendId,
+          name: entry.name,
+          id,
+          to: entry.to,
+          month: ticket.month,
+          asOf: ticket.asOf,
+          attach: ticket.attach === true,
+          initials,
+          account,
+          result: results[id].result,
+          totals: results[id].totals,
+        }),
+      );
+      const done = withLock_(() => {
+        appendHoursEmailRows_(rows);
+        wrote = true;
+        return { ok: true };
+      });
+      if (!done || done.ok !== true) failure = (done && done.message) || "no reply";
+    } catch (err) {
+      if (wrote) {
+        console.error(
+          "Hours emails: rows written for Send ID " +
+            ticket.sendId +
+            ", then the lock ended with an error: " +
+            errorMessage_(err),
+        );
+      } else {
+        failure = errorMessage_(err);
+      }
+    }
+    if (failure) {
+      recordFailed = true;
+      console.error(
+        "Hours emails: rows not written for Send ID " +
+          ticket.sendId +
+          " (" +
+          failure +
+          "). Type them in by hand: " +
+          takenIds
+            .map((id) => {
+              const res = results[id];
+              const said = res.reason ? "not sent: " + res.reason : res.result;
+              return "volunteer " + id + ": " + said;
+            })
+            .join("; "),
+      );
+    }
+  }
+
+  // 7. One result per id of the call, in its order.
+  return {
+    ok: true,
+    results: ids.map((id) => ({ id, result: results[id] ? results[id].result : R.taken })),
+    recordFailed,
+  };
+}
+
+/**
+ * The reads Email hours… makes once per call, with no lock, for the volunteers ids names:
+ * Settings, the volunteer list, those volunteers' addresses, the Log as report entries and
+ * the Flags rows (null when that read throws), with the period worked out from now.
+ */
+function readHoursEmailBase_(ids, choice, attach, now) {
+  const settings = readSettings_();
+  const volunteers = getProfiles_(settings);
+  const found = ids.map((id) => findVolunteer(volunteers, id)).filter((v) => v);
+  const emails = found.length ? profileEmails_(settings, found) : {};
+  const entries = readReportLog_().entries;
+  let flags = null;
+  try {
+    flags = readFlags_().rows;
+  } catch (err) {
+    console.log("Flags not read for the hours email: " + errorMessage_(err));
+    flags = null;
+  }
+  const todayDate = centralDate_(now);
+  return {
+    volunteers,
+    emails,
+    entries,
+    flags,
+    todayDate,
+    period: hoursEmailPeriod(choice, todayDate),
+    attach: attach === true,
+    listedTokens: volunteers.map((v) => v.token),
+    contact: settings[hoursEmailContactSetting()] || "",
+    signature: settings[hoursEmailSignatureSetting()] || "",
+  };
+}
+
+/** The problems that stop the whole set: no Email column, Hours email contact blank. */
+function hoursEmailSetProblems_(base) {
+  const problems = [];
+  const noColumn = Object.keys(base.emails).some(
+    (id) => base.emails[id].problem === "no-email-column",
+  );
+  if (noColumn) problems.push(hoursEmailProblemText("no-email-column"));
+  if (cellString(base.contact) === "") problems.push(hoursEmailContactProblem());
+  return problems;
+}
+
+/**
+ * One volunteer's email as the preview shows it and the send rebuilds it: {id, volunteer,
+ * address, problem, problemText, plan, message, csv, digest}. A volunteer not on the list
+ * has problem not-found and no plan. digest is "" with a problem.
+ */
+function hoursEmailBuild_(base, id) {
+  const volunteer = findVolunteer(base.volunteers, id);
+  if (!volunteer) {
+    return {
+      id,
+      volunteer: null,
+      address: null,
+      problem: "not-found",
+      problemText: hoursEmailProblemText("not-found"),
+      plan: null,
+      message: null,
+      csv: "",
+      digest: "",
+    };
+  }
+  const address = base.emails[volunteer.id] || {
+    email: "",
+    row: 0,
+    problem: "not-found",
+    text: hoursEmailProblemText("not-found"),
+  };
+  const plan = hoursEmailPlan({
+    volunteer,
+    entries: base.entries,
+    flags: base.flags,
+    period: base.period,
+    todayDate: base.todayDate,
+    listedTokens: base.listedTokens,
+  });
+  const message = hoursEmailMessage({
+    firstName: volunteer.firstName,
+    plan,
+    attach: base.attach,
+    contact: base.contact,
+    signature: base.signature,
+  });
+  const csv = base.attach ? hoursEmailCsv(plan.allShifts, adminClock_) : "";
+  const digest = address.problem
+    ? ""
+    : sha256Hex_(
+        hoursEmailDigestText({
+          id: volunteer.id,
+          to: address.email,
+          choice: base.period.choice,
+          month: base.period.month,
+          asOf: base.period.asOf,
+          attach: base.attach,
+          subject: message.subject,
+          body: message.body,
+          csv,
+        }),
+      );
+  return {
+    id,
+    volunteer,
+    address,
+    problem: address.problem,
+    problemText: address.text,
+    plan,
+    message,
+    csv,
+    digest,
+  };
+}
+
+/** An error's message, or the error as text. */
+function errorMessage_(err) {
+  return (err && err.message) || String(err);
+}
+
 /** The list items Remove and Restore show, [{shiftId, row, label, detail}], from rows. */
 function shiftChoices_(rows) {
   return rows.map((r) => {
@@ -377,9 +807,10 @@ function adminGuard_(key) {
 
 /**
  * Opens a dialog from AdminDialog.html with a new key and the Kiosk contact line
- * (kioskContactNote) in it. mode is "add", "fix", "remove" or "restore".
+ * (kioskContactNote) in it. mode is "add", "fix", "remove", "restore" or "email". The
+ * dialog is 480 wide and height tall, 600 when height isn't given.
  */
-function openAdminDialog_(mode, title) {
+function openAdminDialog_(mode, title, height) {
   requireEditorRun_();
   const ui = SpreadsheetApp.getUi();
   const key = Utilities.getUuid();
@@ -388,7 +819,13 @@ function openAdminDialog_(mode, title) {
   page.key = key;
   page.mode = mode;
   page.contactNote = kioskContactNote(kioskContact_());
-  ui.showModalDialog(page.evaluate().setWidth(480).setHeight(600), title);
+  ui.showModalDialog(
+    page
+      .evaluate()
+      .setWidth(480)
+      .setHeight(height || 600),
+    title,
+  );
 }
 
 /**

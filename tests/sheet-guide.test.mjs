@@ -36,10 +36,126 @@ const logNotes = () => plain(L.logHeaderNotes());
 const flagNotes = () => plain(L.flagHeaderNotes());
 const currentNoteTexts = () => [...values(L.logHeaderNotes()), ...values(L.flagHeaderNotes())];
 
+// An invented volunteer and Log for the hours email's texts: every warning kind, a paper
+// row, a stand-in row and a same-name group, so each text the preview and the email can
+// show is built once.
+const PAT = {
+  id: "pat-id",
+  firstName: "Pat",
+  lastName: "Example",
+  token: "tok-pat",
+  row: 2,
+  startDate: "2026-02-15",
+  needsPhoneCheck: true,
+};
+const hoursEntry = (row, fields) => ({
+  row,
+  shiftId: "s-" + row,
+  token: "tok-pat",
+  name: "Pat Example",
+  dateText: "2026-11-02",
+  statedInMs: Date.UTC(2026, 10, 2, 15),
+  statedOutMs: Date.UTC(2026, 10, 2, 18),
+  recordedInMs: NaN,
+  statedHoursCell: 3,
+  alerts: "",
+  status: "closed",
+  outBy: "kiosk",
+  ...fields,
+});
+const HOURS_LOG = [
+  hoursEntry(2),
+  hoursEntry(3, { status: "open", statedHoursCell: "" }),
+  hoursEntry(4, { outBy: "auto-close", alerts: "auto clock-out" }),
+  hoursEntry(5, { statedHoursCell: "" }),
+  hoursEntry(6, { dateText: "11/03/2026" }),
+  hoursEntry(7, { token: "tok-old" }),
+  hoursEntry(8, { token: "import:pat example", shiftId: "import-1" }),
+  hoursEntry(9, { shiftId: "import-2", dateText: "2025-03-01" }),
+];
+
+/** Every text the hours email's preview, results and email can show, one line each. */
+function hoursEmailTexts() {
+  const period = plain(L.hoursEmailPeriod("this", "2026-11-14"));
+  const plan = (flags) =>
+    L.hoursEmailPlan({
+      volunteer: PAT,
+      entries: HOURS_LOG,
+      flags,
+      period,
+      todayDate: "2026-11-14",
+      listedTokens: ["tok-pat"],
+    });
+  const flagged = plan([{ shiftId: "s-2", reviewed: false, name: "Pat Example" }]);
+  const unread = plan(null);
+  const none = L.hoursEmailPlan({
+    volunteer: { ...PAT, needsPhoneCheck: false },
+    entries: [],
+    flags: [],
+    period,
+    todayDate: "2026-11-14",
+    listedTokens: [],
+  });
+  const emails = [flagged, none].flatMap((p) =>
+    [true, false].map((attach) =>
+      L.hoursEmailMessage({
+        firstName: "Pat",
+        plan: p,
+        attach,
+        contact: "Pat Example\npat@example.org",
+        signature: "Pat Example\nVolunteer desk",
+      }),
+    ),
+  );
+  // Last month with no shifts in it, and this month with none yet.
+  [
+    ["last", "2026-11-03"],
+    ["this", "2026-12-03"],
+  ].forEach(([choice, today]) => {
+    const p = L.hoursEmailPlan({
+      volunteer: PAT,
+      entries: HOURS_LOG,
+      flags: [],
+      period: L.hoursEmailPeriod(choice, today),
+      todayDate: today,
+      listedTokens: ["tok-pat"],
+    });
+    emails.push(
+      L.hoursEmailMessage({
+        firstName: "Pat",
+        plan: p,
+        attach: true,
+        contact: "Pat",
+        signature: "",
+      }),
+    );
+  });
+  const results = plain(L.hoursEmailResults());
+  return [
+    ...["no-email", "bad-email", "no-email-column", "not-found", "duplicate-token"].map((p) =>
+      L.hoursEmailProblemText(p, [2, 5], "pat@example.org, pat2@example.org"),
+    ),
+    L.hoursEmailContactProblem(),
+    L.hoursEmailNoneProblem(),
+    L.hoursEmailQuotaProblem(12, 3),
+    L.hoursEmailQuotaProblem(1, 0),
+    ...[...plain(flagged.warnings), ...plain(unread.warnings), ...plain(none.warnings)].map(
+      (w) => w.text,
+    ),
+    ...plain(L.hoursEmailTotalLines(flagged)),
+    L.hoursEmailFromLine("staff@example.org"),
+    ...Object.values(results),
+    L.refusal("HOURS_EMAIL_STALE").message,
+    L.refusal("HOURS_EMAIL_TOO_MANY").message,
+    L.hoursEmailProtectionDescription(),
+    ...emails.flatMap((m) => [m.subject, ...m.body.split("\n").map((line) => line.trim())]),
+  ];
+}
+
 /**
- * Every text staff read: How to rows, Settings sentences and lines, header notes, warnings.
- * The contact cell's text is "" (it is a formula), so its two texts stand in for it, the
- * prefix with an example contact after it.
+ * Every text staff read: How to rows, Settings sentences and lines, header notes, warnings,
+ * and the hours email's texts. The contact cell's text is "" (it is a formula), so its two
+ * texts stand in for it, the prefix with an example contact after it.
  */
 function staffTexts() {
   const contact = plain(L.howToContactTexts());
@@ -54,6 +170,7 @@ function staffTexts() {
     L.settingsDescriptionProtection(),
     L.howToProtectionDescription(),
     ...currentNoteTexts(),
+    ...hoursEmailTexts(),
   ].filter((t) => t !== "");
 }
 
@@ -265,6 +382,7 @@ test("every Kiosk admin > in the staff text names a menu item exactly as the men
     "Remove a shift…",
     "Restore a shift…",
     "Monthly report…",
+    "Email hours…",
   ].forEach((l) => assert.ok(all.includes("Kiosk admin > " + l), l));
 });
 
@@ -401,12 +519,86 @@ const BLANK_TEXT =
   "If the kiosk or this sheet isn't working and this tab doesn't help, ask whoever looks after the kiosk. To name them here, type their name and an email or phone in Kiosk contact on the Settings tab.";
 const PREFIX = "If the kiosk or this sheet isn't working and this tab doesn't help, contact: ";
 
-test("Kiosk contact is the last Settings row, blank by default, with its sentence", () => {
+test("Kiosk contact is the last Settings row before the hours email rows, blank by default, with its sentence", () => {
   const rows = plain(L.settingsDefaults("2026-11-13"));
   assert.equal(L.kioskContactSetting(), "Kiosk contact");
-  assert.deepEqual(rows[rows.length - 1], ["Kiosk contact", ""]);
+  assert.deepEqual(rows[rows.length - 3], ["Kiosk contact", ""]);
   assert.equal(rows.filter((r) => r[0] === "Kiosk contact").length, 1);
   assert.equal(plain(L.settingsDescriptions())["Kiosk contact"], CONTACT_SENTENCE);
+});
+
+test("the two hours email rows are the last two Settings rows, blank by default, with their sentences", () => {
+  const rows = plain(L.settingsDefaults("2026-11-13"));
+  assert.equal(L.hoursEmailContactSetting(), "Hours email contact");
+  assert.equal(L.hoursEmailSignatureSetting(), "Hours email signature");
+  assert.deepEqual(rows.slice(-2), [
+    ["Hours email contact", ""],
+    ["Hours email signature", ""],
+  ]);
+  const d = plain(L.settingsDescriptions());
+  assert.equal(
+    d["Hours email contact"],
+    "Who volunteers should contact about their hours, such as a name and an email or phone: Kiosk admin > Email hours… ends every email with it, because nobody can reply to that email; while it's blank, no hours email can be sent.",
+  );
+  assert.equal(
+    d["Hours email signature"],
+    'Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.',
+  );
+});
+
+test("How to has the Email hours steps, after the monthly report", () => {
+  const sections = plain(L.howToSections());
+  const at = sections.findIndex((s) => s.title === "Email volunteers their hours");
+  assert.ok(at > 0);
+  assert.equal(sections[at - 1].title, "Make the monthly report");
+  const texts = sections[at].lines.map((l) => l.text);
+  assert.ok(texts.includes("1. Kiosk admin > Email hours…"));
+  const all = texts.join("\n");
+  [
+    "this month or last month",
+    "last month, all three totals are as of that month's last day",
+    "Attach all shifts",
+    "Tick all shown with the search empty",
+    "Preview",
+    "Check before sending",
+    "initials",
+    "Send email",
+    "Hours email contact",
+    "can't take replies",
+    "Hours emails tab",
+    "Bounces",
+  ].forEach((part) => assert.ok(all.includes(part), part));
+});
+
+test("the hours email's texts are in the staff text the wording tests read", () => {
+  const texts = hoursEmailTexts();
+  const all = staffTexts();
+  texts.filter((t) => t !== "").forEach((t) => assert.ok(all.includes(t), t));
+  // Every warning kind and every problem is among them.
+  const joined = texts.join("\n");
+  [
+    "open shift not counted",
+    "with an unreviewed flag",
+    "with Admin Alerts? set",
+    "no listed volunteer has",
+    "auto clock-out in the totals",
+    "counted as 0 hours",
+    "left out (",
+    "with an import: User Token",
+    "The Flags tab couldn't be read",
+    "no counted hours yet",
+    "Two volunteers share this name",
+    "has no email",
+    "isn't one email address",
+    "has no Email column",
+    "Not on the volunteer list any more",
+    "have the same User Token",
+    "Google allows 3 more",
+    "daily email limit",
+    "We don't have any volunteer hours recorded for you yet.",
+    "No shifts in October 2026.",
+    "No shifts yet in December 2026.",
+  ].forEach((part) => assert.ok(joined.includes(part), part));
 });
 
 test("How to opens with Problems with the kiosk: one contact line, styled like text", () => {
