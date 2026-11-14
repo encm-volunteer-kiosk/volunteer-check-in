@@ -1460,6 +1460,16 @@ function checkOutCells(open, nowMs, statedOutMs, flag, longFlag) {
 // Check-in and check-out decisions
 
 /**
+ * The rows a decision reads: input.entries when the input has them, else the open rows of
+ * these tokens' states in input.states (logStateOpenRows), which throws when a token has
+ * no state.
+ */
+function decisionEntries(input, tokens) {
+  if (input.entries !== undefined) return input.entries;
+  return logStateOpenRows(input.states, tokens);
+}
+
+/**
  * Checks a check-in in order: NOT_FOUND, phone, ALREADY_IN (an open row still in the
  * window, findOpenShift), ARRIVAL_FUTURE, ARRIVAL_OTHER_DAY. Input: {volunteers, id (the
  * tapped entry), digits, entries (the Log), todayDate, nowMs, windowMs, arrivedMs (null
@@ -1469,12 +1479,18 @@ function checkOutCells(open, nowMs, statedOutMs, flag, longFlag) {
  * resolveVolunteer found, flag the arrival flag or '', flags the list the Flags tab gets:
  * [flag], or [] when nothing is flagged, and missedSignOut whether the volunteer's last
  * check-out was one they didn't make (missedSignOut).
+ *
+ * In place of entries the input may hold states, a map of User Token to the volunteer's
+ * Log state (volunteerLogStates), and the decision is then the one entries would give.
+ * When both are given, entries decide. A states map without the resolved volunteer's
+ * token throws.
  */
 function decideCheckIn(input) {
   const who = resolveVolunteer(input.volunteers, input.id, input.digits);
   if (who.refusal) return { refusal: who.refusal };
   const volunteer = who.volunteer;
-  if (findOpenShift(input.entries, volunteer.token, input.nowMs, input.windowMs, input.todayDate)) {
+  const entries = decisionEntries(input, [volunteer.token]);
+  if (findOpenShift(entries, volunteer.token, input.nowMs, input.windowMs, input.todayDate)) {
     return { refusal: "ALREADY_IN" };
   }
   const arrival = validateArrival(input.nowMs, input.arrivedMs, input.arrivedDate, input.todayDate);
@@ -1485,7 +1501,10 @@ function decideCheckIn(input) {
     arrivedMs: arrival.arrivedMs,
     flag,
     flags: flag ? [flag] : [],
-    missedSignOut: missedSignOut(input.entries, volunteer.token, input.launchDate),
+    missedSignOut:
+      input.entries !== undefined
+        ? missedSignOut(input.entries, volunteer.token, input.launchDate)
+        : logStateMissedSignOut(logStateOf(input.states, volunteer.token), input.launchDate),
   };
 }
 
@@ -1505,13 +1524,20 @@ function decideCheckIn(input) {
  * milestone is counted from the closed rows before this one. flags is checkOutFlags, the
  * texts the cells add to Admin Alerts? (the long-shift flag among them when the stated
  * hours are more than longShiftHours), and open the open row's entry.
+ *
+ * In place of entries the input may hold states, as for decideCheckIn, for every token
+ * checkOutTokens names. An open row from a state has no Admin Alerts? or Name, so the
+ * cells made from it are only a plan: the cells written come from a decision whose open
+ * row is the sheet's own row (logStatesWithEntry).
  */
 function decideCheckOut(input) {
-  const who = resolveCheckOut(input);
+  const wanted = checkOutTokens(input.volunteers, input.id, input.digits);
+  const entries = decisionEntries(input, wanted.tokens || []);
+  const who = resolveCheckOut(input.entries !== undefined ? input : { ...input, entries });
   if (who.refusal) return { refusal: who.refusal };
   const volunteer = who.volunteer;
   const open = findOpenShift(
-    input.entries,
+    entries,
     volunteer.token,
     input.nowMs,
     input.windowMs,
@@ -1533,7 +1559,10 @@ function decideCheckOut(input) {
   const minutes = minutesFromHours(
     milestoneHours({ ...open, statedHours: hoursCell(cells[H.statedHours]) }),
   );
-  const before = closedTotals(input.entries, volunteer.token);
+  const before =
+    input.entries !== undefined
+      ? closedTotals(input.entries, volunteer.token)
+      : logStateOf(input.states, volunteer.token);
   return {
     volunteer,
     row: open.row,
@@ -1550,6 +1579,517 @@ function decideCheckOut(input) {
     flags: checkOutFlags(open, flag, longFlag),
     open,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Log cache
+//
+// With the cache switched on, check-in and check-out read each volunteer's Log state from
+// one script-cache item, the log map, instead of reading the whole Log. A volunteer's
+// state holds exactly what the two decisions read from the Log:
+//
+//   open      every row with Status open, as an entry with row, shiftId, token, dateText,
+//             recordedInMs, statedInMs and status "open", in row order
+//   last      the last row in reportRowOrder of the rows with a readable Date and a Shift
+//             ID that isn't an import's, as {row, date, startMs, missed}, or null; missed
+//             is true when that row is open, or closed with a Check-Out Entered By other
+//             than kiosk
+//   shifts    the count of closed rows, as closedTotals counts them
+//   minutes   their whole minutes, as closedTotals sums them
+//
+// The window and the launch date are Settings, applied at the decision, never stored.
+// Since reportRowOrder sorts by date first, the last row on or after the launch date is
+// the last row overall when that row is dated on or after it, and there is none
+// otherwise, so one stored last row answers missedSignOut for any launch date.
+//
+// The map is {readAt, layout, lastRow, states}: readAt the time the whole-Log read it
+// came from started, kept by every fill; layout the Log's columns (logLayout); lastRow the
+// Log's last row as that read saw it, moved only by a check-in fill; states every
+// Profiles token's state, a token with no Log rows included. A token not in the map is
+// unknown, not empty.
+//
+// The rules: a state gives the decisions exactly what the entries it was built from give;
+// a state that went through encodeLogMap and decodeLogMap gives the same decisions as
+// before; a fill gives exactly the state a rebuild from the Log after the write would.
+
+/**
+ * The shape of the cached log map. Raise it whenever the state's fields, their encoding
+ * or what fills them changes: the cache key carries it, so a map cached by older code is
+ * never read by newer code. The tests pin the encoded shape that goes with each version.
+ */
+function logCacheVersion() {
+  return 1;
+}
+
+/** The script cache key of the log map. One key, so the kiosk's remove reaches every map. */
+function logCacheKey() {
+  return "log:v" + logCacheVersion();
+}
+
+/**
+ * How long a log map may be used after the whole-Log read it came from started, and the
+ * expiry every put of it passes.
+ */
+function logCacheSeconds() {
+  return 600;
+}
+
+/**
+ * A log map is used only when its read started more than this long after the Log changed
+ * stamp. It covers clock skew between the servers that write the stamp and the kiosk.
+ */
+function logCacheMarginMs() {
+  return 5000;
+}
+
+/** The log map is cached only when its text is at most this many UTF-8 bytes. */
+function logCacheMaxBytes() {
+  return 100000;
+}
+
+/**
+ * The script property holding the Log changed stamp: the time, in ms since 1970 as text,
+ * of the last change to the spreadsheet a script writer or the change trigger saw.
+ */
+function logStampProperty() {
+  return "logChangedAt";
+}
+
+/** The script property that switches the Log cache on. */
+function logCacheSwitchProperty() {
+  return "LOG_CACHE";
+}
+
+/**
+ * True when the switch property's value turns the Log cache on: exactly the text "on".
+ * Absent (null), any other text, "ON" and "on " included, is off.
+ */
+function logCacheSwitchOn(value) {
+  return value === "on";
+}
+
+/**
+ * The Log's column layout as text: the 0-based column of each kiosk header, in
+ * logHeaders() order, joined with dots (-1 for an optional column the Log lacks). cols is
+ * logColumns of row 1. A map is used only under the layout it was read under.
+ */
+function logLayout(cols) {
+  return logHeaders()
+    .map((h) => cols[h])
+    .join(".");
+}
+
+/** A volunteer with no Log rows: no closed shifts, no last row, nothing open. */
+function emptyLogState() {
+  return { shifts: 0, minutes: 0, last: null, open: [] };
+}
+
+/** True when a row's check-out was one the volunteer didn't make, as missedSignOut reads it. */
+function isMissedCheckOutRow(entry) {
+  if (isStatus(entry, "open")) return true;
+  return isStatus(entry, "closed") && entrySource(entry.outBy) !== "kiosk";
+}
+
+/** A state's last row as reportRowOrder reads a row. */
+function logLastOrderRow(last) {
+  return { row: last.row, dateText: last.date, statedInMs: last.startMs, recordedInMs: NaN };
+}
+
+/**
+ * Adds one Log entry of this token to state, changing state, and returns it. Entries are
+ * added in Log row order. A row counts in open when its Status is open, in shifts and
+ * minutes when it is closed, and as last when it has a readable Date and a Shift ID that
+ * isn't an import's and comes at or after the last so far in reportRowOrder.
+ */
+function addToLogState(state, entry, token) {
+  if (isStatus(entry, "open")) {
+    const row = {
+      row: entry.row,
+      shiftId: cellString(entry.shiftId),
+      token: cellString(token),
+      dateText: cellString(entry.dateText),
+      recordedInMs: entry.recordedInMs,
+      statedInMs: entry.statedInMs,
+      status: "open",
+    };
+    let at = state.open.length;
+    while (at > 0 && state.open[at - 1].row > row.row) at--;
+    state.open.splice(at, 0, row);
+  }
+  if (isStatus(entry, "closed")) {
+    state.shifts += 1;
+    state.minutes += minutesFromHours(milestoneHours(entry));
+  }
+  const date = rowDate(entry.dateText);
+  if (date && !isImportShiftId(entry.shiftId)) {
+    const last = {
+      row: entry.row,
+      date,
+      startMs: shiftStartMs(entry),
+      missed: isMissedCheckOutRow(entry),
+    };
+    if (!state.last || reportRowOrder(logLastOrderRow(state.last), logLastOrderRow(last)) <= 0) {
+      state.last = last;
+    }
+  }
+  return state;
+}
+
+/** True when states, a map of User Token to state, has a state for this token. */
+function hasLogState(states, token) {
+  return Boolean(states) && Object.prototype.hasOwnProperty.call(states, cellString(token));
+}
+
+/** This token's state in a states map; throws when it has none. */
+function logStateOf(states, token) {
+  if (!hasLogState(states, token)) throw new Error("The Log state has no row for a volunteer.");
+  return states[cellString(token)];
+}
+
+/**
+ * The state of each token from entries (a whole Log, or every row of these tokens), as
+ * a map of User Token to state. Every token gets a state, one with no rows included; a
+ * blank token gets none.
+ */
+function volunteerLogStates(entries, tokens) {
+  const states = Object.create(null);
+  tokens.forEach((token) => {
+    const key = cellString(token);
+    if (key && !hasLogState(states, key)) states[key] = emptyLogState();
+  });
+  entries
+    .slice()
+    .sort((a, b) => a.row - b.row)
+    .forEach((e) => {
+      const key = cellString(e.token);
+      if (key && hasLogState(states, key)) addToLogState(states[key], e, key);
+    });
+  return states;
+}
+
+/**
+ * The whole Log's values read once (row 1 the headers) as what a miss needs, in one pass:
+ * {entries, states}. entries are the rows whose User Token is one of wanted, as log
+ * entries, which is what readLogTable_ keeps for the same tokens; states is
+ * volunteerLogStates of the rows of tokens (every Profiles token). A row of neither is
+ * not parsed. cols and read are as for logEntry.
+ */
+function logTableStates(values, cols, read, wanted, tokens) {
+  const want = Object.create(null);
+  wanted.forEach((token) => {
+    if (cellString(token)) want[cellString(token)] = true;
+  });
+  const states = volunteerLogStates([], tokens);
+  const at = cols[logHeaderNames().token];
+  const entries = [];
+  for (let i = 1; i < values.length; i++) {
+    const cells = values[i];
+    const key = cellString(read.text(typeof at === "number" && at >= 0 ? cells[at] : ""));
+    if (!key) continue;
+    const isWanted = want[key] === true;
+    const inStates = hasLogState(states, key);
+    if (!isWanted && !inStates) continue;
+    const e = logEntry(cells, i + 1, cols, read);
+    if (isWanted) entries.push(e);
+    if (inStates) addToLogState(states[key], e, key);
+  }
+  return { entries, states };
+}
+
+/** The open rows of these tokens' states, as entries findOpenShift reads. */
+function logStateOpenRows(states, tokens) {
+  const rows = [];
+  tokens.forEach((token) => logStateOf(states, token).open.forEach((row) => rows.push(row)));
+  return rows;
+}
+
+/** missedSignOut from a state: its last row, when that is dated on or after the launch date. */
+function logStateMissedSignOut(state, launchDate) {
+  const launch = parseStartDate(launchDate);
+  if (!launch || !state.last) return false;
+  return state.last.date >= launch && state.last.missed;
+}
+
+/**
+ * The states map with entry, the sheet's own row read again before a check-out, in place
+ * of the open row of the same row number in the state of entry's token, for a decision
+ * whose open row carries Admin Alerts? and Name. Null when that state has no open row at
+ * that row number.
+ */
+function logStatesWithEntry(states, entry) {
+  if (!hasLogState(states, entry.token)) return null;
+  const key = cellString(entry.token);
+  const state = states[key];
+  const at = state.open.findIndex((row) => row.row === entry.row);
+  if (at < 0) return null;
+  const open = state.open.slice();
+  open[at] = entry;
+  const copy = Object.assign(Object.create(null), states);
+  copy[key] = { ...state, open };
+  return copy;
+}
+
+/**
+ * True when a Log row read again before a check-out (current, an entry, or null) is still
+ * the open row a state gave (cached): open, with the same Shift ID and User Token. A
+ * cached row with a blank Shift ID was typed by staff, and two such rows of one volunteer
+ * can't be told apart, so it never passes.
+ */
+function cachedOpenRowUnchanged(cached, current) {
+  const shiftId = cellString(cached.shiftId);
+  if (!shiftId || !current || !isStatus(current, "open")) return false;
+  return (
+    cellString(current.shiftId) === shiftId &&
+    cellString(current.token) === cellString(cached.token)
+  );
+}
+
+/** True when two check-out decisions close the same row with the same flags. */
+function sameCheckOutPlan(a, b) {
+  if (!a || !b || a.refusal || b.refusal || a.row !== b.row) return false;
+  const fa = a.flags || [];
+  const fb = b.flags || [];
+  return fa.length === fb.length && fa.every((f, i) => f === fb[i]);
+}
+
+/**
+ * A row the kiosk wrote, as logEntry would read it back: the cell map (header to value,
+ * as cellWrites takes it) on sheet row row. Times are numbers or NaN, hours numbers or NaN,
+ * and text loses the one leading apostrophe sheetText adds. Cells the map doesn't name
+ * read as blank.
+ */
+function logEntryFromCells(row, cells) {
+  const H = logHeaderNames();
+  const has = (h) => Object.prototype.hasOwnProperty.call(cells, h);
+  const text = (h) => {
+    const s = has(h) ? cellString(cells[h]) : "";
+    return s.charAt(0) === "'" ? s.slice(1) : s;
+  };
+  const time = (h) =>
+    has(h) && typeof cells[h] === "number" && isFinite(cells[h]) ? cells[h] : NaN;
+  const hours = (h) => (has(h) ? hoursCell(cells[h]) : NaN);
+  return {
+    row,
+    shiftId: text(H.shiftId),
+    token: text(H.token),
+    name: text(H.name),
+    dateText: text(H.date),
+    recordedInMs: time(H.recordedIn),
+    statedInMs: time(H.statedIn),
+    recordedOutMs: time(H.recordedOut),
+    statedOutMs: time(H.statedOut),
+    recordedHours: hours(H.recordedHours),
+    statedHours: hours(H.statedHours),
+    alerts: text(H.alerts),
+    notes: text(H.notes),
+    status: text(H.status),
+    outBy: text(H.outBy),
+  };
+}
+
+/** A copy of map whose states map is a copy, with state as this token's state. */
+function logMapWithState(map, token, state, lastRow) {
+  const states = Object.assign(Object.create(null), map.states);
+  states[cellString(token)] = state;
+  return { readAt: map.readAt, layout: map.layout, lastRow, states };
+}
+
+/**
+ * The map after the kiosk's check-in wrote entry (logEntryFromCells of the written
+ * cells) on the next row: entry joins the volunteer's open rows, and is its last row when
+ * it comes last in reportRowOrder. lastRow becomes entry's row. Null, so nothing is
+ * stored, when entry's row isn't the map's lastRow + 1 (a row the map never read sits
+ * above it) or the map has no state for entry's token. readAt is kept.
+ */
+function logStateAfterCheckIn(map, entry) {
+  if (entry.row !== map.lastRow + 1 || !hasLogState(map.states, entry.token)) return null;
+  const was = logStateOf(map.states, entry.token);
+  const state = {
+    shifts: was.shifts,
+    minutes: was.minutes,
+    last: was.last,
+    open: was.open.slice(),
+  };
+  addToLogState(state, entry, entry.token);
+  return logMapWithState(map, entry.token, state, entry.row);
+}
+
+/**
+ * The map after the kiosk's check-out wrote decision (decideCheckOut, the decision
+ * written): its row leaves the volunteer's open rows, shifts gains 1 and minutes gains
+ * decision.minutes, and when it is the last row its check-out is no longer missed (the
+ * kiosk closed it). A check-out changes neither the Date nor the check-in times, so the
+ * row keeps its place in reportRowOrder. lastRow and readAt are kept. Null when the
+ * volunteer's state has no open row at decision.row.
+ */
+function logStateAfterCheckOut(map, decision) {
+  const token = decision.volunteer.token;
+  if (!hasLogState(map.states, token)) return null;
+  const was = logStateOf(map.states, token);
+  if (!was.open.some((row) => row.row === decision.row)) return null;
+  const last =
+    was.last && was.last.row === decision.row ? { ...was.last, missed: false } : was.last;
+  const state = {
+    shifts: was.shifts + 1,
+    minutes: was.minutes + decision.minutes,
+    last,
+    open: was.open.filter((row) => row.row !== decision.row),
+  };
+  return logMapWithState(map, token, state, map.lastRow);
+}
+
+/** A time for the cached text: a number, or null for NaN (JSON writes NaN as null). */
+function encodeLogTime(ms) {
+  return typeof ms === "number" && isFinite(ms) ? ms : null;
+}
+
+/** A cached time back as a number, NaN for null. */
+function decodeLogTime(value) {
+  return value === null ? NaN : value;
+}
+
+/**
+ * The log map as the cached text: JSON {v, readAt, layout, lastRow, tokens}, with each
+ * token's state as [shifts, minutes, last, open]: last null or [row, date, startMs,
+ * missed (1 or 0)], open a list of [row, shiftId, dateText, recordedInMs, statedInMs].
+ * An unreadable time is null.
+ */
+function encodeLogMap(map) {
+  const tokens = Object.create(null);
+  Object.keys(map.states).forEach((token) => {
+    const s = map.states[token];
+    tokens[token] = [
+      s.shifts,
+      s.minutes,
+      s.last
+        ? [s.last.row, s.last.date, encodeLogTime(s.last.startMs), s.last.missed ? 1 : 0]
+        : null,
+      s.open.map((r) => [
+        r.row,
+        r.shiftId,
+        r.dateText,
+        encodeLogTime(r.recordedInMs),
+        encodeLogTime(r.statedInMs),
+      ]),
+    ];
+  });
+  return JSON.stringify({
+    v: logCacheVersion(),
+    readAt: map.readAt,
+    layout: map.layout,
+    lastRow: map.lastRow,
+    tokens,
+  });
+}
+
+/** One cached state back as a state of token, or null when it isn't one. */
+function decodeLogState(token, value) {
+  const isTime = (t) => t === null || (typeof t === "number" && isFinite(t));
+  const isRow = (n) => typeof n === "number" && Number.isInteger(n) && n >= 2;
+  if (!Array.isArray(value) || value.length !== 4) return null;
+  const [shifts, minutes, last, open] = value;
+  if (!Number.isInteger(shifts) || shifts < 0 || !Number.isInteger(minutes) || minutes < 0) {
+    return null;
+  }
+  let lastRow = null;
+  if (last !== null) {
+    if (!Array.isArray(last) || last.length !== 4) return null;
+    if (!isRow(last[0]) || typeof last[1] !== "string" || !isTime(last[2])) return null;
+    if (last[3] !== 0 && last[3] !== 1) return null;
+    lastRow = {
+      row: last[0],
+      date: last[1],
+      startMs: decodeLogTime(last[2]),
+      missed: last[3] === 1,
+    };
+  }
+  if (!Array.isArray(open)) return null;
+  const rows = [];
+  for (const r of open) {
+    if (!Array.isArray(r) || r.length !== 5 || !isRow(r[0])) return null;
+    if (typeof r[1] !== "string" || typeof r[2] !== "string" || !isTime(r[3]) || !isTime(r[4])) {
+      return null;
+    }
+    rows.push({
+      row: r[0],
+      shiftId: r[1],
+      token,
+      dateText: r[2],
+      recordedInMs: decodeLogTime(r[3]),
+      statedInMs: decodeLogTime(r[4]),
+      status: "open",
+    });
+  }
+  return { shifts, minutes, last: lastRow, open: rows };
+}
+
+/**
+ * The log map in a cached text, as {readAt, layout, lastRow, states}, or null when the
+ * text isn't this version's map: not JSON, another version, or any field or state not of
+ * the shape encodeLogMap writes (a readAt that isn't a number included).
+ */
+function decodeLogMap(text) {
+  if (typeof text !== "string" || !text) return null;
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch (e) {
+    return null;
+  }
+  if (!value || typeof value !== "object" || value.v !== logCacheVersion()) return null;
+  return decodeLogMapValue(value);
+}
+
+/** decodeLogMap's shape check and decode of a parsed value of this version. */
+function decodeLogMapValue(value) {
+  const { readAt, layout, lastRow, tokens } = value;
+  if (typeof readAt !== "number" || !isFinite(readAt) || typeof layout !== "string") return null;
+  if (!Number.isInteger(lastRow) || lastRow < 1) return null;
+  if (!tokens || typeof tokens !== "object" || Array.isArray(tokens)) return null;
+  const states = Object.create(null);
+  for (const token of Object.keys(tokens)) {
+    const state = decodeLogState(token, tokens[token]);
+    if (!state) return null;
+    states[token] = state;
+  }
+  return { readAt, layout, lastRow, states };
+}
+
+/**
+ * The log map a tap may use, or why not. text is the cached text (null when the cache has
+ * none), stampText the Log changed stamp property (null when there is none, which counts
+ * as 0), nowMs the time now, layout logLayout of the Log's row 1 now, lastRow the Log's
+ * last row now, tokens the User Tokens the tap decides on.
+ *
+ * Returns the map, {readAt, layout, lastRow, states}, or {miss: reason}, with reason the
+ * first of these that holds: "none" (no text), "unreadable" (not JSON, or not of this
+ * version's shape: decodeLogMap), "version" (another version), "layout" (read under
+ * another column layout), "rows" (the Log's last row moved), "token" (a token the tap
+ * needs has no state), "edited" (the map's read didn't start more than logCacheMarginMs()
+ * after the stamp, or the stamp isn't a whole number), "old" (its read started
+ * logCacheSeconds() or more ago). Another version is told apart from unreadable text by
+ * its v alone.
+ */
+function logCacheRead(text, stampText, nowMs, layout, lastRow, tokens) {
+  if (text === null || text === undefined || text === "") return { miss: "none" };
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch (e) {
+    return { miss: "unreadable" };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { miss: "unreadable" };
+  if (value.v !== logCacheVersion()) return { miss: "version" };
+  const map = decodeLogMapValue(value);
+  if (!map) return { miss: "unreadable" };
+  if (map.layout !== layout) return { miss: "layout" };
+  if (map.lastRow !== lastRow) return { miss: "rows" };
+  if (!tokens.every((token) => hasLogState(map.states, token))) return { miss: "token" };
+  const stamp = stampText === null || stampText === undefined || stampText === "" ? "0" : stampText;
+  if (typeof stamp !== "string" || !/^\d+$/.test(stamp)) return { miss: "edited" };
+  if (!(map.readAt > Number(stamp) + logCacheMarginMs())) return { miss: "edited" };
+  if (!(nowMs - map.readAt < logCacheSeconds() * 1000)) return { miss: "old" };
+  return map;
 }
 
 // ---------------------------------------------------------------------------
