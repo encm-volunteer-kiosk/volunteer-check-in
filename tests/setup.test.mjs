@@ -538,11 +538,13 @@ function sheetsService(ss, opts = {}) {
  * A fresh context with Logic.js and Sheets.js loaded and SpreadsheetApp pointing at ss.
  * opts.noSheetsService leaves the advanced Sheets service out, as when it is off;
  * opts.failOn is passed to sheetsService. opts.cache is the script cache, a Map of key
- * to value (a new one by default); opts.onFlush runs on each SpreadsheetApp.flush;
+ * to value (a new one by default); opts.props the script properties, also a Map (new by
+ * default); opts.onFlush runs on each SpreadsheetApp.flush;
  * opts.errors collects what the server logs with console.error.
  */
 function server(ss, opts = {}) {
   const cache = opts.cache || new Map();
+  const props = opts.props || new Map();
   const checkbox = () => {
     const rule = {};
     const b = {
@@ -560,6 +562,14 @@ function server(ss, opts = {}) {
       getScriptCache: () => ({
         get: (k) => (cache.has(k) ? cache.get(k) : null),
         put: (k, v) => void cache.set(k, v),
+      }),
+    },
+    // Script properties, where Log writes put the Log changed stamp.
+    PropertiesService: {
+      getScriptProperties: () => ({
+        getProperty: (k) => (props.has(k) ? props.get(k) : null),
+        setProperty: (k, v) => void props.set(k, String(v)),
+        deleteProperty: (k) => void props.delete(k),
       }),
     },
     SpreadsheetApp: {

@@ -142,6 +142,9 @@ function applyLook_(sheet, plan) {
  * Then set each kiosk column's format by its header and freeze row 1.
  */
 function setupLog_(ss) {
+  // Stamped first and last, as the Log write helpers are, so no log map read before this
+  // runs is used after it.
+  markLogChanged_();
   let log = ss.getSheetByName(LOG_TAB);
   if (log && isOldLogLayout(logHeaderRow_(log))) {
     if (ss.getSheetByName(OLD_LOG_TAB)) {
@@ -174,6 +177,7 @@ function setupLog_(ss) {
     log.getRange(1, f.col, log.getMaxRows(), 1).setNumberFormat(logFormat_(f.kind)),
   );
   log.setFrozenRows(1);
+  markLogChanged_();
 }
 
 /**
@@ -866,18 +870,43 @@ function writeLogCells_(sheet, row, cells, cols) {
   });
 }
 
-/** Writes a new row (a cell map) on the next empty Log row. Returns the row number. */
-function appendLogRow_(cells, cols) {
-  const sheet = sheet_(LOG_TAB);
-  const row = sheet.getLastRow() + 1;
-  if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 50);
-  writeLogCells_(sheet, row, cells, cols);
-  return row;
+/**
+ * Runs write, a Log write, between two Log changed stamps (markLogChanged_): one before
+ * its first Log call and one after its last, even when it throws, so no log map read
+ * before or during the write is used after it. opts {kiosk: true} writes no stamp: only
+ * the kiosk's check-in and check-out pass it, since they forget and fill the map
+ * themselves. Every shared Log write helper goes through this. Returns what write returns.
+ */
+function stampedLogWrite_(opts, write) {
+  const kiosk = Boolean(opts && opts.kiosk);
+  if (!kiosk) markLogChanged_();
+  try {
+    return write();
+  } finally {
+    if (!kiosk) markLogChanged_();
+  }
 }
 
-/** Writes a cell map onto an existing Log row. */
-function updateLogRow_(row, cells, cols) {
-  writeLogCells_(sheet_(LOG_TAB), row, cells, cols);
+/**
+ * Writes a new row (a cell map) on the next empty Log row. Returns the row number. Stamps
+ * the Log changed unless opts is {kiosk: true} (stampedLogWrite_).
+ */
+function appendLogRow_(cells, cols, opts) {
+  return stampedLogWrite_(opts, () => {
+    const sheet = sheet_(LOG_TAB);
+    const row = sheet.getLastRow() + 1;
+    if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 50);
+    writeLogCells_(sheet, row, cells, cols);
+    return row;
+  });
+}
+
+/**
+ * Writes a cell map onto an existing Log row. Stamps the Log changed unless opts is
+ * {kiosk: true} (stampedLogWrite_).
+ */
+function updateLogRow_(row, cells, cols, opts) {
+  stampedLogWrite_(opts, () => writeLogCells_(sheet_(LOG_TAB), row, cells, cols));
 }
 
 /**
@@ -886,30 +915,277 @@ function updateLogRow_(row, cells, cols) {
  * of rows. Grows the tab first when the rows would pass its last grid row. Then one
  * setNumberFormats and one setValues across the full width: each kiosk column a map names
  * gets its column's format, staff's columns keep theirs, and cells the maps don't name are
- * left blank. Returns the first new row number; map i is on that row plus i.
+ * left blank. Returns the first new row number; map i is on that row plus i. Stamps the
+ * Log changed (stampedLogWrite_).
  */
-function appendLogRows_(cellMaps, cols) {
-  const sheet = sheet_(LOG_TAB);
-  const first = sheet.getLastRow() + 1;
-  if (!cellMaps.length) return first;
-  const width = logHeaderRow_(sheet).length;
-  const last = first + cellMaps.length - 1;
-  if (last > sheet.getMaxRows()) {
-    sheet.insertRowsAfter(sheet.getMaxRows(), Math.max(50, last - sheet.getMaxRows()));
-  }
-  const range = sheet.getRange(first, 1, cellMaps.length, width);
-  const formats = range.getNumberFormats();
-  const values = cellMaps.map((cells, i) => {
-    const line = Array.from({ length: width }, () => "");
-    cellWrites(cells, cols).forEach((w) => {
-      line[w.col - 1] = w.kind === "time" && w.value !== "" ? new Date(w.value) : w.value;
-      formats[i][w.col - 1] = logFormat_(w.kind);
+function appendLogRows_(cellMaps, cols, opts) {
+  return stampedLogWrite_(opts, () => {
+    const sheet = sheet_(LOG_TAB);
+    const first = sheet.getLastRow() + 1;
+    if (!cellMaps.length) return first;
+    const width = logHeaderRow_(sheet).length;
+    const last = first + cellMaps.length - 1;
+    if (last > sheet.getMaxRows()) {
+      sheet.insertRowsAfter(sheet.getMaxRows(), Math.max(50, last - sheet.getMaxRows()));
+    }
+    const range = sheet.getRange(first, 1, cellMaps.length, width);
+    const formats = range.getNumberFormats();
+    const values = cellMaps.map((cells, i) => {
+      const line = Array.from({ length: width }, () => "");
+      cellWrites(cells, cols).forEach((w) => {
+        line[w.col - 1] = w.kind === "time" && w.value !== "" ? new Date(w.value) : w.value;
+        formats[i][w.col - 1] = logFormat_(w.kind);
+      });
+      return line;
     });
-    return line;
+    range.setNumberFormats(formats);
+    range.setValues(values);
+    return first;
   });
-  range.setNumberFormats(formats);
-  range.setValues(values);
-  return first;
+}
+
+// ---------------------------------------------------------------------------
+// Log cache
+//
+// With the LOG_CACHE script property set to exactly "on", check-in and check-out read each
+// volunteer's Log state from one script-cache item, the log map (Logic.js, "Log cache"),
+// instead of the whole Log. The switch is read once per kiosk call; off, the call reads,
+// decides and writes as it did before the cache, and touches neither the map nor the
+// stamp. Only the developer changes it, from the Apps Script editor, with logCacheOn() and
+// logCacheOff(); no tab, Settings row, menu or dialog shows it.
+//
+// The Log changed stamp is the script property logStampProperty(): the time of the last
+// change to the spreadsheet a script writer or the change trigger saw. A map is used only
+// when its whole-Log read started more than logCacheMarginMs() after the stamp. Every Log
+// write helper stamps before and after its write (stampedLogWrite_), setupLog_ stamps
+// first and last, and onSheetChange, the installable change trigger, stamps on every
+// change anyone makes by hand. The kiosk's own write instead removes the map just before
+// it writes and puts it back, with the write folded in, after the write is flushed.
+//
+// Every cache and property call is in its own try/catch: a read that fails is a miss, a
+// put or remove that fails is logged and changes nothing else. The one failure that stops
+// a tap is the kiosk failing both to remove the map and to stamp before its write.
+
+/**
+ * Writes the Log changed stamp, the time now, so no log map whose read started before now
+ * is used again. Returns true, or false after logging when the write failed.
+ */
+function markLogChanged_() {
+  try {
+    PropertiesService.getScriptProperties().setProperty(logStampProperty(), String(Date.now()));
+    return true;
+  } catch (e) {
+    console.error("Log change not stamped: " + (e && e.message ? e.message : String(e)));
+    return false;
+  }
+}
+
+/**
+ * The installable change trigger: Sheets runs it after any change anyone makes by hand,
+ * in any tab, of any kind (an edit, a paste, a row or column inserted or removed, a sort).
+ * Its first and only work is the Log changed stamp: it reads nothing from the event or the
+ * spreadsheet. It has no trigger check, since one would come before the stamp; the page
+ * can name it through google.script.run, and such a call only makes the next tap read the
+ * whole Log.
+ */
+function onSheetChange(e) {
+  markLogChanged_();
+}
+
+/**
+ * True when the Log cache switch reads on (logCacheSwitchOn, Logic.js). A read that fails
+ * is logged and reads as off.
+ */
+function logCacheSwitchOn_() {
+  try {
+    return logCacheSwitchOn(
+      PropertiesService.getScriptProperties().getProperty(logCacheSwitchProperty()),
+    );
+  } catch (e) {
+    console.error("Log cache switch not read: " + (e && e.message ? e.message : String(e)));
+    return false;
+  }
+}
+
+/**
+ * The Log as a kiosk call with the cache on needs it, for tokens (the User Tokens the
+ * decision reads) and volunteers (the Profiles list). First the Log's extent and row 1, a
+ * cache get of the map and a read of the stamp; when the map may be used (logCacheRead,
+ * Logic.js) that is all: {hit: true, map, cols, width}. Otherwise the whole Log
+ * (readLogMiss_) with the reason: {hit: false, reason, map, cols, width, entries}. A cache
+ * or stamp read that fails is a miss with reason "error", logged.
+ */
+function readLogState_(tokens, volunteers) {
+  const sheet = sheet_(LOG_TAB);
+  // The data range runs from A1 to the last used row and column, as readLogTable_ reads it.
+  const extent = sheet.getDataRange();
+  const lastRow = extent.getLastRow();
+  const width = extent.getLastColumn();
+  const cols = logColumns(sheet.getRange(1, 1, 1, width).getValues()[0].map(cellText_));
+  // The map and the stamp, each read in its own try: either failing is a miss.
+  let text = null;
+  let stamp = null;
+  let failed = false;
+  try {
+    text = CacheService.getScriptCache().get(logCacheKey());
+  } catch (e) {
+    console.error("Log cache not read: " + (e && e.message ? e.message : String(e)));
+    failed = true;
+  }
+  if (!failed) {
+    try {
+      stamp = PropertiesService.getScriptProperties().getProperty(logStampProperty());
+    } catch (e) {
+      console.error("Log cache not read: " + (e && e.message ? e.message : String(e)));
+      failed = true;
+    }
+  }
+  const got = failed
+    ? { miss: "error" }
+    : logCacheRead(text, stamp, Date.now(), logLayout(cols), lastRow, tokens);
+  if (got.miss) return { hit: false, reason: got.miss, ...readLogMiss_(tokens, volunteers) };
+  return { hit: true, map: got, cols, width };
+}
+
+/**
+ * The whole Log in one range read, as readLogTable_ reads it, and in the same pass the
+ * log map built from it: {cols, width, entries, map}. entries are the rows of tokens,
+ * exactly what readLogTable_(tokens) keeps, so a decision on them is the one made without
+ * the cache. map is {readAt, layout, lastRow, states} with every Profiles token's state
+ * (logTableStates, Logic.js); readAt is the time taken before the read. The map is stored
+ * only after the call's own write is flushed, never here.
+ */
+function readLogMiss_(tokens, volunteers) {
+  const readAt = Date.now();
+  const values = sheet_(LOG_TAB).getDataRange().getValues();
+  const width = values[0].length;
+  const cols = logColumns(values[0].map(cellText_));
+  const built = logTableStates(
+    values,
+    cols,
+    logRead_(),
+    tokens,
+    volunteers.map((v) => v.token),
+  );
+  return {
+    cols,
+    width,
+    entries: built.entries,
+    map: { readAt, layout: logLayout(cols), lastRow: values.length, states: built.states },
+  };
+}
+
+/**
+ * Removes the log map just before a kiosk Log write, so no stored map lacks the write.
+ * When the remove fails it stamps instead, which makes every stored map unusable; when that
+ * fails too it throws, before anything is written.
+ */
+function forgetLogMap_() {
+  try {
+    CacheService.getScriptCache().remove(logCacheKey());
+    return;
+  } catch (e) {
+    console.error("Log cache not removed: " + (e && e.message ? e.message : String(e)));
+  }
+  if (!markLogChanged_()) {
+    throw new Error(
+      "The Log cache could not be cleared before the Log write, so nothing was written.",
+    );
+  }
+}
+
+/**
+ * Stores map, the log map with the call's own write folded in, after the write is flushed.
+ * A map whose text is over logCacheMaxBytes() isn't stored: the stored one is removed and
+ * every tap reads the whole Log. map null stores nothing; why says why in the log line.
+ * Every failure is logged as "Log cache: not stored (<why>)" and changes nothing else.
+ */
+function putLogMap_(map, why) {
+  if (!map) {
+    console.log("Log cache: not stored (" + (why || "no map") + ")");
+    return;
+  }
+  const text = encodeLogMap(map);
+  const size = utf8Length(text);
+  try {
+    if (size <= logCacheMaxBytes()) {
+      CacheService.getScriptCache().put(logCacheKey(), text, logCacheSeconds());
+      return;
+    }
+    console.log("Log cache: not stored (" + size + " bytes, over the limit)");
+    CacheService.getScriptCache().remove(logCacheKey());
+  } catch (e) {
+    console.log("Log cache: not stored (" + (e && e.message ? e.message : String(e)) + ")");
+  }
+}
+
+/** Removes the log map; a failure is logged. Returns true when the remove went through. */
+function removeLogMap_() {
+  try {
+    CacheService.getScriptCache().remove(logCacheKey());
+    return true;
+  } catch (e) {
+    console.error("Log cache not removed: " + (e && e.message ? e.message : String(e)));
+    return false;
+  }
+}
+
+/**
+ * Run from the Apps Script editor after changing the Log in a way the change trigger
+ * doesn't see (another script, version history, the test copy's kit): stamps the Log
+ * changed and removes the log map, so the next tap reads the whole Log. Leaves the switch
+ * as it is.
+ */
+function clearLogCache() {
+  requireEditorRun_();
+  const stamped = markLogChanged_();
+  const removed = removeLogMap_();
+  console.log(
+    "clearLogCache: stamp " +
+      (stamped ? "written" : "not written") +
+      ", map " +
+      (removed ? "removed" : "not removed"),
+  );
+}
+
+/**
+ * Turns the Log cache on, run from the Apps Script editor. Stamps first, then sets the
+ * switch, so no map stored before this run is ever used. A stamp that fails throws before
+ * the switch is set. Run it only after every kiosk page was reloaded on the deployment.
+ */
+function logCacheOn() {
+  requireEditorRun_();
+  if (!markLogChanged_()) {
+    throw new Error("The Log changed stamp wasn't written, so the Log cache stays off.");
+  }
+  console.log("logCacheOn: stamp written");
+  PropertiesService.getScriptProperties().setProperty(logCacheSwitchProperty(), "on");
+  console.log("logCacheOn: the Log cache is on");
+}
+
+/**
+ * Turns the Log cache off, run from the Apps Script editor; it is also the rollback. Under
+ * the script lock, so no kiosk call is under way: deletes the switch, which throws through
+ * when it fails, then stamps and removes the map. Its stamp keeps every map stored before
+ * it from being used, even when the switch is later set to on by hand. A lock that isn't
+ * free within 30 seconds throws and changes nothing.
+ */
+function logCacheOff() {
+  requireEditorRun_();
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) throw new Error("Kiosk busy, run it again");
+  try {
+    PropertiesService.getScriptProperties().deleteProperty(logCacheSwitchProperty());
+    console.log("logCacheOff: the Log cache is off");
+    if (markLogChanged_()) {
+      console.log("logCacheOff: stamp written");
+    } else {
+      console.log("logCacheOff: stamp not written; turn the cache on again only with logCacheOn()");
+    }
+    console.log("logCacheOff: map " + (removeLogMap_() ? "removed" : "not removed"));
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1165,9 +1441,9 @@ function appendRemovedRow_(removed, logHeader, values, formats, initials, reason
   return row;
 }
 
-/** Deletes one Log row; the rows below it move up. */
-function deleteLogRow_(row) {
-  sheet_(LOG_TAB).deleteRow(row);
+/** Deletes one Log row; the rows below it move up. Stamps the Log changed (stampedLogWrite_). */
+function deleteLogRow_(row, opts) {
+  stampedLogWrite_(opts, () => sheet_(LOG_TAB).deleteRow(row));
 }
 
 /**
@@ -1215,29 +1491,31 @@ function readRemoved_() {
  * formats are one Log-width line each, already mapped to the Log's header (headerMapCopy,
  * Logic.js), with null where nothing maps. Kiosk columns (cols, logColumns) get their
  * kind's format; staff columns get the copied one, or keep theirs where none was copied.
- * Returns the new row's number.
+ * Returns the new row's number. Stamps the Log changed (stampedLogWrite_).
  */
-function appendLogValues_(values, formats, cols) {
-  const sheet = sheet_(LOG_TAB);
-  const width = values.length;
-  const row = sheet.getLastRow() + 1;
-  if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 50);
-  const range = sheet.getRange(row, 1, 1, width);
-  const kept = range.getNumberFormats()[0];
-  const lineFormats = formats.map((f, j) => (f === null || f === "" ? kept[j] : f));
-  const kinds = logColumnKinds();
-  Object.keys(cols).forEach((h) => {
-    const c = cols[h];
-    if (c < 0 || c >= width) return;
-    const format = logFormat_(kinds[h]);
-    // A real date in a text column (pasted in by hand) keeps the format it came with, so
-    // it still reads as that date rather than as a serial number under plain text.
-    if (format === "@" && isDateValue_(values[c]) && lineFormats[c] !== kept[c]) return;
-    lineFormats[c] = format;
+function appendLogValues_(values, formats, cols, opts) {
+  return stampedLogWrite_(opts, () => {
+    const sheet = sheet_(LOG_TAB);
+    const width = values.length;
+    const row = sheet.getLastRow() + 1;
+    if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 50);
+    const range = sheet.getRange(row, 1, 1, width);
+    const kept = range.getNumberFormats()[0];
+    const lineFormats = formats.map((f, j) => (f === null || f === "" ? kept[j] : f));
+    const kinds = logColumnKinds();
+    Object.keys(cols).forEach((h) => {
+      const c = cols[h];
+      if (c < 0 || c >= width) return;
+      const format = logFormat_(kinds[h]);
+      // A real date in a text column (pasted in by hand) keeps the format it came with, so
+      // it still reads as that date rather than as a serial number under plain text.
+      if (format === "@" && isDateValue_(values[c]) && lineFormats[c] !== kept[c]) return;
+      lineFormats[c] = format;
+    });
+    range.setNumberFormats([lineFormats]);
+    range.setValues([values.map(cellBack_)]);
+    return row;
   });
-  range.setNumberFormats([lineFormats]);
-  range.setValues([values.map(cellBack_)]);
-  return row;
 }
 
 /** True when v is a Date, from any script context. */

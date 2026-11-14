@@ -246,6 +246,7 @@ const settingsRows = (extra = []) => [
 function server(opts = {}) {
   const calls = [];
   const cache = new Map();
+  const props = new Map();
   const errors = [];
   const logs = [];
   const shown = [];
@@ -292,6 +293,14 @@ function server(opts = {}) {
           put: (k, v) => void cache.set(k, v),
         }),
     }),
+    // Script properties, where Log writes put the Log changed stamp.
+    PropertiesService: {
+      getScriptProperties: () => ({
+        getProperty: (k) => (props.has(k) ? props.get(k) : null),
+        setProperty: (k, v) => void props.set(k, String(v)),
+        deleteProperty: (k) => void props.delete(k),
+      }),
+    },
     LockService: service("LockService", {
       getScriptLock: () => ({
         tryLock: () => (opts.lock ? opts.lock(++locks) : true),
@@ -371,7 +380,7 @@ function server(opts = {}) {
   );
   for (const key of opts.keys || ["k"]) cache.set(ctx.adminKeyCacheKey(key), "1");
   calls.length = 0;
-  return { ctx, calls, cache, sheets, source, shown, errors, logs };
+  return { ctx, calls, cache, props, sheets, source, shown, errors, logs };
 }
 
 const FORM = { file: FILE_LINK, tab: "Historical Hours", initials: "j.p." };

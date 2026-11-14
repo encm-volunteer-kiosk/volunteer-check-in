@@ -216,6 +216,7 @@ function server(opts = {}) {
   const journal = [];
   const errors = [];
   const cache = new Map();
+  const props = new Map();
   const tabs = {};
   const add = (name, rows) => (tabs[name] = new FakeSheet(name, rows, journal));
   add("Log", opts.log || [LOG_HEADER]);
@@ -237,6 +238,14 @@ function server(opts = {}) {
       getScriptCache: () => ({
         get: (k) => (cache.has(k) ? cache.get(k) : null),
         put: (k, v) => void cache.set(k, v),
+      }),
+    },
+    // Script properties, where Log writes put the Log changed stamp.
+    PropertiesService: {
+      getScriptProperties: () => ({
+        getProperty: (k) => (props.has(k) ? props.get(k) : null),
+        setProperty: (k, v) => void props.set(k, String(v)),
+        deleteProperty: (k) => void props.delete(k),
       }),
     },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
@@ -297,6 +306,7 @@ function server(opts = {}) {
     tabs,
     journal,
     errors,
+    props,
     onFlush: (fn) => (afterFlush = fn),
   };
 }

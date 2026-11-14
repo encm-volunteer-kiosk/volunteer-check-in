@@ -197,6 +197,7 @@ function flagRow({
 function server(opts = {}) {
   const calls = [];
   const cache = new Map();
+  const props = new Map();
   const logs = [];
   const mail = [];
   const alerts = [];
@@ -248,6 +249,14 @@ function server(opts = {}) {
       getScriptCache: () => ({
         get: (k) => (cache.has(k) ? cache.get(k) : null),
         put: (k, v) => void cache.set(k, v),
+      }),
+    },
+    // Script properties, where Log writes put the Log changed stamp.
+    PropertiesService: {
+      getScriptProperties: () => ({
+        getProperty: (k) => (props.has(k) ? props.get(k) : null),
+        setProperty: (k, v) => void props.set(k, String(v)),
+        deleteProperty: (k) => void props.delete(k),
       }),
     },
     Session: service("Session", {
@@ -384,6 +393,7 @@ function server(opts = {}) {
     ctx,
     calls,
     cache,
+    props,
     logs,
     mail,
     alerts,
