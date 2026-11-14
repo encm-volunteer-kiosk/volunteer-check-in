@@ -5564,13 +5564,17 @@ function importLedgerColumns(headerRow) {
   return cols;
 }
 
-/** Why a source row is left out, by code, as the preview lists them. */
+/**
+ * Why a source row is left out, by code, as the preview lists them. The most hours a row
+ * may have is the Log check's limit (logCheckMaxHours), so the import never brings in a
+ * row the Log check would flag as an impossible shift.
+ */
 function importLeftOutReasons() {
   return {
     date: "date can't be read",
     future: "date is after today",
     name: "no first or last name",
-    hours: "hours aren't a number above 0 and at most 24",
+    hours: "hours aren't a number above 0 and at most " + logCheckMaxHours(),
   };
 }
 
@@ -5654,6 +5658,106 @@ function importSourceKey(date, nameKey, n) {
   return date + "|" + nameKey + "|" + n;
 }
 
+/** The date and name part of a source key: all of it before its count. */
+function importKeyGroup(key) {
+  const s = cellString(key);
+  return s.slice(0, s.lastIndexOf("|"));
+}
+
+/**
+ * The source row a ledger line's Source names ("<file ID>, <tab>, row 12"), or 0 when it
+ * names another file or tab, or no row.
+ */
+function importLedgerSourceRow(source, fileId, tab) {
+  const s = cellString(source);
+  const start = cellString(fileId) + ", " + cellString(tab) + ", row ";
+  if (!s.startsWith(start)) return 0;
+  const rest = s.slice(start.length);
+  return /^[1-9]\d*$/.test(rest) ? Number(rest) : 0;
+}
+
+/**
+ * The ledger lines [{key, source}] that came from this file and tab, as [{key, row}] with
+ * the source row each was imported from.
+ */
+function importLedgerRows(lines, fileId, tab) {
+  return (lines || [])
+    .map((line) => ({
+      key: cellString(line.key),
+      row: importLedgerSourceRow(line.source, fileId, tab),
+    }))
+    .filter((line) => line.key !== "" && line.row > 0);
+}
+
+/**
+ * The count each keyed source row gets in its key (importSourceKey), as a Map of source
+ * row to count. rows is [{row, group}] in source order: every row whose date reads and
+ * that has a name, left out or not, with group its date and name key ("date|nameKey").
+ * ledgerKeys is a Set of every key in the ledger, ledgerRows the ledger's lines from this
+ * file and tab (importLedgerRows).
+ *
+ * A row's count is its place among the rows with its date and name, unless the ledger
+ * says otherwise. When every ledger line from this tab names a row that still has that
+ * line's date and name, no imported row has moved, and each keeps the count it came in
+ * under. That matters when a row left out for its date or name is fixed where it is: it
+ * joins a date and name above rows already imported, and by place it would take the key
+ * of the row below it. Instead, a row whose place is taken gets the lowest count no other
+ * row has and no ledger key uses. When some line's row no longer matches (rows were added
+ * or removed above imported ones), every row is counted by its place.
+ */
+function importRowCounts(rows, ledgerKeys, ledgerRows) {
+  const groupAt = new Map((rows || []).map((r) => [r.row, r.group]));
+  let claims = new Map();
+  const keyRows = new Map();
+  for (const line of ledgerRows || []) {
+    const key = cellString(line.key);
+    const group = importKeyGroup(key);
+    const n = Number(key.slice(group.length + 1));
+    const held = claims.get(line.row);
+    const fits = groupAt.get(line.row) === group && Number.isInteger(n) && n > 0;
+    const clash =
+      (held !== undefined && held !== n) || (keyRows.has(key) && keyRows.get(key) !== line.row);
+    if (!fits || clash) {
+      claims = new Map();
+      break;
+    }
+    claims.set(line.row, n);
+    keyRows.set(key, line.row);
+  }
+
+  const groups = new Map();
+  (rows || []).forEach((r) => {
+    if (!groups.has(r.group)) groups.set(r.group, []);
+    groups.get(r.group).push(r.row);
+  });
+  const counts = new Map();
+  groups.forEach((members, group) => {
+    const used = new Set();
+    members.forEach((row) => {
+      if (claims.has(row)) used.add(claims.get(row));
+    });
+    const unplaced = [];
+    const placed = [];
+    members.forEach((row, i) => {
+      if (claims.has(row)) counts.set(row, claims.get(row));
+      else if (!used.has(i + 1)) placed.push([row, i + 1]);
+      else unplaced.push(row);
+    });
+    placed.forEach(([row, n]) => {
+      counts.set(row, n);
+      used.add(n);
+    });
+    let n = 0;
+    unplaced.forEach((row) => {
+      do n++;
+      while (used.has(n) || ledgerKeys.has(group + "|" + n));
+      used.add(n);
+      counts.set(row, n);
+    });
+  });
+  return counts;
+}
+
 /** An imported row's Shift ID: "import-" and the first 16 hex of the key's SHA-256. */
 function importShiftId(key, hashFn) {
   return "import-" + String(hashFn(key)).toLowerCase().slice(0, 16);
@@ -5731,16 +5835,19 @@ function importHours(value) {
 
 /**
  * Works out what an import would do. input is {header, rows, todayDate, volunteers,
- * ledgerKeys, logShiftIds, kioskDays, hashFn}: the source header row, its data rows (data
- * row i is source row i + 2; a date cell already as yyyy-MM-dd text, hours as read),
- * today, the Profiles list, the source keys in the ledger, the Shift IDs on the Log, the
+ * ledgerKeys, ledgerRows, logShiftIds, kioskDays, hashFn}: the source header row, its data
+ * rows (data row i is source row i + 2; a date cell already as yyyy-MM-dd text, hours as
+ * read), today, the Profiles list, the source keys in the ledger, the ledger's lines from
+ * this file and tab (importLedgerRows; missing is none), the Shift IDs on the Log, the
  * Log's kiosk days (importKioskDays; missing is empty), and a SHA-256 hex function.
  *
  * A row is importable when its Date reads as a day (parseStartDate) not after today, it
- * has a first or last name, and its hours are a number above 0 and at most 24. Wholly
+ * has a first or last name, and its hours are a number above 0 and at most
+ * logCheckMaxHours(). Wholly
  * blank rows are skipped and not counted. A key counts every row whose date reads and that
  * has a name, left out or not, so fixing one row's hours in the source doesn't change its
- * neighbours' keys.
+ * neighbours' keys; importRowCounts keeps an imported row's key when a row left out for
+ * its date or name is fixed above it.
  *
  * A name matches when exactly one Profiles volunteer has its name key. Returns {refusal}
  * (headers), or {rowsRead, toImport, alreadyImported, onLog, leftOut}: the
@@ -5771,36 +5878,45 @@ function importPlan(input) {
   const ledger = new Set((input.ledgerKeys || []).map(cellString));
   const onLogIds = new Set((input.logShiftIds || []).map(cellString));
   const kioskDays = input.kioskDays || new Set();
-  const counts = new Map();
   const plan = { rowsRead: 0, toImport: [], alreadyImported: [], onLog: [], leftOut: [] };
 
+  const read = [];
   (input.rows || []).forEach((cells, i) => {
-    const row = i + 2;
     if ((cells || []).every((v) => cellString(v) === "")) return;
-    plan.rowsRead++;
     const cell = (at) => (at >= 0 ? cells[at] : "");
-    const date = parseStartDate(cell(c.date));
     const firstName = cellString(cell(c.firstName));
     const lastName = cellString(cell(c.lastName));
+    read.push({
+      row: i + 2,
+      cell,
+      date: parseStartDate(cell(c.date)),
+      firstName,
+      lastName,
+      hasName: firstName !== "" || lastName !== "",
+      nameKey: importNameKey(firstName, lastName),
+    });
+  });
+  const counts = importRowCounts(
+    read
+      .filter((r) => r.date && r.hasName)
+      .map((r) => ({ row: r.row, group: r.date + "|" + r.nameKey })),
+    ledger,
+    input.ledgerRows,
+  );
+
+  read.forEach(({ row, cell, date, firstName, lastName, hasName, nameKey }) => {
+    plan.rowsRead++;
     const hours = importHours(cell(c.hours));
-    const hasName = firstName !== "" || lastName !== "";
-    const nameKey = importNameKey(firstName, lastName);
-    let n = 0;
-    if (date && hasName) {
-      const at = date + "|" + nameKey;
-      n = (counts.get(at) || 0) + 1;
-      counts.set(at, n);
-    }
     let reason = "";
     if (!date) reason = "date";
     else if (date > input.todayDate) reason = "future";
     else if (!hasName) reason = "name";
-    else if (!isFinite(hours) || hours <= 0 || hours > 24) reason = "hours";
+    else if (!isFinite(hours) || hours <= 0 || hours > logCheckMaxHours()) reason = "hours";
     if (reason) {
       plan.leftOut.push({ row, reason });
       return;
     }
-    const key = importSourceKey(date, nameKey, n);
+    const key = importSourceKey(date, nameKey, counts.get(row));
     const shiftId = importShiftId(key, input.hashFn);
     const same = byName.get(nameKey) || [];
     const item = {
