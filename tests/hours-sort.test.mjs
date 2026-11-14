@@ -12,6 +12,13 @@
 // - After any run that gets past the build check, each box holds one of its own choices
 //   with its own list's validation, and each pivot's sort is its box's choice, however the
 //   runs of several edits take their turns.
+// - Before the lock a run writes "Sorting..." into its boxes' status cells and flushes, and
+//   only then stamps and shows its toast; under the lock a run with a newer stamp behind
+//   it stops at once; the run that sorts blanks every status cell in its batch; the
+//   newest run that can't sort says so, and takes it back if a newer run stamped.
+// - After a re-sort the header notes are checked, and only a missing kiosk note is put back.
+// - An abstract model of two and three runs, in every interleaving, never leaves a
+//   "Sorting..." text behind (the ordering model, near the end).
 //
 // Which rows a pivot shows in which order is Sheets' work and can't be checked here; the
 // release check does that on the TEST copy.
@@ -84,15 +91,20 @@ const listOf = (table) => ({
  * and Hours data (marked, its state cells opts.state, built by default), plus a Log tab.
  * opts.docBusy makes the document lock unavailable; opts.triggers is this account's
  * project triggers as [{uid, handler, eventType}], one on-edit runHoursSort trigger
- * "t-sort" by default. calls records, in order, every lock call, write, Sheets call,
- * flush, log line and trigger change.
+ * "t-sort" by default. opts.oldLayout puts row 7's merges as they were before the status
+ * cells (A7:C7, E7:I7, K7:N7). The document properties (props) and the Hours tab's notes
+ * last across runs on one server. calls records, in order, every lock call, read of a
+ * status cell, write, note, property, toast, Sheets call, flush, log line and trigger
+ * change.
  */
 function server(opts = {}) {
   const calls = [];
   const logs = [];
   let fail = null;
+  let watch = null;
   const rec = (entry) => {
     calls.push(entry);
+    if (watch) watch(entry);
     if (fail && fail(entry)) {
       fail = null;
       throw new Error("injected");
@@ -105,6 +117,8 @@ function server(opts = {}) {
       this.cells = new Map();
       this.validations = new Map(); // "row:col" -> rule
       this.pivots = new Map(); // col (1-based) -> pivotTable
+      this.notes = new Map(); // "row:col" -> note
+      this.merges = []; // [row, firstCol, lastCol], 1-based, one row each
     }
     get(r, c) {
       return this.cells.get(r + ":" + c) ?? "";
@@ -150,6 +164,35 @@ function server(opts = {}) {
     getNumColumns() {
       return this.cols;
     }
+    getLastColumn() {
+      return this.col + this.cols - 1;
+    }
+    getValue() {
+      rec({ op: "getValue", sheet: this.sheet.name, a1: this.a1() });
+      return this.sheet.get(this.row, this.col);
+    }
+    isPartOfMerge() {
+      rec({ op: "isPartOfMerge", sheet: this.sheet.name, a1: this.a1() });
+      return this.sheet.merges.some(
+        ([r, c1, c2]) => r === this.row && c1 <= this.col && this.col <= c2,
+      );
+    }
+    getNotes() {
+      rec({ op: "getNotes", sheet: this.sheet.name, a1: this.a1() });
+      return Array.from({ length: this.rows }, (_, i) =>
+        Array.from(
+          { length: this.cols },
+          (_, j) => this.sheet.notes.get(this.row + i + ":" + (this.col + j)) ?? "",
+        ),
+      );
+    }
+    setNote(note) {
+      rec({ op: "setNote", sheet: this.sheet.name, a1: this.a1(), value: note });
+      const at = this.row + ":" + this.col;
+      if (note === "") this.sheet.notes.delete(at);
+      else this.sheet.notes.set(at, note);
+      return this;
+    }
     getValues() {
       rec({ op: "getValues", sheet: this.sheet.name, a1: this.a1() });
       return Array.from({ length: this.rows }, (_, i) =>
@@ -170,6 +213,15 @@ function server(opts = {}) {
   (opts.state || BUILT).forEach((v, i) => data.cells.set("1:" + (12 + i), v));
   const boxes = opts.boxes || row7();
   boxes.forEach((v, i) => v !== "" && hours.cells.set("7:" + (i + 1), v));
+  if (opts.oldLayout) {
+    hours.merges = [
+      [7, 1, 3],
+      [7, 5, 9],
+      [7, 11, 14],
+    ];
+  }
+  const props = new Map(Object.entries(opts.props || {}));
+  let uuids = 0;
   TABLES.forEach((t, i) => {
     // Each box's validation is on its box cell alone, as setupReports sets it.
     hours.validations.set("7:" + boxColumn(t), listOf(t));
@@ -189,6 +241,7 @@ function server(opts = {}) {
 
   const ss = {
     getId: () => "file-1",
+    toast: (message, title, seconds) => rec({ op: "toast", value: [message, title, seconds] }),
     getSheetByName: (name) => sheets.find((s) => s.name === name) || null,
     createDeveloperMetadataFinder: () => {
       const finder = {
@@ -247,6 +300,18 @@ function server(opts = {}) {
       getActiveSpreadsheet: () => ss,
       flush: () => rec({ op: "flush" }),
     },
+    PropertiesService: {
+      getDocumentProperties: () => ({
+        getProperty: (key) => {
+          rec({ op: "prop.get", key });
+          return props.has(key) ? props.get(key) : null;
+        },
+        setProperty: (key, value) => {
+          rec({ op: "prop.set", key, value });
+          props.set(key, value);
+        },
+      }),
+    },
     Sheets: {
       Spreadsheets: {
         get: (id, params) => {
@@ -304,6 +369,7 @@ function server(opts = {}) {
       },
     },
     Utilities: {
+      getUuid: () => (++uuids).toString(16).padStart(8, "c") + "-0000-4000-8000-000000000000",
       formatDate: (date, tz, format) => {
         assert.equal(tz, "America/Chicago");
         assert.equal(format, "yyyy-MM-dd h:mm a");
@@ -338,6 +404,7 @@ function server(opts = {}) {
     ctx,
     calls,
     logs,
+    props,
     hours,
     data,
     log,
@@ -346,6 +413,8 @@ function server(opts = {}) {
     edit,
     run,
     failAt: (f) => (fail = f),
+    // Called with every call as it is recorded, before any failAt.
+    watch: (f) => (watch = f),
     clear: () => {
       calls.length = 0;
       logs.length = 0;
@@ -582,7 +651,7 @@ test("a paste over row 7, or over rows around it, starts a run", () => {
   }
 });
 
-test("a run holds the document lock once, released in runHoursSort's finally, and writes only boxes, pivots and B1", () => {
+test("a run holds the document lock once, released in runHoursSort's finally, and writes only boxes, status cells, pivots and B1", () => {
   const s = server();
   const second = TABLES[0].choices.find((c) => c.text !== TABLES[0].start).text;
   const e = s.edit(colLetters(boxColumn(TABLES[0])) + "7", second);
@@ -612,11 +681,24 @@ test("a run holds the document lock once, released in runHoursSort's finally, an
   assert.equal(o.filter((x) => x === "batchUpdate").length, 1);
   const writes = s.calls.filter((c) => c.op === "setValue");
   assert.deepEqual(
-    writes.map((c) => c.sheet + "!" + c.a1),
-    ["Hours!B1"],
+    writes.map((c) => c.sheet + "!" + c.a1 + "=" + c.value),
+    ["Hours!" + TABLES[0].status + "=" + L.hoursSortStatusText(), "Hours!B1=" + writes[1].value],
     "no state cell, no Hours data row, no row 3",
   );
-  const b1 = s.calls.indexOf(writes[0]);
+  // Before the lock: the sorting text, a flush, then the stamp and the toast.
+  assert.deepEqual(o.slice(0, o.indexOf("docLock.tryLock")), [
+    "isPartOfMerge",
+    "setValue",
+    "flush",
+    "prop.set",
+    "toast",
+  ]);
+  // Holding: the stamp check first, then the state cells.
+  assert.deepEqual(o.slice(o.indexOf("docLock.tryLock") + 1).slice(0, 2), [
+    "prop.get",
+    "getValues",
+  ]);
+  const b1 = s.calls.indexOf(writes[1]);
   assert.ok(b1 > o.indexOf("batchUpdate"));
   assert.equal(o[b1 + 1], "flush", "B1 rendered, then flushed");
   assert.ok(o.lastIndexOf("flush") < release);
@@ -624,11 +706,27 @@ test("a run holds the document lock once, released in runHoursSort's finally, an
     s.hours.get(1, 2),
     L.hoursLine(L.hoursState(BUILT), (ms) => "time " + ms),
   );
-  assert.match(s.logs[0], new RegExp("^Sort \\(edit\\): .*; 1 table re-sorted in \\d+\\.\\d s$"));
+  // The batch blanked every status cell.
+  assert.deepEqual(
+    TABLES.map((t) => s.hours.get(7, colNumber(t.status.slice(0, -1)))),
+    ["", "", ""],
+  );
+  const stamp = s.props.get("hoursSortStamp");
+  assert.match(stamp, /^\d+-[0-9a-f]{8}$/);
+  assert.match(
+    s.logs[0],
+    new RegExp(
+      "^Sort \\(edit\\): .*; 1 table re-sorted in \\d+\\.\\d s\\. Stamp " +
+        stamp +
+        ", stored " +
+        stamp +
+        ", \\d+\\.\\d s from its start\\.$",
+    ),
+  );
   checkMatches(s, "after one pick");
 });
 
-test("a run whose batch fails still releases the lock, and changes nothing", () => {
+test("a run whose batch fails says so in its status cell, renders B1 and flushes, then releases the lock and throws, changing no pivot", () => {
   const s = server();
   const second = TABLES[0].choices.find((c) => c.text !== TABLES[0].start).text;
   const e = s.edit(colLetters(boxColumn(TABLES[0])) + "7", second);
@@ -636,17 +734,53 @@ test("a run whose batch fails still releases the lock, and changes nothing", () 
   s.clear();
   s.failAt((c) => c.op === "batchUpdate");
   assert.throws(() => s.run(e), /injected/);
-  assert.equal(ops(s.calls).filter((x) => x === "docLock.release").length, 1);
+  const o = ops(s.calls);
+  assert.equal(o.filter((x) => x === "docLock.release").length, 1);
   assert.deepEqual(plain([...s.hours.pivots]), pivots);
+  assert.equal(s.hours.get(7, 2), L.hoursSortFailedText());
+  const after = o.slice(o.indexOf("batchUpdate") + 1);
+  assert.deepEqual(after, [
+    "prop.get",
+    "getValue",
+    "setValue",
+    "getValue",
+    "getValue",
+    // The render: the state cells, then B1; then the flush, before the release.
+    "getValues",
+    "setValue",
+    "flush",
+    "release-by",
+    "docLock.release",
+  ]);
+  assert.equal(s.calls.filter((c) => c.op === "setValue").at(-1).a1, "B1");
 });
 
-test("a busy document lock: nothing read or written, and one line logged", () => {
+test("a busy document lock: no box or pivot read, one line logged, and the newest run says the sort failed", () => {
   const s = server({ docBusy: true });
   const e = s.edit(colLetters(boxColumn(TABLES[0])) + "7", "");
   s.clear();
   s.run(e);
-  assert.deepEqual(ops(s.calls), ["docLock.tryLock", "log", "release-by"]);
-  assert.deepEqual(s.logs, ["Sort (edit): Hours stayed busy for 4 minutes; nothing changed."]);
+  const o = ops(s.calls);
+  assert.deepEqual(o.slice(o.indexOf("docLock.tryLock")), [
+    "docLock.tryLock",
+    "log",
+    // Without the lock: its stamp is stored, so the failure text over the sorting text, a
+    // flush, and a fresh read of the stamp, still its own.
+    "prop.get",
+    "getValue",
+    "setValue",
+    "getValue",
+    "getValue",
+    "flush",
+    "prop.get",
+    "release-by",
+  ]);
+  assert.match(
+    s.logs[0],
+    /^Sort \(edit\): Hours stayed busy for 4 minutes; nothing changed\. Stamp \d+-[0-9a-f]{8}, stored not read, \d+\.\d s from its start\.$/,
+  );
+  assert.equal(s.hours.get(7, 2), L.hoursSortFailedText());
+  assert.ok(!s.calls.some((c) => c.op === "getValues" || c.op.startsWith("Sheets")));
 });
 
 test("Hours not built: B1 rendered and flushed, no pivot read, no batch, and it says to run setupReports", () => {
@@ -658,14 +792,24 @@ test("Hours not built: B1 rendered and flushed, no pivot read, no batch, and it 
     const o = ops(s.calls);
     assert.ok(!o.some((x) => x.startsWith("Sheets") || x === "batchUpdate"), q1);
     assert.ok(!s.calls.some((c) => c.op === "getValues" && c.a1 === "A7:N7"), q1);
+    // The sorting text before the lock; under it, all three status cells blanked, then B1.
+    const held = o.indexOf("docLock.tryLock");
     assert.deepEqual(
-      s.calls.filter((c) => c.op === "setValue").map((c) => c.a1),
-      ["B1"],
+      s.calls
+        .filter((c, i) => c.op === "setValue" && i > held)
+        .map((c) => c.a1 + "=" + (c.a1 === "B1" ? "B1" : c.value)),
+      [...TABLES.map((t) => t.status + "="), "B1=B1"],
       q1,
     );
-    const b1 = s.calls.findIndex((c) => c.op === "setValue");
+    const b1 = s.calls.findLastIndex((c) => c.op === "setValue");
     assert.deepEqual(o.slice(b1 + 1), ["flush", "log", "release-by", "docLock.release"], q1);
-    assert.deepEqual(s.logs, ["Sort (edit): Hours isn't built; nothing sorted. Run setupReports."]);
+    assert.equal(s.logs.length, 1, q1);
+    assert.match(
+      s.logs[0],
+      /^Sort \(edit\): Hours isn't built; nothing sorted\. Run setupReports\. Stamp /,
+      q1,
+    );
+    assert.equal(s.hours.get(7, 2), "", q1);
     // The blank box stays blank: nothing but B1 is written on a half-built tab.
     assert.equal(s.hours.get(7, boxColumn(TABLES[0])), "", q1);
   }
@@ -745,6 +889,623 @@ test("a sort made in the pivot editor is put back to the box's choice by the nex
     ),
   );
   checkMatches(s, "after the next pick");
+});
+
+// ---------------------------------------------------------------------------
+// The status cells, the stamp, the toast and the header notes
+
+const STAMP = "hoursSortStamp";
+const statusCol = (t) => colNumber(t.status.replace(/\d+$/, ""));
+/** Each status cell's text, in table order. */
+const statusOf = (s) => TABLES.map((t) => s.hours.get(7, statusCol(t)));
+/** An edit picking a choice other than the start in table i's box (made, not run). */
+const pick = (s, i) =>
+  s.edit(
+    colLetters(boxColumn(TABLES[i])) + "7",
+    texts(TABLES[i]).find((x) => x !== TABLES[i].start),
+  );
+const SORTING = L.hoursSortStatusText();
+const FAILED = L.hoursSortFailedText();
+
+test("the sorting text goes only into the covered boxes' status cells, is flushed, and only then the stamp is written", () => {
+  for (const [a1, covered] of [
+    [colLetters(boxColumn(TABLES[1])) + "7", [1]],
+    ["A7:" + colLetters(boxColumn(TABLES[1])) + "7", [0, 1]],
+    ["A7:N7", [0, 1, 2]],
+  ]) {
+    const s = server({ docBusy: true });
+    const e = s.edit(a1);
+    s.clear();
+    s.run(e);
+    const before = s.calls.slice(
+      0,
+      s.calls.findIndex((c) => c.op === "docLock.tryLock"),
+    );
+    assert.deepEqual(
+      before.filter((c) => c.op === "setValue").map((c) => c.a1 + "=" + c.value),
+      covered.map((i) => TABLES[i].status + "=" + SORTING),
+      a1,
+    );
+    const o = ops(before);
+    assert.ok(o.lastIndexOf("setValue") < o.indexOf("flush"), a1);
+    assert.ok(o.indexOf("flush") < o.indexOf("prop.set"), a1 + ": flushed before the stamp");
+    assert.deepEqual(
+      before.filter((c) => c.op === "prop.set").map((c) => c.key),
+      [STAMP],
+      a1,
+    );
+  }
+});
+
+test("a run stopped before the lock (off a box, or not the kiosk's Hours tab) writes no status, no stamp and no toast", () => {
+  const s = server();
+  const e = s.edit(TABLES[0].status, "typed");
+  s.clear();
+  s.run(e);
+  assert.deepEqual(s.calls, [], "an edit on a status cell alone ends at the cheap exit");
+  const t = server();
+  t.hours.name = "Hours (old)";
+  const other = new t.hours.constructor("Hours", 999, null);
+  t.sheets.push(other);
+  const e2 = t.edit(colLetters(boxColumn(TABLES[0])) + "7", TABLES[0].start, other);
+  t.clear();
+  t.run(e2);
+  assert.deepEqual(ops(t.calls), ["log", "release-by"]);
+  assert.equal(t.props.size, 0);
+});
+
+test("a stale stamp stops the run under the lock after a render and a flush: no box read, no Sheets call, no status write", () => {
+  const s = server();
+  const e = pick(s, 0);
+  s.clear();
+  // A newer pick's run stamps while this one waits for the lock.
+  s.watch((c) => c.op === "docLock.tryLock" && s.props.set(STAMP, "9999999999999-0000beef"));
+  s.run(e);
+  const o = ops(s.calls);
+  assert.deepEqual(o.slice(o.indexOf("docLock.tryLock")), [
+    "docLock.tryLock",
+    "prop.get",
+    "getValues", // the render reads the state cells
+    "setValue",
+    "flush",
+    "log",
+    "release-by",
+    "docLock.release",
+  ]);
+  assert.equal(s.calls.filter((c) => c.op === "setValue").at(-1).a1, "B1");
+  assert.ok(!o.some((x) => x.startsWith("Sheets") || x === "batchUpdate"));
+  assert.match(
+    s.logs[0],
+    /^Sort \(edit\): a newer pick is waiting; this run stopped\. Stamp \d+-[0-9a-f]{8}, stored 9999999999999-0000beef, \d+\.\d s from its start\.$/,
+  );
+  // Its text stays for the newer run, which owes the clear.
+  assert.equal(statusOf(s)[0], SORTING);
+});
+
+test("a run whose stamp write fails runs as before stamps: it never stops, sorts and clears", () => {
+  const s = server();
+  const e = pick(s, 0);
+  s.clear();
+  s.failAt((c) => c.op === "prop.set");
+  s.watch((c) => c.op === "docLock.tryLock" && s.props.set(STAMP, "9999999999999-0000beef"));
+  s.run(e);
+  assert.ok(s.logs.includes("Sort (edit): the stamp wasn't written: injected"));
+  assert.match(s.logs.at(-1), /1 table re-sorted in .* Stamp none, stored 9999999999999-0000beef,/);
+  assert.deepEqual(statusOf(s), ["", "", ""]);
+  checkMatches(s, "no stamp");
+});
+
+test("a newer pick that stamps and sorts while an older run waits: the older run stops, every table follows its box, no sorting text left", () => {
+  const s = server();
+  const older = pick(s, 0);
+  const newer = pick(s, 1);
+  s.clear();
+  let nested = false;
+  s.watch((c) => {
+    if (c.op === "docLock.tryLock" && !nested) {
+      nested = true;
+      s.run(newer);
+    }
+  });
+  s.run(older);
+  assert.equal(s.logs.length, 2);
+  assert.match(s.logs[0], /2 tables re-sorted/);
+  assert.match(s.logs[1], /a newer pick is waiting; this run stopped/);
+  assert.deepEqual(statusOf(s), ["", "", ""]);
+  checkMatches(s, "after both runs");
+});
+
+test("a throw while holding: the newest run writes the failure text before its batch was sent and a blank after; a run no longer newest writes no status", () => {
+  // After the batch: a sorting text a newer run wrote before it stamped is blanked, since
+  // the sort is done.
+  const after = server();
+  const e = pick(after, 0);
+  after.clear();
+  after.failAt((c) => {
+    if (c.op !== "setValue" || c.a1 !== "B1") return false;
+    after.hours.cells.set("7:" + statusCol(TABLES[1]), SORTING);
+    return true;
+  });
+  assert.throws(() => after.run(e), /injected/);
+  assert.deepEqual(statusOf(after), ["", "", ""]);
+  const o = ops(after.calls);
+  assert.deepEqual(o.slice(-4), ["setValue", "flush", "release-by", "docLock.release"]);
+  // Before the batch, but a newer run has stamped meanwhile: nothing but B1 and a flush.
+  const stale = server();
+  const e2 = pick(stale, 0);
+  stale.clear();
+  stale.failAt((c) => {
+    if (c.op !== "batchUpdate") return false;
+    stale.props.set(STAMP, "9999999999999-0000beef");
+    return true;
+  });
+  assert.throws(() => stale.run(e2), /injected/);
+  assert.equal(statusOf(stale)[0], SORTING, "left for the newer run");
+  const o2 = ops(stale.calls);
+  assert.deepEqual(o2.slice(o2.indexOf("batchUpdate") + 1), [
+    "prop.get",
+    "getValues",
+    "setValue",
+    "flush",
+    "release-by",
+    "docLock.release",
+  ]);
+});
+
+test("a busy run: newest writes the failure text and takes it back when a newer stamp is stored by its fresh read; no stamp blanks; not newest writes nothing", () => {
+  // Newest at the first read, but a newer run stamps before the fresh read.
+  const back = server({ docBusy: true });
+  const e = pick(back, 0);
+  back.clear();
+  let failed = false;
+  back.watch((c) => {
+    if (c.op === "setValue" && c.value === FAILED) failed = true;
+    if (c.op === "flush" && failed) back.props.set(STAMP, "9999999999999-0000beef");
+  });
+  back.run(e);
+  const o = ops(back.calls);
+  assert.deepEqual(o.slice(o.indexOf("log") + 1), [
+    "prop.get",
+    "getValue",
+    "setValue",
+    "getValue",
+    "getValue",
+    "flush",
+    "prop.get",
+    "getValue",
+    "setValue",
+    "flush",
+    "release-by",
+  ]);
+  assert.deepEqual(statusOf(back), ["", "", ""]);
+  // No stamp: it can't tell whether a newer run sorted, so it blanks the sorting texts.
+  const none = server({ docBusy: true });
+  const e2 = pick(none, 0);
+  none.hours.cells.set("7:" + statusCol(TABLES[2]), SORTING);
+  none.clear();
+  none.failAt((c) => c.op === "prop.set");
+  none.run(e2);
+  assert.deepEqual(statusOf(none), ["", "", ""]);
+  assert.ok(!none.calls.some((c) => c.value === FAILED));
+  // Not newest: a newer run stamped while it waited, and owes the clear.
+  const older = server({ docBusy: true });
+  const e3 = pick(older, 0);
+  older.clear();
+  older.watch(
+    (c) => c.op === "docLock.tryLock" && older.props.set(STAMP, "9999999999999-0000beef"),
+  );
+  older.run(e3);
+  const o3 = ops(older.calls);
+  assert.deepEqual(o3.slice(o3.indexOf("log") + 1), ["prop.get", "release-by"]);
+  assert.equal(statusOf(older)[0], SORTING);
+});
+
+test("on row 7's old layout a run writes no status anywhere, and its batch carries no status blank", () => {
+  const s = server({ oldLayout: true });
+  const e = pick(s, 0);
+  s.clear();
+  s.run(e);
+  assert.equal(s.calls.filter((c) => c.op === "isPartOfMerge").length, 1);
+  assert.deepEqual(
+    s.calls.filter((c) => c.op === "setValue").map((c) => c.a1),
+    ["B1"],
+  );
+  const batch = s.calls.find((c) => c.op === "batchUpdate").value;
+  assert.ok(
+    !batch.some(
+      (r) => r.updateCells && TABLES.some((t) => r.updateCells.start.columnIndex === t.boxEnd),
+    ),
+  );
+  assert.ok(s.props.has(STAMP));
+  checkMatches(s, "old layout");
+  // Busy on the old layout: no failure write either.
+  const busy = server({ oldLayout: true, docBusy: true });
+  const e2 = pick(busy, 0);
+  busy.clear();
+  busy.run(e2);
+  assert.ok(!busy.calls.some((c) => c.op === "setValue" || c.op === "getValue"));
+  // Not built on the old layout: no blanks, B1 only.
+  const half = server({ oldLayout: true, state: [String(NOW), "complete", "", "", "", ""] });
+  const e3 = pick(half, 0);
+  half.clear();
+  half.run(e3);
+  assert.deepEqual(
+    half.calls.filter((c) => c.op === "setValue").map((c) => c.a1),
+    ["B1"],
+  );
+  // A failed layout check is taken as the new layout.
+  const unread = server();
+  const e4 = pick(unread, 0);
+  unread.clear();
+  unread.failAt((c) => c.op === "isPartOfMerge");
+  unread.run(e4);
+  assert.ok(unread.logs.includes("Sort (edit): row 7's layout wasn't read: injected"));
+  assert.ok(unread.calls.some((c) => c.op === "setValue" && c.value === SORTING));
+});
+
+test("the toast: once per run, naming the covered tables; one that fails is logged and the sort goes on", () => {
+  const s = server();
+  const e = s.edit("A7:" + colLetters(boxColumn(TABLES[1])) + "7");
+  s.clear();
+  s.run(e);
+  assert.deepEqual(
+    s.calls.filter((c) => c.op === "toast").map((c) => plain(c.value)),
+    [[L.hoursSortToast([TABLES[0].title, TABLES[1].title]), "Sort box", L.hoursSortSeconds()]],
+  );
+  const o = ops(s.calls);
+  assert.ok(o.indexOf("prop.set") < o.indexOf("toast"));
+  assert.ok(o.indexOf("toast") < o.indexOf("docLock.tryLock"));
+  const f = server();
+  const e2 = pick(f, 0);
+  f.clear();
+  f.failAt((c) => c.op === "toast");
+  f.run(e2);
+  assert.ok(f.logs.includes("Sort (edit): the toast wasn't shown: injected"));
+  checkMatches(f, "after a failed toast");
+});
+
+/** The kiosk's notes on row 8, A to N, as setupReports leaves them. */
+const kioskNotes = () =>
+  plain(
+    L.headerNotesRow(
+      L.hoursHeaderRow(),
+      L.hoursHeaderNames(),
+      L.hoursHeaderNotes(),
+      [],
+      L.hoursHeaderNoteKioskTexts(),
+    ),
+  );
+const putNotes = (s, notes) =>
+  notes.forEach((n, i) =>
+    n === "" ? s.hours.notes.delete("8:" + (i + 1)) : s.hours.notes.set("8:" + (i + 1), n),
+  );
+const notesOf = (s) =>
+  Array.from({ length: 14 }, (_, i) => s.hours.notes.get("8:" + (i + 1)) ?? "");
+
+test("after a re-sort the header notes are checked and found in place; a kiosk note deleted by hand comes back; no re-sort, no notes read", () => {
+  const s = server();
+  putNotes(s, kioskNotes());
+  const e = pick(s, 0);
+  s.clear();
+  s.run(e);
+  const o = ops(s.calls);
+  assert.equal(o.filter((x) => x === "getNotes").length, 1);
+  assert.ok(o.indexOf("batchUpdate") < o.indexOf("getNotes"));
+  assert.ok(o.indexOf("getNotes") < s.calls.findIndex((c) => c.op === "setValue" && c.a1 === "B1"));
+  assert.ok(!o.includes("setNote"));
+  // A kiosk note deleted by hand comes back at the next re-sort.
+  s.hours.notes.delete("8:2");
+  s.clear();
+  s.run(pick(s, 1));
+  assert.deepEqual(
+    s.calls.filter((c) => c.op === "setNote").map((c) => c.a1),
+    ["B8"],
+  );
+  assert.deepEqual(notesOf(s), kioskNotes());
+  // A pick that rewrites no pivot reads no notes.
+  s.clear();
+  s.run(s.edit(colLetters(boxColumn(TABLES[2])) + "7"));
+  assert.match(s.logs.at(-1), /0 tables re-sorted/);
+  assert.ok(!ops(s.calls).includes("getNotes"));
+});
+
+test("a header notes failure after the batch is logged, and the run ends as a sort", () => {
+  for (const op of ["getNotes", "setNote"]) {
+    const s = server();
+    putNotes(
+      s,
+      kioskNotes().map((n, i) => (i === 0 ? "" : n)),
+    );
+    const e = pick(s, 0);
+    s.clear();
+    s.failAt((c) => c.op === op);
+    s.run(e);
+    assert.ok(s.logs.includes("Hours: header notes not written: injected"), op);
+    assert.match(s.logs.at(-1), /^Sort \(edit\): .*; 1 table re-sorted in /, op);
+    const o = ops(s.calls);
+    assert.deepEqual(o.slice(-3), ["log", "release-by", "docLock.release"], op);
+    assert.deepEqual(statusOf(s), ["", "", ""], op);
+    checkMatches(s, op);
+  }
+});
+
+test("writeHoursNotes_ writes only the cells whose note changes and never replaces a staff note, one written after the early read included", () => {
+  const s = server();
+  const kiosk = kioskNotes();
+  const staffBefore = "Staff: B8 checked by hand.";
+  const staffNow = "Staff: C8 written after the early read.";
+  const before = kiosk.slice();
+  before[1] = staffBefore; // B8's staff note, since dropped
+  before[2] = kiosk[2];
+  const now = kiosk.slice();
+  now[1] = ""; // dropped
+  now[2] = staffNow; // written after the early read
+  now[3] = kiosk[0]; // a kiosk text in the D gap
+  now[11] = "Old wording."; // a staff note, as far as the kiosk knows
+  putNotes(s, now);
+  s.clear();
+  s.ctx.writeHoursNotes_({ hours: s.hours }, before);
+  assert.deepEqual(
+    s.calls.filter((c) => c.op === "setNote").map((c) => c.a1 + "=" + c.value),
+    ["B8=" + staffBefore, "D8="],
+  );
+  const want = kiosk.slice();
+  want[1] = staffBefore;
+  want[2] = staffNow;
+  want[11] = "Old wording.";
+  assert.deepEqual(notesOf(s), want);
+  // Run again with nothing changed: no write.
+  s.clear();
+  s.ctx.writeHoursNotes_({ hours: s.hours }, null);
+  assert.ok(!ops(s.calls).includes("setNote"));
+});
+
+// ---------------------------------------------------------------------------
+// The ordering model
+//
+// The status cells are right only if every run's writes keep a certain order against
+// every other run's: a run's sorting text must be in the sheet before its stamp, and every
+// clear comes after the clearing run's own stamp. Real runs are separate executions, so
+// their steps interleave in ways one process can't replay. This model runs two and three
+// runs as sequences of events, in every interleaving each run's own order allows, with the
+// document lock letting one hold run at a time:
+//
+//   pick       the edit: the box takes the run's value
+//   text       the run's sorting text lands in its box's status cell. It may land at any
+//              point up to the run's flush, which comes before its stamp: a slow write
+//   stamp      the stamp is stored, replacing any other
+//   check      holding the lock: a run whose stamp isn't the stored one stops and lets
+//              go; otherwise it reads every box
+//   batch      the pivots take the boxes it read, and every status cell is blanked; the
+//              lock is let go
+//   fail       a throw while holding, before the batch: the newest run writes the failure
+//              text over every sorting text; the lock is let go
+//   busy       the lock wait ran out: read the stamp; if it is the run's own, the failure
+//              text over every sorting text; read the stamp again; if a newer run stamped,
+//              blank each cell where it put the failure text and that still holds it.
+//              With no stamp: blank every sorting text
+//
+// Every interleaving must end with no status cell holding the sorting text, every pivot
+// matching its box when no run failed, and no failure text left once a run that stamped
+// after the failed run has sorted. The same model with the text written after the stamp
+// must find a sorting text left for good, so the model is shown to catch that order.
+
+const MODEL_BOXES = 3;
+
+/** One run's events, in its own order, for its kind and the write order under test. */
+function modelEvents(kind, textFirst) {
+  const stamped = kind !== "noStamp" && kind !== "busyNoStamp";
+  const before = !stamped
+    ? ["pick", "text"]
+    : textFirst
+      ? ["pick", "text", "stamp"]
+      : ["pick", "stamp", "text"];
+  const rest = {
+    normal: ["check", "batch"],
+    noStamp: ["check", "batch"],
+    throw: ["check", "fail"],
+    busy: ["read1", "failWrite", "read2", "takeBack"],
+    busyNoStamp: ["blankAll"],
+  }[kind];
+  return before.concat(rest);
+}
+
+function modelClone(st) {
+  return {
+    boxes: st.boxes.slice(),
+    pivots: st.pivots.slice(),
+    status: st.status.map((c) => ({ ...c })),
+    stored: st.stored,
+    lock: st.lock,
+    step: st.step,
+    runs: st.runs.map((r) => ({
+      ...r,
+      put: r.put.slice(),
+      snapshot: r.snapshot && r.snapshot.slice(),
+    })),
+    batches: st.batches.slice(),
+  };
+}
+
+/**
+ * Explores every interleaving of the runs ([{kind, box}]) and calls visit with each final
+ * state. Returns how many final states there were.
+ */
+function modelExplore(specs, textFirst, visit) {
+  const plans = specs.map((sp) => modelEvents(sp.kind, textFirst));
+  const start = {
+    boxes: Array(MODEL_BOXES).fill(0),
+    pivots: Array(MODEL_BOXES).fill(0),
+    status: Array.from({ length: MODEL_BOXES }, () => ({ text: "", by: -1 })),
+    stored: null,
+    lock: null,
+    step: 0,
+    runs: specs.map(() => ({
+      pc: 0,
+      done: false,
+      stampAt: -1,
+      snapshot: null,
+      newest: false,
+      put: [],
+    })),
+    batches: [],
+  };
+  const newest = (st, r) => specs[r].kind === "noStamp" || st.stored === r;
+  const apply = (st, r, ev) => {
+    const run = st.runs[r];
+    const box = specs[r].box;
+    st.step++;
+    run.pc++;
+    if (run.pc === plans[r].length) run.done = true;
+    if (ev === "pick") st.boxes[box] = r + 1;
+    else if (ev === "text") st.status[box] = { text: "sorting", by: r };
+    else if (ev === "stamp") {
+      st.stored = r;
+      run.stampAt = st.step;
+    } else if (ev === "check") {
+      st.lock = r;
+      if (!newest(st, r)) {
+        st.lock = null;
+        run.done = true;
+      } else run.snapshot = st.boxes.slice();
+    } else if (ev === "batch") {
+      st.pivots = run.snapshot.slice();
+      st.status = st.status.map(() => ({ text: "", by: r }));
+      st.batches.push({ run: r, stampAt: run.stampAt });
+      st.lock = null;
+    } else if (ev === "fail") {
+      if (newest(st, r)) {
+        st.status = st.status.map((c) => (c.text === "sorting" ? { text: "failed", by: r } : c));
+      }
+      st.lock = null;
+    } else if (ev === "read1") run.newest = st.stored === r;
+    else if (ev === "failWrite") {
+      if (run.newest) {
+        st.status.forEach((c, i) => {
+          if (c.text === "sorting") {
+            st.status[i] = { text: "failed", by: r };
+            run.put.push(i);
+          }
+        });
+      }
+    } else if (ev === "read2") run.takeBack = run.newest && st.stored !== r;
+    else if (ev === "takeBack") {
+      if (run.takeBack) {
+        run.put.forEach((i) => {
+          if (st.status[i].text === "failed") st.status[i] = { text: "", by: r };
+        });
+      }
+    } else if (ev === "blankAll") {
+      st.status = st.status.map((c) => (c.text === "sorting" ? { text: "", by: r } : c));
+    }
+  };
+  let ends = 0;
+  const go = (st) => {
+    let moved = false;
+    st.runs.forEach((run, r) => {
+      if (run.done) return;
+      const ev = plans[r][run.pc];
+      // One hold at a time: a check waits while another run holds the lock.
+      if (ev === "check" && st.lock !== null) return;
+      const next = modelClone(st);
+      apply(next, r, ev);
+      moved = true;
+      go(next);
+    });
+    if (!moved) {
+      assert.ok(
+        st.runs.every((run) => run.done),
+        "every run finishes",
+      );
+      ends++;
+      visit(st);
+    }
+  };
+  go(start);
+  return ends;
+}
+
+/** What is wrong with a final state, or null: the three rules above. */
+function modelProblem(specs, st) {
+  if (st.status.some((c) => c.text === "sorting")) return "a sorting text is left";
+  const failing = specs.some((sp) => sp.kind !== "normal" && sp.kind !== "noStamp");
+  if (!failing && st.pivots.some((p, i) => p !== st.boxes[i]))
+    return "a pivot doesn't follow its box";
+  for (const c of st.status) {
+    if (c.text !== "failed") continue;
+    const failedStamp = st.runs[c.by].stampAt;
+    if (st.batches.some((b) => b.stampAt > failedStamp)) {
+      return "a failure text is left after a newer run sorted";
+    }
+  }
+  return null;
+}
+
+const MODEL_KINDS = ["normal", "noStamp", "throw", "busy", "busyNoStamp"];
+
+test("the ordering model: two runs of every kind, in every interleaving, leave no sorting text, every table sorted, and no stale failure text", () => {
+  let checked = 0;
+  for (const a of MODEL_KINDS)
+    for (const b of MODEL_KINDS)
+      for (const boxes of [
+        [0, 0],
+        [0, 1],
+      ]) {
+        const specs = [
+          { kind: a, box: boxes[0] },
+          { kind: b, box: boxes[1] },
+        ];
+        checked += modelExplore(specs, true, (st) => {
+          const problem = modelProblem(specs, st);
+          assert.equal(problem, null, JSON.stringify(specs) + ": " + problem);
+        });
+      }
+  assert.ok(checked > 10000, "interleavings checked: " + checked);
+});
+
+test("the ordering model: three runs, in every interleaving, leave no sorting text and every table sorted", () => {
+  for (const specs of [
+    [
+      { kind: "normal", box: 0 },
+      { kind: "normal", box: 0 },
+      { kind: "normal", box: 1 },
+    ],
+    [
+      { kind: "normal", box: 0 },
+      { kind: "noStamp", box: 1 },
+      { kind: "busy", box: 0 },
+    ],
+    // A busy run's failure text can land on a third run's text after a newer run sorted:
+    // the take-back must remove it.
+    [
+      { kind: "busy", box: 0 },
+      { kind: "normal", box: 1 },
+      { kind: "busyNoStamp", box: 2 },
+    ],
+    [
+      { kind: "throw", box: 0 },
+      { kind: "busy", box: 1 },
+      { kind: "normal", box: 0 },
+    ],
+  ]) {
+    const ends = modelExplore(specs, true, (st) => {
+      const problem = modelProblem(specs, st);
+      assert.equal(problem, null, JSON.stringify(specs) + ": " + problem);
+    });
+    assert.ok(ends > 1000, JSON.stringify(specs) + ": " + ends);
+  }
+});
+
+test("the ordering model catches a sorting text left for good when the text is written after the stamp", () => {
+  const specs = [
+    { kind: "normal", box: 0 },
+    { kind: "normal", box: 0 },
+  ];
+  let stuck = 0;
+  modelExplore(specs, false, (st) => {
+    if (modelProblem(specs, st) === "a sorting text is left") stuck++;
+  });
+  assert.ok(stuck > 0);
 });
 
 // ---------------------------------------------------------------------------
