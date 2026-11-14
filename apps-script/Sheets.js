@@ -651,17 +651,21 @@ function onEdit(e) {
  * token, row}], from the cache when it holds one. On a cache miss it reads Profiles in one
  * call and rewrites the Settings "Profiles problems" value. Never writes to Profiles. The
  * cache key carries profilesCacheVersion(), so a list cached in an older shape is never
- * read.
+ * read. A cache error, or a cached list that can't be read, counts as a miss; a failed put
+ * is logged and changes nothing else.
  */
 function getProfiles_(settings) {
   const fileId = settings["Volunteer Profiles file ID"];
   const tabName = settings["Volunteer Profiles tab"] || "Volunteer Profiles";
   if (!fileId) throw new Error('The Settings value "Volunteer Profiles file ID" is empty.');
 
-  const cache = CacheService.getScriptCache();
   const key = profilesCacheKey(fileId, tabName);
-  const hit = cache.get(key);
-  if (hit) return JSON.parse(hit);
+  try {
+    const hit = CacheService.getScriptCache().get(key);
+    if (hit) return JSON.parse(hit);
+  } catch (e) {
+    console.error("Profiles cache not read: " + (e && e.message ? e.message : String(e)));
+  }
 
   const sheet = SpreadsheetApp.openById(fileId).getSheetByName(tabName);
   if (!sheet) throw new Error('Volunteer Profiles has no tab named "' + tabName + '".');
@@ -678,7 +682,11 @@ function getProfiles_(settings) {
 
   const json = JSON.stringify(parsed.volunteers);
   if (utf8Length(json) <= profilesCacheMaxBytes()) {
-    cache.put(key, json, profilesCacheSeconds());
+    try {
+      CacheService.getScriptCache().put(key, json, profilesCacheSeconds());
+    } catch (e) {
+      console.error("Profiles not cached: " + (e && e.message ? e.message : String(e)));
+    }
   }
   return parsed.volunteers;
 }
