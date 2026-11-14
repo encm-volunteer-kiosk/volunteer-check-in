@@ -5327,6 +5327,19 @@ function lastRunText(nowText, what) {
   return nowText + ", " + what;
 }
 
+/** What the weekly email's last run says when it was due but had no address to send to. */
+function flagsEmailNoAddress() {
+  return 'not sent: no valid address in "Flags email to"';
+}
+
+/**
+ * True when a "Flags email last run" value is that of a run that was due but had no
+ * address to send to (flagsEmailNoAddress).
+ */
+function flagsEmailNotSent(lastRunValue) {
+  return cellString(lastRunValue).endsWith(", " + flagsEmailNoAddress());
+}
+
 /**
  * The weekly email's due slot: the latest "yyyy-MM-dd HH:00" at or before nowText that
  * falls on weekday (a name from parseWeekdaySetting) at hour (0-23).

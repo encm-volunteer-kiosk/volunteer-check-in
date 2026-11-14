@@ -21,6 +21,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { createHash } from "node:crypto";
 import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
@@ -248,7 +249,9 @@ class FakeSheet {
  * tab), flagsMaxRows (its last grid row), logMaxRows (the Log's), now (a fixed server
  * clock, in ms), onFlush (run on each SpreadsheetApp.flush), triggers (this account's
  * project triggers, as [{uid, handler}]), settingsCacheFails (every cache call on a
- * Settings key throws). The cache is a Map of key to value; it never expires an entry, so
+ * Settings key throws), profiles (the Volunteer Profiles tab's rows, header first, which
+ * openById("file-1") serves) and profilesCacheFails (every cache call on a Profiles key
+ * throws). The cache is a Map of key to value; it never expires an entry, so
  * a test sets the clock to age one. errors collects what the server logs with
  * console.error. journal lists, in order, every sheet read and write (FakeSheet), each tab
  * the script opens ("read <tab> getSheetByName") and each flush ("flush").
@@ -263,6 +266,11 @@ function server(opts = {}) {
   const settingsKey = (k) => String(k).startsWith("settings:");
   const failSettings = (method) => {
     if (opts.settingsCacheFails) throw new Error("cache." + method + " failed");
+  };
+  const failProfiles = (k, method) => {
+    if (opts.profilesCacheFails && String(k).startsWith("profiles:")) {
+      throw new Error("cache." + method + " failed");
+    }
   };
   const sheets = {
     Log: new FakeSheet(opts.log || [[]], opts.logMaxRows),
@@ -321,7 +329,10 @@ function server(opts = {}) {
     CacheService: service("CacheService", {
       getScriptCache: () =>
         service("cache", {
-          get: (k) => (cache.has(k) ? cache.get(k) : null),
+          get: (k) => {
+            failProfiles(k, "get");
+            return cache.has(k) ? cache.get(k) : null;
+          },
           getAll: (keys) => {
             if (keys.some(settingsKey)) failSettings("getAll");
             const out = {};
@@ -330,6 +341,7 @@ function server(opts = {}) {
           },
           put: (k, v) => {
             if (settingsKey(k)) failSettings("put");
+            failProfiles(k, "put");
             cache.set(k, v);
           },
           remove: (k) => {
@@ -366,6 +378,11 @@ function server(opts = {}) {
           return sheets[name] || null;
         },
       }),
+      openById: (id) => {
+        if (id !== "file-1" || !opts.profiles) throw new Error("no file " + id);
+        const profiles = new FakeSheet(opts.profiles);
+        return { getSheetByName: (name) => (name === "Volunteer Profiles" ? profiles : null) };
+      },
       flush: () => {
         journal.push("flush");
         return opts.onFlush ? opts.onFlush() : undefined;
@@ -390,6 +407,9 @@ function server(opts = {}) {
     Utilities: service("Utilities", {
       getUuid: () => "uuid-" + ++uuid,
       sleep: () => undefined,
+      // The algorithm and charset are read off the stand-in as functions; SHA-256 of UTF-8.
+      computeDigest: (algorithm, text) =>
+        [...createHash("sha256").update(text, "utf8").digest()].map((b) => (b > 127 ? b - 256 : b)),
       formatDate: (date, tz, format) => {
         assert.equal(tz, TZ);
         if (format === "yyyy-MM-dd HH:mm:ss") return formatInZone(date, tz, format);
@@ -1403,6 +1423,45 @@ test("apiCheckOut on a row whose Date was typed as text writes the Flags Date as
   assert.equal(s.sheets.Log.rowByHeader(2).Date, "11/12/2026");
 });
 
+test("apiCheckOut on a hand-typed open row with no Shift ID gives it one and copies its flags", () => {
+  // Staff typed the row for a volunteer who forgot to tap in: no Shift ID.
+  const typed = logRow({
+    "User Token": "tok-sam",
+    Status: "open",
+    Date: TODAY,
+    "Volunteer Name": "Sam Lee",
+    "Check-In Stated (user)": at(TODAY, "00:30"),
+  });
+  const s = kiosk({ settings: WINDOW_SETTINGS, log: [LOG_HEADER, typed] });
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30))).ok, true);
+  const log = s.sheets.Log.rowByHeader(2);
+  assert.equal(log.Status, "closed");
+  assert.equal(log["Shift ID"], "uuid-1");
+  assert.equal(
+    log["Admin Alerts?"],
+    "check-out differs by 30 min; long shift: 9 h stated, over 8 h",
+  );
+  const flags = [2, 3].map((r) => s.sheets.Flags.rowByHeader(r));
+  assert.deepEqual(
+    flags.map((f) => [f.Reason, f["Shift ID"], f["Log Row"]]),
+    [
+      ["check-out differs by 30 min", "uuid-1", 2],
+      ["long shift: 9 h stated, over 8 h", "uuid-1", 2],
+    ],
+  );
+  assert.deepEqual(s.errors, []);
+
+  // A row that has a Shift ID keeps it.
+  const kept = kiosk({
+    settings: WINDOW_SETTINGS,
+    log: [LOG_HEADER, kioskOpen("s-k", TODAY, "00:30")],
+  });
+  assert.equal(plain(kept.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(kept.sheets.Log.rowByHeader(2)["Shift ID"], "s-k");
+  assert.equal(kept.sheets.Flags.rowByHeader(2)["Shift ID"], "s-k");
+  assert.ok(!kept.calls.includes("Utilities.getUuid"));
+});
+
 test("adminFixSignOut closes a row whose check-in was typed as a time with no date", () => {
   const typed = kioskOpen("s-1", DAY, "09:00");
   // Sheets keeps "9:00 AM" typed into the cell as 9:00 on 1899-12-30.
@@ -1953,6 +2012,40 @@ test("with the cache down a tap reads the tab, answers as usual and logs the cac
   assert.equal(plain(wrong.ctx.apiCheckIn(WRONG_CODE, SAM.id, null, null)).refusal, "ACCESS");
   assert.equal(settingsReads(wrong), 1);
   assert.equal(sleeps(wrong), 1);
+});
+
+const PROFILES = [
+  [
+    "Volunteer\nFirst Name",
+    "Volunteer\nLast Name",
+    "Volunteer\nPhone",
+    "Start Date\nmm/dd/yyyy",
+    "Onboarding\nToken",
+  ],
+  ["Sam", "Lee", "615-555-0131", "01/15/2026", "tok-sam"],
+];
+const PROFILE_SAM = createHash("sha256").update("tok-sam", "utf8").digest("hex").slice(0, 16);
+
+test("with the Profiles cache down a tap reads the Profiles tab, answers as usual and logs the cache errors", () => {
+  const s = kiosk({ profilesCacheFails: true, profiles: PROFILES });
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, PROFILE_SAM, null, null)).ok, true);
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, PROFILE_SAM, null, null)).ok, true);
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+  assert.deepEqual(s.errors, [
+    "Profiles cache not read: cache.get failed",
+    "Profiles not cached: cache.put failed",
+    "Profiles cache not read: cache.get failed",
+    "Profiles not cached: cache.put failed",
+  ]);
+
+  // A cached list that can't be read is a miss too, and the tab's list replaces it.
+  const t = kiosk({ profiles: PROFILES });
+  const key = t.ctx.profilesCacheKey("file-1", "Volunteer Profiles");
+  t.cache.set(key, "not json");
+  assert.equal(plain(t.ctx.apiCheckIn(CODE, PROFILE_SAM, null, null)).ok, true);
+  assert.equal(JSON.parse(t.cache.get(key))[0].id, PROFILE_SAM);
+  assert.equal(t.errors.length, 1);
+  assert.match(t.errors[0], /^Profiles cache not read: /);
 });
 
 test("Settings too big to cache are read on every tap, and an older copy is removed", () => {

@@ -184,18 +184,22 @@ function apiCheckOut(code, id, digits, checkOutIso) {
     // Staff may sort, insert or delete Log rows while the call runs, which moves rows
     // under their numbers. Read the row again, last before the write, and write only if
     // it is still the open row decided on; else BUSY, and a retry reads the Log again.
-    const shiftId = decision.open.shiftId;
-    const current = readLogRowAt_(decision.row, log.width, log.cols, logRead_(), shiftId);
+    const openId = decision.open.shiftId;
+    const current = readLogRowAt_(decision.row, log.width, log.cols, logRead_(), openId);
     if (!autoClockOutRowUnchanged(decision.open, current)) {
       console.error(
         "Check-out: Log row " +
           decision.row +
           " no longer holds open Shift ID " +
-          cellString(shiftId) +
+          cellString(openId) +
           "; answered BUSY and wrote nothing.",
       );
       return refusal("BUSY");
     }
+    // A row staff typed with no Shift ID gets one, as the auto clock-out gives it, so its
+    // Flags rows can be written and find it.
+    const shiftId = cellString(openId) || Utilities.getUuid();
+    if (!cellString(openId)) decision.cells[logHeaderNames().shiftId] = sheetText(shiftId);
     updateLogRow_(decision.row, decision.cells, log.cols);
     raiseFlags_(
       {

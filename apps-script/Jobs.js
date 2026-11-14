@@ -97,9 +97,11 @@ function removeDailyJobs() {
 
 /**
  * The weekly flags email, run every hour by its trigger. Under the script lock: stops
- * unless Settings "Flags email" is On, "Flags email to" has an address and the due slot
+ * unless Settings "Flags email" is On, "Flags email to" isn't blank and the due slot
  * (flagsEmailDue) has passed since "Flags email last run"; then counts the Flags tab and
- * sends, or records that there was nothing to send. When the lock isn't free within 30
+ * sends, or records that there was nothing to send. When "Flags email to" holds no
+ * address it can read, the due run records that in "Flags email last run" instead and
+ * the next hourly run with an address sends. When the lock isn't free within 30
  * seconds it logs one line and stops; the next hourly run catches up.
  */
 function runFlagsEmail(e) {
@@ -358,19 +360,30 @@ function sendFlagsEmailIfDue_(now) {
   const settings = readSettings_();
   if (!parseFlagsEmailOn(settings["Flags email"])) return;
   const to = parseEmailAddresses(settings["Flags email to"]);
-  if (!to.valid.length) {
+  if (!to.valid.length && !to.invalid.length) {
     console.log('Flags email: "Flags email to" has no email address; nothing sent.');
     return;
   }
   const nowText = wallClock_(now);
   const lastRun = settings["Flags email last run"] || "";
-  const due = flagsEmailDue(
-    nowText,
-    lastRun,
-    parseWeekdaySetting(settings["Flags email day"]),
-    parseEmailHour(settings["Flags email hour"]),
-  );
+  // A run that was due but had no address to send to doesn't count as the slot's run once
+  // an address can be read, so a fixed address sends at the next hourly run.
+  const due =
+    flagsEmailDue(
+      nowText,
+      lastRun,
+      parseWeekdaySetting(settings["Flags email day"]),
+      parseEmailHour(settings["Flags email hour"]),
+    ) ||
+    (to.valid.length > 0 && flagsEmailNotSent(lastRun));
   if (!due) return;
+  if (!to.valid.length) {
+    // Said in the sheet, where staff look, once a slot: the write makes the run not due
+    // again until the next slot.
+    console.log('Flags email: "Flags email to" has no valid email address; nothing sent.');
+    setSetting_("Flags email last run", lastRunText(nowText, flagsEmailNoAddress()));
+    return;
+  }
 
   const flags = readFlags_();
   const message = flagsEmailMessage({
