@@ -4136,6 +4136,24 @@ test("a fill that fails leaves no map, and the next tap reads the whole Log", ()
   assert.equal(lastLine(s), "Log cache: miss (none)");
   assert.ok(logValueReads(s).includes("getValues 1,1,3," + WIDTH), "the whole Log");
 
+  // A check-out on a hit whose fill fails: the map from before it was removed before the
+  // write, so none is left, and the next tap reads the whole Log.
+  const out = cacheKiosk({ log }).s;
+  storeMapWith(out, RUTH);
+  out.faults.cachePut = (k) => k === LOG_KEY;
+  assert.equal(plain(out.ctx.apiCheckOut(CODE, RUTH.id, null, null)).ok, true);
+  assert.equal(out.sheets.Log.rowByHeader(2).Status, "closed");
+  assert.equal(out.cache.has(LOG_KEY), false, "the map from before the check-out is gone");
+  assert.deepEqual(cacheLines(out).slice(-2), [
+    "Log cache: hit",
+    "Log cache: not stored (cache.put failed)",
+  ]);
+  out.faults.cachePut = null;
+  freshReads(out);
+  assert.equal(plain(out.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(lastLine(out), "Log cache: miss (none)");
+  assert.ok(logValueReads(out).includes("getValues 1,1,2," + WIDTH), "the whole Log");
+
   // A flush that throws: the call fails as before, and nothing is put after it.
   assert.ok(s.cache.has(LOG_KEY));
   s.faults.flush = () => true;
@@ -4202,38 +4220,58 @@ test("a fill that fails leaves no map, and the next tap reads the whole Log", ()
 
 test("before its write the kiosk removes the map, or stamps when the remove fails, or writes nothing", () => {
   const log = [LOG_HEADER, ruthOpen()];
-  const { s } = cacheKiosk({ log });
-  storeMapWith(s, RUTH);
-  const seen = [];
-  const put = s.sheets.Log.put.bind(s.sheets.Log);
-  s.sheets.Log.put = (...args) => (
-    seen.push([s.cache.has(LOG_KEY), s.props.get(STAMP)]),
-    put(...args)
-  );
-  s.faults.cacheRemove = (k) => k === LOG_KEY;
-  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
-  assert.equal(seen.length > 0, true);
-  assert.deepEqual(seen[0], [true, String(NOW)], "the stamp is written before the Log write");
-  assert.deepEqual(s.errors, ["Log cache not removed: cache.remove failed"]);
-  // The map stored after the write is under that stamp, so the next tap misses.
-  s.faults.cacheRemove = null;
-  assert.equal(plain(s.ctx.apiCheckOut(CODE, RUTH.id, null, null)).ok, true);
-  assert.equal(lastLine(s), "Log cache: miss (edited)");
+  // Each kiosk write, and a tap after it that sees the Log as that write left it.
+  const calls = {
+    "check-in": {
+      write: (s, arrival = null) => s.ctx.apiCheckIn(CODE, SAM.id, arrival, null),
+      next: (s) => s.ctx.apiCheckOut(CODE, RUTH.id, null, null),
+    },
+    "check-out": {
+      write: (s, out = null) => s.ctx.apiCheckOut(CODE, RUTH.id, null, out),
+      next: (s) => s.ctx.apiCheckIn(CODE, SAM.id, null, null),
+    },
+  };
+  for (const [name, call] of Object.entries(calls)) {
+    const { s } = cacheKiosk({ log });
+    storeMapWith(s, RUTH);
+    const seen = [];
+    const put = s.sheets.Log.put.bind(s.sheets.Log);
+    s.sheets.Log.put = (...args) => (
+      seen.push([s.cache.has(LOG_KEY), s.props.get(STAMP)]),
+      put(...args)
+    );
+    s.faults.cacheRemove = (k) => k === LOG_KEY;
+    assert.equal(plain(call.write(s)).ok, true, name);
+    assert.equal(lastLine(s), "Log cache: hit", name);
+    assert.equal(seen.length > 0, true, name);
+    assert.deepEqual(
+      seen[0],
+      [true, String(NOW)],
+      name + ": the stamp is written before the Log write",
+    );
+    assert.deepEqual(s.errors, ["Log cache not removed: cache.remove failed"], name);
+    // The map stored after the write is under that stamp, so the next tap misses.
+    s.faults.cacheRemove = null;
+    assert.equal(plain(call.next(s)).ok, true, name);
+    assert.equal(lastLine(s), "Log cache: miss (edited)", name);
 
-  // The remove and the stamp both fail: the call throws and writes nothing.
-  const both = cacheKiosk({ log }).s;
-  storeMapWith(both, RUTH);
-  both.faults.cacheRemove = (k) => k === LOG_KEY;
-  both.faults.propSet = (k) => k === STAMP;
-  const rows = JSON.stringify(both.sheets.Log.rows);
-  const flags = JSON.stringify(both.sheets.Flags.rows);
-  assert.throws(
-    () => both.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(30), null),
-    /The Log cache could not be cleared before the Log write, so nothing was written\./,
-  );
-  assert.equal(JSON.stringify(both.sheets.Log.rows), rows);
-  assert.equal(JSON.stringify(both.sheets.Flags.rows), flags);
-  assert.equal(both.journal.filter((e) => isLogWrite(e)).length, 0, "no Log write");
+    // The remove and the stamp both fail: the call throws and writes nothing.
+    const both = cacheKiosk({ log }).s;
+    storeMapWith(both, RUTH);
+    both.faults.cacheRemove = (k) => k === LOG_KEY;
+    both.faults.propSet = (k) => k === STAMP;
+    const rows = JSON.stringify(both.sheets.Log.rows);
+    const flags = JSON.stringify(both.sheets.Flags.rows);
+    assert.throws(
+      () => call.write(both, minutesBefore(30)),
+      /The Log cache could not be cleared before the Log write, so nothing was written\./,
+      name,
+    );
+    assert.equal(JSON.stringify(both.sheets.Log.rows), rows, name);
+    assert.equal(JSON.stringify(both.sheets.Flags.rows), flags, name);
+    assert.equal(both.sheets.Log.rowByHeader(2).Status, "open", name);
+    assert.equal(both.journal.filter((e) => isLogWrite(e)).length, 0, name + ": no Log write");
+  }
 });
 
 test("a second check-in of the same volunteer is refused, whatever the cache does between them", () => {
