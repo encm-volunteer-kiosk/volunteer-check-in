@@ -44,6 +44,48 @@
         "lastSent": "2026-11-03 by JP"
       },
       {
+        "id": "79c369649f707d1c",
+        "label": "Ana Diaz",
+        "profilesRow": 5,
+        "startDate": "2026-02-15",
+        "to": "ana.diaz@example.org",
+        "subject": "Your volunteer hours for November 2026",
+        "body": "Hi Ana,\n\nHere are the volunteer hours we have for you as of Saturday, November 14, 2026:\n\nWe don't have any volunteer hours recorded for you yet.\n\nThis email comes from an address that can't take replies. If anything looks wrong, please contact:\nPat Example, pat@example.org\n\nThank you for volunteering.",
+        "totals": {
+          "month": {
+            "key": "2026-11",
+            "hundredths": 0,
+            "shifts": 0
+          },
+          "year": {
+            "key": "2026",
+            "hundredths": 0,
+            "shifts": 0
+          },
+          "all": {
+            "hundredths": 0,
+            "shifts": 0
+          },
+          "paperHundredths": 0,
+          "lines": [
+            "November 2026 so far: 0.00 hours (0 shifts)",
+            "2026 so far: 0.00 hours (0 shifts)",
+            "All time: 0.00 hours (0 shifts)"
+          ]
+        },
+        "attachment": null,
+        "warnings": [
+          {
+            "kind": "no-hours",
+            "count": 0,
+            "rows": [],
+            "text": "This volunteer has no counted hours yet; the email will say so. The shifts file is left out, since there are no shifts to list."
+          }
+        ],
+        "problems": [],
+        "lastSent": "never"
+      },
+      {
         "id": "2239ae48e5f1e982",
         "label": "James Okafor",
         "profilesRow": 3,
@@ -150,7 +192,7 @@
       }
     ],
     "setProblems": [],
-    "sendIds": ["76cc61bee0826b1d", "2239ae48e5f1e982"],
+    "sendIds": ["76cc61bee0826b1d", "79c369649f707d1c", "2239ae48e5f1e982"],
     "chunkSize": 10,
     "ticket": "uuid-1"
   },
@@ -159,6 +201,10 @@
     "results": [
       {
         "id": "76cc61bee0826b1d",
+        "result": "sent"
+      },
+      {
+        "id": "79c369649f707d1c",
         "result": "sent"
       },
       {

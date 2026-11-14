@@ -2094,10 +2094,10 @@ function hoursEmailSameNameText() {
 
 /**
  * Which Log rows one volunteer's email counts, and what the preview warns about. input is
- * {volunteer, entries, flags, period, todayDate, listedTokens}: entries are reportEntry
- * rows (the whole Log), flags readFlags_'s rows or null when that read threw, period
- * hoursEmailPeriod's, todayDate the Central day and listedTokens every listed volunteer's
- * User Token.
+ * {volunteer, entries, flags, period, todayDate, listedTokens, attach}: entries are
+ * reportEntry rows (the whole Log), flags readFlags_'s rows or null when that read threw,
+ * period hoursEmailPeriod's, todayDate the Central day, listedTokens every listed
+ * volunteer's User Token and attach whether the shifts file was asked for.
  *
  * A row counts when it is closed with a User Token (isCountedRow), under this volunteer's
  * token, its Date is yyyy-mm-dd (monthKey) and on or before the as-of date: the Hours tab's
@@ -2116,7 +2116,8 @@ function hoursEmailSameNameText() {
  * Each warning names its count and up to 10 Log rows. The flag warnings name flags only on
  * this volunteer's own token; a row under the name with another token is listed by its own
  * warning, which says it isn't in the totals. Kinds, in this order: open, flags, alerts,
- * other-token, auto, zero-hours, dates, stand-in, flags-unreadable, no-hours.
+ * other-token, auto, zero-hours, dates, stand-in, flags-unreadable, no-hours. With no
+ * counted shifts and attach, the no-hours warning also says the file is left out.
  */
 function hoursEmailPlan(input) {
   const v = input.volunteer;
@@ -2256,7 +2257,9 @@ function hoursEmailPlan(input) {
       kind: "no-hours",
       count: 0,
       rows: [],
-      text: "This volunteer has no counted hours yet; the email will say so.",
+      text:
+        "This volunteer has no counted hours yet; the email will say so." +
+        (input.attach === true ? " " + hoursEmailNoFileText() : ""),
     });
   }
 
@@ -2284,6 +2287,19 @@ function hoursEmailPlan(input) {
     })),
     warnings,
   };
+}
+
+/** Why a volunteer with no counted shifts gets no shifts file, though the box is ticked. */
+function hoursEmailNoFileText() {
+  return "The shifts file is left out, since there are no shifts to list.";
+}
+
+/**
+ * Whether one volunteer's email carries the shifts file: only with the box ticked and at
+ * least one counted shift. With none, the email has no file and no file line.
+ */
+function hoursEmailHasFile(plan, attach) {
+  return attach === true && plan.all.shifts > 0;
 }
 
 /** "Saturday, November 14, 2026" for "2026-11-14". */
@@ -2358,7 +2374,8 @@ function hoursEmailTotalLines(plan) {
  * plan (hoursEmailPlan's), attach, contact, signature}: contact and signature are the two
  * Settings values as typed. Every email names who to contact, since nobody can reply to it;
  * the contact's lines are joined with ", " as the Kiosk contact line joins them. The
- * signature's lines go one per line under the thanks.
+ * signature's lines go one per line under the thanks. The file line shows only when the
+ * email carries the file (hoursEmailHasFile).
  */
 function hoursEmailMessage(input) {
   const plan = input.plan;
@@ -2388,7 +2405,7 @@ function hoursEmailMessage(input) {
       blocks.push([(last ? "No shifts in " : "No shifts yet in ") + month + "."]);
     }
   }
-  if (input.attach) {
+  if (hoursEmailHasFile(plan, input.attach)) {
     const n = plan.all.shifts;
     const file = hoursEmailFileName(period.asOf);
     blocks.push([
@@ -2600,15 +2617,29 @@ function hoursEmailLastSent(rows, id) {
 }
 
 /**
+ * text for the execution log, with anything shaped like an email address replaced by
+ * "[address]". Google's message for a send that failed can quote the recipient; the log
+ * holds no address, while the Hours emails tab keeps the message whole.
+ */
+function hoursEmailLogText(text) {
+  return cellString(text).replace(
+    /[^\s<>()[\]{}"',;:@]+@[^\s<>()[\]{}"',;:@]*[^\s<>()[\]{}"',;:@.]/g,
+    "[address]",
+  );
+}
+
+/**
  * The execution log's line for one volunteer a send took. reason stands in for a "not
  * sent" result's text when given: an address problem is logged by its code, since its text
- * quotes the cell. No name and no address.
+ * quotes the cell. Any other text goes through hoursEmailLogText. No name and no address.
  */
 function hoursEmailLogLine(id, result, reason) {
   const who = " (volunteer " + id + ")";
   if (result === "sent") return "Hours email: sent" + who;
-  if (result.indexOf("failed: ") === 0) return "Hours email: failed" + who + ": " + result.slice(8);
-  const why = reason || result.replace(/^not sent: /, "");
+  if (result.indexOf("failed: ") === 0) {
+    return "Hours email: failed" + who + ": " + hoursEmailLogText(result.slice(8));
+  }
+  const why = reason || hoursEmailLogText(result.replace(/^not sent: /, ""));
   return "Hours email: not sent" + who + ": " + why;
 }
 

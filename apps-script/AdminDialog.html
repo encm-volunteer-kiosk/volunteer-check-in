@@ -826,14 +826,18 @@
         return lines.slice(start, end === -1 ? undefined : end).map((l) => l.trim());
       }
 
-      // The flagged shifts a volunteer's warnings name, when the reply says: a count of
-      // its own, or the counts on its Flags and Admin Alerts? warnings. null when unknown.
-      function flaggedCount(v) {
-        if (typeof v.flagged === "number") return v.flagged;
-        const flags = (v.warnings || []).filter(
-          (w) => w && typeof w.count === "number" && /flag|alert/i.test(w.kind || w.code || ""),
+      // The Log rows the preview's flags and alerts warnings name, each row once: a row
+      // with both an unreviewed flag and an Admin Alerts? cell is one flagged shift.
+      function flaggedRows(people) {
+        const rows = new Set();
+        people.forEach((v) =>
+          (v.warnings || []).forEach((w) => {
+            if (w && (w.kind === "flags" || w.kind === "alerts")) {
+              (w.rows || []).forEach((row) => rows.add(row));
+            }
+          }),
         );
-        return flags.length ? flags.reduce((sum, w) => sum + w.count, 0) : null;
+        return rows.size;
       }
 
       function addBlock(box, lines) {
@@ -889,14 +893,13 @@
         });
         const warned = people.filter((v) => texts(v.warnings).length).length;
         if (warned) {
-          const counts = people.map(flaggedCount).filter((n) => n !== null);
-          const flagged = counts.reduce((sum, n) => sum + n, 0);
+          const flagged = flaggedRows(people);
           $("email-check").textContent =
             "Check before sending: " +
             plural(warned, "volunteer") +
             (warned === 1 ? " has" : " have") +
             " something to check below" +
-            (counts.length ? ", " + plural(flagged, "flagged shift") + " in all" : "") +
+            (flagged ? ", " + plural(flagged, "flagged shift") + " in all" : "") +
             ".";
           $("email-check").hidden = false;
         }

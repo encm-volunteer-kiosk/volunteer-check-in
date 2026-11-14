@@ -451,6 +451,27 @@ test("the same-name sentence only in a same-name group; Flags unreadable; no hou
       text: "This volunteer has no counted hours yet; the email will say so.",
     },
   ]);
+  // With the box ticked, the warning also says the file is left out.
+  const ticked = L.hoursEmailPlan({
+    volunteer: nobody,
+    entries: WLOG,
+    flags: [],
+    period: L.hoursEmailPeriod("this", "2026-11-14"),
+    todayDate: "2026-11-14",
+    listedTokens: [ANA.token, ANA_TOO.token],
+    attach: true,
+  });
+  assert.deepEqual(plain(ticked.warnings), [
+    {
+      kind: "no-hours",
+      count: 0,
+      rows: [],
+      text: "This volunteer has no counted hours yet; the email will say so. The shifts file is left out, since there are no shifts to list.",
+    },
+  ]);
+  assert.equal(L.hoursEmailHasFile(ticked, true), false);
+  assert.equal(L.hoursEmailHasFile(wplan(ANA), true), true);
+  assert.equal(L.hoursEmailHasFile(wplan(ANA), false), false);
 });
 
 test("with last month, a row between the as-of date and today is in no warning", () => {
@@ -566,7 +587,7 @@ const fakePlan = (choice, monthShifts, all, paper = 0) => ({
   warnings: [],
 });
 
-test("no hours at all, none in the month, one shift, paper only above 0, the file line", () => {
+test("no hours at all, none in the month, one shift, paper only above 0, the file line only with shifts", () => {
   const msg = (plan, attach = false, contact = CONTACT, signature = "") =>
     L.hoursEmailMessage({ firstName: "Pat", plan, attach, contact, signature });
   const none = msg(fakePlan("this", [], { hundredths: 0, shifts: 0 }), true).body;
@@ -578,8 +599,6 @@ test("no hours at all, none in the month, one shift, paper only above 0, the fil
       "Here are the volunteer hours we have for you as of Saturday, November 14, 2026:",
       "",
       "We don't have any volunteer hours recorded for you yet.",
-      "",
-      "All 0 of your shifts are in the attached spreadsheet file, volunteer-hours-to-2026-11-14.csv.",
       "",
       "This email comes from an address that can't take replies. If anything looks wrong, please contact:",
       "Pat Example, pat@example.org",
@@ -611,6 +630,8 @@ test("no hours at all, none in the month, one shift, paper only above 0, the fil
   );
   // Without attach there is no file line.
   assert.ok(!msg(planFor("this", "2026-11-14")).body.includes("attached"));
+  // With it and no counted shifts there is none either: the file would be empty.
+  assert.equal(msg(fakePlan("this", [], { hundredths: 0, shifts: 0 }), false).body, none);
   // Contact lines trimmed, empty ones dropped, joined; signature lines likewise.
   const c = msg(
     planFor("this", "2026-11-14"),
@@ -1039,12 +1060,22 @@ test("Last emailed: the newest sent row for the Volunteer ID", () => {
   assert.equal(L.hoursEmailLastSent([], "a"), "never");
 });
 
-test("the log line names the Volunteer ID and the result, never the address problem's text", () => {
+test("the log line names the Volunteer ID and the result, never an address", () => {
   assert.equal(L.hoursEmailLogLine("v1", "sent"), "Hours email: sent (volunteer v1)");
   assert.equal(
     L.hoursEmailLogLine("v1", "failed: Invalid recipient"),
     "Hours email: failed (volunteer v1): Invalid recipient",
   );
+  // Google's message can quote the recipient: anything shaped like an address is masked.
+  assert.equal(
+    L.hoursEmailLogLine("v1", "failed: Invalid email: pat.example+1@example.org"),
+    "Hours email: failed (volunteer v1): Invalid email: [address]",
+  );
+  assert.equal(
+    L.hoursEmailLogLine("v1", "not sent: Failed to send to <pat@example.org>; a@b.co, c@d.org."),
+    "Hours email: not sent (volunteer v1): Failed to send to <[address]>; [address], [address].",
+  );
+  assert.equal(L.hoursEmailLogText("Service unavailable: Gmail"), "Service unavailable: Gmail");
   assert.equal(
     L.hoursEmailLogLine(
       "v1",

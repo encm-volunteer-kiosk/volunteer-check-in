@@ -446,10 +446,9 @@ function adminHoursPreview(key, request) {
               lines: hoursEmailTotalLines(plan),
             }
           : null,
-        attachment:
-          plan && attach
-            ? { name: hoursEmailFileName(base.period.asOf), shifts: plan.all.shifts }
-            : null,
+        attachment: b.file
+          ? { name: hoursEmailFileName(base.period.asOf), shifts: plan.all.shifts }
+          : null,
         warnings: plan ? plan.warnings : [],
         problems: b.problem ? [b.problemText] : [],
         lastSent: sendsRead ? hoursEmailLastSent(sends || [], b.id) : "unknown",
@@ -560,7 +559,7 @@ function adminSendHours(key, request) {
               name: flagsEmailSenderName(),
               noReply: true,
             };
-            if (base.attach) {
+            if (b.file) {
               mail.attachments = [
                 Utilities.newBlob(b.csv, "text/csv", hoursEmailFileName(base.period.asOf)),
               ];
@@ -633,7 +632,7 @@ function adminSendHours(key, request) {
           takenIds
             .map((id) => {
               const res = results[id];
-              const said = res.reason ? "not sent: " + res.reason : res.result;
+              const said = res.reason ? "not sent: " + res.reason : hoursEmailLogText(res.result);
               return "volunteer " + id + ": " + said;
             })
             .join("; "),
@@ -695,8 +694,10 @@ function hoursEmailSetProblems_(base) {
 
 /**
  * One volunteer's email as the preview shows it and the send rebuilds it: {id, volunteer,
- * address, problem, problemText, plan, message, csv, digest}. A volunteer not on the list
- * has problem not-found and no plan. digest is "" with a problem.
+ * address, problem, problemText, plan, message, file, csv, digest}. A volunteer not on the
+ * list has problem not-found and no plan. file is whether the email carries the shifts
+ * file (the box ticked and at least one counted shift); csv is "" without it. digest is ""
+ * with a problem.
  */
 function hoursEmailBuild_(base, id) {
   const volunteer = findVolunteer(base.volunteers, id);
@@ -709,6 +710,7 @@ function hoursEmailBuild_(base, id) {
       problemText: hoursEmailProblemText("not-found"),
       plan: null,
       message: null,
+      file: false,
       csv: "",
       digest: "",
     };
@@ -726,6 +728,7 @@ function hoursEmailBuild_(base, id) {
     period: base.period,
     todayDate: base.todayDate,
     listedTokens: base.listedTokens,
+    attach: base.attach,
   });
   const message = hoursEmailMessage({
     firstName: volunteer.firstName,
@@ -734,7 +737,8 @@ function hoursEmailBuild_(base, id) {
     contact: base.contact,
     signature: base.signature,
   });
-  const csv = base.attach ? hoursEmailCsv(plan.allShifts, adminClock_) : "";
+  const file = hoursEmailHasFile(plan, base.attach);
+  const csv = file ? hoursEmailCsv(plan.allShifts, adminClock_) : "";
   const digest = address.problem
     ? ""
     : sha256Hex_(
@@ -758,6 +762,7 @@ function hoursEmailBuild_(base, id) {
     problemText: address.text,
     plan,
     message,
+    file,
     csv,
     digest,
   };

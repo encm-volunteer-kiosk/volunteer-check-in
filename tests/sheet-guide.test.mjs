@@ -96,6 +96,15 @@ function hoursEmailTexts() {
     todayDate: "2026-11-14",
     listedTokens: [],
   });
+  const noneTicked = L.hoursEmailPlan({
+    volunteer: { ...PAT, needsPhoneCheck: false },
+    entries: [],
+    flags: [],
+    period,
+    todayDate: "2026-11-14",
+    listedTokens: [],
+    attach: true,
+  });
   const emails = [flagged, none].flatMap((p) =>
     [true, false].map((attach) =>
       L.hoursEmailMessage({
@@ -139,9 +148,12 @@ function hoursEmailTexts() {
     L.hoursEmailNoneProblem(),
     L.hoursEmailQuotaProblem(12, 3),
     L.hoursEmailQuotaProblem(1, 0),
-    ...[...plain(flagged.warnings), ...plain(unread.warnings), ...plain(none.warnings)].map(
-      (w) => w.text,
-    ),
+    ...[
+      ...plain(flagged.warnings),
+      ...plain(unread.warnings),
+      ...plain(none.warnings),
+      ...plain(noneTicked.warnings),
+    ].map((w) => w.text),
     ...plain(L.hoursEmailTotalLines(flagged)),
     L.hoursEmailFromLine("staff@example.org"),
     ...Object.values(results),
@@ -596,6 +608,7 @@ test("the hours email's texts are in the staff text the wording tests read", () 
     "Google allows 3 more",
     "daily email limit",
     "We don't have any volunteer hours recorded for you yet.",
+    "The shifts file is left out, since there are no shifts to list.",
     "No shifts in October 2026.",
     "No shifts yet in December 2026.",
   ].forEach((part) => assert.ok(joined.includes(part), part));

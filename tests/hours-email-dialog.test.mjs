@@ -397,6 +397,7 @@ test("email window: Check before sending shows only when a volunteer has warning
   const flagged = {
     kind: "flags",
     count: 2,
+    rows: [14, 220],
     text: "2 shifts with an unreviewed flag (Log rows 14, 220): check them on the Flags tab before sending",
   };
   d.last().answer(previewReply(["v1", "v2"], { warnings: { v2: [flagged] } }));
@@ -406,6 +407,34 @@ test("email window: Check before sending shows only when a volunteer has warning
     "Check before sending: 1 volunteer has something to check below, 2 flagged shifts in all.",
   );
   assert.match(detail(d), /Check: 2 shifts with an unreviewed flag \(Log rows 14, 220\)/);
+
+  // The count is of Log rows: a row with a flag and an alert counts once, across both
+  // warnings; other warnings add none.
+  click(d, d.$("email-preview"));
+  const alerted = {
+    kind: "alerts",
+    count: 2,
+    rows: [220, 301],
+    text: "2 rows with Admin Alerts? set (Log rows 220, 301): read the Admin Alerts? cell on those Log rows before sending.",
+  };
+  const open = {
+    kind: "open",
+    count: 1,
+    rows: [400],
+    text: "1 open shift not counted (Log row 400): use Fix a sign-out… if they're finished.",
+  };
+  d.last().answer(previewReply(["v1", "v2"], { warnings: { v1: [open], v2: [flagged, alerted] } }));
+  assert.equal(
+    d.$("email-check").textContent,
+    "Check before sending: 2 volunteers have something to check below, 3 flagged shifts in all.",
+  );
+  // With no flags or alerts, no count.
+  click(d, d.$("email-preview"));
+  d.last().answer(previewReply(["v1", "v2"], { warnings: { v1: [open] } }));
+  assert.equal(
+    d.$("email-check").textContent,
+    "Check before sending: 1 volunteer has something to check below.",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -741,9 +770,10 @@ for (const [mode, [name, reply]] of Object.entries(LOADS)) {
 //
 // tests/hours-email-replies.json holds a preview reply and a send reply as the server
 // builds them; admin.test.mjs checks the file against adminHoursPreview and adminSendHours
-// on its stand-in server. Here the window reads them: Maria Alvarez and James Okafor sent,
-// James with a flag and an Admin Alerts? cell on one Log row, Dev Patel with no email, and
-// one id no longer on the volunteer list, with the attach box ticked.
+// on its stand-in server. Here the window reads them, with the attach box ticked: Maria
+// Alvarez, Ana Diaz (no shifts, so no file) and James Okafor sent, James with both a flag
+// and an Admin Alerts? cell on one Log row, Dev Patel with no email, and one id no longer
+// on the volunteer list.
 
 const REPLIES = JSON.parse(
   readFileSync(new URL("./hours-email-replies.json", import.meta.url), "utf8"),
@@ -773,10 +803,10 @@ test("email window: the server's own preview and send replies show line by line"
   assert.equal(sendOff(d), false);
   assert.deepEqual(plain(ticketOf(d).pending), preview.sendIds);
   const shown = [...blocks(d)];
-  assert.equal(shown.length, 5);
+  assert.equal(shown.length, 6);
   assert.deepEqual(shown[0].text.split("\n"), [
     "From: ENCM Volunteer Kiosk, from a no-reply address (sent by staff@example.org)",
-    "4 ticked: 2 will be sent, 2 won't.",
+    "5 ticked: 3 will be sent, 2 won't.",
   ]);
   assert.deepEqual(shown[1].text.split("\n"), [
     "To: Maria Alvarez <maria.alvarez@example.org>",
@@ -788,6 +818,13 @@ test("email window: the server's own preview and send replies show line by line"
     "Attached: volunteer-hours-to-2026-11-14.csv (3 shifts)",
   ]);
   assert.deepEqual(shown[2].text.split("\n"), [
+    "To: Ana Diaz <ana.diaz@example.org>",
+    "Volunteer Profiles row 5 · started 2026-02-15",
+    "Last emailed: never",
+    "We don't have any volunteer hours recorded for you yet.",
+    "Check: This volunteer has no counted hours yet; the email will say so. The shifts file is left out, since there are no shifts to list.",
+  ]);
+  assert.deepEqual(shown[3].text.split("\n"), [
     "To: James Okafor <james.okafor@example.org>",
     "Volunteer Profiles row 3 · started 2026-02-15",
     "Last emailed: never",
@@ -798,7 +835,7 @@ test("email window: the server's own preview and send replies show line by line"
     "Check: 1 counted shift with an unreviewed flag (Log row 5): check them on the Flags tab before sending.",
     "Check: 1 row with Admin Alerts? set (Log row 5): read the Admin Alerts? cell on those Log rows before sending.",
   ]);
-  assert.deepEqual(shown[3].text.split("\n"), [
+  assert.deepEqual(shown[4].text.split("\n"), [
     "Dev Patel: won't be sent. Volunteer Profiles row 4 has no email. Add it there, then press Preview again.",
     "Volunteer Profiles row 4 · started 2026-02-15",
     "Last emailed: never",
@@ -807,10 +844,15 @@ test("email window: the server's own preview and send replies show line by line"
     "All time: 1.00 hours (1 shift)",
     "Attached: volunteer-hours-to-2026-11-14.csv (1 shift)",
   ]);
-  assert.deepEqual(shown[4].text.split("\n"), [
+  assert.deepEqual(shown[5].text.split("\n"), [
     "Not on the volunteer list: won't be sent. Not on the volunteer list any more; press Preview again.",
     "Last emailed: never",
   ]);
+  // James's one Log row has a flag and an alert: one flagged shift, not two.
+  assert.equal(
+    d.$("email-check").textContent,
+    "Check before sending: 2 volunteers have something to check below, 1 flagged shift in all.",
+  );
   // Each sendable block opens to the email exactly as the server built it; the one not on
   // the list has none.
   preview.volunteers.forEach((v, i) => {
@@ -828,9 +870,10 @@ test("email window: the server's own preview and send replies show line by line"
     initials: "JP",
   });
   sent.answer(send);
-  assert.equal(message(d), "Sent 2 of 2.");
+  assert.equal(message(d), "Sent 3 of 3.");
   assert.deepEqual(detail(d).split("\n"), [
     "Maria Alvarez: sent to maria.alvarez@example.org",
+    "Ana Diaz: sent to ana.diaz@example.org",
     "James Okafor: sent to james.okafor@example.org",
     "Left out at Preview:",
     "Dev Patel: Volunteer Profiles row 4 has no email. Add it there, then press Preview again.",

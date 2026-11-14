@@ -706,7 +706,8 @@ be sent, 1 won't." Then, for each ticked volunteer in roster order:
 - "Email text", which opens to the subject and the whole email.
 
 "Check before sending", above the preview, says how many volunteers have something to
-check, so a long list doesn't hide it.
+check, so a long list doesn't hide it, and how many flagged shifts there are in all: each
+Log row with an unreviewed flag or an Admin Alerts? cell, counted once.
 
 **What to check.** For each volunteer the preview lists the Log rows staff would want to
 look at before sending, with a count and up to 10 Log row numbers. None of them stops the
@@ -742,11 +743,11 @@ the volunteer by first name, then gives three totals, each in hours and shifts:
 hours. Then the month's shifts, a date and hours each, or "No shifts yet in November
 2026." (or "No shifts in October 2026."). A volunteer with no counted hours gets "We don't
 have any volunteer hours recorded for you yet." instead of the totals and the list. With
-the box ticked, a line names the attached file. Then "This email comes from an address
-that can't take replies. If anything looks wrong, please contact:" and the Settings row
-Hours email contact, then "Thank you for volunteering." and the Hours email signature
-lines, if any. The email holds no User Token, Shift ID, Log row, flag, note or anyone
-else's name.
+the box ticked, a line names the attached file, except for a volunteer with no counted
+shifts, whose email has no file. Then "This email comes from an address that can't take
+replies. If anything looks wrong, please contact:" and the Settings row Hours email
+contact, then "Thank you for volunteering." and the Hours email signature lines, if any.
+The email holds no User Token, Shift ID, Log row, flag, note or anyone else's name.
 
 **What counts** is what the Hours tab and the monthly report count (see Which rows count):
 closed rows with the volunteer's User Token, with their stated hours, by Date. Flagged
@@ -761,13 +762,13 @@ can differ from the Hours tab:
   token's hours on the plain name line and the new token's on the "Name (2)" line. The
   email counts the token in Profiles now, so its totals match the "(2)" line.
 
-**The shifts file.** With the box ticked, each email has a file named
-`volunteer-hours-to-<date>.csv`, such as `volunteer-hours-to-2026-11-14.csv`, which any
-spreadsheet program opens. It has one row per counted shift in all time up to the day the
-totals are as of, the same shifts as the "All time" line, oldest first, with the columns
-Date, Check-in, Check-out and Hours. The times are the stated ones. A time is blank when it
-isn't known: paper hours have only a date and hours, and an auto clock-out's check-out
-time was guessed.
+**The shifts file.** With the box ticked, each email to a volunteer with counted shifts
+has a file named `volunteer-hours-to-<date>.csv`, such as
+`volunteer-hours-to-2026-11-14.csv`, which any spreadsheet program opens. It has one row
+per counted shift in all time up to the day the totals are as of, the same shifts as the
+"All time" line, oldest first, with the columns Date, Check-in, Check-out and Hours. The
+times are the stated ones. A time is blank when it isn't known: paper hours have only a
+date and hours, and an auto clock-out's check-out time was guessed.
 
 **Sending.** Send email sends one email to each volunteer the preview said will be sent,
 10 at a time, one group after another; the message line shows "Sending… 20 of 63"
@@ -817,7 +818,9 @@ row. Volunteers left out at Preview get no row. The tab warns before an edit: ed
 to fix a mistake. It holds volunteers' email addresses, one more reason to share the Log as
 narrowly as Profiles (see User Token and who can see the Log). If rows couldn't be written,
 the message line says so, and the script's execution log names each volunteer's ID and
-result so they can be typed in by hand.
+result so they can be typed in by hand. The execution log never holds an address: where
+Google's message quotes one, the log shows "[address]", and the Result cell has the
+message whole.
 
 The window stops working after 30 minutes, like the others: close it and open the menu
 again.

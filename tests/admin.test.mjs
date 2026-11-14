@@ -2698,6 +2698,8 @@ const JAMES = person(
   "sample-token-02",
 );
 const DEV = person("Dev", "Patel", "615-555-0104", "dev.patel@example.org", "sample-token-04");
+// On the Profiles tab only in the tests that add her; she has no shifts.
+const ANA = person("Ana", "Diaz", "615-555-0105", "ana.diaz@example.org", "sample-token-05");
 const profileRow = (p) => [p.first, p.last, p.phone, "02/15/2026", p.email, p.token];
 const EMAIL_SETTINGS = [
   ["Setting", "Value"],
@@ -3231,6 +3233,87 @@ test("Email hours: one volunteer's MailApp failure doesn't stop the rest", () =>
   ]);
 });
 
+test("Email hours: Google's message is logged with any address masked, and the Result cell keeps it whole", () => {
+  const said = "Invalid email: " + JAMES.email;
+  const masked = "failed: Invalid email: [address]";
+  // The rows can't be written, so the result also goes to the error log.
+  const s = emailServer();
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  s.faults.sendEmail = (m) => (m.to === JAMES.email ? said : null);
+  s.faults.insertSheet = () => true;
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.deepEqual(reply.results, [
+    { id: MARIA.id, result: "sent" },
+    { id: JAMES.id, result: "failed: " + said },
+  ]);
+  assert.equal(reply.recordFailed, true);
+  assert.ok(
+    s.logs.includes("Hours email: failed (volunteer " + JAMES.id + "): " + masked.slice(8)),
+  );
+  assert.equal(s.errors.length, 1);
+  assert.ok(s.errors[0].includes("volunteer " + JAMES.id + ": " + masked), s.errors[0]);
+  for (const line of [...s.logs, ...s.errors]) assert.doesNotMatch(line, /@/);
+
+  // The tab's Result cell has the message as Google gave it.
+  const t = emailServer();
+  const q = previewHours(t, [JAMES.id]);
+  t.faults.sendEmail = () => said;
+  assert.equal(sendHours(t, q.ticket, [JAMES.id]).results[0].result, "failed: " + said);
+  assert.equal(hoursEmailRows(t)[0].Result, "failed: " + said);
+  for (const line of t.logs) assert.doesNotMatch(line, /@/);
+});
+
+test("Email hours: with the box ticked, a volunteer with no counted shifts gets no file and no file line", () => {
+  const s = emailServer({
+    profiles: [EMAIL_PROFILE_HEADER, profileRow(MARIA), profileRow(ANA)],
+  });
+  const p = previewHours(s, [MARIA.id, ANA.id], { attach: true });
+  const [maria, shown] = p.volunteers;
+  assert.equal(shown.id, ANA.id);
+  assert.deepEqual(maria.attachment, { name: "volunteer-hours-to-2026-11-14.csv", shifts: 3 });
+  assert.equal(shown.attachment, null);
+  assert.equal(shown.totals.all.shifts, 0);
+  assert.doesNotMatch(shown.body, /attached|spreadsheet/);
+  assert.deepEqual(
+    shown.warnings.map((w) => w.text),
+    [
+      "This volunteer has no counted hours yet; the email will say so. The shifts file is left out, since there are no shifts to list.",
+    ],
+  );
+  // The digest covers the email with no file: an empty csv.
+  const digest = s.ctx.sha256Hex_(
+    s.ctx.hoursEmailDigestText({
+      id: ANA.id,
+      to: ANA.email,
+      choice: "this",
+      month: "2026-11",
+      asOf: EMAIL_TODAY,
+      attach: true,
+      subject: shown.subject,
+      body: shown.body,
+      csv: "",
+    }),
+  );
+  assert.equal(ticketItem(s, p.ticket).entries[ANA.id].digest, digest);
+
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.deepEqual(
+    reply.results.map((r) => r.result),
+    ["sent", "sent"],
+  );
+  const [toMaria, toAna] = s.mail.sent.map((m) => m.message);
+  assert.equal(toMaria.attachments.length, 1);
+  assert.equal(toAna.to, ANA.email);
+  assert.equal(toAna.body, shown.body);
+  assert.equal("attachments" in toAna, false);
+  assert.equal(s.blobs.length, 1);
+  // Shifts file records the box, as ticked for the send.
+  assert.deepEqual(
+    hoursEmailRows(s).map((r) => r["Shifts file"]),
+    ["yes", "yes"],
+  );
+});
+
 /** Asserts errors holds one entry, naming the Send ID and each id with its result, and no name or address. */
 const assertRowsLogged = (s, sendId, results) => {
   assert.equal(s.errors.length, 1, s.errors.join("\n"));
@@ -3684,10 +3767,16 @@ test("Email hours: the replies the window's tests use are the server's own", () 
   const s = emailServer({
     log,
     flags: [FLAG_HEADER, flagged],
-    profiles: [EMAIL_PROFILE_HEADER, profileRow(MARIA), profileRow(JAMES), withEmail(DEV, "")],
+    profiles: [
+      EMAIL_PROFILE_HEADER,
+      profileRow(MARIA),
+      profileRow(JAMES),
+      withEmail(DEV, ""),
+      profileRow(ANA),
+    ],
     hoursEmails: [HOURS_EMAILS_HEADER, sentRow("2026-11-03", MARIA, "JP", "sent")],
   });
-  const preview = previewHours(s, [MARIA.id, JAMES.id, DEV.id, "0000aaaa0000bbbb"], {
+  const preview = previewHours(s, [MARIA.id, JAMES.id, DEV.id, ANA.id, "0000aaaa0000bbbb"], {
     attach: true,
   });
   const send = sendHours(s, preview.ticket, preview.sendIds);
