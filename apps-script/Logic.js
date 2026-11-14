@@ -3736,15 +3736,19 @@ function hoursPivotSortKey(pivotTable) {
 
 /**
  * What one run of the sort boxes sends, worked out from what it read under the lock.
- * boxes is the Hours tab's A7:N7 values; current is {hoursSheetId, dataSheetId, pivots}:
- * the two tabs' ids and the boxed pivots' definitions as stored, one per boxed table in
- * hoursSortChoices' order (null where no pivot was found).
+ * boxes is the Hours tab's A7:N7 values; current is {hoursSheetId, dataSheetId, pivots,
+ * oldLayout}: the two tabs' ids, the boxed pivots' definitions as stored, one per boxed
+ * table in hoursSortChoices' order (null where no pivot was found), and whether the run
+ * found row 7 laid out before the status cells existed (their cells then sit inside the
+ * box merges, where a write is dropped).
  *
  * Each box's choice comes from hoursBoxChoices: a blank or unknown box gives its table's
  * starting choice and a write-back of that text. The requests, for one batchUpdate, are a
  * data validation on every box cell with its own list, as setupReports sets it, every
  * time, since a paste can copy another cell's validation over a box or strip it; then the
- * write-backs; then, for each pivot whose outer row-group sort (hoursPivotSortKey) differs from its choice's, the
+ * write-backs; then a blank for every status cell, so the batch that sorts also clears
+ * every "Sorting..." text a run before it left (none on the old layout); then, for each
+ * pivot whose outer row-group sort (hoursPivotSortKey) differs from its choice's, the
  * whole pivot from hoursPivots, the same plan setupReports builds, so a re-sort changes
  * the order and nothing else. A missing pivot is left missing: setupReports makes pivots.
  *
@@ -3801,12 +3805,22 @@ function hoursSortPlan(boxes, current) {
       });
     }
   });
+  // A cell with no value, under the userEnteredValue mask, is a blank cell.
+  const blanks = current.oldLayout
+    ? []
+    : tables.map((table) => ({
+        updateCells: {
+          rows: [{ values: [{}] }],
+          start: { sheetId: id, rowIndex: row, columnIndex: table.boxEnd },
+          fields: "userEnteredValue",
+        },
+      }));
   const summary = tables
     .map((table, i) => table.key + " " + choices[i].choice.replace(/^Sort: /, ""))
     .join(", ");
   return {
     choices,
-    requests: [].concat(validations, writeBacks, resorts),
+    requests: [].concat(validations, writeBacks, blanks, resorts),
     resorted: resorts.length,
     summary,
   };
@@ -3965,15 +3979,64 @@ function hoursSortSeconds() {
 }
 
 /**
+ * What a box's status cell says while a sort for its table is on its way. A run writes it
+ * before its stamp, and the run whose stamp is stored last blanks it (HoursSort.js).
+ */
+function hoursSortStatusText() {
+  return "Sorting... up to " + hoursSortSeconds() + " seconds";
+}
+
+/** What a status cell says when the newest run for a pick couldn't sort. */
+function hoursSortFailedText() {
+  return "Not sorted. Pick again.";
+}
+
+/**
+ * Whether a sort run should stop because a newer pick is waiting: true when the stamp
+ * stored in the document property and the run's own stamp are both set and differ. A run
+ * whose stamp write failed (mine empty) never stops, and neither does one that finds no
+ * stamp stored.
+ */
+function hoursStampStale(stored, mine) {
+  const s = cellString(stored);
+  const m = cellString(mine);
+  return s !== "" && m !== "" && s !== m;
+}
+
+/**
+ * The toast the editor who picked sees: titles are the tables whose box the edit covered,
+ * in hoursSortChoices' order. "Hours by month is being re-sorted. Everyone sees the new
+ * order in up to 20 seconds."
+ */
+function hoursSortToast(titles) {
+  const list = titles || [];
+  const named =
+    list.length < 2
+      ? list.join("")
+      : list.slice(0, -1).join(", ") + " and " + list[list.length - 1];
+  return (
+    named +
+    (list.length === 1 ? " is" : " are") +
+    " being re-sorted. Everyone sees the new order in up to " +
+    hoursSortSeconds() +
+    " seconds."
+  );
+}
+
+/**
  * The sort box above each Hours pivot, in pivot order (Hours by volunteer, Hours by month,
- * Shifts). Each box is a dropdown in row 7, merged across its table's columns.
+ * Shifts). Each box is a dropdown in row 7, wide enough for its longest choice, with a
+ * status cell just to its right that says when a sort is on its way.
  *
  * Returns [{
  *   key       "volunteer", "month" or "shifts": the table's short name for log lines;
  *   title     the table's name;
  *   cell      the box's cell, "A7", "E7" or "K7";
- *   merge     the box's merged range, "A7:C7", "E7:I7" or "K7:N7";
- *   column, endColumn   the merge's columns as 0-based indexes, end exclusive;
+ *   merge     the box's range, "A7", "E7:G7" or "K7": merged only when it spans more than
+ *             one column;
+ *   column, boxEnd   the box's columns as 0-based indexes, end exclusive;
+ *   endColumn the table's end column, end exclusive: row 7's fill runs from column to here;
+ *   status    the status cell, in column boxEnd: "B7", "H7" or "L7";
  *   pivot     the cell the table's pivot starts at, "A8", "E8" or "K8";
  *   choices   [{text, sortOrder, valuesIndex}]: valuesIndex is the value the outer row
  *             group sorts by (its Grand Total), or null to sort by the group's own values;
@@ -3989,20 +4052,25 @@ function hoursSortSeconds() {
  */
 function hoursSortChoices() {
   const choice = (text, sortOrder, valuesIndex) => ({ text, sortOrder, valuesIndex });
-  const table = (key, title, column, endColumn, choices) => ({
+  const table = (key, title, column, boxEnd, endColumn, choices) => ({
     key,
     title,
     cell: columnLetter(column) + "7",
-    merge: columnLetter(column) + "7:" + columnLetter(endColumn - 1) + "7",
+    merge:
+      columnLetter(column) +
+      "7" +
+      (boxEnd - column > 1 ? ":" + columnLetter(boxEnd - 1) + "7" : ""),
     column,
+    boxEnd,
     endColumn,
+    status: columnLetter(boxEnd) + "7",
     pivot: columnLetter(column) + hoursPivotRow(),
     choices,
     start: choices[0].text,
   });
   return [
     // Values: Shifts 0, Hours 1.
-    table("volunteer", "Hours by volunteer", 0, 3, [
+    table("volunteer", "Hours by volunteer", 0, 1, 3, [
       choice("Sort: most hours first", "DESCENDING", 1),
       choice("Sort: fewest hours first", "ASCENDING", 1),
       choice("Sort: most shifts first", "DESCENDING", 0),
@@ -4010,7 +4078,7 @@ function hoursSortChoices() {
       choice("Sort: name Z to A", "DESCENDING", null),
     ]),
     // Values: Shifts 0, Hours 1, Volunteers 2, Average shift 3.
-    table("month", "Hours by month", 4, 9, [
+    table("month", "Hours by month", 4, 7, 9, [
       choice("Sort: oldest month first", "ASCENDING", null),
       choice("Sort: newest month first", "DESCENDING", null),
       choice("Sort: most hours first", "DESCENDING", 1),
@@ -4018,7 +4086,7 @@ function hoursSortChoices() {
       choice("Sort: most volunteers first", "DESCENDING", 2),
     ]),
     // Values: Hours 0.
-    table("shifts", "Shifts", 10, 14, [
+    table("shifts", "Shifts", 10, 11, 14, [
       choice("Sort: newest first", "DESCENDING", null),
       choice("Sort: oldest first", "ASCENDING", null),
       choice("Sort: most hours first", "DESCENDING", 0),
@@ -4143,6 +4211,120 @@ function hoursDateNote() {
 }
 
 /**
+ * The column headers the Hours tab's pivots show in row 8, one name per kind of header.
+ * Hours by volunteer and Hours by month both show Shifts and Hours, and Shifts shows
+ * Hours, so nine names cover the twelve header cells. Keyed like hoursHeaderNotes().
+ */
+function hoursHeaderNames() {
+  return {
+    volunteer: "Volunteer",
+    shifts: "Shifts",
+    hours: "Hours",
+    month: "Month",
+    volunteers: "Volunteers",
+    averageShift: "Average shift",
+    shift: "Shift",
+    roleType: "Role/Type",
+    activity: "Activity",
+  };
+}
+
+/**
+ * The hover note on each Hours header, keyed like hoursHeaderNames(). Each is one line,
+ * true wherever its header appears, and names no volunteer.
+ */
+function hoursHeaderNotes() {
+  return {
+    volunteer:
+      "The volunteer's name from the Log. Everyone with no name shares one (no name) line. Namesakes show as Name and Name (2), in order of first shift.",
+    shifts:
+      "How many shifts this line counts, for your slicer picks. Only closed shifts with a date count; an open shift shows after its check-out and the next refresh.",
+    hours:
+      "The Log's Hours Served (stated), added up for this line and your slicer picks. On the Shifts table it is that one shift's hours.",
+    month: "The month of the shift's date, as yyyy-mm.",
+    volunteers:
+      "How many different volunteers had a shift that month, for your slicer picks. Everyone with no name counts as one.",
+    averageShift: "Hours divided by Shifts: the average shift that month, in hours.",
+    shift:
+      "One shift: date, weekday, start time (if the Log has one) and volunteer. A (2) marks a second shift with the same date, start and volunteer.",
+    roleType:
+      "The Log's Volunteer Role/Type for the shift, or (not set) when it's blank. Spellings that differ only in capitals or spaces show as one.",
+    activity:
+      "The Log's Activity for the shift, or (not set) when it's blank. Spellings that differ only in capitals or spaces show as one.",
+  };
+}
+
+/**
+ * Every Hours header note text the kiosk wrote in an earlier release and no longer writes.
+ * When a note's wording changes, its old text goes here, so a cell still carrying it is
+ * known as the kiosk's and brought up to date. Kept apart from the Log and Flags lists
+ * (headerNotePastTexts), so neither list's code ever touches the other's tabs.
+ */
+function hoursHeaderNotePastTexts() {
+  return [];
+}
+
+/** Every text the kiosk counts as its own Hours header note: the current ones, then the past ones. */
+function hoursHeaderNoteKioskTexts() {
+  const notes = hoursHeaderNotes();
+  return Object.keys(notes)
+    .map((k) => notes[k])
+    .concat(hoursHeaderNotePastTexts());
+}
+
+/**
+ * The fourteen texts the pivots show in row 8, A to N: each pivot's row-group labels, then
+ * its value names, from its first column, as hoursPivots builds them; "" in the gaps D and J.
+ */
+function hoursHeaderRow() {
+  const tables = hoursSortChoices();
+  const pivots = hoursPivots(hoursSourceRange(0), null);
+  const row = Array(tables[tables.length - 1].endColumn).fill("");
+  tables.forEach((t, i) => {
+    const p = pivots[i];
+    p.rows
+      .map((g) => g.label)
+      .concat(p.values.map((v) => v.name))
+      .forEach((text, j) => (row[t.column + j] = text));
+  });
+  return row;
+}
+
+/**
+ * Where the Hours header notes go: {range, row, names, notes}. range is row 8 from A to N,
+ * row the header texts in it (hoursHeaderRow), names and notes the Hours lists, for
+ * headerNotesRow. Notes on these cells last through a re-sort, a refresh, a slicer pick and
+ * setupReports, so they are written there and nowhere else.
+ */
+function hoursNoteCells() {
+  const row = hoursHeaderRow();
+  return {
+    range: "A" + hoursPivotRow() + ":" + columnLetter(row.length - 1) + hoursPivotRow(),
+    row,
+    names: hoursHeaderNames(),
+    notes: hoursHeaderNotes(),
+  };
+}
+
+/**
+ * The note to treat as each note cell's existing one, for headerNotesRow. now is the cells'
+ * notes as read just before the write; before is what was read before the tab was changed
+ * (null when nothing was read). Cell by cell: the note now when it is a staff note (set
+ * and not one of kioskTexts), so one written after the early read is kept; otherwise the
+ * before note, so a staff note that was there before and has since gone is put back;
+ * otherwise, with no before, the note now.
+ */
+function hoursNotesExisting(now, before, kioskTexts) {
+  const kiosk = new Set(kioskTexts || []);
+  const text = (x) => (x === null || x === undefined ? "" : String(x));
+  return (now || []).map((n, i) => {
+    const t = text(n);
+    if (t !== "" && !kiosk.has(t)) return t;
+    return before ? text(before[i]) : t;
+  });
+}
+
+/**
  * The Hours tab's row 2: how to use it. openPath is what opening the sheet does:
  * "refresh" (it refreshes), "note" (it only notes it didn't) or "none" (it writes nothing).
  */
@@ -4175,8 +4357,8 @@ function hoursUsageText(openPath) {
  *
  * Returns {
  *   cells: [{a1, value}]   A1's title, row 2's text, row 3's line before the first refresh,
- *                          A4's how-to line, F6's date note and each box's choice (B1 is
- *                          written only by the render);
+ *                          A4's how-to line, F6's date note, each box's choice and ""
+ *                          for each status cell (B1 is written only by the render);
  *   frozenRows             1;
  *   source                 hoursSourceRange(dataSheetId);
  *   boxes                  hoursSortChoices() with each table's chosen text as choice;
@@ -4186,7 +4368,8 @@ function hoursUsageText(openPath) {
  *                          widths, heights, validations, rules (the three Grand Total
  *                          rules first), pivots, slicers;
  *   data: {headers, formats, stateRange, tabColor}   Hours data's look;
- *   tabColor               the Hours tab's colour.
+ *   tabColor               the Hours tab's colour;
+ *   notes                  hoursNoteCells(): where the header notes go.
  * }
  *
  * Layout: row 1 the title and the refresh line in B1, not wrapped, overflowing C1:P1; row
@@ -4197,8 +4380,10 @@ function hoursUsageText(openPath) {
  * each reads its own date column) with the date note in F6; both rows 38 px, each slicer
  * 240 px wide at 250 px steps from column A, so its title shows in full and its value list
  * has room (at 165 px the titles were cut to "Ro..."), and five fit a 1,366 px screen; row
- * 7 the sort boxes, each merged across its table's columns so its longest choice shows,
- * with a strict dropdown of its own choices; from row 8 the pivots Hours by volunteer
+ * 7 the sort boxes, each wide enough for its longest choice (A7, E7:G7 merged, K7), with a
+ * strict dropdown of its own choices, and each box's status cell just to its right (B7,
+ * H7, L7) in row 4's line style, so its text runs on over the empty cells to the next box;
+ * the section fill runs across each table's columns; from row 8 the pivots Hours by volunteer
  * (A8), Hours by month (E8) and Shifts (K8, through N), from hoursPivots. Stripes and
  * Grand Total rows come from rules keyed on each pivot's first column, so they follow the
  * pivot as it grows and shrinks; every body row gets its fill from a rule, so the pivot's
@@ -4239,11 +4424,13 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath, choices) {
     { mergeCells: { range: range(1, 2, 0, 16), mergeType: "MERGE_ALL" } },
     { mergeCells: { range: range(2, 3, 0, 16), mergeType: "MERGE_ALL" } },
   ];
-  boxes.forEach((b) =>
-    formats.push({
-      mergeCells: { range: range(6, 7, b.column, b.endColumn), mergeType: "MERGE_ALL" },
-    }),
-  );
+  boxes
+    .filter((b) => b.boxEnd - b.column > 1)
+    .forEach((b) =>
+      formats.push({
+        mergeCells: { range: range(6, 7, b.column, b.boxEnd), mergeType: "MERGE_ALL" },
+      }),
+    );
   formats.push(
     repeat(
       range(0, 3, 0, 16),
@@ -4292,6 +4479,8 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath, choices) {
       ),
     ),
   );
+  // After the fill, whose text format would otherwise replace the line's.
+  boxes.forEach((b) => formats.push(line(6, b.boxEnd)));
   [
     [0, 3],
     [4, 9],
@@ -4462,7 +4651,9 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath, choices) {
       { a1: "A3", value: hoursCountsLine(null) },
       { a1: "A4", value: hoursHowTo() },
       { a1: "F6", value: hoursDateNote() },
-    ].concat(boxes.map((b) => ({ a1: b.cell, value: b.choice }))),
+    ]
+      .concat(boxes.map((b) => ({ a1: b.cell, value: b.choice })))
+      .concat(boxes.map((b) => ({ a1: b.status, value: "" }))),
     frozenRows: 1,
     source,
     boxes,
@@ -4481,6 +4672,7 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath, choices) {
       tabColor: lookTabColours().hoursData,
     },
     tabColor: lookTabColours().hours,
+    notes: hoursNoteCells(),
   };
 }
 

@@ -1425,6 +1425,9 @@ test("widths are fixed pixels for every column A to P, and rows 2, 3, 5 and 6 ha
     "A7",
     "E7",
     "K7",
+    "B7",
+    "H7",
+    "L7",
   ]);
   assert.equal(plan.cells[0].value, "Volunteer hours");
   assert.ok(!plan.cells.some((c) => c.a1 === "B1"), "B1 is written only by the render");
@@ -1472,11 +1475,21 @@ test("row 2 names the open refresh only when the open path refreshes", () => {
 test("the sort boxes' choices: each starts with Sort:, the starting choice first, and sorts by a value its pivot has", () => {
   const tables = plain(L.hoursSortChoices());
   assert.deepEqual(
-    tables.map((t) => [t.key, t.cell, t.merge, t.column, t.endColumn, t.pivot, t.start]),
+    tables.map((t) => [
+      t.key,
+      t.cell,
+      t.merge,
+      t.column,
+      t.boxEnd,
+      t.status,
+      t.endColumn,
+      t.pivot,
+      t.start,
+    ]),
     [
-      ["volunteer", "A7", "A7:C7", 0, 3, "A8", "Sort: most hours first"],
-      ["month", "E7", "E7:I7", 4, 9, "E8", "Sort: oldest month first"],
-      ["shifts", "K7", "K7:N7", 10, 14, "K8", "Sort: newest first"],
+      ["volunteer", "A7", "A7", 0, 1, "B7", 3, "A8", "Sort: most hours first"],
+      ["month", "E7", "E7:G7", 4, 7, "H7", 9, "E8", "Sort: oldest month first"],
+      ["shifts", "K7", "K7", 10, 11, "L7", 14, "K8", "Sort: newest first"],
     ],
   );
   const pivots = plain(L.hoursPivots(L.hoursSourceRange(22), []));
@@ -1602,22 +1615,17 @@ test("every choice gives its sort on its table's outer row group, and the other 
   );
 });
 
-test("row 7: the sort boxes, merged across their tables, filled, each a strict dropdown of its own choices, holding its choice", () => {
+test("row 7: the sort boxes, merged only over two or more columns, filled across their tables, each a strict dropdown of its own choices, holding its choice", () => {
   const plan = plain(L.hoursTabPlan(11, 22, "refresh"));
   const tables = plain(L.hoursSortChoices());
-  const merges = plan.formats.filter((f) => f.mergeCells).map((f) => f.mergeCells.range);
+  const merges = plan.formats
+    .filter((f) => f.mergeCells && f.mergeCells.range.startRowIndex === 6)
+    .map((f) => f.mergeCells.range);
+  // Only the month box spans columns; a one-column box isn't merged.
+  assert.deepEqual(merges, [
+    { sheetId: 11, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 4, endColumnIndex: 7 },
+  ]);
   for (const t of tables) {
-    assert.ok(
-      merges.some(
-        (r) =>
-          r.sheetId === 11 &&
-          r.startRowIndex === 6 &&
-          r.endRowIndex === 7 &&
-          r.startColumnIndex === t.column &&
-          r.endColumnIndex === t.endColumn,
-      ),
-      t.merge,
-    );
     const fill = plan.formats.find(
       (f) =>
         f.repeatCell &&
@@ -1826,4 +1834,244 @@ test("the tab names and marks", () => {
     data: "hours-data",
   });
   assert.deepEqual(plain(L.hoursStateCells()), ["L1", "M1", "N1", "O1", "P1", "Q1"]);
+});
+
+// ---------------------------------------------------------------------------
+// Row 7's status cells, the stamp check, the toast and row 8's header notes
+
+test("row 7: each box's status cell is just right of it, blank, in row 4's line style, laid over the fill", () => {
+  const plan = plain(L.hoursTabPlan(11, 22, "refresh"));
+  const tables = plain(L.hoursSortChoices());
+  const cell = (a1) => plan.cells.find((c) => c.a1 === a1);
+  const lineStyle = {
+    wrapStrategy: "OVERFLOW_CELL",
+    textFormat: {
+      foregroundColorStyle: plain(L.lookColorStyle(L.lookPalette().navy)),
+      fontSize: 10,
+    },
+  };
+  for (const t of tables) {
+    assert.equal(t.status, L.columnLetter(t.boxEnd) + "7");
+    assert.equal(cell(t.status).value, "", t.status);
+    const at = plan.formats.findIndex(
+      (f) =>
+        f.repeatCell &&
+        f.repeatCell.range.startRowIndex === 6 &&
+        f.repeatCell.range.startColumnIndex === t.boxEnd,
+    );
+    assert.ok(at >= 0, t.status);
+    const f = plan.formats[at].repeatCell;
+    assert.deepEqual(f.range, {
+      sheetId: 11,
+      startRowIndex: 6,
+      endRowIndex: 7,
+      startColumnIndex: t.boxEnd,
+      endColumnIndex: t.boxEnd + 1,
+    });
+    assert.deepEqual(f.cell.userEnteredFormat, lineStyle);
+    // The fill across the table comes first, so the line style is what stays.
+    const fill = plan.formats.findIndex(
+      (x) =>
+        x.repeatCell &&
+        x.repeatCell.range.startRowIndex === 6 &&
+        x.repeatCell.range.startColumnIndex === t.column,
+    );
+    assert.ok(fill < at, t.status);
+    // The status cell is no box's column, and it sits inside its table's fill.
+    assert.ok(t.boxEnd < t.endColumn);
+    assert.ok(!tables.some((u) => u.column === t.boxEnd));
+  }
+  assert.deepEqual(plan.notes, plain(L.hoursNoteCells()));
+});
+
+const sortCurrent = (oldLayout) => ({
+  hoursSheetId: 11,
+  dataSheetId: 22,
+  pivots: plain(L.hoursPivots(L.hoursSourceRange(22), null)),
+  oldLayout,
+});
+
+test("hoursSortPlan blanks every status cell in every plan, after the write-backs and before the re-sorts, and none on the old layout", () => {
+  const tables = plain(L.hoursSortChoices());
+  const isBlank = (r) =>
+    r.updateCells &&
+    r.updateCells.fields === "userEnteredValue" &&
+    JSON.stringify(r.updateCells.rows) === JSON.stringify([{ values: [{}] }]);
+  const rows = [
+    ["", "", "", "", "", "", "", "", "", "", ""],
+    [
+      "Sort: name A to Z",
+      "",
+      "",
+      "",
+      "Sort: newest month first",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "Sort: oldest first",
+    ],
+  ];
+  for (const boxes of rows) {
+    const plan = plain(L.hoursSortPlan(boxes, sortCurrent(false)));
+    const blanks = plan.requests.filter(isBlank);
+    assert.deepEqual(
+      blanks.map((r) => r.updateCells.start),
+      tables.map((t) => ({ sheetId: 11, rowIndex: 6, columnIndex: t.boxEnd })),
+    );
+    const first = plan.requests.findIndex(isBlank);
+    const last = plan.requests.findLastIndex(isBlank);
+    assert.ok(
+      plan.requests
+        .slice(0, first)
+        .every((r) => r.setDataValidation || r.updateCells.fields === "userEnteredValue"),
+    );
+    assert.ok(plan.requests.slice(last + 1).every((r) => r.updateCells.fields === "pivotTable"));
+    const old = plain(L.hoursSortPlan(boxes, sortCurrent(true)));
+    assert.equal(old.requests.filter(isBlank).length, 0);
+    assert.deepEqual(
+      old.requests,
+      plan.requests.filter((r) => !isBlank(r)),
+    );
+  }
+});
+
+test("the status texts, and the toast naming the tables a pick covered", () => {
+  assert.equal(L.hoursSortStatusText(), "Sorting... up to " + L.hoursSortSeconds() + " seconds");
+  assert.equal(L.hoursSortFailedText(), "Not sorted. Pick again.");
+  const n = L.hoursSortSeconds();
+  assert.equal(
+    L.hoursSortToast(["Hours by month"]),
+    "Hours by month is being re-sorted. Everyone sees the new order in up to " + n + " seconds.",
+  );
+  assert.equal(
+    L.hoursSortToast(["Hours by volunteer", "Hours by month"]),
+    "Hours by volunteer and Hours by month are being re-sorted. Everyone sees the new order in up to " +
+      n +
+      " seconds.",
+  );
+  assert.equal(
+    L.hoursSortToast(["Hours by volunteer", "Hours by month", "Shifts"]),
+    "Hours by volunteer, Hours by month and Shifts are being re-sorted. Everyone sees the new order in up to " +
+      n +
+      " seconds.",
+  );
+});
+
+test("hoursStampStale is true only when both stamps are set and differ", () => {
+  const a = "1763046840000-3f2a9c1b";
+  const b = "1763046840000-77d0e2aa";
+  assert.equal(L.hoursStampStale(a, b), true);
+  assert.equal(L.hoursStampStale(b, a), true);
+  assert.equal(L.hoursStampStale(a, a), false);
+  for (const empty of ["", null, undefined]) {
+    assert.equal(L.hoursStampStale(empty, a), false, "nothing stored: " + empty);
+    assert.equal(L.hoursStampStale(a, empty), false, "no stamp of its own: " + empty);
+    assert.equal(L.hoursStampStale(empty, empty), false);
+  }
+});
+
+const HEADER_ROW = [
+  "Volunteer",
+  "Shifts",
+  "Hours",
+  "",
+  "Month",
+  "Shifts",
+  "Hours",
+  "Volunteers",
+  "Average shift",
+  "",
+  "Shift",
+  "Role/Type",
+  "Activity",
+  "Hours",
+];
+
+test("hoursHeaderRow is the labels and value names the pivots show in A8:N8, gaps blank", () => {
+  assert.deepEqual(plain(L.hoursHeaderRow()), HEADER_ROW);
+  // Built from the pivots, so a renamed value would show here.
+  const pivots = plain(L.hoursPivots(L.hoursSourceRange(22), null));
+  const tables = plain(L.hoursSortChoices());
+  tables.forEach((t, i) => {
+    const shown = pivots[i].rows.map((g) => g.label).concat(pivots[i].values.map((v) => v.name));
+    assert.deepEqual(plain(L.hoursHeaderRow()).slice(t.column, t.column + shown.length), shown);
+    assert.equal(shown.length, t.endColumn - t.column);
+  });
+  assert.deepEqual(plain(L.hoursNoteCells()), {
+    range: "A8:N8",
+    row: HEADER_ROW,
+    names: plain(L.hoursHeaderNames()),
+    notes: plain(L.hoursHeaderNotes()),
+  });
+});
+
+test("the Hours header notes: keyed like the names, one per header shown, one line each with no edge space, kept apart from the Log's", () => {
+  const names = L.hoursHeaderNames();
+  const notes = L.hoursHeaderNotes();
+  assert.deepEqual(Object.keys(notes), Object.keys(names));
+  const shown = new Set(HEADER_ROW.filter((h) => h !== "").map((h) => L.normalizeHeader(h)));
+  assert.deepEqual(new Set(Object.values(names).map((n) => L.normalizeHeader(n))), shown);
+  for (const [k, text] of Object.entries(notes)) {
+    assert.ok(text.length > 0, k);
+    assert.equal(text, text.trim(), k);
+    assert.doesNotMatch(text, /[\n\r\t]/, k);
+    assert.doesNotMatch(text, /\[|§/, k);
+  }
+  assert.equal(new Set(Object.values(notes)).size, Object.keys(notes).length);
+  assert.deepEqual(plain(L.hoursHeaderNotePastTexts()), []);
+  assert.deepEqual(
+    plain(L.hoursHeaderNoteKioskTexts()),
+    Object.values(notes).concat(plain(L.hoursHeaderNotePastTexts())),
+  );
+  // Neither round's list holds the other's texts.
+  const logs = new Set(L.headerNoteKioskTexts());
+  assert.ok(Object.values(notes).every((t) => !logs.has(t)));
+});
+
+test("headerNotesRow over the Hours lists keeps a staff note, replaces a past text and clears a kiosk text in a gap", () => {
+  const notes = plain(L.hoursHeaderNotes());
+  const past = "Old wording of the Hours note.";
+  const kiosk = plain(L.hoursHeaderNoteKioskTexts()).concat([past]);
+  const existing = Array(14).fill("");
+  existing[1] = "Staff: count checked by hand in March.";
+  existing[2] = past;
+  existing[3] = notes.volunteer; // a kiosk text on D8, the gap
+  existing[9] = "Gap note staff left.";
+  const out = plain(
+    L.headerNotesRow(L.hoursHeaderRow(), L.hoursHeaderNames(), notes, existing, kiosk),
+  );
+  assert.equal(out[0], notes.volunteer);
+  assert.equal(out[1], existing[1]);
+  assert.equal(out[2], notes.hours);
+  assert.equal(out[3], "");
+  assert.equal(out[9], existing[9]);
+  assert.equal(out[5], notes.shifts);
+  assert.equal(out[8], notes.averageShift);
+  assert.equal(out[13], notes.hours);
+});
+
+test("hoursNotesExisting takes a staff note now over the early read, and the early read over an empty or kiosk note now", () => {
+  const kiosk = plain(L.hoursHeaderNoteKioskTexts());
+  const k = kiosk[0];
+  const staffNow = "Staff note written after the early read.";
+  const staffBefore = "Staff note that was there before.";
+  assert.deepEqual(
+    plain(
+      L.hoursNotesExisting(
+        [staffNow, "", k, "", k, staffNow],
+        [staffBefore, staffBefore, staffBefore, "", "", ""],
+        kiosk,
+      ),
+    ),
+    [staffNow, staffBefore, staffBefore, "", "", staffNow],
+  );
+  // No early read: the notes now, as they are.
+  assert.deepEqual(plain(L.hoursNotesExisting([staffNow, "", k], null, kiosk)), [staffNow, "", k]);
+  // Missing values read as no note.
+  assert.deepEqual(plain(L.hoursNotesExisting([null, undefined], [null, staffBefore], kiosk)), [
+    "",
+    staffBefore,
+  ]);
 });

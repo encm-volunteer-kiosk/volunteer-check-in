@@ -295,6 +295,8 @@ function server(opts = {}) {
               return () => hours.pivots.set(u.start.columnIndex + 1, plain(cell.pivotTable));
             }
             assert.equal(u.fields, "userEnteredValue");
+            // A cell with no value under the userEnteredValue mask blanks it.
+            if (!cell.userEnteredValue) return () => hours.cells.delete(at);
             return () => hours.cells.set(at, cell.userEnteredValue.stringValue);
           });
           apply.forEach((f) => f());
@@ -410,9 +412,12 @@ const kinds = (requests) =>
       ? "validation " + r.setDataValidation.range.startColumnIndex
       : r.updateCells.fields === "pivotTable"
         ? "pivot " + r.updateCells.start.columnIndex
-        : "write-back " + r.updateCells.start.columnIndex,
+        : r.updateCells.rows[0].values[0].userEnteredValue
+          ? "write-back " + r.updateCells.start.columnIndex
+          : "status " + r.updateCells.start.columnIndex,
   );
 const validationsAll = () => TABLES.map((t) => "validation " + t.column);
+const statusAll = () => TABLES.map((t) => "status " + t.boxEnd);
 
 test("hoursSortPlan: every choice of every box rewrites only that box's pivot, whole, from hoursPivots", () => {
   const start = pivotsFor(row7());
@@ -430,7 +435,7 @@ test("hoursSortPlan: every choice of every box rewrites only that box's pivot, w
       assert.equal(changed, text !== t.start, label + ": only the starting choice matches");
       assert.deepEqual(
         kinds(plan.requests),
-        [...validationsAll(), ...(changed ? ["pivot " + t.column] : [])],
+        [...validationsAll(), ...statusAll(), ...(changed ? ["pivot " + t.column] : [])],
         label,
       );
       assert.equal(plan.resorted, changed ? 1 : 0, label);
@@ -457,9 +462,10 @@ test("hoursSortPlan: a blank or unknown box goes back to its starting choice wit
     assert.deepEqual(kinds(plan.requests), [
       ...validationsAll(),
       ...TABLES.map((t) => "write-back " + t.column),
+      ...statusAll(),
     ]);
     plan.requests
-      .filter((r) => r.updateCells)
+      .filter((r) => r.updateCells && r.updateCells.rows[0].values[0].userEnteredValue)
       .forEach((r, i) => {
         assert.deepEqual(r.updateCells.rows[0].values[0].userEnteredValue, {
           stringValue: TABLES[i].start,
@@ -472,8 +478,8 @@ test("hoursSortPlan: a blank or unknown box goes back to its starting choice wit
 test("hoursSortPlan: every plan carries each box's own validation, also when every pivot matches", () => {
   const plan = plain(L.hoursSortPlan(row7(), current(pivotsFor(row7()))));
   assert.equal(plan.resorted, 0);
-  assert.deepEqual(kinds(plan.requests), validationsAll());
-  plan.requests.forEach((r, i) => {
+  assert.deepEqual(kinds(plan.requests), [...validationsAll(), ...statusAll()]);
+  plan.requests.slice(0, TABLES.length).forEach((r, i) => {
     const t = TABLES[i];
     assert.deepEqual(r.setDataValidation.rule, listOf(t));
     assert.deepEqual(r.setDataValidation.range, {
@@ -499,7 +505,11 @@ test("hoursSortPlan: only pivots whose sort differs are rewritten, a stored {} b
     stored.rows[0].valueBucket = {};
   }
   const plan = plain(L.hoursSortPlan(row7(picks), current([stored, start[1], null])));
-  assert.deepEqual(kinds(plan.requests), [...validationsAll(), "pivot " + TABLES[1].column]);
+  assert.deepEqual(kinds(plan.requests), [
+    ...validationsAll(),
+    ...statusAll(),
+    "pivot " + TABLES[1].column,
+  ]);
   assert.equal(plan.resorted, 1);
   // A choice sorting by value 0, against a pivot stored with {}: no rewrite.
   TABLES.forEach((t, i) => {
