@@ -698,7 +698,9 @@ test("on a new spreadsheet Settings gets every default, the check-out flag at 15
   const settings = ss.getSheetByName("Settings");
   assert.deepEqual(settings.row(1), ["Setting", "Value", "What it does"]);
   const rows = settings.getDataRange().getValues().slice(1);
-  assert.equal(rows.length, 20);
+  // One row per default: 22, worked out from settingsDefaults.
+  assert.equal(rows.length, S.settingsDefaults("2026-11-13").length);
+  assert.equal(rows.length, 22);
   const names = rows.map((r) => r[0]);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
   assert.deepEqual(rows.find((r) => r[0] === "Check-out flag minutes").slice(0, 2), [
@@ -725,7 +727,11 @@ test("setupSheets stamps the Settings cache after its Settings rows reach the sh
   const before = Date.now() - 1000;
   cache.set(S.settingsCacheKey(), S.settingsCacheValue({ "Kiosk access code": "x" }, before));
   S.setupSheets();
-  assert.deepEqual(atFlush, [{ stamped: false, rows: 21 }]);
+  // The header and one row per default: 23.
+  assert.deepEqual(atFlush, [
+    { stamped: false, rows: S.settingsDefaults("2026-11-13").length + 1 },
+  ]);
+  assert.equal(atFlush[0].rows, 23);
   const stamp = cache.get(S.settingsStampKey());
   assert.match(stamp, /^\d+$/);
   assert.ok(Number(stamp) >= before + 1000);
@@ -847,7 +853,8 @@ test("existing Settings values are kept and missing rows appended", () => {
     .map((r) => r.slice(0, 2));
   assert.deepEqual(rows[0], ["Kiosk access code", "lettersonlylettersonly"]);
   assert.deepEqual(rows[1], ["Arrival flag minutes", "20"]);
-  assert.equal(rows.length, 20);
+  assert.equal(rows.length, S.settingsDefaults("2026-11-13").length);
+  assert.equal(rows.length, 22);
   assert.deepEqual(
     rows.find((r) => r[0] === "Check-out flag minutes"),
     ["Check-out flag minutes", "15"],
@@ -995,7 +1002,9 @@ test("without the advanced Sheets service, setupSheets names the view step and t
   assert.equal(flags.frozen, 1);
   assert.deepEqual([...flags.validations.entries()], [["2,6,999,1", CHECKBOX]]);
   assert.deepEqual(ss.getSheetByName("Log").row(1), LOG_HEADERS);
-  assert.equal(ss.getSheetByName("Settings").getDataRange().getValues().length, 21);
+  const settingsRows = ss.getSheetByName("Settings").getDataRange().getValues().length;
+  assert.equal(settingsRows, S.settingsDefaults("2026-11-13").length + 1);
+  assert.equal(settingsRows, 23);
   assert.equal(ss.views.size, 0);
 });
 
@@ -1678,6 +1687,62 @@ test("Kiosk contact: a staff value survives every run; a tab without the row get
   assert.deepEqual(tab.row(last), ["Kiosk contact", "", S.settingsDescriptions()["Kiosk contact"]]);
   rows.forEach((r, i) => assert.deepEqual(tab.row(i + 1).slice(0, 2), r, "row " + (i + 1)));
   assert.equal(O.kioskContact_(), "");
+});
+
+test("the hours email rows: staff values survive every run; a tab without them gets both, last, blank", () => {
+  const ss = new FakeSpreadsheet();
+  sheetWith(ss, "Log", [LOG_HEADERS]);
+  const settings = sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Hours email contact", "Pat Example\npat@example.org"],
+    ["Hours email signature", "Pat Example\nVolunteer desk"],
+  ]);
+  const S = server(ss);
+  S.setupSheets();
+  S.setupSheets();
+  assert.deepEqual(settings.row(2).slice(0, 2), [
+    "Hours email contact",
+    "Pat Example\npat@example.org",
+  ]);
+  assert.deepEqual(settings.row(3).slice(0, 2), [
+    "Hours email signature",
+    "Pat Example\nVolunteer desk",
+  ]);
+  assert.equal(settings.get(2, 3), S.settingsDescriptions()["Hours email contact"]);
+  assert.equal(settings.get(3, 3), S.settingsDescriptions()["Hours email signature"]);
+  const names = settings
+    .getDataRange()
+    .getValues()
+    .map((r) => r[0]);
+  assert.equal(names.length, S.settingsDefaults("2026-11-13").length + 1);
+  assert.equal(names.filter((n) => n === "Hours email contact").length, 1);
+  assert.equal(names.filter((n) => n === "Hours email signature").length, 1);
+
+  // A Settings tab from before the two rows: they are appended once, at the bottom, B blank.
+  const old = new FakeSpreadsheet();
+  sheetWith(old, "Log", [LOG_HEADERS]);
+  const rows = [["Setting", "Value"]].concat(
+    plain(S.settingsDefaults("2026-11-13"))
+      .filter((r) => !r[0].startsWith("Hours email"))
+      .map((r) => [r[0], r[1] || "kept"]),
+  );
+  const tab = sheetWith(old, "Settings", rows);
+  const O = server(old);
+  O.setupSheets();
+  O.setupSheets();
+  const last = tab.getLastRow();
+  assert.equal(last, rows.length + 2);
+  assert.deepEqual(tab.row(last - 1), [
+    "Hours email contact",
+    "",
+    S.settingsDescriptions()["Hours email contact"],
+  ]);
+  assert.deepEqual(tab.row(last), [
+    "Hours email signature",
+    "",
+    S.settingsDescriptions()["Hours email signature"],
+  ]);
+  rows.forEach((r, i) => assert.deepEqual(tab.row(i + 1).slice(0, 2), r, "row " + (i + 1)));
 });
 
 test("kioskContact_ is blank, logged, when Settings can't be read", () => {

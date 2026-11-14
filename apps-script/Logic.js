@@ -135,6 +135,8 @@ function settingsDefaults(todayDate) {
     ["Past hours file ID", ""],
     ["Past hours tab", "Historical Hours"],
     [kioskContactSetting(), ""],
+    [hoursEmailContactSetting(), ""],
+    [hoursEmailSignatureSetting(), ""],
   );
   return rows;
 }
@@ -192,6 +194,10 @@ function settingsDescriptions() {
       "The tab in that old hours spreadsheet that Import past hours… offers first; blank means Historical Hours.",
     [kioskContactSetting()]:
       "Who to ask when the kiosk or this sheet isn't working, such as a name and an email or phone: the How to tab shows it, and so does the Kiosk admin menu when something goes wrong; while it's blank, the How to tab says to ask whoever looks after the kiosk.",
+    [hoursEmailContactSetting()]:
+      "Who volunteers should contact about their hours, such as a name and an email or phone: Kiosk admin > Email hours… ends every email with it, because nobody can reply to that email; while it's blank, no hours email can be sent.",
+    [hoursEmailSignatureSetting()]:
+      'Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.',
   };
 }
 
@@ -231,8 +237,10 @@ function settingsDescriptionProtection() {
 }
 
 /**
- * Profiles headers the kiosk needs, after normalizeHeader. Email is never read. The
- * token is found separately, under one of profileTokenHeaders().
+ * Profiles headers the kiosk needs, after normalizeHeader. Email isn't needed here: the
+ * tablet and the kiosk list never read it; only Kiosk admin > Email hours… reads it,
+ * straight from Profiles (profileEmails_). The token is found separately, under one of
+ * profileTokenHeaders().
  */
 function requiredProfileHeaders() {
   return {
@@ -304,6 +312,8 @@ function refusalMessages() {
       "This shift is open and the volunteer already has an open shift in the Log. Close that one with Fix a sign-out first.",
     ADMIN_RESTORE_HEADERS:
       "This row has a value in a column the Log doesn't have exactly once, or whose header is blank or repeated, so it can't go back without losing that value. Give the Log one column with that header first.",
+    HOURS_EMAIL_STALE: "This preview has expired or was already sent. Press Preview again.",
+    HOURS_EMAIL_TOO_MANY: "Too many volunteers in one send. Press Preview again.",
   };
 }
 
@@ -1816,6 +1826,790 @@ function decideFixSignOut(input) {
   }
   const cells = fixSignOutCells(open, checked.ms, note, initials);
   return { open, cells, hours: cells[logHeaderNames().statedHours] };
+}
+
+// ---------------------------------------------------------------------------
+// Hours email
+//
+// Kiosk admin > Email hours… (Admin.js) sends each ticked volunteer one plain-text email:
+// their hours for this month or last month, the year so far and all time, counted from the
+// Log by the Hours tab's and the monthly report's rules, to the Email cell of their own
+// Volunteer Profiles row. This section holds its pure parts: the address check, the period,
+// which rows count and what the preview warns about, the email's text, the shifts file,
+// the quota check, the ticket a preview leaves for its send, and the Hours emails tab's
+// rows.
+//
+// The rules: all three totals are as of one date, the as-of date; a row counts when it is
+// closed, under the volunteer's own User Token, dated yyyy-mm-dd and on or before that
+// date; the warnings go in the preview and never in the email, and never block a send; and
+// the email holds no User Token, Shift ID, Log row, flag, note or other volunteer's name.
+
+/** How many volunteers one send call handles. */
+function hoursEmailChunkSize() {
+  return 10;
+}
+
+/** The Settings row naming who volunteers contact about their hours. */
+function hoursEmailContactSetting() {
+  return "Hours email contact";
+}
+
+/** The Settings row whose lines go under the email's thanks. */
+function hoursEmailSignatureSetting() {
+  return "Hours email signature";
+}
+
+/** The tab in the Check-In Log that keeps one row per volunteer a send takes. */
+function hoursEmailTab() {
+  return "Hours emails";
+}
+
+/** The description of the Hours emails tab's one warning-only protection. */
+function hoursEmailProtectionDescription() {
+  return "Hours emails: written by Kiosk admin > Email hours…. Edit only to fix a mistake.";
+}
+
+/** The Hours emails tab's header, in the order a new tab gets it. */
+function hoursEmailHeaders() {
+  return [
+    "Sent at",
+    "Send ID",
+    "Volunteer Name",
+    "Volunteer ID",
+    "Email",
+    "Month",
+    "Month hours",
+    "Year",
+    "Year hours",
+    "All-time hours",
+    "Shifts file",
+    "Sent by",
+    "Sent from",
+    "Result",
+  ];
+}
+
+/** Each Hours emails header's kind, which sets its number format: "date", "hours" or "text". */
+function hoursEmailColumnKinds() {
+  const kinds = {};
+  hoursEmailHeaders().forEach((h) => (kinds[h] = "text"));
+  kinds["Sent at"] = "date";
+  ["Month hours", "Year hours", "All-time hours"].forEach((h) => (kinds[h] = "hours"));
+  return kinds;
+}
+
+/**
+ * Maps each Hours emails header to its 0-based index in headerRow, compared after
+ * normalizeHeader. Each must be there exactly once, else this throws, so a row is never
+ * written under the wrong header.
+ */
+function hoursEmailColumns(headerRow) {
+  const cols = {};
+  hoursEmailHeaders().forEach((h) => {
+    const found = logHeaderIndexes(headerRow, h);
+    if (found.length !== 1) {
+      throw new Error(
+        "The " +
+          hoursEmailTab() +
+          ' tab needs exactly one "' +
+          h +
+          '" column in row 1. Fix its header row.',
+      );
+    }
+    cols[h] = found[0];
+  });
+  return cols;
+}
+
+/** The Profiles Email column's names, after normalizeHeader; the first one found is used. */
+function profileEmailHeaders() {
+  return ["email", "email address"];
+}
+
+/** The script cache key of a preview's ticket, or "" when ticket isn't a ticket id. */
+function hoursEmailTicketKey(ticket) {
+  if (typeof ticket !== "string") return "";
+  const t = ticket.trim();
+  return /^[A-Za-z0-9-]{1,64}$/.test(t) ? "hours-email:" + t : "";
+}
+
+/** "this" or "last"; anything else is "this". */
+function hoursEmailChoice(choice) {
+  return choice === "last" ? "last" : "this";
+}
+
+/** The ids of a request, each trimmed, blanks dropped, each kept once in the order given. */
+function hoursEmailIds(ids) {
+  const out = [];
+  (Array.isArray(ids) ? ids : []).forEach((id) => {
+    const s = cellString(id);
+    if (s && out.indexOf(s) < 0) out.push(s);
+  });
+  return out;
+}
+
+/**
+ * The address an Email cell gives, as {email, problem}: problem "" with the address, or
+ * "no-email" (blank) or "bad-email" (anything but one plain address) with email "". The
+ * cell's whole trimmed text must be the address: parseEmailAddresses (the flags email's
+ * rule) finds one valid part and no invalid one, that part is the whole text, and none of
+ * < > " ( ) is in it, so angle brackets are refused rather than stripped, and a repeat such
+ * as "pat@example.org, PAT@example.org" is refused although the flags email keeps one.
+ */
+function hoursEmailAddress(text) {
+  const cell = cellString(text);
+  if (!cell) return { email: "", problem: "no-email" };
+  const parsed = parseEmailAddresses(cell);
+  const one =
+    parsed.valid.length === 1 &&
+    parsed.invalid.length === 0 &&
+    parsed.valid[0] === cell &&
+    !/[<>"()]/.test(cell);
+  return one ? { email: cell, problem: "" } : { email: "", problem: "bad-email" };
+}
+
+/** "2", "2 and 5", "2, 5 and 9". */
+function andList(items) {
+  const list = (items || []).map(String);
+  if (list.length < 2) return list.join("");
+  return list.slice(0, -1).join(", ") + " and " + list[list.length - 1];
+}
+
+/**
+ * What the preview and the result say about an address problem. rows are the Profiles rows
+ * it is about, cell the Email cell's text.
+ */
+function hoursEmailProblemText(problem, rows, cell) {
+  const row = rows && rows.length ? rows[0] : "";
+  switch (problem) {
+    case "no-email":
+      return (
+        "Volunteer Profiles row " + row + " has no email. Add it there, then press Preview again."
+      );
+    case "bad-email":
+      return (
+        "The email in Volunteer Profiles row " +
+        row +
+        " isn't one email address: \"" +
+        cellString(cell) +
+        '". Fix it there, then press Preview again.'
+      );
+    case "no-email-column":
+      return "Volunteer Profiles has no Email column.";
+    case "duplicate-token":
+      return (
+        "Volunteer Profiles rows " +
+        andList(rows) +
+        " have the same User Token. Fix it there, then press Preview again."
+      );
+    default:
+      return "Not on the volunteer list any more; press Preview again.";
+  }
+}
+
+/**
+ * Each volunteer's address from the Profiles header row and data rows (cells as text; data
+ * row i is sheet row i + 2), as {id: {email, row, problem, text}}. The row is the one data
+ * row whose trimmed User Token is the volunteer's token, matched by token and not by row
+ * number, because rows move. problem is "" or one of no-email, bad-email (hoursEmailAddress),
+ * not-found (no row has the token), duplicate-token (two or more do; row is the first) and
+ * no-email-column (the header has none of profileEmailHeaders(), for every volunteer). text
+ * is hoursEmailProblemText, "" with no problem. Throws as profileTokenColumn does.
+ */
+function profileEmailsFrom(headerRow, rows, volunteers) {
+  const headers = (headerRow || []).map(normalizeHeader);
+  const tokenAt = profileTokenColumn(headers);
+  const names = profileEmailHeaders();
+  const emailAt = headers.findIndex((h) => names.indexOf(h) >= 0);
+  const byToken = new Map();
+  (rows || []).forEach((cells, i) => {
+    const token = cellString(cells[tokenAt]);
+    if (!token) return;
+    if (!byToken.has(token)) byToken.set(token, []);
+    byToken.get(token).push(i);
+  });
+  const out = {};
+  (volunteers || []).forEach((v) => {
+    const at = byToken.get(cellString(v.token)) || [];
+    const sheetRows = at.map((i) => i + 2);
+    let problem = "";
+    let email = "";
+    let cell = "";
+    if (emailAt < 0) problem = "no-email-column";
+    else if (!at.length) problem = "not-found";
+    else if (at.length > 1) problem = "duplicate-token";
+    else {
+      cell = cellString(rows[at[0]][emailAt]);
+      const checked = hoursEmailAddress(cell);
+      email = checked.email;
+      problem = checked.problem;
+    }
+    out[v.id] = {
+      email,
+      row: sheetRows.length ? sheetRows[0] : 0,
+      problem,
+      text: problem ? hoursEmailProblemText(problem, sheetRows, cell) : "",
+    };
+  });
+  return out;
+}
+
+/**
+ * The chosen month and the as-of date, from todayDate (the Central calendar day):
+ * {choice, month, asOf}. "this" is todayDate's month as of todayDate; "last" is the month
+ * before, as of its last day, so in early January it is December of the year before.
+ */
+function hoursEmailPeriod(choice, todayDate) {
+  const c = hoursEmailChoice(choice);
+  const thisMonth = monthKey(todayDate);
+  if (c === "this") return { choice: c, month: thisMonth, asOf: todayDate };
+  return { choice: c, month: previousMonth(thisMonth), asOf: addDays(thisMonth + "-01", -1) };
+}
+
+/** The order of a volunteer's counted rows: by Date, then check-in time (unreadable last), then Log row. */
+function hoursEmailRowOrder(a, b) {
+  const da = cellString(a.dateText);
+  const db = cellString(b.dateText);
+  if (da !== db) return da < db ? -1 : 1;
+  const ra = isFinite(a.statedInMs);
+  const rb = isFinite(b.statedInMs);
+  if (ra !== rb) return ra ? -1 : 1;
+  if (ra && a.statedInMs !== b.statedInMs) return a.statedInMs - b.statedInMs;
+  return a.row - b.row;
+}
+
+/** "Log row 14", or "Log rows 14, 220 and 3 more": at most 10 rows named, in row order. */
+function hoursEmailRowsText(rows) {
+  const sorted = rows.slice().sort((a, b) => a - b);
+  const shown = sorted.slice(0, 10);
+  const more = sorted.length - shown.length;
+  if (sorted.length === 1) return "Log row " + sorted[0];
+  return "Log rows " + (more ? shown.join(", ") + " and " + more + " more" : andList(shown));
+}
+
+/** The sentence a same-name warning adds. */
+function hoursEmailSameNameText() {
+  return "Two volunteers share this name; check whose they are.";
+}
+
+/**
+ * Which Log rows one volunteer's email counts, and what the preview warns about. input is
+ * {volunteer, entries, flags, period, todayDate, listedTokens}: entries are reportEntry
+ * rows (the whole Log), flags readFlags_'s rows or null when that read threw, period
+ * hoursEmailPeriod's, todayDate the Central day and listedTokens every listed volunteer's
+ * User Token.
+ *
+ * A row counts when it is closed with a User Token (isCountedRow), under this volunteer's
+ * token, its Date is yyyy-mm-dd (monthKey) and on or before the as-of date: the Hours tab's
+ * rows for this token, up to that date. Hours are Hours Served (stated) in whole hundredths
+ * (reportHundredths). Paper rows imported with a match carry the real token and count like
+ * any shift; paperHundredths keeps them apart for the email. Open rows, rows under a
+ * stand-in import: token or another token, and rows dated after the as-of date count in no
+ * total of this email.
+ *
+ * Returns {period, month: {key, hundredths, shifts}, year: {key, hundredths, shifts}, all:
+ * {hundredths, shifts}, paperHundredths, monthShifts: [{date, hundredths}], allShifts:
+ * [{date, inMs, outMs, hundredths, paper, autoClosed, row}], warnings: [{kind, count, rows,
+ * text}]}. allShifts holds every counted row, in hoursEmailRowOrder, for the shifts file;
+ * inMs and outMs are the stated times, NaN when unreadable.
+ *
+ * Each warning names its count and up to 10 Log rows. The flag warnings name flags only on
+ * this volunteer's own token; a row under the name with another token is listed by its own
+ * warning, which says it isn't in the totals. Kinds, in this order: open, flags, alerts,
+ * other-token, auto, zero-hours, dates, stand-in, flags-unreadable, no-hours.
+ */
+function hoursEmailPlan(input) {
+  const v = input.volunteer;
+  const period = input.period;
+  const asOf = period.asOf;
+  const yearKey = asOf.slice(0, 4);
+  const entries = input.entries || [];
+  const listed = new Set((input.listedTokens || []).map(cellString));
+  const name = normalizeName(volunteerFullName(v));
+  const standIn = importStandInToken(volunteerNameKey(v));
+  const mine = entries.filter((e) => isTokenRow(e, v.token));
+  const dated = (e) => monthKey(e.dateText) !== "";
+  const counted = mine
+    .filter((e) => isCountedRow(e) && dated(e) && cellString(e.dateText) <= asOf)
+    .sort(hoursEmailRowOrder);
+  const hundredths = (e) => reportHundredths(e.statedHoursCell);
+  const total = (rows) => ({
+    hundredths: rows.reduce((sum, e) => sum + hundredths(e), 0),
+    shifts: rows.length,
+  });
+  const monthRows = counted.filter((e) => cellString(e.dateText).slice(0, 7) === period.month);
+  const yearRows = counted.filter((e) => cellString(e.dateText).slice(0, 4) === yearKey);
+  const isAuto = (e) => cellString(e.outBy).toLowerCase() === autoCloseEnteredBy();
+
+  const warnings = [];
+  const sameName = v.needsPhoneCheck ? " " + hoursEmailSameNameText() : "";
+  const hoursOf = (rows) => hoursText(rows.reduce((sum, e) => sum + hundredths(e), 0));
+  const warn = (kind, rows, what, advice) => {
+    if (!rows.length) return;
+    const nums = rows.map((e) => e.row);
+    warnings.push({
+      kind,
+      count: rows.length,
+      rows: nums.slice().sort((a, b) => a - b),
+      text: what + " (" + hoursEmailRowsText(nums) + "): " + advice,
+    });
+  };
+
+  const open = mine.filter((e) => isStatus(e, "open"));
+  warn(
+    "open",
+    open,
+    plural(open.length, "open shift", "open shifts") + " not counted",
+    "use Fix a sign-out… if they're finished.",
+  );
+  if (input.flags) {
+    const flagged = new Set(
+      input.flags
+        .filter((f) => !f.reviewed && cellString(f.shiftId))
+        .map((f) => cellString(f.shiftId)),
+    );
+    const rows = counted.filter((e) => cellString(e.shiftId) && flagged.has(cellString(e.shiftId)));
+    warn(
+      "flags",
+      rows,
+      plural(rows.length, "counted shift", "counted shifts") + " with an unreviewed flag",
+      "check them on the Flags tab before sending.",
+    );
+  }
+  const alerts = mine.filter((e) => cellString(e.alerts) !== "");
+  warn(
+    "alerts",
+    alerts,
+    plural(alerts.length, "row", "rows") + " with Admin Alerts? set",
+    "read the Admin Alerts? cell on those Log rows before sending.",
+  );
+  const otherToken = entries.filter(
+    (e) =>
+      isCountedRow(e) &&
+      normalizeName(e.name) === name &&
+      !/^import:/i.test(cellString(e.token)) &&
+      !listed.has(cellString(e.token)),
+  );
+  warn(
+    "other-token",
+    otherToken,
+    plural(otherToken.length, "closed shift", "closed shifts") +
+      " under this name with a User Token no listed volunteer has, " +
+      hoursOf(otherToken) +
+      " hours",
+    "they aren't in these totals; this may be an old or mistyped User Token. If they're this volunteer's, change it to their current User Token on those rows." +
+      sameName,
+  );
+  const auto = counted.filter(isAuto);
+  warn(
+    "auto",
+    auto,
+    plural(auto.length, "auto clock-out", "auto clock-outs") + " in the totals",
+    "their check-out time was guessed.",
+  );
+  const zero = counted.filter((e) => {
+    const cell = e.statedHoursCell;
+    const readable =
+      (typeof cell === "number" || (typeof cell === "string" && cellString(cell) !== "")) &&
+      isFinite(Number(cell)) &&
+      Number(cell) >= 0;
+    return !readable;
+  });
+  warn(
+    "zero-hours",
+    zero,
+    plural(zero.length, "shift", "shifts") + " counted as 0 hours",
+    "Hours Served (stated) is blank, negative or not a number.",
+  );
+  const undated = mine.filter(
+    (e) => isCountedRow(e) && (!dated(e) || cellString(e.dateText) > input.todayDate),
+  );
+  warn(
+    "dates",
+    undated,
+    plural(undated.length, "shift", "shifts") + " left out",
+    "the Date isn't yyyy-mm-dd, or is after today (the Hours tab counts the future-dated ones).",
+  );
+  const standIns = entries.filter(
+    (e) => isCountedRow(e) && cellString(e.token).toLowerCase() === standIn,
+  );
+  warn(
+    "stand-in",
+    standIns,
+    plural(standIns.length, "paper shift", "paper shifts") +
+      " under this name with an import: User Token, " +
+      hoursOf(standIns) +
+      " hours",
+    "they aren't in these totals; if they're this volunteer's, type their User Token over the import: token on those rows." +
+      sameName,
+  );
+  if (!input.flags) {
+    warnings.push({
+      kind: "flags-unreadable",
+      count: 0,
+      rows: [],
+      text: "The Flags tab couldn't be read, so flags weren't checked.",
+    });
+  }
+  if (!counted.length) {
+    warnings.push({
+      kind: "no-hours",
+      count: 0,
+      rows: [],
+      text: "This volunteer has no counted hours yet; the email will say so.",
+    });
+  }
+
+  const all = total(counted);
+  return {
+    period,
+    month: Object.assign({ key: period.month }, total(monthRows)),
+    year: Object.assign({ key: yearKey }, total(yearRows)),
+    all,
+    paperHundredths: counted
+      .filter((e) => isImportShiftId(e.shiftId))
+      .reduce((sum, e) => sum + hundredths(e), 0),
+    monthShifts: monthRows.map((e) => ({
+      date: cellString(e.dateText),
+      hundredths: hundredths(e),
+    })),
+    allShifts: counted.map((e) => ({
+      date: cellString(e.dateText),
+      inMs: isFinite(e.statedInMs) ? e.statedInMs : NaN,
+      outMs: isFinite(e.statedOutMs) ? e.statedOutMs : NaN,
+      hundredths: hundredths(e),
+      paper: isImportShiftId(e.shiftId),
+      autoClosed: isAuto(e),
+      row: e.row,
+    })),
+    warnings,
+  };
+}
+
+/** "Saturday, November 14, 2026" for "2026-11-14". */
+function hoursEmailLongDate(date) {
+  const [year, , day] = date.split("-");
+  return (
+    weekdayName(date) +
+    ", " +
+    monthName(date.slice(0, 7)).split(" ")[0] +
+    " " +
+    Number(day) +
+    ", " +
+    year
+  );
+}
+
+/** "Mon Nov 2" for "2026-11-02". */
+function hoursEmailShortDate(date) {
+  return (
+    weekdayName(date).slice(0, 3) +
+    " " +
+    monthName(date.slice(0, 7)).slice(0, 3) +
+    " " +
+    Number(date.slice(8, 10))
+  );
+}
+
+/**
+ * A Settings value's lines, each trimmed, empty ones dropped, as a list. The Kiosk contact
+ * line and the hours email's contact and signature all read their values this way.
+ */
+function settingLines(value) {
+  return cellString(value)
+    .split(/\r\n|[\n\r\u2028\u2029]/)
+    .map(cellString)
+    .filter((line) => line !== "");
+}
+
+/** The shifts file's name: volunteer-hours-to-<as-of date>.csv, with no volunteer's name. */
+function hoursEmailFileName(asOf) {
+  return "volunteer-hours-to-" + asOf + ".csv";
+}
+
+/** "6.50 hours (2 shifts)". */
+function hoursEmailTotalText(t) {
+  return hoursText(t.hundredths) + " hours (" + plural(t.shifts, "shift", "shifts") + ")";
+}
+
+/**
+ * The email's three totals lines, unindented: the month, the year and all time, worded for
+ * "this" (so far, as of today) or "last" (through the month's end).
+ */
+function hoursEmailTotalLines(plan) {
+  const month = monthName(plan.month.key);
+  const monthWord = month.split(" ")[0];
+  const last = plan.period.choice === "last";
+  const paper =
+    plan.paperHundredths > 0
+      ? ", including " + hoursText(plan.paperHundredths) + " hours from our paper records"
+      : "";
+  return [
+    (last ? month : month + " so far") + ": " + hoursEmailTotalText(plan.month),
+    (last ? plan.year.key + " through " + monthWord : plan.year.key + " so far") +
+      ": " +
+      hoursEmailTotalText(plan.year),
+    "All time: " + hoursEmailTotalText(plan.all) + paper,
+  ];
+}
+
+/**
+ * The email, as {subject, body}, plain text with "\n" line ends. input is {firstName,
+ * plan (hoursEmailPlan's), attach, contact, signature}: contact and signature are the two
+ * Settings values as typed. Every email names who to contact, since nobody can reply to it;
+ * the contact's lines are joined with ", " as the Kiosk contact line joins them. The
+ * signature's lines go one per line under the thanks.
+ */
+function hoursEmailMessage(input) {
+  const plan = input.plan;
+  const period = plan.period;
+  const month = monthName(period.month);
+  const last = period.choice === "last";
+  const blocks = [["Hi " + cellString(input.firstName) + ","]];
+  blocks.push([
+    "Here are the volunteer hours we have for you " +
+      (last ? "through " : "as of ") +
+      hoursEmailLongDate(period.asOf) +
+      ":",
+  ]);
+  if (!plan.all.shifts) {
+    blocks.push(["We don't have any volunteer hours recorded for you yet."]);
+  } else {
+    blocks.push(hoursEmailTotalLines(plan).map((line) => "  " + line));
+    if (plan.monthShifts.length) {
+      blocks.push(
+        ["Your shifts in " + month + ":"].concat(
+          plan.monthShifts.map(
+            (s) => "  " + hoursEmailShortDate(s.date) + ": " + hoursText(s.hundredths) + " hours",
+          ),
+        ),
+      );
+    } else {
+      blocks.push([(last ? "No shifts in " : "No shifts yet in ") + month + "."]);
+    }
+  }
+  if (input.attach) {
+    const n = plan.all.shifts;
+    const file = hoursEmailFileName(period.asOf);
+    blocks.push([
+      n === 1
+        ? "Your 1 shift is in the attached spreadsheet file, " + file + "."
+        : "All " + n + " of your shifts are in the attached spreadsheet file, " + file + ".",
+    ]);
+  }
+  blocks.push([
+    "This email comes from an address that can't take replies. If anything looks wrong, please contact:",
+    settingLines(input.contact).join(", "),
+  ]);
+  blocks.push(["Thank you for volunteering."].concat(settingLines(input.signature)));
+  return {
+    subject: "Your volunteer hours for " + month,
+    body: blocks.map((b) => b.join("\n")).join("\n\n"),
+  };
+}
+
+/**
+ * The shifts file's text: CSV, CRLF line ends, the header Date,Check-in,Check-out,Hours,
+ * then one row per shift in allShifts' order. Date is yyyy-mm-dd; the times are
+ * formatTime(ms), a Central clock time such as "9:00 AM", left blank when unreadable, on a
+ * paper row (date and hours only), and for Check-out on an auto clock-out, whose time was
+ * guessed; Hours is hoursText. No cell holds text read from a sheet, so none needs quoting.
+ */
+function hoursEmailCsv(allShifts, formatTime) {
+  const known = (ms) => typeof ms === "number" && isFinite(ms);
+  const lines = ["Date,Check-in,Check-out,Hours"];
+  (allShifts || []).forEach((s) => {
+    const inText = !s.paper && known(s.inMs) ? formatTime(s.inMs) : "";
+    const outText = !s.paper && !s.autoClosed && known(s.outMs) ? formatTime(s.outMs) : "";
+    lines.push([s.date, inText, outText, hoursText(s.hundredths)].join(","));
+  });
+  return lines.map((line) => line + "\r\n").join("");
+}
+
+/**
+ * The text whose SHA-256 is a volunteer's digest: everything the send would put in the
+ * email and the file, and the period. csv is "" when nothing is attached.
+ */
+function hoursEmailDigestText(d) {
+  return JSON.stringify({
+    id: d.id,
+    to: d.to,
+    choice: d.choice,
+    month: d.month,
+    asOf: d.asOf,
+    attach: d.attach,
+    subject: d.subject,
+    body: d.body,
+    csv: d.csv,
+  });
+}
+
+/** The set problem a blank Hours email contact gives. */
+function hoursEmailContactProblem() {
+  return "Type who volunteers should contact about their hours in Hours email contact on the Settings tab, then press Preview again.";
+}
+
+/** The set problem when no ticked volunteer can be sent. */
+function hoursEmailNoneProblem() {
+  return "None of the ticked volunteers can be sent; fix the problems shown, then press Preview again.";
+}
+
+/**
+ * The quota problem for a preview that would send count emails with remaining left today,
+ * or "" when they fit.
+ */
+function hoursEmailQuotaProblem(count, remaining) {
+  const left = Math.max(0, Math.floor(Number(remaining) || 0));
+  if (!(count > 0) || count <= left) return "";
+  if (left === 0) {
+    return "Google's daily email limit for this account is used up; try again tomorrow.";
+  }
+  return (
+    "This would send " +
+    plural(count, "email", "emails") +
+    ", and Google allows " +
+    left +
+    " more from this account today. Untick some, or send the rest tomorrow."
+  );
+}
+
+/** The results a send gives that aren't a problem's own text or Google's message. */
+function hoursEmailResults() {
+  return {
+    sent: "sent",
+    taken: "not sent: this preview has expired or was already sent for them",
+    changed: "not sent: changed since the preview; press Preview again to check it",
+    quota: "not sent: Google's daily email limit for this account is used up",
+  };
+}
+
+/** The preview's From line, naming the account that sends. */
+function hoursEmailFromLine(account) {
+  return flagsEmailSenderName() + ", from a no-reply address (sent by " + cellString(account) + ")";
+}
+
+/**
+ * The ticket a preview keeps in the script cache, as an object: {sendId, expiresMs, choice,
+ * month, asOf, attach, entries: {id: {digest, name, label, to}}}, for the sendable
+ * volunteers only.
+ */
+function hoursEmailTicket(fields) {
+  return {
+    sendId: fields.sendId,
+    expiresMs: fields.expiresMs,
+    choice: fields.choice,
+    month: fields.month,
+    asOf: fields.asOf,
+    attach: fields.attach === true,
+    entries: fields.entries,
+  };
+}
+
+/**
+ * A ticket from its cached text, or null when there is none to send from: no text, text
+ * that isn't a ticket, or expiresMs at or before nowMs.
+ */
+function hoursEmailTicketRead(text, nowMs) {
+  if (typeof text !== "string" || !text) return null;
+  let t;
+  try {
+    t = JSON.parse(text);
+  } catch (e) {
+    return null;
+  }
+  if (!t || typeof t !== "object" || !t.entries || typeof t.entries !== "object") return null;
+  if (typeof t.expiresMs !== "number" || !(t.expiresMs > nowMs)) return null;
+  return t;
+}
+
+/**
+ * Splits a call's ids by the ticket: {taken: [{id, entry}], missing: [id], rest, seconds}.
+ * taken are the ids whose entry the ticket holds, in the call's order; missing the others.
+ * rest is the ticket without the taken entries, or null when none is left (the key is then
+ * removed); seconds is the time left to expiresMs, at least 1.
+ */
+function hoursEmailTake(ticket, ids, nowMs) {
+  const entries = Object.assign({}, ticket.entries);
+  const taken = [];
+  const missing = [];
+  ids.forEach((id) => {
+    if (Object.prototype.hasOwnProperty.call(entries, id)) {
+      taken.push({ id, entry: entries[id] });
+      delete entries[id];
+    } else {
+      missing.push(id);
+    }
+  });
+  const rest = Object.keys(entries).length ? Object.assign({}, ticket, { entries }) : null;
+  return {
+    taken,
+    missing,
+    rest,
+    seconds: Math.max(1, Math.ceil((ticket.expiresMs - nowMs) / 1000)),
+  };
+}
+
+/**
+ * One Hours emails row as {header: value}, built only from the ticket, the taken entry, the
+ * call's own values and the result. item is {sentAtMs, sendId, name, id, to, month, asOf,
+ * attach, initials, account, result, totals}: totals ({month, year, all} hundredths) on a
+ * sent or failed row, null on a "not sent" one, whose hours cells are blank. Every text goes
+ * through sheetText, so a name or address starting "=" stays text. Sent at is milliseconds.
+ */
+function hoursEmailRow(item) {
+  const hours = (h) => (item.totals ? h / 100 : "");
+  const t = item.totals || {};
+  return {
+    "Sent at": item.sentAtMs,
+    "Send ID": sheetText(item.sendId),
+    "Volunteer Name": sheetText(item.name),
+    "Volunteer ID": sheetText(item.id),
+    Email: sheetText(item.to),
+    Month: sheetText(item.month),
+    "Month hours": hours(t.month),
+    Year: sheetText(cellString(item.asOf).slice(0, 4)),
+    "Year hours": hours(t.year),
+    "All-time hours": hours(t.all),
+    "Shifts file": item.attach ? "yes" : "no",
+    "Sent by": sheetText(item.initials),
+    "Sent from": sheetText(item.account),
+    Result: sheetText(item.result),
+  };
+}
+
+/**
+ * The preview's Last emailed text for one Volunteer ID: "2026-11-03 by JP" from the newest
+ * row with Result "sent", or "never". rows are {id, result, ms, date, by} read from the
+ * Hours emails tab, ms NaN when Sent at can't be read; of rows with equal times the later
+ * one is newer, and a readable time is newer than none.
+ */
+function hoursEmailLastSent(rows, id) {
+  let best = null;
+  let bestAt = -1;
+  (rows || []).forEach((r, i) => {
+    if (cellString(r.id) !== id || cellString(r.result) !== "sent") return;
+    const ms = isFinite(r.ms) ? r.ms : -Infinity;
+    if (!best || ms > best.ms || (ms === best.ms && i > bestAt)) {
+      best = { ms, row: r };
+      bestAt = i;
+    }
+  });
+  if (!best) return "never";
+  const by = cellString(best.row.by);
+  return cellString(best.row.date) + (by ? " by " + by : "");
+}
+
+/**
+ * The execution log's line for one volunteer a send took. reason stands in for a "not
+ * sent" result's text when given: an address problem is logged by its code, since its text
+ * quotes the cell. No name and no address.
+ */
+function hoursEmailLogLine(id, result, reason) {
+  const who = " (volunteer " + id + ")";
+  if (result === "sent") return "Hours email: sent" + who;
+  if (result.indexOf("failed: ") === 0) return "Hours email: failed" + who + ": " + result.slice(8);
+  const why = reason || result.replace(/^not sent: /, "");
+  return "Hours email: not sent" + who + ": " + why;
 }
 
 // ---------------------------------------------------------------------------
@@ -7409,10 +8203,7 @@ function kioskContactFormula() {
  * nothing is left.
  */
 function kioskContactNote(value) {
-  const lines = cellString(value)
-    .split(/\r\n|[\n\r\u2028\u2029]/)
-    .map(cellString)
-    .filter((line) => line !== "");
+  const lines = settingLines(value);
   return lines.length ? "If this keeps happening, contact: " + lines.join(", ") : "";
 }
 
@@ -7547,6 +8338,33 @@ function howToSections() {
         ),
         tip(
           "The report's dollar figure uses Volunteer hour value on the Settings tab. Making the same month again makes a second tab; delete old report tabs when you're done with them.",
+        ),
+      ],
+    },
+    {
+      title: "Email volunteers their hours",
+      lines: [
+        text(
+          "Each volunteer you tick gets one email with their hours for the month, the year so far and all time, sent to the email on their Volunteer Profiles row from an address that can't take replies. It names who to contact about their hours from Hours email contact on the Settings tab, so type that first: while it's blank, nothing can be sent.",
+        ),
+        step("1. Kiosk admin > Email hours…"),
+        step(
+          "2. Choose this month or last month. For last month, all three totals are as of that month's last day.",
+        ),
+        step(
+          "3. Tick Attach all shifts if they should also get a spreadsheet file of every shift they have.",
+        ),
+        step(
+          "4. Tick the volunteers. Type part of a name to search; Tick all shown with the search empty ticks everyone.",
+        ),
+        step(
+          "5. Press Preview. Check each volunteer's address, hours and the warnings under Check before sending. A volunteer with a problem, such as no email on their Profiles row, is left out and the problem says where to fix it.",
+        ),
+        step(
+          "6. Type your initials and press Send email. The list then says, for each volunteer, sent, failed or not sent and why.",
+        ),
+        tip(
+          "One failure doesn't stop the rest. Every volunteer a send handles gets a row on the Hours emails tab with the result. Bounces go to the inbox of the account you're signed in as. To send again, press Preview again.",
         ),
       ],
     },

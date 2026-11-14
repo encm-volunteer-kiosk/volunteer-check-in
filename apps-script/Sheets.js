@@ -691,6 +691,26 @@ function getProfiles_(settings) {
   return parsed.volunteers;
 }
 
+/**
+ * Each volunteer's address from the Email column of their own Profiles row, for Kiosk
+ * admin > Email hours…: {id: {email, row, problem, text}} (profileEmailsFrom, Logic.js).
+ * Opens the same file and tab getProfiles_ reads and reads the sheet in one call for the
+ * whole set; the row is found by User Token, not by row number. Never reads through or
+ * writes to the Profiles cache, whose list keeps no email, and never writes to Profiles.
+ */
+function profileEmails_(settings, volunteers) {
+  const fileId = settings["Volunteer Profiles file ID"];
+  const tabName = settings["Volunteer Profiles tab"] || "Volunteer Profiles";
+  if (!fileId) throw new Error('The Settings value "Volunteer Profiles file ID" is empty.');
+  const sheet = SpreadsheetApp.openById(fileId).getSheetByName(tabName);
+  if (!sheet) throw new Error('Volunteer Profiles has no tab named "' + tabName + '".');
+  const values = sheet
+    .getDataRange()
+    .getValues()
+    .map((row) => row.map(cellText_));
+  return profileEmailsFrom(values[0] || [], values.slice(1), volunteers);
+}
+
 // ---------------------------------------------------------------------------
 // Log
 
@@ -1289,6 +1309,96 @@ function markShiftFlags_(shiftId, opts) {
     }
   });
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Hours emails
+//
+// The tab Kiosk admin > Email hours… (Admin.js) writes one row on for each volunteer a send
+// takes, and reads back for the preview's Last emailed line. Nothing else reads it. It is
+// read and written by header; the row's cells come from hoursEmailRow (Logic.js).
+
+/**
+ * The Hours emails tab, made on the first write, as {sheet, cols}: the header in plain
+ * text, row 1 frozen, and one warning-only protection (protectOnce_, so a later write adds
+ * no second). A tab whose row 1 is empty gets the header.
+ */
+function hoursEmailSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(hoursEmailTab()) || ss.insertSheet(hoursEmailTab());
+  let header = logHeaderRow_(sheet);
+  if (header.every((h) => h === "")) {
+    const headers = hoursEmailHeaders();
+    sheet.getRange(1, 1, 1, headers.length).setNumberFormat("@").setValues([headers]);
+    sheet.setFrozenRows(1);
+    header = headers;
+  }
+  protectOnce_(
+    sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET),
+    hoursEmailProtectionDescription(),
+    () => sheet.protect(),
+  );
+  return { sheet, cols: hoursEmailColumns(header) };
+}
+
+/**
+ * Appends Hours emails rows (hoursEmailRow maps) below the tab's last row, in one
+ * setNumberFormats and one setValues: Sent at as a date-time, the hours as numbers with
+ * 0.00, every other column of the tab's own as plain text. Columns staff added keep their
+ * format and get a blank.
+ */
+function appendHoursEmailRows_(rows) {
+  if (!rows.length) return;
+  const { sheet, cols } = hoursEmailSheet_();
+  const width = logHeaderRow_(sheet).length;
+  const first = sheet.getLastRow() + 1;
+  const last = first + rows.length - 1;
+  if (last > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), Math.max(50, last - sheet.getMaxRows()));
+  }
+  const range = sheet.getRange(first, 1, rows.length, width);
+  const formats = range.getNumberFormats();
+  const kinds = hoursEmailColumnKinds();
+  const format = { date: DATE_TIME_FORMAT, hours: "0.00", text: "@" };
+  const values = rows.map((row, i) => {
+    const line = new Array(width).fill("");
+    Object.keys(cols).forEach((h) => {
+      formats[i][cols[h]] = format[kinds[h]];
+      line[cols[h]] = kinds[h] === "date" ? new Date(row[h]) : row[h];
+    });
+    return line;
+  });
+  range.setNumberFormats(formats);
+  range.setValues(values);
+}
+
+/**
+ * The Hours emails tab's rows as [{id, result, ms, date, by}] for the Last emailed line,
+ * or null when there is no tab. Sent at is read as a time (ms NaN when it can't be) and
+ * date is its Central yyyy-MM-dd, or the cell's text when it isn't a time. Throws when
+ * row 1 lacks a header.
+ */
+function readHoursEmailSends_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(hoursEmailTab());
+  if (!sheet) return null;
+  const header = logHeaderRow_(sheet);
+  if (header.every((h) => h === "")) return [];
+  const cols = hoursEmailColumns(header);
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  return sheet
+    .getRange(2, 1, last - 1, header.length)
+    .getValues()
+    .map((cells) => {
+      const t = cellTime_(cells[cols["Sent at"]]);
+      return {
+        id: cellText_(cells[cols["Volunteer ID"]]),
+        result: cellText_(cells[cols.Result]),
+        ms: t.ms,
+        date: t.date || cellText_(cells[cols["Sent at"]]),
+        by: cellText_(cells[cols["Sent by"]]),
+      };
+    });
 }
 
 // ---------------------------------------------------------------------------
