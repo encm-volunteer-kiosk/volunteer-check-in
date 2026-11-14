@@ -1174,6 +1174,35 @@ test("a run that read the old layout before setupReports laid row 7 out anew rea
   assert.deepEqual(statusOf(half), ["", "", ""]);
 });
 
+test("a busy run that read the old layout before setupReports laid row 7 out anew reads it again and doesn't leave a newer run's sorting text", () => {
+  // While this run waits for the lock, setupReports lays row 7 out anew and a newer
+  // pick's run writes its sorting text; that run fails to stamp, so this run's stamp is
+  // still the stored one and it owes the clear.
+  const s = server({ oldLayout: true, docBusy: true });
+  const e = pick(s, 0);
+  s.clear();
+  s.watch((c) => {
+    if (c.op !== "docLock.tryLock") return;
+    s.hours.merges = [[7, 5, 7]];
+    s.hours.cells.set("7:" + statusCol(TABLES[1]), SORTING);
+  });
+  s.run(e);
+  assert.equal(s.calls.filter((c) => c.op === "isPartOfMerge").length, 2);
+  assert.deepEqual(statusOf(s), ["", FAILED, ""]);
+  // With no stamp of its own, it blanks the sorting text instead.
+  const none = server({ oldLayout: true, docBusy: true });
+  const e2 = pick(none, 0);
+  none.clear();
+  none.failAt((c) => c.op === "prop.set");
+  none.watch((c) => {
+    if (c.op !== "docLock.tryLock") return;
+    none.hours.merges = [[7, 5, 7]];
+    none.hours.cells.set("7:" + statusCol(TABLES[1]), SORTING);
+  });
+  none.run(e2);
+  assert.deepEqual(statusOf(none), ["", "", ""]);
+});
+
 test("the toast: once per run, naming the covered tables; one that fails is logged and the sort goes on", () => {
   const s = server();
   const e = s.edit("A7:" + colLetters(boxColumn(TABLES[1])) + "7");

@@ -214,7 +214,8 @@ function applyHoursSorts_(tabs, hold, e, run) {
  * newest, every status cell holding the sorting text gets the failure text when the
  * batch wasn't sent (a batch that throws counts as not sent), or a blank when it was (the
  * sort is done); then B1 is rendered and flushed, as every hold ends. Without the lock
- * (busy, or a throw before it was held): a run with no stamp blanks the sorting texts; a
+ * (busy, or a throw before it was held), on row 7's new layout (read again if the run's
+ * first read found the old one): a run with no stamp blanks the sorting texts; a
  * run whose stamp is stored writes the failure text over them, flushes, reads the stamp
  * again and, if a newer run has stamped meanwhile, blanks each cell it put the failure
  * text in that still holds it; a run that isn't the newest writes nothing, since the run
@@ -243,7 +244,11 @@ function finishHoursSort_(tabs, hold, run, threw) {
     }
     return;
   }
-  if (!run.past || run.oldLayout || !(threw || run.busy)) return;
+  if (!run.past || !(threw || run.busy)) return;
+  // Read again: setupReports may have laid row 7 out anew while this run waited, and a
+  // newer pick's run may have written its sorting text there. The layout only goes from
+  // old to new, so a run that read the new layout needn't look again.
+  if (run.oldLayout && hoursSortOldLayout_(tabs)) return;
   try {
     if (run.stamp === null) {
       setHoursSortStatus_(tabs, all, "", sorting);
