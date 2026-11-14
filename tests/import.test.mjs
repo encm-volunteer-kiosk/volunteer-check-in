@@ -441,10 +441,10 @@ test("every left-out reason, by source row, and none is remembered", () => {
     ["2026-01-05", "", " ", 3, "", ""], // 7: no name
     ["2026-01-05", "Avery", "Quinn", 0, "", ""], // 8: zero hours
     ["2026-01-05", "Avery", "Quinn", -1, "", ""], // 9: negative
-    ["2026-01-05", "Avery", "Quinn", 24.01, "", ""], // 10: over 24
+    ["2026-01-05", "Avery", "Quinn", 16.01, "", ""], // 10: over the Log check's 16
     ["2026-01-05", "Avery", "Quinn", "three", "", ""], // 11: text
     ["2026-01-05", "Avery", "Quinn", "", "", ""], // 12: blank
-    ["2026-01-05", "Avery", "Quinn", 24, "", ""], // 13: 24 is in
+    ["2026-01-05", "Avery", "Quinn", 16, "", ""], // 13: 16 is in
     ["1/6/2026", "Avery", "Quinn", "2.5", "", ""], // 14: m/d/yyyy and hours as text
     ["2026-06-14", "", "Quinn", 1, "", ""], // 15: last name alone
   ]);
@@ -462,7 +462,7 @@ test("every left-out reason, by source row, and none is remembered", () => {
   assert.deepEqual(plain(p.toImport.map((i) => [i.sourceRow, i.date, i.hours])), [
     [5, "2026-06-15", 3],
     [6, "2026-07-01", 3],
-    [13, "2026-01-05", 24],
+    [13, "2026-01-05", 16],
     [14, "2026-01-06", 2.5],
     [15, "2026-06-14", 1],
   ]);
@@ -472,7 +472,7 @@ test("every left-out reason, by source row, and none is remembered", () => {
     { reason: "date can't be read", rows: [2, 3] },
     { reason: "date is after today", rows: [4] },
     { reason: "no first or last name", rows: [7] },
-    { reason: "hours aren't a number above 0 and at most 24", rows: [8, 9, 10, 11, 12] },
+    { reason: "hours aren't a number above 0 and at most 16", rows: [8, 9, 10, 11, 12] },
   ]);
   assert.deepEqual(Object.keys(L.importLeftOutReasons()), ["date", "future", "name", "hours"]);
 });
@@ -582,6 +582,53 @@ test("keys: a repeated date and name counts up in source order; the Shift ID is 
   assert.equal(plan(rows).toImport[0].key, "2026-01-05|avery|quinn|1");
 });
 
+test("row counts: a row fixed above imported rows takes a free count; a moved row falls back to place", () => {
+  const rows = (...list) => list.map(([row, group]) => ({ row, group }));
+  const G = "2025-11-05|jane|doe";
+  const counts = (r, keys, lines) => plain([...L.importRowCounts(r, new Set(keys), lines)]);
+  // Row 3 came in as G|1; row 2 is fixed above it, row 4 was left out for its hours.
+  assert.deepEqual(counts(rows([2, G], [3, G], [4, G]), [G + "|1"], [{ key: G + "|1", row: 3 }]), [
+    [3, 1],
+    [4, 3],
+    [2, 2],
+  ]);
+  // A key from another tab is skipped too.
+  assert.deepEqual(
+    counts(rows([2, G], [3, G]), [G + "|1", G + "|2"], [{ key: G + "|1", row: 3 }]),
+    [
+      [3, 1],
+      [2, 3],
+    ],
+  );
+  // A line whose row now holds another date or name: every row by its place.
+  assert.deepEqual(
+    counts(
+      rows([2, G], [3, G], [4, "2025-11-06|jane|doe"]),
+      [G + "|1", "2025-11-06|jane|doe|1"],
+      [
+        { key: G + "|1", row: 3 },
+        { key: "2025-11-06|jane|doe|1", row: 5 },
+      ],
+    ),
+    [
+      [2, 1],
+      [3, 2],
+      [4, 1],
+    ],
+  );
+  // The ledger's Source names the file, the tab and the row.
+  assert.equal(
+    L.importLedgerSourceRow("f1, Historical Hours, row 12", "f1", "Historical Hours"),
+    12,
+  );
+  assert.equal(L.importLedgerSourceRow("f1, Other, row 12", "f1", "Historical Hours"), 0);
+  assert.equal(
+    L.importLedgerSourceRow("f2, Historical Hours, row 12", "f1", "Historical Hours"),
+    0,
+  );
+  assert.equal(L.importLedgerSourceRow("f1, Historical Hours, row x", "f1", "Historical Hours"), 0);
+});
+
 test("the ledger and the Log's Shift IDs keep a key from importing twice", () => {
   const first = plan(SOURCE_ROWS);
   const [a, b] = first.toImport;
@@ -589,6 +636,21 @@ test("the ledger and the Log's Shift IDs keep a key from importing twice", () =>
   assert.deepEqual(plain(p.alreadyImported.map((i) => i.key)), [a.key]);
   assert.deepEqual(plain(p.onLog.map((i) => i.key)), [b.key]);
   assert.equal(p.toImport.length, first.toImport.length - 2);
+});
+
+test("the import leaves out the hours the Log check calls impossible", () => {
+  const most = L.logCheckMaxHours();
+  const p = plan([
+    ["2026-01-05", "Avery", "Quinn", most, "", ""], // 2: at the limit: in
+    ["2026-01-06", "Avery", "Quinn", most + 0.01, "", ""], // 3: over it
+    ["2026-01-07", "Avery", "Quinn", 20, "", ""], // 4: over it
+  ]);
+  assert.deepEqual(plain(p.toImport.map((i) => [i.sourceRow, i.hours])), [[2, most]]);
+  assert.deepEqual(plain(p.leftOut), [
+    { row: 3, reason: "hours" },
+    { row: 4, reason: "hours" },
+  ]);
+  assert.equal(L.importLeftOutReasons().hours, "hours aren't a number above 0 and at most " + most);
 });
 
 test("the invented ENCM-layout tab previews as expected", () => {
@@ -611,7 +673,7 @@ test("the invented ENCM-layout tab previews as expected", () => {
       { name: "Lee / Max Fenn", rows: 1, matches: 0 },
       { name: "R. Tamsin", rows: 1, matches: 0 },
     ],
-    leftOutRows: [{ reason: "hours aren't a number above 0 and at most 24", rows: [11] }],
+    leftOutRows: [{ reason: "hours aren't a number above 0 and at most 16", rows: [11] }],
   });
 });
 
@@ -849,6 +911,48 @@ test("a row staff delete from the Log stays deleted", () => {
   assert.equal(again.imported, 0);
   assert.equal(again.summary.alreadyImported, 13);
   assert.ok(!s.sheets.Log.rows.some((r) => r[0] === deleted[0]));
+});
+
+test("a left-out row fixed in place comes in, and the row below it isn't imported twice", () => {
+  const s = server({
+    source: [
+      SOURCE_HEADER,
+      ["2025-11-5", "Jane", "Doe", 2, "", ""], // row 2: left out, its date doesn't read
+      ["2025-11-05", "Jane", "Doe", 3, "", ""], // row 3
+    ],
+  });
+  const first = plain(s.ctx.adminImportRun("k", FORM));
+  assert.deepEqual([first.imported, first.hours], [1, 3]);
+  // Staff fix row 2's date where it is, as the preview tells them to, and run again.
+  s.source.rows[1][0] = "2025-11-05";
+  const preview = plain(s.ctx.adminImportPreview("k", FORM)).summary;
+  assert.deepEqual([preview.toImport, preview.hours, preview.alreadyImported], [1, 2, 1]);
+  const second = plain(s.ctx.adminImportRun("k", FORM));
+  assert.deepEqual([second.imported, second.hours], [1, 2]);
+  const log = s.sheets.Log.records();
+  assert.deepEqual(
+    log.map((r) => [r.Notes.replace(/^.* row /, "row "), r["Hours Served (stated)"]]),
+    [
+      ["row 3", 3],
+      ["row 2", 2],
+    ],
+  );
+  assert.notEqual(log[0]["Shift ID"], log[1]["Shift ID"]);
+  // Row 3 keeps the key it came in under.
+  assert.equal(log[0]["Shift ID"], "import-" + sha256("2025-11-05|jane|doe|1").slice(0, 16));
+  const third = plain(s.ctx.adminImportRun("k", FORM));
+  assert.equal(third.imported, 0);
+  assert.equal(third.summary.alreadyImported, 2);
+});
+
+test("rows that moved in the source keep their keys by their place among the same date and name", () => {
+  const s = server();
+  s.ctx.adminImportRun("k", FORM);
+  // A row added at the top moves every row down one: no ledger line's row still holds
+  // its date and name, so each row is known by its place, as before.
+  s.source.rows.splice(1, 0, ["2025-11-30", "Avery", "Quinn", 1, "", ""]);
+  const preview = plain(s.ctx.adminImportPreview("k", FORM)).summary;
+  assert.deepEqual([preview.toImport, preview.alreadyImported, preview.hours], [1, 13, 1]);
 });
 
 test("a ledger missing a block's lines is repaired from the Log's Shift IDs", () => {

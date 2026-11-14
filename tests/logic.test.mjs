@@ -1241,6 +1241,24 @@ test("findOpenShift matches by token and ignores rows out of the window and clos
   assert.equal(find(entries).row, 8);
 });
 
+test("findOpenShift: the open row it picks doesn't depend on row order", () => {
+  const find = (entries) => L.findOpenShift(entries, TOKEN, NOW, WINDOW, TODAY).row;
+  // Row 4 has no readable time; row 5 was checked in an hour ago.
+  const noTime = entry(4, { recordedInMs: NaN, statedInMs: NaN });
+  const real = entry(5, { recordedInMs: NOW - HOUR, statedInMs: NOW - HOUR });
+  assert.equal(find([noTime, real]), 5);
+  assert.equal(find([real, noTime]), 5);
+  // Check-out closes the real row, whichever comes first.
+  assert.equal(checkOut({ entries: [noTime, real] }).row, 5);
+  // Equal starts, readable or not, go to the later row.
+  const twin = entry(6, { recordedInMs: NOW - HOUR, statedInMs: NOW - HOUR });
+  assert.equal(find([real, twin]), 6);
+  assert.equal(find([twin, real]), 6);
+  const noTime2 = entry(7, { recordedInMs: NaN, statedInMs: NaN });
+  assert.equal(find([noTime, noTime2]), 7);
+  assert.equal(find([noTime2, noTime]), 7);
+});
+
 test("closedTotals counts this token's closed rows by stated hours, menu rows included", () => {
   const entries = [
     entry(2, { status: "closed", statedHours: 1.5, recordedHours: 9, dateText: "2026-10-01" }),
@@ -2095,6 +2113,52 @@ test("findOverlap skips a closed row whose check-out reads before its check-in",
   const refused = add([pastMidnight, normal], "13:00", "15:00");
   assert.equal(refused.refusal, "ADMIN_OVERLAP");
   assert.equal(refused.conflict.row, 7);
+});
+
+test("a kiosk check-out written on the day after the row's Date ends that shift", () => {
+  // Checked in 11:00 PM on the 11th, checked out at the kiosk 12:30 AM on the 12th.
+  const day = "2026-11-11";
+  const Y = (hhmm) => Date.parse(day + "T" + hhmm + ":00-06:00");
+  const N = (hhmm) => Date.parse("2026-11-12T" + hhmm + ":00-06:00");
+  const cols = L.logColumns(LOG_HEADERS);
+  const row = (extra = {}) =>
+    L.logEntry(
+      closedRow(LOG_HEADERS, {
+        Date: day,
+        "User Token": TOKEN,
+        "Check-In Recorded (timestamp)": new Date(Y("23:00")),
+        "Check-In Stated (user)": new Date(Y("23:00")),
+        "Check-Out Recorded (timestamp)": new Date(N("00:30")),
+        "Check-Out Stated (user)": new Date(N("00:30")),
+        "Hours Served (timestamps)": 1.5,
+        "Hours Served (stated)": 1.5,
+        ...extra,
+      }),
+      6,
+      cols,
+      READ,
+    );
+  const overnight = row();
+  assert.equal(overnight.recordedOutMs, N("00:30"));
+  assert.equal(overnight.statedOutMs, N("00:30"));
+  // Add a shift inside it that night is refused.
+  assert.equal(L.findOverlap([overnight], TOKEN, day, Y("23:15"), Y("23:45")).row, 6);
+  const added = addShift({
+    entries: [overnight],
+    date: day,
+    inMs: Y("23:15"),
+    inDate: day,
+    outMs: Y("23:45"),
+    outDate: day,
+  });
+  assert.equal(added.refusal, "ADMIN_OVERLAP");
+  // Only an end time belongs to the day before: a check-in on the next day is unreadable.
+  assert.ok(Number.isNaN(row({ "Check-In Stated (user)": new Date(N("00:10")) }).statedInMs));
+  // With no readable start there is no shift to end, and two days on is still unreadable.
+  const noStart = row({ "Check-In Recorded (timestamp)": "", "Check-In Stated (user)": "" });
+  assert.ok(Number.isNaN(noStart.statedOutMs));
+  const later = row({ "Check-Out Stated (user)": new Date(N("00:30") + 24 * HOUR) });
+  assert.ok(Number.isNaN(later.statedOutMs));
 });
 
 test("handShiftCells throws on an empty token or Shift ID", () => {

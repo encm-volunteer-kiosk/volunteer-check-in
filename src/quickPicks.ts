@@ -9,6 +9,8 @@
 // Plain TypeScript only (no enums, namespaces or parameter properties): the tests import
 // this file in Node, which strips the types without a loader.
 
+import { centralDay } from "./listStore.ts";
+
 const TZ = "America/Chicago";
 const QUARTER = 15;
 
@@ -117,4 +119,52 @@ export function agoText(minutes: number, range: QuickRange) {
   const hours = Math.floor(ago / 60);
   const rest = ago % 60;
   return [hours ? `${hours} hr` : "", rest ? `${rest} min` : ""].filter(Boolean).join(" ") + " ago";
+}
+
+/**
+ * A time the picker holds ("HH:mm") and the Central day it was picked on ("YYYY-MM-DD").
+ * The time is sent when Check In or Check Out is tapped, which can be after midnight; it
+ * stays on the day it was picked.
+ */
+export type PickedTime = { time: string; day: string };
+
+/** time, picked at the instant now: it keeps now's Central day. */
+export function pickTime(time: string, now: Date = new Date()): PickedTime {
+  return { time, day: centralDay(now.getTime()) };
+}
+
+/** The instant a picked time names: its time on the day it was picked, Central, as ISO. */
+export function pickedTimeToIso({ time, day }: PickedTime) {
+  const [year, month, date] = day.split("-").map(Number);
+  const [hour, minute] = time.split(":").map(Number);
+  const desiredUtc = Date.UTC(year, month - 1, date, hour, minute);
+  const zonedParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const offsetAt = (timestamp: number) => {
+    const parts = zonedParts.formatToParts(new Date(timestamp));
+    const value = (type: Intl.DateTimeFormatPartTypes) =>
+      Number(parts.find((item) => item.type === type)?.value);
+    return (
+      Date.UTC(
+        value("year"),
+        value("month") - 1,
+        value("day"),
+        value("hour"),
+        value("minute"),
+        value("second"),
+      ) -
+      Math.floor(timestamp / 1000) * 1000
+    );
+  };
+  let timestamp = desiredUtc - offsetAt(desiredUtc);
+  timestamp = desiredUtc - offsetAt(timestamp);
+  return new Date(timestamp).toISOString();
 }
