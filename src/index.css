@@ -1096,7 +1096,7 @@
 }
 @keyframes sunrise-sun {
   from {
-    transform: translateY(70px);
+    transform: translateY(60px);
   }
   to {
     transform: translateY(0);
@@ -1121,6 +1121,16 @@
   }
   to {
     fill: var(--yellow);
+  }
+}
+/* Without motion: shown finished at once. The global rule below shortens durations but not
+   delays, so these are turned off here. */
+@media (prefers-reduced-motion: reduce) {
+  .success-in::before,
+  .sunrise-skyline .sun,
+  .sunrise-skyline .glow,
+  .sunrise-skyline .window {
+    animation: none;
   }
 }
 .saving-panel .slow-line {

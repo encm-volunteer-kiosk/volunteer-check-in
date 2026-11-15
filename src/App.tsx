@@ -1022,8 +1022,16 @@ function SunriseSkyline() {
       preserveAspectRatio="xMidYMax meet"
       aria-hidden="true"
     >
-      <circle className="glow" cx="512" cy="96" r="80" />
-      <circle className="sun" cx="512" cy="96" r="34" />
+      <defs>
+        <clipPath id="sunrise-above-ground">
+          <rect x="0" y="0" width="1024" height={SUNRISE_GROUND} />
+        </clipPath>
+      </defs>
+      {/* Clipped at the ground line, so the sun comes up from behind it. */}
+      <g clipPath="url(#sunrise-above-ground)">
+        <circle className="glow" cx="512" cy="150" r="70" />
+        <circle className="sun" cx="512" cy="150" r="44" />
+      </g>
       <g className="buildings">
         {SUNRISE.outlines.map((d) => (
           <path key={d} d={d} />
