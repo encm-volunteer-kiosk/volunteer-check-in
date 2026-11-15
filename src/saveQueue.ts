@@ -44,6 +44,8 @@ export const BACKOFF_MS = [5_000, 10_000, 20_000, 40_000, 60_000, 120_000, 300_0
 export const ATTEMPT_MS = 45_000;
 // A queued save tapped longer ago than this shows on the banner as "Not saved yet".
 export const STUCK_MS = 600_000;
+// The Checked In panel's "Saving…" line shows once a queued save was tapped this long ago.
+export const SLOW_SAVE_MS = 10_000;
 // Apps Script stops any call after 6 minutes; 30 s more for the tablet's reading of the send.
 export const SERVER_MAX_MS = 390_000;
 // When another page holds the runner lock, this page looks again after this long.
@@ -974,6 +976,21 @@ export function overlay<T extends ListEntry>(
 /** Queued saves tapped more than STUCK_MS ago: the banner's "Not saved yet" lines. */
 export function stuckSaves(queue: SaveQueue, now: number): QueuedSave[] {
   return queue.saves.filter((s) => now - s.tapAt > STUCK_MS);
+}
+
+/**
+ * True when the Checked In panel shows its "Saving…" line: a queued save was tapped
+ * SLOW_SAVE_MS or longer ago. A normal save lands well inside that, so the line only
+ * shows for a slow one.
+ */
+export function savingLineShown(saves: QueuedSave[], now: number): boolean {
+  return saves.some((s) => now - s.tapAt >= SLOW_SAVE_MS);
+}
+
+/** The tablet ms the next queued save turns slow, or null when none is still to turn. */
+export function nextSlowAt(saves: QueuedSave[], now: number): number | null {
+  const due = saves.map((s) => s.tapAt + SLOW_SAVE_MS).filter((t) => t > now);
+  return due.length ? Math.min(...due) : null;
 }
 
 export type SavingContext = {
