@@ -804,6 +804,63 @@ function Success({
   );
 }
 
+// The neighborhood's windows, lit one after another while a save runs: x, y, width, height,
+// and the step of the 4 s loop at which each one comes on.
+const SKYLINE_WINDOWS: [number, number, number, number, number][] = [
+  [30, 114, 7, 8, 0],
+  [41, 114, 7, 8, 5],
+  [30, 128, 7, 8, 9],
+  [41, 128, 7, 8, 3],
+  [74, 80, 8, 9, 2],
+  [88, 80, 8, 9, 7],
+  [102, 80, 8, 9, 11],
+  [74, 98, 8, 9, 6],
+  [88, 98, 8, 9, 1],
+  [102, 98, 8, 9, 10],
+  [74, 116, 8, 9, 4],
+  [102, 116, 8, 9, 8],
+  [135, 98, 7, 8, 5],
+  [146, 98, 7, 8, 2],
+  [135, 114, 7, 8, 9],
+  [146, 114, 7, 8, 6],
+  [173, 120, 10, 9, 3],
+  [205, 124, 8, 10, 8],
+];
+
+/**
+ * The saving screen's picture: a line drawing of the neighborhood, the sun crossing the sky
+ * and windows lighting up one by one. It loops for as long as the save takes, so a slow save
+ * never shows anything stuck; the success screen that follows is its finish.
+ */
+function SavingSkyline() {
+  return (
+    <svg className="saving-skyline" viewBox="0 0 240 180" aria-hidden="true">
+      {/* Drawn first, so the buildings pass in front of it; its path stays above the ground. */}
+      <circle className="sun" cx="120" cy="62" r="18" />
+      <g className="buildings">
+        <rect x="22" y="104" width="34" height="46" />
+        <path d="M66 150V70h18V52l8-14 8 14v18h18v80z" />
+        <rect x="128" y="88" width="30" height="62" />
+        <rect x="166" y="110" width="24" height="40" />
+        <path d="M196 150v-30l14-12 14 12v30z" />
+      </g>
+      {SKYLINE_WINDOWS.map(([x, y, width, height, step]) => (
+        <rect
+          key={`${x},${y}`}
+          className="window"
+          x={x}
+          y={y}
+          width={width}
+          height={height}
+          style={{ animationDelay: `${step * 0.32}s` }}
+        />
+      ))}
+      <path className="ground" d="M8 150h224" />
+      <path className="street" d="M40 172h160" />
+    </svg>
+  );
+}
+
 /**
  * Shown for the whole of a check-in or check-out call. It has no way back: only the call's
  * reply or its watchdog leaves it.
@@ -822,7 +879,7 @@ function SavingScreen({ save }: { save: SaveRecord }) {
   return (
     <main className="center-screen screen-enter">
       <section className="panel confirmation-panel saving-panel" aria-live="polite">
-        <span className="save-spinner" aria-hidden="true" />
+        <SavingSkyline />
         <h1>
           {save.kind === "in" ? "Checking you in" : "Checking you out"}, {save.firstName}…
         </h1>

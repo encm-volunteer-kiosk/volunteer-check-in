@@ -911,13 +911,74 @@
   justify-items: center;
   gap: 22px;
 }
-.save-spinner {
-  width: 64px;
-  height: 64px;
-  border: 6px solid var(--light-blue);
-  border-top-color: var(--blue);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+/* The saving screen's skyline (SavingSkyline in App.tsx): the sun crosses on a 6 s loop and
+   the windows light in turn on a 4 s loop, for as long as the save takes. The sun starts
+   partway up, so the first frame already shows it. */
+.saving-skyline {
+  width: 200px;
+  height: 150px;
+  overflow: visible;
+}
+.saving-skyline .sun {
+  fill: var(--yellow);
+  transform-origin: 120px 150px;
+  animation: skyline-sun 6s ease-in-out -1.5s infinite;
+}
+.saving-skyline .buildings {
+  fill: var(--surface);
+  stroke: var(--navy);
+  stroke-width: 4;
+  stroke-linejoin: round;
+}
+.saving-skyline .window {
+  fill: #eef2f3;
+  animation: skyline-window 4s infinite;
+}
+.saving-skyline .ground {
+  stroke: var(--navy);
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+.saving-skyline .street {
+  stroke: var(--teal);
+  stroke-width: 6;
+  stroke-linecap: round;
+  opacity: 0.35;
+}
+@keyframes skyline-sun {
+  0% {
+    transform: rotate(-70deg);
+  }
+  50% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(70deg);
+  }
+}
+@keyframes skyline-window {
+  0%,
+  8% {
+    fill: #eef2f3;
+  }
+  14%,
+  70% {
+    fill: var(--yellow);
+  }
+  80%,
+  100% {
+    fill: #eef2f3;
+  }
+}
+/* Without motion: the sun overhead and every window lit. */
+@media (prefers-reduced-motion: reduce) {
+  .saving-skyline .sun,
+  .saving-skyline .window {
+    animation: none;
+  }
+  .saving-skyline .window {
+    fill: var(--yellow);
+  }
 }
 .saving-panel .slow-line {
   margin: 0;
