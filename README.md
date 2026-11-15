@@ -1722,6 +1722,12 @@ whenever the page reloads. To make the iPad remember it:
 If the kiosk ever asks for the code again after a long closure, type it once more. These
 steps have not yet been tried on ENCM's iPad; check step 4 when you set it up.
 
+In landscape the welcome screen keeps the name box at the top of the screen, so the box and
+the names under it fit above the on-screen keyboard; while someone types, the Checked In
+column slides aside and comes back when the keyboard closes. Keep one Safari tab open and
+the page zoom (the "AA" menu) at 100%, since a second tab's tab bar or another zoom moves
+the page down and can put the names under the keyboard.
+
 ### What setupSheets does
 
 `setupSheets` writes only empty cells, creates or renames tabs, and sets formats, the
