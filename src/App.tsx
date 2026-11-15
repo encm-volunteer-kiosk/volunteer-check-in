@@ -272,11 +272,16 @@ function Welcome({
   clock,
   onSelect,
   onSearchOpen,
+  focusOnOpen,
 }: {
   volunteers: Volunteer[];
   listState: ListState;
   clock: CardClock;
   onSelect: (v: Volunteer) => void;
+  // Whether the name box takes focus on its own when the screen opens. Not when a tap
+  // brought the screen up (Go back, Done): focus given during a tap raises the tablet's
+  // keyboard, and the Checked In panel would stay in place under it (src/searchOpen.ts).
+  focusOnOpen: boolean;
   // Told whether the Checked In panel should be aside, by the rule in src/searchOpen.ts.
   onSearchOpen: (open: boolean) => void;
 }) {
@@ -327,7 +332,7 @@ function Welcome({
           <span className="sr-only">Type your first and last name</span>
           <input
             ref={searchRef}
-            autoFocus
+            autoFocus={focusOnOpen}
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
@@ -1097,6 +1102,9 @@ export default function App() {
   // The volunteer is using the welcome screen's name box: on a landscape tablet the Checked
   // In panel slides aside and the name card centers (index.css, src/searchOpen.ts).
   const [searchOpen, setSearchOpen] = useState(false);
+  // Whether the welcome screen's name box focuses itself when the screen opens: on load and
+  // when a timer goes home, not when a tap does (see Welcome's focusOnOpen).
+  const [focusNameBox, setFocusNameBox] = useState(true);
   const [screen, setScreen] = useState<Screen>("welcome");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // The setup screen's code check only. A check-in or check-out is a save, below.
@@ -1138,7 +1146,8 @@ export default function App() {
     isToday(new Date(checkOutFloorMs).toISOString()) &&
     Math.ceil(checkOutMinMinutes / 15) * 15 <= floorQuarter(minutesOfDay(centralTimeValue()));
 
-  const goHome = () => {
+  const goHome = (byTap = false) => {
+    setFocusNameBox(!byTap);
     setScreen("welcome");
     setSelectedId(null);
     setError("");
@@ -1152,6 +1161,8 @@ export default function App() {
     setDigitsAsked(false);
     setAnotherIn(false);
   };
+  // Home from a button the volunteer tapped.
+  const tapHome = () => goHome(true);
   const select = (volunteer: Volunteer) => {
     closeTabletKeyboard();
     setSelectedId(volunteer.id);
@@ -1280,7 +1291,7 @@ export default function App() {
     if (ms === null) return;
     const resetTimer = () => {
       if (inactivityRef.current) clearTimeout(inactivityRef.current);
-      inactivityRef.current = window.setTimeout(goHome, ms);
+      inactivityRef.current = window.setTimeout(() => goHome(), ms);
     };
     const events = ["pointerdown", "keydown", "input"];
     events.forEach((name) => window.addEventListener(name, resetTimer));
@@ -1294,7 +1305,7 @@ export default function App() {
   useEffect(() => {
     const ms = autoHomeMs(screen);
     if (ms === null) return;
-    const timer = window.setTimeout(goHome, ms);
+    const timer = window.setTimeout(() => goHome(), ms);
     return () => clearTimeout(timer);
   }, [screen]);
 
@@ -1524,6 +1535,7 @@ export default function App() {
             clock={cardClock}
             onSelect={select}
             onSearchOpen={setSearchOpen}
+            focusOnOpen={focusNameBox}
           />
           <CheckedInSidebar volunteers={volunteers} clock={cardClock} onSelect={select} />
         </>
@@ -1546,7 +1558,7 @@ export default function App() {
           error={error}
           onTimeChange={(time) => setArrivalTime(pickTime(time))}
           onConfirm={handleConfirm}
-          onBack={goHome}
+          onBack={tapHome}
         />
       )}
       {code && screen === "checkout" && selected && (
@@ -1572,7 +1584,7 @@ export default function App() {
           error={error}
           onTimeChange={(time) => setCheckOutTime(pickTime(time))}
           onConfirm={handleCheckout}
-          onBack={goHome}
+          onBack={tapHome}
         />
       )}
       {code && screen === "saving" && save && <SavingScreen key={save.seq} save={save} />}
@@ -1580,14 +1592,14 @@ export default function App() {
         <MissedCheckOutNotice firstName={result.firstName} onDone={() => setScreen("success-in")} />
       )}
       {code && screen === "success-in" && result && (
-        <Success type="in" result={result} onDone={goHome} />
+        <Success type="in" result={result} onDone={tapHome} />
       )}
       {code && screen === "success-out" && result && (
-        <Success type="out" result={result} onDone={goHome} />
+        <Success type="out" result={result} onDone={tapHome} />
       )}
-      {code && screen === "status" && result && <StatusScreen result={result} onDone={goHome} />}
+      {code && screen === "status" && result && <StatusScreen result={result} onDone={tapHome} />}
       {code && screen === "unconfirmed" && result && (
-        <Unconfirmed firstName={result.firstName} onDone={goHome} />
+        <Unconfirmed firstName={result.firstName} onDone={tapHome} />
       )}
       {usingLocalApi && (
         <DevTools

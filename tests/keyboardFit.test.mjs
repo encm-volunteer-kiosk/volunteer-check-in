@@ -368,3 +368,21 @@ test("tapping Clear keeps focus in the name box", () => {
   assert.match(on.onMouseDown, /event\.preventDefault\(\)/);
   assert.match(on.onClick, /updateQuery\(""\)/);
 });
+
+test("a tap that goes home leaves the name box unfocused; load and timers still focus it", () => {
+  // Focus given during a tap raises the tablet's keyboard, and focus alone keeps the panel in
+  // place, so the box focuses itself only when no tap brought the welcome screen up.
+  const input = app.indexOf("<input\n            ref={searchRef}");
+  assert.match(app.slice(input, input + 120), /autoFocus=\{focusOnOpen\}/);
+  assert.match(app, /focusOnOpen=\{focusNameBox\}/);
+  assert.match(app, /useState\(true\);\n  const \[screen, setScreen\]/);
+  assert.match(app, /const goHome = \(byTap = false\) => \{\n    setFocusNameBox\(!byTap\);/);
+  assert.match(app, /const tapHome = \(\) => goHome\(true\);/);
+  // Every button home is a tap; none hands goHome its click event.
+  assert.doesNotMatch(app, /=\{goHome\}/);
+  assert.equal(app.match(/onBack=\{tapHome\}/g).length, 2);
+  assert.equal(app.match(/onDone=\{tapHome\}/g).length, 4);
+  // The timers go home as no tap, and pass setTimeout no function that takes the flag.
+  assert.equal(app.match(/window\.setTimeout\(\(\) => goHome\(\), ms\)/g).length, 2);
+  assert.doesNotMatch(app, /setTimeout\(goHome/);
+});
