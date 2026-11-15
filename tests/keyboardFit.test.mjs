@@ -147,6 +147,8 @@ test("every length from the screen's top to the results area's bottom is one of 
     assert.equal(scoped(`${SHELL} ${hidden}`, "display"), "none", hidden);
   const welcome = `${SHELL} .welcome`;
   assert.equal(scoped(welcome, "min-height"), "0");
+  // Keeps the card's top margin inside the welcome block, so the page gains no scroll range.
+  assert.equal(scoped(welcome, "display"), "flow-root");
   assert.equal(
     scoped(`${SHELL} .checkin-sidebar`, "overscroll-behavior"),
     "contain",
@@ -189,7 +191,11 @@ test("the panel slides aside by transform and visibility only, inside the landsc
     const touches = selectorsOf(rule).some(
       (s) => s.endsWith(".name-search-card") || s.endsWith(".checkin-sidebar"),
     );
-    if (touches) assert.notEqual(rule.decls.transition, "none", rule.selector);
+    if (!touches) continue;
+    assert.notEqual(rule.decls.transition, "none", rule.selector);
+    assert.notEqual(rule.decls["transition-property"], "none", rule.selector);
+    // Only the transition shorthand times the slide; a separate duration would override it.
+    assert.equal(rule.decls["transition-duration"], undefined, rule.selector);
   }
 });
 
