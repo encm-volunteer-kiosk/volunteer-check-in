@@ -804,10 +804,6 @@ function Success({
   );
 }
 
-/**
- * Shown for the whole of a check-in or check-out call. It has no way back: only the call's
- * reply or its watchdog leaves it.
- */
 // The neighborhood's windows, lit one after another while a save runs: x, y, width, height,
 // and the step of the 4 s loop at which each one comes on.
 const SKYLINE_WINDOWS: [number, number, number, number, number][] = [
@@ -839,14 +835,8 @@ const SKYLINE_WINDOWS: [number, number, number, number, number][] = [
 function SavingSkyline() {
   return (
     <svg className="saving-skyline" viewBox="0 0 240 180" aria-hidden="true">
-      <defs>
-        <clipPath id="saving-sky">
-          <rect x="0" y="0" width="240" height="150" />
-        </clipPath>
-      </defs>
-      <g clipPath="url(#saving-sky)">
-        <circle className="sun" cx="120" cy="62" r="18" />
-      </g>
+      {/* Drawn first, so the buildings pass in front of it; its path stays above the ground. */}
+      <circle className="sun" cx="120" cy="62" r="18" />
       <g className="buildings">
         <rect x="22" y="104" width="34" height="46" />
         <path d="M66 150V70h18V52l8-14 8 14v18h18v80z" />
@@ -871,6 +861,10 @@ function SavingSkyline() {
   );
 }
 
+/**
+ * Shown for the whole of a check-in or check-out call. It has no way back: only the call's
+ * reply or its watchdog leaves it.
+ */
 function SavingScreen({ save }: { save: SaveRecord }) {
   const [slow, setSlow] = useState(() => slowLineShows(Date.now() - save.startedAt));
   useEffect(() => {
