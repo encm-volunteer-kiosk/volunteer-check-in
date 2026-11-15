@@ -1729,6 +1729,63 @@
   }
 }
 
+/* Landscape phone step (the last four digits, for a name two volunteers share): while the box
+   has focus, the card moves to the top of the screen, drops its heading and puts its two
+   buttons side by side, so the message, the box and both buttons fit above the iPad's
+   keyboard. The box is focused when the step opens from a tap, which raises the keyboard, and
+   a tap on it later focuses it again; the hide key blurs it and the card goes back to its
+   place. The change follows focus itself, not a script, so the box is already in its new
+   place when Safari measures it for the keyboard, and Safari leaves the page alone (it
+   scrolls only when the box ends less than 50 pt above the keyboard). Every length from the
+   top of the screen to the bottom of the card is one of the properties below. */
+@media (orientation: landscape) and (min-width: 821px) {
+  .confirmation-panel.phone-check {
+    --phone-top: 8px; /* the card's top edge */
+    --phone-border: 1px;
+    --phone-padding: 14px;
+    --phone-line: 25px; /* the message, two lines */
+    --phone-gap: 10px;
+    --phone-box-height: 62px;
+    --phone-box-margin: 4px;
+    --phone-buttons-gap: 12px;
+    --phone-button-height: 50px;
+  }
+  .confirmation-panel.phone-check:focus-within {
+    width: min(760px, 100%);
+    align-self: start;
+    /* .center-screen's top padding is 30px. */
+    margin-top: calc(var(--phone-top) - 30px);
+    padding: var(--phone-padding) 30px;
+    border-width: var(--phone-border);
+  }
+  .confirmation-panel.phone-check:focus-within .spark,
+  .confirmation-panel.phone-check:focus-within .eyebrow,
+  .confirmation-panel.phone-check:focus-within h1 {
+    display: none;
+  }
+  .confirmation-panel.phone-check:focus-within > p {
+    margin: 0 auto var(--phone-gap);
+    font-size: 17px;
+    line-height: var(--phone-line);
+    text-wrap: balance;
+  }
+  .confirmation-panel.phone-check:focus-within .phone-digits {
+    margin-bottom: var(--phone-box-margin);
+  }
+  .confirmation-panel.phone-check:focus-within .phone-digits input {
+    height: var(--phone-box-height);
+    min-height: 0;
+  }
+  .confirmation-panel.phone-check:focus-within .button-stack {
+    grid-template-columns: 1fr 1fr;
+    margin-top: var(--phone-buttons-gap);
+  }
+  .confirmation-panel.phone-check:focus-within .button {
+    height: var(--phone-button-height);
+    min-height: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

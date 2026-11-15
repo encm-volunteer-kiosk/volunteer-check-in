@@ -386,3 +386,80 @@ test("a tap that goes home leaves the name box unfocused; load and timers still 
   assert.equal(app.match(/window\.setTimeout\(\(\) => goHome\(\), ms\)/g).length, 2);
   assert.doesNotMatch(app, /setTimeout\(goHome/);
 });
+
+// The phone step (last four digits) in landscape: while the box has focus, the card sits at
+// the top of the screen with its message, the box and both buttons above the keyboard. The
+// same limits as the name box: the box ends by frame y 196, the card by 235.
+const PHONE = ".confirmation-panel.phone-check";
+const FOCUSED = `${PHONE}:focus-within`;
+
+test("the phone step's box and buttons fit above the keyboard on a 1024x768 iPad", () => {
+  const prop = (name) => px(scoped(PHONE, name));
+  const top = prop("--phone-top");
+  const border = prop("--phone-border");
+  const padding = prop("--phone-padding");
+  const boxEnd =
+    top +
+    border +
+    padding +
+    2 * prop("--phone-line") +
+    prop("--phone-gap") +
+    prop("--phone-box-height");
+  assert.ok(boxEnd <= 196, `box ends at ${boxEnd}, Safari scrolls past 196`);
+  const cardEnd =
+    boxEnd +
+    prop("--phone-box-margin") +
+    prop("--phone-buttons-gap") +
+    prop("--phone-button-height") +
+    padding +
+    border;
+  assert.ok(cardEnd <= 235, `card ends at ${cardEnd}, past 235`);
+});
+
+test("every length from the screen's top to the phone card's bottom is one of the properties", () => {
+  // The card's top margin undoes the screen's 30px top padding.
+  const screen = rules.find(
+    (r) => r.media.length === 0 && selectorsOf(r).includes(".center-screen"),
+  );
+  assert.equal(screen.decls.padding, "30px");
+  assert.equal(scoped(FOCUSED, "margin-top"), "calc(var(--phone-top) - 30px)");
+  assert.equal(scoped(FOCUSED, "align-self"), "start");
+  assert.equal(scoped(FOCUSED, "padding"), "var(--phone-padding) 30px");
+  assert.equal(scoped(FOCUSED, "border-width"), "var(--phone-border)");
+  for (const hidden of [".spark", ".eyebrow", "h1"])
+    assert.equal(scoped(`${FOCUSED} ${hidden}`, "display"), "none", hidden);
+  assert.equal(scoped(`${FOCUSED} > p`, "margin"), "0 auto var(--phone-gap)");
+  assert.equal(scoped(`${FOCUSED} > p`, "line-height"), "var(--phone-line)");
+  assert.equal(scoped(`${FOCUSED} .phone-digits`, "margin-bottom"), "var(--phone-box-margin)");
+  assert.equal(scoped(`${FOCUSED} .phone-digits input`, "height"), "var(--phone-box-height)");
+  assert.equal(scoped(`${FOCUSED} .phone-digits input`, "min-height"), "0");
+  assert.equal(scoped(`${FOCUSED} .button-stack`, "grid-template-columns"), "1fr 1fr");
+  assert.equal(scoped(`${FOCUSED} .button-stack`, "margin-top"), "var(--phone-buttons-gap)");
+  assert.equal(scoped(`${FOCUSED} .button`, "height"), "var(--phone-button-height)");
+  assert.equal(scoped(`${FOCUSED} .button`, "min-height"), "0");
+});
+
+test("the phone card changes only with focus, only in landscape, and only on the phone step", () => {
+  // Focus itself, not a script: Safari measures the box for the keyboard before the page
+  // hears about the focus, and a style that follows focus is in place by then.
+  for (const rule of rules.filter((r) => r.selector.includes("phone-check"))) {
+    assert.equal(rule.media[0], SCOPE, `${rule.selector} sits in the landscape block`);
+    for (const selector of selectorsOf(rule)) {
+      if (selector === PHONE) {
+        for (const prop of Object.keys(rule.decls)) assert.ok(prop.startsWith("--phone-"), prop);
+      } else {
+        assert.ok(selector.startsWith(FOCUSED), selector);
+      }
+    }
+  }
+  assert.match(app, /\$\{phoneStep === "entry" \? " phone-check" : ""\}/);
+  assert.equal(app.match(/phone-check/g).length, 1);
+});
+
+test("the phone box asks for a code, with the number keyboard", () => {
+  const start = app.indexOf("function PhoneDigits(");
+  const box = app.slice(start, app.indexOf("\nfunction ", start + 1));
+  assert.match(box, /inputMode="numeric"/);
+  assert.match(box, /autoComplete="one-time-code"/);
+  assert.match(box, /autoFocus\n/);
+});
