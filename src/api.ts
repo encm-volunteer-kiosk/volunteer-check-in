@@ -22,6 +22,9 @@ import {
 import type { Tap } from "./saveQueue";
 import { DEFAULT_LONG_SHIFT_HOURS, longShiftHoursOf } from "./cardTime";
 import { nameKey } from "./sameName";
+import { checkInFromServer, checkOutFromServer, summaryFromServer } from "./replies";
+
+export { toVolunteer } from "./replies";
 
 export type Refusal = { refusal: string; message: string };
 
@@ -36,7 +39,9 @@ export type VolunteerSummary = {
   // That row's stated arrival. After midnight it can be on yesterday's date.
   openShiftArrival: string | null;
   needsPhoneCheck: boolean;
-  // A server older than instant results sends none of the four below.
+  // A server older than instant results sends none of the four below. google.script.run
+  // drops a null field, so the page reads a missing one of the last three as null
+  // (replies.ts).
   // What a check-in now would answer for the missed check-out notice.
   missedSignOut?: boolean;
   // The open row's Shift ID, and when it leaves the window (ISO); null when not checked in.
@@ -112,26 +117,6 @@ export function isRefusal(value: unknown): value is Refusal {
   return typeof value === "object" && value !== null && "refusal" in value;
 }
 
-/** A server volunteer in the shape the screens use. */
-export function toVolunteer(summary: VolunteerSummary): Volunteer {
-  return {
-    id: summary.id,
-    firstName: summary.firstName,
-    lastName: summary.lastName,
-    currentCheckIn: summary.openShiftArrival,
-    checkedIn: summary.checkedIn,
-    active: true,
-    expectedToday: false,
-    completedShiftCount: 0,
-    totalVolunteerMinutes: 0,
-    needsPhoneCheck: summary.needsPhoneCheck,
-    missedSignOut: typeof summary.missedSignOut === "boolean" ? summary.missedSignOut : undefined,
-    openShiftId: summary.openShiftId,
-    openUntil: summary.openUntil,
-    checkOutMilestones: summary.checkOutMilestones,
-  };
-}
-
 const isMilestone = (m: unknown): m is Milestone =>
   typeof m === "object" &&
   m !== null &&
@@ -184,7 +169,7 @@ export const gasApi: KioskApi = {
     const reply = await run((r) => r.apiListVolunteers(code));
     if (!reply.ok) return refusalOf(reply);
     return {
-      volunteers: reply.volunteers as VolunteerSummary[],
+      volunteers: (reply.volunteers as unknown[]).map(summaryFromServer),
       longShiftHours: longShiftHoursOf(reply),
       ...listExtrasOf(reply),
     };
@@ -196,19 +181,7 @@ export const gasApi: KioskApi = {
         ? r.apiCheckIn(code, id, arrivalIso, phoneLast4, tap)
         : r.apiCheckIn(code, id, arrivalIso, phoneLast4),
     );
-    if (!reply.ok) return refusalOf(reply);
-    const { id: actedOn, shiftId, arrivedAt, tappedAt } = reply;
-    // A server older than the notice sends no missedSignOut: no notice.
-    const missed = reply.missedSignOut === true;
-    const replayed = reply.replayed === true;
-    return {
-      id: actedOn,
-      shiftId,
-      arrivedAt,
-      tappedAt,
-      missedSignOut: missed,
-      replayed,
-    } as CheckInResult;
+    return reply.ok ? checkInFromServer(reply) : refusalOf(reply);
   },
   async checkOut(code, id, phoneLast4, checkOutIso, tap) {
     const reply = await run((r) =>
@@ -216,10 +189,7 @@ export const gasApi: KioskApi = {
         ? r.apiCheckOut(code, id, phoneLast4, checkOutIso, tap)
         : r.apiCheckOut(code, id, phoneLast4, checkOutIso),
     );
-    if (!reply.ok) return refusalOf(reply);
-    const { id: actedOn, signedOutAt, tappedAt, minutes, milestone } = reply;
-    const replayed = reply.replayed === true;
-    return { id: actedOn, signedOutAt, tappedAt, minutes, milestone, replayed } as CheckOutResult;
+    return reply.ok ? checkOutFromServer(reply) : refusalOf(reply);
   },
 };
 

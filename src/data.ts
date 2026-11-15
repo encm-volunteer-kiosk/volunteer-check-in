@@ -21,7 +21,8 @@ export type Volunteer = {
   // four digits of their phone number.
   needsPhoneCheck?: boolean;
   // From the server's list, read by an instant check-in or check-out (saveQueue.ts). A list
-  // from a server without them leaves them undefined, and then every tap waits.
+  // from a server without them leaves them undefined, or null where replies.ts reads a missing
+  // field as null, and then every tap waits.
   // What a check-in now would answer for the missed check-out notice.
   missedSignOut?: boolean;
   // The open row's Shift ID, and when that row leaves the window (ISO), or null.

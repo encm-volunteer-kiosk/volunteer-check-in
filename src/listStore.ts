@@ -19,6 +19,7 @@
 
 import type { Milestone, MilestoneStep, Volunteer } from "./data";
 import type { ListStamp } from "./saveQueue.ts";
+import { stepsWithNulls } from "./replies.ts";
 
 // "stored": the list came from storage and the first refresh hasn't landed yet.
 export type ListState = "loading" | "stored" | "ready" | "failed";
@@ -78,12 +79,16 @@ export function centralDay(ms: number): string {
   }).format(new Date(ms));
 }
 
-// The fields an instant result reads, each only when the list carried it.
+// The fields an instant result reads, each only when the list carried it. A step with no id
+// is a no-milestone step whose null google.script.run dropped, kept so by a page before the
+// list was read through replies.ts: it reads as null.
 const instantFields = (v: Volunteer | StoredVolunteer) => ({
   ...(typeof v.missedSignOut === "boolean" ? { missedSignOut: v.missedSignOut } : {}),
   ...(v.openShiftId !== undefined ? { openShiftId: v.openShiftId } : {}),
   ...(v.openUntil !== undefined ? { openUntil: v.openUntil } : {}),
-  ...(v.checkOutMilestones !== undefined ? { checkOutMilestones: v.checkOutMilestones } : {}),
+  ...(v.checkOutMilestones !== undefined
+    ? { checkOutMilestones: stepsWithNulls(v.checkOutMilestones) }
+    : {}),
 });
 
 const toStored = (v: Volunteer): StoredVolunteer => ({
@@ -115,11 +120,12 @@ const isNumber = (n: unknown) => typeof n === "number" && Number.isFinite(n);
 const isTextOrNull = (t: unknown) => t === null || typeof t === "string";
 const absentOr = (r: Record<string, unknown>, key: string, ok: (v: unknown) => boolean) =>
   !(key in r) || ok(r[key]);
+// A missing id is a dropped null (see instantFields).
 const isStep = (s: unknown) =>
   typeof s === "object" &&
   s !== null &&
   isNumber((s as MilestoneStep).fromMinutes) &&
-  isTextOrNull((s as MilestoneStep).id);
+  absentOr(s as Record<string, unknown>, "id", isTextOrNull);
 const isMilestone = (m: unknown) =>
   typeof m === "object" &&
   m !== null &&
