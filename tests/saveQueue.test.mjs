@@ -38,6 +38,7 @@ import {
   qualifyFailure,
   readQueue,
   runOnce,
+  runnerGate,
   RUNNER_BUSY_RETRY_MS,
   SAVE_QUEUE_KEY,
   SAVE_QUEUE_LOCK,
@@ -1183,6 +1184,17 @@ test("the runner looks again soon while another page holds its lock and saves ar
   assert.equal(nextRunDelay(sent("landed"), ctx), 0);
   assert.equal(nextRunDelay(sent("retry"), ctx), 0);
   assert.equal(nextRunDelay(sent("lock"), ctx), "lock");
+});
+
+test("the runner looks again while a foreground save is pending and saves are queued", () => {
+  const ready = { hasCode: true, visible: true, foregroundPending: false, queued: 1 };
+  assert.equal(runnerGate(ready), "run");
+  // A foreground save that its watchdog may give up: the queue isn't left for the next event.
+  assert.equal(runnerGate({ ...ready, foregroundPending: true }), RUNNER_BUSY_RETRY_MS);
+  assert.equal(runnerGate({ ...ready, foregroundPending: true, queued: 0 }), null);
+  // Setting the code and coming back into view start the runner again.
+  assert.equal(runnerGate({ ...ready, hasCode: false }), null);
+  assert.equal(runnerGate({ ...ready, visible: false }), null);
 });
 
 test("an enqueue refused for a queued save shows the still-saving line; a newer mark waits", async () => {

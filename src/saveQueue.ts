@@ -888,6 +888,24 @@ export function nextRunDelay(
 }
 
 /**
+ * Whether this page may start a runner attempt now ("run"), or else when it looks again, in
+ * ms from now, or null for no timer. It needs the access code and a visible page; setting
+ * the code and coming back into view start the runner again. While a foreground save is
+ * pending and saves are queued it looks again after RUNNER_BUSY_RETRY_MS, so the queue
+ * doesn't wait for the next event when that save is given up.
+ */
+export function runnerGate(ctx: {
+  hasCode: boolean;
+  visible: boolean;
+  foregroundPending: boolean;
+  queued: number;
+}): "run" | number | null {
+  if (!ctx.hasCode || !ctx.visible) return null;
+  if (ctx.foregroundPending) return ctx.queued > 0 ? RUNNER_BUSY_RETRY_MS : null;
+  return "run";
+}
+
+/**
  * Where an instant tap goes after its enqueue: "instant" when the save was stored; the
  * still-saving line when the volunteer already had a queued save (another tab queued it
  * after this page last read the queue), since a save sent now would reach the server first;

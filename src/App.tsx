@@ -71,6 +71,7 @@ import {
   qualifies,
   readQueue,
   runOnce,
+  runnerGate,
   SAVE_QUEUE_KEY,
   SELECT_REFRESH_MS,
   SERVER_MAX_MS,
@@ -1519,8 +1520,16 @@ export default function App() {
   // foreground save is pending; then the next run is timed from what it found.
   async function kickRunner() {
     if (runnerActive.current) return;
-    if (!codeRef.current || saveFlow.current.pending) return;
-    if (document.visibilityState !== "visible") return;
+    const gate = runnerGate({
+      hasCode: Boolean(codeRef.current),
+      visible: document.visibilityState === "visible",
+      foregroundPending: saveFlow.current.pending !== null,
+      queued: queueRef.current.saves.length,
+    });
+    if (gate !== "run") {
+      if (gate !== null) armRunner(gate);
+      return;
+    }
     runnerActive.current = true;
     let ran: RunResult = { status: "busy" };
     try {
@@ -1684,6 +1693,7 @@ export default function App() {
         setResult(resultOf(taken.save, {}));
         setScreen("unconfirmed");
         refreshList();
+        void kickRunner();
       },
       msUntil(WATCHDOG_MS, Date.now() - startedAt),
     );
