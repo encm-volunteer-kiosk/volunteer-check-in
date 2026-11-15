@@ -1461,13 +1461,135 @@
   }
 }
 
-/* While a name is typed on a landscape tablet, the header and greeting give up their room so
-   the results sit above the on-screen keyboard. Layout only, no scrolling. Clearing the box
-   or leaving the screen brings them back. */
-@media (orientation: landscape) and (max-height: 900px) {
-  .app-shell.has-query .header,
-  .app-shell.has-query .name-entry-hero {
+/* The greeting inside the results area and the logo and date at the top of the Checked In
+   panel show only in the landscape layout below. */
+.results-greeting,
+.sidebar-header {
+  display: none;
+}
+
+/* Landscape welcome screen beside the Checked In panel: the name box sits at the top of the
+   screen with a results area of fixed height right under it, so on an iPad both stay above
+   the on-screen keyboard. Safari measures the box when it is tapped and scrolls the page if
+   the box is low, so the box must already be in its typing place before the tap, and must
+   not move up or down after it. Nothing above the bottom of the results area depends on
+   focus, typed text or results, and every length from the top of the screen to that edge is
+   one of the properties below or made from them. The keyboard covers everything lower. */
+@media (orientation: landscape) and (min-width: 821px) {
+  .app-shell.screen-welcome:not(.setup) {
+    --search-top: 13px; /* the name field's top edge */
+    --card-border: 1px;
+    --card-padding: 6px;
+    --search-field-height: 60px;
+    --results-gap: 6px;
+    --results-height: 156px; /* two rows and the top of a third */
+    --result-row-height: 62px;
+    --result-row-gap: 8px;
+    --slide-duration: 250ms;
+    --slide-ease: cubic-bezier(0.2, 0, 0, 1);
+  }
+  .app-shell.screen-welcome:not(.setup) .header,
+  .app-shell.screen-welcome:not(.setup) .name-entry-hero,
+  .app-shell.screen-welcome:not(.setup) .match-prompt,
+  .app-shell.screen-welcome:not(.setup) .type-prompt {
     display: none;
+  }
+  /* Its own block, so the card's top margin stays inside it and doesn't push the whole
+     screen down past the bottom of the frame. */
+  .app-shell.screen-welcome:not(.setup) .welcome {
+    display: flow-root;
+    min-height: 0;
+    padding-bottom: 0;
+  }
+  .app-shell.screen-welcome:not(.setup) .name-search-card {
+    margin-top: calc(var(--search-top) - var(--card-padding) - var(--card-border));
+    padding: var(--card-padding);
+    border-width: var(--card-border);
+    transition: transform var(--slide-duration) var(--slide-ease);
+  }
+  /* A fixed height, so the Clear button can't change it. */
+  .app-shell.screen-welcome:not(.setup) .name-search-field {
+    height: var(--search-field-height);
+    min-height: 0;
+  }
+  .app-shell.screen-welcome:not(.setup) .name-results {
+    height: var(--results-height);
+    min-height: var(--results-height);
+    max-height: var(--results-height);
+    margin-top: var(--results-gap);
+    gap: var(--result-row-gap);
+    align-content: start;
+    /* A swipe that reaches the end of the list doesn't pass on and scroll the page. */
+    overscroll-behavior: contain;
+  }
+  .app-shell.screen-welcome:not(.setup) .name-results .volunteer-card {
+    height: var(--result-row-height);
+    min-height: 0;
+  }
+  .app-shell.screen-welcome:not(.setup) .results-greeting {
+    height: var(--results-height);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    border-radius: 15px;
+    background: #f3f8fa;
+  }
+  .app-shell.screen-welcome:not(.setup) .results-greeting h1 {
+    font-size: 40px;
+  }
+  .app-shell.screen-welcome:not(.setup) .results-greeting > p:last-child {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 18px;
+    font-weight: 800;
+  }
+
+  .app-shell.screen-welcome:not(.setup) .checkin-sidebar {
+    overscroll-behavior: contain;
+    transition:
+      transform var(--slide-duration) var(--slide-ease),
+      visibility 0s linear 0s;
+  }
+  /* Each block as wide as its content and inside the panel's content width. */
+  .app-shell.screen-welcome:not(.setup) .sidebar-header {
+    display: grid;
+    gap: 10px;
+    justify-items: start;
+    margin-bottom: 6px;
+  }
+  .app-shell.screen-welcome:not(.setup) .sidebar-header .logo {
+    width: min(180px, calc(100% - 22px));
+    margin: 0;
+  }
+  .app-shell.screen-welcome:not(.setup) .sidebar-header .date {
+    max-width: 100%;
+    margin: 0;
+    text-align: left;
+  }
+
+  /* While the volunteer uses the name box, the panel slides off to the right and the card
+     slides right by half the panel's width, which centers it on the screen. Only transforms
+     change, so nothing moves up or down and the page's size stays the screen's. The panel
+     is hidden once its slide ends, so its shadow leaves no strip at the edge, and is visible
+     again from the first frame of its slide back. The move stays a transition even with
+     reduced motion: Safari puts the caret back in the box when a transition ends. */
+  .app-shell.screen-welcome:not(.setup).search-open .name-search-card {
+    transform: translateX(calc(var(--sidebar-width) / 2));
+  }
+  .app-shell.screen-welcome:not(.setup).search-open .checkin-sidebar {
+    transform: translateX(100%);
+    visibility: hidden;
+    transition:
+      transform var(--slide-duration) var(--slide-ease),
+      visibility 0s linear var(--slide-duration);
+  }
+  /* Reduced motion cuts the slide to an instant; the panel hides at once too. */
+  @media (prefers-reduced-motion: reduce) {
+    .app-shell.screen-welcome:not(.setup).search-open .checkin-sidebar {
+      transition:
+        transform var(--slide-duration) var(--slide-ease),
+        visibility 0s linear 0s;
+    }
   }
 }
 

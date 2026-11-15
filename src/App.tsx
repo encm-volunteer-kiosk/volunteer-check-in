@@ -23,6 +23,7 @@ import {
   type ListStorage,
 } from "./listStore";
 import { searchNames } from "./nameSearch";
+import { searchOpenAfter, type SearchOpenEvent } from "./searchOpen";
 import { QuickPicks } from "./QuickPicks.tsx";
 import { pickTime, pickedTimeToIso } from "./quickPicks";
 import {
@@ -131,7 +132,8 @@ const Icon = ({ name, size = 24 }: { name: string; size?: number }) => {
   );
 };
 
-function Header() {
+/** The "Today is / day / time" block, on its own clock. */
+function DateBlock() {
   const [now, setNow] = useState(new Date());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), CLOCK_TICK_MS);
@@ -149,13 +151,19 @@ function Header() {
     minute: "2-digit",
   }).format(now);
   return (
+    <div className="date">
+      <span>Today is</span>
+      <strong>{day}</strong>
+      <time dateTime={now.toISOString()}>{time}</time>
+    </div>
+  );
+}
+
+function Header() {
+  return (
     <header className="header">
       <img className="logo" src={logo} alt="East Nashville Care Market" />
-      <div className="date">
-        <span>Today is</span>
-        <strong>{day}</strong>
-        <time dateTime={now.toISOString()}>{time}</time>
-      </div>
+      <DateBlock />
     </header>
   );
 }
@@ -263,14 +271,14 @@ function Welcome({
   listState,
   clock,
   onSelect,
-  onHasQuery,
+  onSearchOpen,
 }: {
   volunteers: Volunteer[];
   listState: ListState;
   clock: CardClock;
   onSelect: (v: Volunteer) => void;
-  // Told whether the name box holds any text, and false when the screen closes.
-  onHasQuery: (hasQuery: boolean) => void;
+  // Told whether the Checked In panel should be aside, by the rule in src/searchOpen.ts.
+  onSearchOpen: (open: boolean) => void;
 }) {
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -285,8 +293,13 @@ function Welcome({
   const normalizedQuery = query.trim().toLowerCase();
   const results = useMemo(() => searchNames(volunteers, query), [query, volunteers]);
 
-  useEffect(() => onHasQuery(query !== ""), [query]);
-  useEffect(() => () => onHasQuery(false), []);
+  // What this screen last told the app, so each event is applied to the current state.
+  const searchOpen = useRef(false);
+  const reportSearch = (event: SearchOpenEvent) => {
+    searchOpen.current = searchOpenAfter(searchOpen.current, event);
+    onSearchOpen(searchOpen.current);
+  };
+  useEffect(() => () => reportSearch("unmount"), []);
 
   const updateQuery = (next: string) => {
     setQuery(next);
@@ -316,7 +329,13 @@ function Welcome({
             ref={searchRef}
             autoFocus
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              reportSearch("typed");
+            }}
+            // A click, not focus or touch-down: see src/searchOpen.ts.
+            onClick={() => reportSearch("click")}
+            onBlur={() => reportSearch("blur")}
             // The tablet's Search key closes the keyboard, so results under it show.
             onKeyDown={(event) => {
               if (event.key === "Enter") event.currentTarget.blur();
@@ -330,7 +349,16 @@ function Welcome({
             enterKeyHint="search"
           />
           {query && (
-            <button type="button" onClick={() => updateQuery("")} aria-label="Clear name">
+            <button
+              type="button"
+              // Keeps focus in the box, so the keyboard stays up and the panel stays aside.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                updateQuery("");
+                reportSearch("clear");
+              }}
+              aria-label="Clear name"
+            >
               Clear
             </button>
           )}
@@ -355,6 +383,22 @@ function Welcome({
                 <div className="type-prompt">
                   <Icon name="user" size={27} />
                   <span>Start typing to find your name.</span>
+                </div>
+              )}
+              {/* Shown instead of the prompt and the greeting above the card on a landscape
+                  tablet, where the box sits at the top of the screen (index.css). */}
+              {!normalizedQuery && (
+                <div className="hero results-greeting">
+                  <div className="spark spark-hero">
+                    <i />
+                    <i />
+                    <i />
+                  </div>
+                  <p className="welcome-note">{welcomeNote}</p>
+                  <h1>
+                    Hey there, <span>neighbor!</span>
+                  </h1>
+                  <p>Type your name in the box above.</p>
                 </div>
               )}
               {results.map((volunteer) => (
@@ -411,6 +455,11 @@ function CheckedInSidebar({
 
   return (
     <aside className={`checkin-sidebar`}>
+      {/* The logo and date, here instead of above the name box on a landscape tablet. */}
+      <div className="sidebar-header">
+        <img className="logo" src={logo} alt="East Nashville Care Market" />
+        <DateBlock />
+      </div>
       <h2 className="checkin-sidebar-title">Checked In</h2>
       {checkedIn.length === 0 ? (
         <p className="sidebar-empty">No one checked in yet.</p>
@@ -1044,9 +1093,9 @@ export default function App() {
   const listRequested = useRef(0);
   const listApplied = useRef(0);
   const [messageIndex, setMessageIndex] = useState(0);
-  // The welcome screen's name box holds text: on a landscape tablet the header and greeting
-  // hide so the results sit above the keyboard (index.css).
-  const [hasQuery, setHasQuery] = useState(false);
+  // The volunteer is using the welcome screen's name box: on a landscape tablet the Checked
+  // In panel slides aside and the name card centers (index.css, src/searchOpen.ts).
+  const [searchOpen, setSearchOpen] = useState(false);
   const [screen, setScreen] = useState<Screen>("welcome");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // The setup screen's code check only. A check-in or check-out is a save, below.
@@ -1456,7 +1505,9 @@ export default function App() {
   };
 
   return (
-    <div className={`app-shell screen-${code ? screen : "welcome"}${code ? "" : " setup"}${hasQuery ? " has-query" : ""}`}>
+    <div
+      className={`app-shell screen-${code ? screen : "welcome"}${code ? "" : " setup"}${searchOpen ? " search-open" : ""}`}
+    >
       {!code && (
         <>
           <Header />
@@ -1471,7 +1522,7 @@ export default function App() {
             listState={listState}
             clock={cardClock}
             onSelect={select}
-            onHasQuery={setHasQuery}
+            onSearchOpen={setSearchOpen}
           />
           <CheckedInSidebar volunteers={volunteers} clock={cardClock} onSelect={select} />
         </>
