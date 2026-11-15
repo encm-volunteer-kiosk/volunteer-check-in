@@ -503,10 +503,18 @@ function CheckedInSidebar({
   useEffect(() => {
     const at = nextSlowAt(saving, now);
     if (at === null) return;
-    const id = window.setTimeout(() => setNow(Date.now()), Math.max(0, at - Date.now()));
+    // Capped at setTimeout's largest delay: a longer one fires at once, over and over.
+    const wait = Math.min(2_147_483_647, Math.max(0, at - Date.now()));
+    const id = window.setTimeout(() => setNow(Date.now()), wait);
     return () => window.clearTimeout(id);
   }, [saving, now]);
-  const showSaving = savingLineShown(saving, Math.max(now, Date.now()));
+  // Once shown, the line stays until the queue is empty, so it doesn't blink off when a
+  // slow save lands ahead of a newer one.
+  const slowNow = savingLineShown(saving, Math.max(now, Date.now()));
+  const [held, setHeld] = useState(false);
+  if (saving.length === 0 && held) setHeld(false);
+  if (saving.length > 0 && slowNow && !held) setHeld(true);
+  const showSaving = saving.length > 0 && (held || slowNow);
 
   // Earliest check-in first. A volunteer whose check-in time can't be read is still
   // checked in, and goes last.

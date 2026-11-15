@@ -37,10 +37,11 @@ so hours can be credited to each volunteer and reported to grantmakers.
   missed-check-out notice included, from the volunteer list the tablet already holds, and
   the save runs behind it. The tablet keeps unsent saves in its own storage, so they
   survive a reload or the iPad sleeping, and sends them one at a time with a tap ID, so a
-  save sent twice writes one row. When one has waited 10 seconds, the Checked In
-  panel shows "Saving…" until the queue is empty; a normal save lands before that. The stated time is the time of the tap, worked out on the server from how
-  long ago the tap was. These taps still wait for the server, as before: a volunteer who
-  shares a name and types phone digits, a changed arrival or check-out time, a list that
+  save sent twice writes one row. When one has waited 10 seconds, the Checked In panel
+  shows "Saving…" until the queue is empty; a normal save lands before that. The stated
+  time is the time of the tap, worked out on the server from how long ago the tap was.
+  These taps still wait for the server, as before: a volunteer who shares a name and
+  types phone digits, a changed arrival or check-out time, a list that
   is too old or doesn't agree with the tap, a tablet clock more than a minute off, a
   check-out close to a milestone or to the auto clock-out window, a volunteer this tablet
   saved after its list was fetched, and any tap when the browser can't store the queue or
