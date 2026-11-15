@@ -1037,6 +1037,102 @@
     fill: var(--yellow);
   }
 }
+/* The check-in screen's sunrise (SunriseSkyline in App.tsx): plays once behind the message.
+   The sun rises from behind the buildings and the windows light left to right; the resting
+   state is the finish, so without motion it shows lit at once. */
+.sunrise-skyline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: auto;
+  z-index: 0;
+  pointer-events: none;
+}
+.success-in::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(180deg, rgba(249, 189, 47, 0) 30%, rgba(249, 189, 47, 0.14));
+  animation: sunrise-wash 2s 0.4s ease-out both;
+}
+.sunrise-skyline .sun {
+  fill: var(--yellow);
+  animation: sunrise-sun 1.7s 0.2s cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+.sunrise-skyline .glow {
+  fill: var(--yellow);
+  opacity: 0.18;
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(1.25);
+  animation: sunrise-glow 2.4s 0.6s ease-out both;
+}
+.sunrise-skyline .buildings {
+  fill: var(--surface);
+  stroke: var(--navy);
+  stroke-width: 3;
+  stroke-linejoin: round;
+  opacity: 0.9;
+}
+.sunrise-skyline .window {
+  fill: var(--yellow);
+  animation: sunrise-window 300ms both;
+}
+.sunrise-skyline .ground {
+  stroke: var(--navy);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+@keyframes sunrise-wash {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes sunrise-sun {
+  from {
+    transform: translateY(60px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+@keyframes sunrise-glow {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  50% {
+    opacity: 0.3;
+  }
+  100% {
+    opacity: 0.18;
+    transform: scale(1.25);
+  }
+}
+@keyframes sunrise-window {
+  from {
+    fill: #e5ecef;
+  }
+  to {
+    fill: var(--yellow);
+  }
+}
+/* Without motion: shown finished at once. The global rule below shortens durations but not
+   delays, so these are turned off here. */
+@media (prefers-reduced-motion: reduce) {
+  .success-in::before,
+  .sunrise-skyline .sun,
+  .sunrise-skyline .glow,
+  .sunrise-skyline .window {
+    animation: none;
+  }
+}
 .saving-panel .slow-line {
   margin: 0;
   color: var(--muted);

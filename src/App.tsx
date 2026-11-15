@@ -912,6 +912,7 @@ function Success({
 }) {
   return (
     <main className={`success-screen success-${type} screen-enter`}>
+      {type === "in" && <SunriseSkyline />}
       <div className="success-content">
         <div className="spark success-spark left">
           <i />
@@ -957,6 +958,98 @@ function Success({
         <Button onClick={onDone}>Done</Button>
       </div>
     </main>
+  );
+}
+
+// The check-in screen's neighborhood, across the bottom of the screen in a 1024 x 170 box:
+// each building's left edge, width, height, and whether it has a pitched roof. The middle is
+// left open for the sun.
+const SUNRISE_BUILDINGS: [number, number, number, boolean][] = [
+  [14, 70, 64, false],
+  [96, 46, 92, false],
+  [150, 82, 52, false],
+  [244, 54, 110, true],
+  [310, 66, 76, false],
+  [388, 40, 58, false],
+  [596, 44, 64, false],
+  [650, 72, 98, false],
+  [734, 52, 120, true],
+  [798, 80, 60, false],
+  [890, 48, 86, false],
+  [948, 64, 54, false],
+];
+const SUNRISE_GROUND = 158;
+
+/** The building outlines and their windows: x, y, and the order a window lights in. */
+const SUNRISE = (() => {
+  const outlines: string[] = [];
+  const windows: [number, number, number][] = [];
+  for (const [x, w, h, roof] of SUNRISE_BUILDINGS) {
+    const top = SUNRISE_GROUND - h;
+    outlines.push(
+      roof
+        ? `M${x} ${SUNRISE_GROUND}V${top + 16}l${w / 2} -16l${w / 2} 16V${SUNRISE_GROUND}z`
+        : `M${x} ${SUNRISE_GROUND}V${top}h${w}V${SUNRISE_GROUND}z`,
+    );
+    const cols = Math.max(2, Math.floor((w - 10) / 16));
+    const rows = Math.max(1, Math.floor((h - (roof ? 30 : 16)) / 22));
+    const gap = (w - cols * 9) / (cols + 1);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        // A few windows stay dark, so the rows don't look like a grid.
+        if ((r * 3 + c * 5 + x) % 4 === 0) continue;
+        windows.push([
+          Math.round((x + gap + c * (9 + gap)) * 10) / 10,
+          top + (roof ? 26 : 12) + r * 22,
+          Math.round((x / 1024) * 24 + r),
+        ]);
+      }
+    }
+  }
+  return { outlines, windows };
+})();
+
+/**
+ * The check-in screen's celebration: the saving screen's neighborhood across the bottom, the
+ * sun rising behind it and the windows lighting left to right. It plays once and stays lit;
+ * without motion it shows lit at once.
+ */
+function SunriseSkyline() {
+  return (
+    <svg
+      className="sunrise-skyline"
+      viewBox="0 0 1024 170"
+      preserveAspectRatio="xMidYMax meet"
+      aria-hidden="true"
+    >
+      <defs>
+        <clipPath id="sunrise-above-ground">
+          <rect x="0" y="0" width="1024" height={SUNRISE_GROUND} />
+        </clipPath>
+      </defs>
+      {/* Clipped at the ground line, so the sun comes up from behind it. */}
+      <g clipPath="url(#sunrise-above-ground)">
+        <circle className="glow" cx="512" cy="150" r="70" />
+        <circle className="sun" cx="512" cy="150" r="44" />
+      </g>
+      <g className="buildings">
+        {SUNRISE.outlines.map((d) => (
+          <path key={d} d={d} />
+        ))}
+      </g>
+      {SUNRISE.windows.map(([x, y, n]) => (
+        <rect
+          key={`${x},${y}`}
+          className="window"
+          x={x}
+          y={y}
+          width={9}
+          height={11}
+          style={{ animationDelay: `${0.9 + n * 0.045}s` }}
+        />
+      ))}
+      <path className="ground" d={`M0 ${SUNRISE_GROUND}h1024`} />
+    </svg>
   );
 }
 
