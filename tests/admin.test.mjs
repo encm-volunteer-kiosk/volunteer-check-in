@@ -5197,3 +5197,297 @@ test("only apiCheckIn and apiCheckOut pass the kiosk option, and the Log cache's
     assert.deepEqual([...functions[name].writes], [], name);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Saves the tablet already showed, sent with a tap
+
+const TAP_A = "0f8fad5b-d9cb-469f-a165-70867728950e";
+const TAP_B = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+const tapFor = (fields = {}) => ({
+  tapId: TAP_A,
+  shiftId: null,
+  tapAt: NOW - 3000,
+  sentAt: NOW,
+  attempt: 1,
+  shown: { missedSignOut: false },
+  name: "Sam Lee",
+  ...fields,
+});
+const outTapFor = (shiftId, fields = {}) =>
+  tapFor({ tapId: TAP_B, shiftId, shown: { milestoneId: null }, ...fields });
+const logSnapshot = (s) => JSON.stringify(s.sheets.Log.rows);
+const flagCount = (s) => s.sheets.Flags.getLastRow() - 1;
+
+test("a tapped check-in writes one row with the tap's ID, stated at the tap; a later send replays it", () => {
+  const s = kiosk({ settings: WINDOW_SETTINGS });
+  const reply = plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null, tapFor()));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.shiftId, TAP_A);
+  assert.equal(reply.arrivedAt, new Date(NOW - 3000).toISOString());
+  assert.equal(reply.replayed, undefined);
+  const row = s.sheets.Log.rowByHeader(2);
+  assert.equal(row["Shift ID"], TAP_A);
+  assert.equal(row["Check-In Stated (user)"].getTime(), NOW - 3000);
+  assert.equal(row["Check-In Recorded (timestamp)"].getTime(), NOW);
+  assert.equal(row["Admin Alerts?"], "");
+  assert.equal(flagCount(s), 0);
+  const log = logSnapshot(s);
+  const again = plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null, tapFor({ attempt: 2 })));
+  assert.deepEqual(again, {
+    ok: true,
+    id: SAM.id,
+    shiftId: TAP_A,
+    arrivedAt: new Date(NOW - 3000).toISOString(),
+    tappedAt: new Date(NOW).toISOString(),
+    missedSignOut: false,
+    replayed: true,
+  });
+  assert.equal(logSnapshot(s), log);
+  assert.equal(flagCount(s), 0);
+  // The replay finds a closed row too: the volunteer checked out meanwhile.
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(
+    plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null, tapFor({ attempt: 3 }))).replayed,
+    true,
+  );
+  assert.equal(s.sheets.Log.getLastRow(), 2);
+});
+
+test("a tapped check-in sent 20 minutes after the tap is flagged in Admin Alerts? and on the Flags tab", () => {
+  const s = kiosk({ settings: WINDOW_SETTINGS });
+  const tap = tapFor({ tapAt: NOW - 20 * 60000 });
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null, tap)).ok, true);
+  const row = s.sheets.Log.rowByHeader(2);
+  assert.equal(row["Check-In Stated (user)"].getTime(), NOW - 20 * 60000);
+  assert.equal(row["Admin Alerts?"], "arrival differs by 20 min");
+  assert.equal(flagCount(s), 1);
+  assert.equal(s.sheets.Flags.rowByHeader(2).Reason, "arrival differs by 20 min");
+});
+
+test("a tapped check-in whose notice differs from the server's flags the new row and the Flags tab", () => {
+  const s = kiosk({
+    settings: WINDOW_SETTINGS,
+    log: [LOG_HEADER, closedBy("s-old", "2026-11-03", "auto-close")],
+  });
+  const reply = plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null, tapFor()));
+  assert.equal(reply.missedSignOut, true);
+  const row = s.sheets.Log.rowByHeader(3);
+  assert.equal(row["Admin Alerts?"], "missed check-out notice not shown on the tablet");
+  assert.equal(flagCount(s), 1);
+  const flag = s.sheets.Flags.rowByHeader(2);
+  assert.equal(flag.Reason, "missed check-out notice not shown on the tablet");
+  assert.equal(flag["Shift ID"], TAP_A);
+  assert.equal(flag["Log Row"], 3);
+});
+
+test("a tapped check-out closes the named row; a later send replays; a row staff closed is NOT_IN with one Flags row", () => {
+  const s = kiosk({
+    settings: WINDOW_SETTINGS,
+    log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")],
+  });
+  const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null, outTapFor("s-sam")));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.signedOutAt, new Date(NOW - 3000).toISOString());
+  const row = s.sheets.Log.rowByHeader(2);
+  assert.equal(row.Status, "closed");
+  assert.equal(row["Check-Out Stated (user)"].getTime(), NOW - 3000);
+  assert.equal(row["Check-Out Entered By"], "kiosk");
+  const log = logSnapshot(s);
+  const again = plain(
+    s.ctx.apiCheckOut(CODE, SAM.id, null, null, outTapFor("s-sam", { attempt: 2 })),
+  );
+  assert.equal(again.ok, true);
+  assert.equal(again.replayed, true);
+  assert.equal(again.milestone, null);
+  assert.equal(again.minutes, reply.minutes);
+  assert.equal(again.signedOutAt, reply.signedOutAt);
+  assert.equal(logSnapshot(s), log);
+  assert.equal(flagCount(s), 0);
+
+  // Closed by Fix a sign-out before the save landed.
+  const fixed = kiosk({
+    settings: WINDOW_SETTINGS,
+    log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")],
+  });
+  const STATUS_AT = LOG_HEADER.indexOf("Status");
+  const OUT_BY = LOG_HEADER.indexOf("Check-Out\nEntered By");
+  fixed.sheets.Log.rows[1][STATUS_AT] = "closed";
+  fixed.sheets.Log.rows[1][OUT_BY] = "JP";
+  const before = logSnapshot(fixed);
+  assert.deepEqual(plain(fixed.ctx.apiCheckOut(CODE, SAM.id, null, null, outTapFor("s-sam"))), {
+    ok: false,
+    refusal: "NOT_IN",
+    message: "You're not checked in.",
+  });
+  assert.equal(logSnapshot(fixed), before);
+  assert.equal(flagCount(fixed), 1);
+  const flag = fixed.sheets.Flags.rowByHeader(2);
+  assert.equal(flag["Shift ID"], "s-sam");
+  assert.equal(flag.Source, "kiosk check-out");
+  assert.equal(flag["Log Row"], "");
+  assert.equal(
+    flag.Reason,
+    "tablet showed a check-out at 9:59 AM; the shift wasn't open to the tablet (closed by staff or the auto clock-out, or missing), so nothing was written",
+  );
+});
+
+test("a tapped check-in for a volunteer not on Profiles writes one Flags row with the tablet's name", () => {
+  const s = kiosk({ settings: WINDOW_SETTINGS });
+  const reply = plain(
+    s.ctx.apiCheckIn(CODE, "ffffffffffffffff", null, null, tapFor({ name: "Gone Person" })),
+  );
+  assert.equal(reply.refusal, "NOT_FOUND");
+  assert.equal(s.sheets.Log.getLastRow(), 1);
+  assert.equal(flagCount(s), 1);
+  const flag = s.sheets.Flags.rowByHeader(2);
+  delete flag["Raised At"];
+  assert.deepEqual(flag, {
+    "Shift ID": TAP_A,
+    Date: TODAY,
+    "Volunteer Name": "Gone Person",
+    Reason: "tablet showed a check-in at 9:59 AM as saved, but the server refused it (NOT_FOUND)",
+    "Staff column": "",
+    Reviewed: false,
+    "Reviewed By": "",
+    Notes: "",
+    Source: "kiosk check-in",
+    "Log Row": "",
+  });
+  // An already-in volunteer: the Profiles name, and the ALREADY_IN text.
+  const open = kiosk({
+    settings: WINDOW_SETTINGS,
+    log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")],
+  });
+  assert.equal(
+    plain(open.ctx.apiCheckIn(CODE, SAM.id, null, null, tapFor({ name: "x" }))).refusal,
+    "ALREADY_IN",
+  );
+  const already = open.sheets.Flags.rowByHeader(2);
+  assert.equal(already["Volunteer Name"], "Sam Lee");
+  assert.equal(
+    already.Reason,
+    "tablet showed a check-in at 9:59 AM; the volunteer was already checked in, so no row was written",
+  );
+});
+
+test("an unreadable tap is refused TAP_UNREADABLE with no lock taken and nothing written", () => {
+  for (const [call, tap] of [
+    [(s, t) => s.ctx.apiCheckIn(CODE, SAM.id, null, null, t), tapFor({ tapId: "nope" })],
+    [(s, t) => s.ctx.apiCheckOut(CODE, SAM.id, null, null, t), outTapFor("")],
+    [(s, t) => s.ctx.apiCheckOut(CODE, SAM.id, null, null, t), outTapFor("s".repeat(201))],
+  ]) {
+    const s = kiosk({
+      settings: WINDOW_SETTINGS,
+      log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")],
+    });
+    const before = logSnapshot(s);
+    assert.deepEqual(plain(call(s, tap)), {
+      ok: false,
+      refusal: "TAP_UNREADABLE",
+      message: "A kiosk tap can't be read.",
+    });
+    assert.equal(s.lock.tries, 0);
+    assert.equal(logSnapshot(s), before);
+    assert.equal(flagCount(s), 0);
+  }
+});
+
+test("apiListVolunteers gives the new fields from the whole Log, cache off and on, and stores no map", () => {
+  const log = [
+    LOG_HEADER,
+    closedBy("s-old", "2026-11-03", "auto-close"),
+    closedFor(RUTH, "s-r1", "2026-11-04", 49.5),
+    ruthOpen(),
+  ];
+  const expected = [
+    {
+      id: SAM.id,
+      firstName: "Sam",
+      lastName: "Lee",
+      checkedIn: false,
+      openShiftArrival: null,
+      needsPhoneCheck: false,
+      missedSignOut: true,
+      openShiftId: null,
+      openUntil: null,
+      checkOutMilestones: null,
+    },
+    {
+      id: RUTH.id,
+      firstName: "Ruth",
+      lastName: "Okafor",
+      checkedIn: true,
+      openShiftArrival: at(TODAY, "08:30").toISOString(),
+      needsPhoneCheck: false,
+      missedSignOut: true,
+      openShiftId: "s-ruth",
+      openUntil: new Date(at(TODAY, "08:30").getTime() + 12 * 3600000).toISOString(),
+      checkOutMilestones: [
+        { fromMinutes: 0, id: null },
+        { fromMinutes: 30, id: "hours-50" },
+      ],
+    },
+  ];
+  const check = (s) => {
+    const reply = plain(s.ctx.apiListVolunteers(CODE));
+    assert.deepEqual(reply.volunteers, expected);
+    assert.deepEqual(
+      reply.milestones.map((m) => Object.keys(m)),
+      reply.milestones.map(() => ["id", "title", "message"]),
+    );
+    assert.deepEqual(
+      reply.milestones.map((m) => m.id),
+      ["shift-1", "shift-10", "shift-25", "hours-50", "hours-100"],
+    );
+    assert.equal(typeof reply.serverNow, "number");
+    assert.equal(reply.longShiftHours, 8);
+  };
+  // Off: one whole-Log read.
+  const off = kiosk({ settings: WINDOW_SETTINGS, volunteers: [SAM, RUTH], log });
+  check(off);
+  // On, a miss: the whole Log; no map stored.
+  const { s: miss } = cacheKiosk({ log });
+  check(miss);
+  assert.equal(storedMap(miss), null);
+  assert.ok(!miss.stores.includes("cache.put " + LOG_KEY));
+  // On, a hit: the stored map's states; still nothing stored.
+  const { s: hit } = cacheKiosk({ log });
+  storeMapWith(hit, RUTH);
+  const puts = hit.stores.filter((x) => x === "cache.put " + LOG_KEY).length;
+  const reads = valueReads(hit.sheets.Log).length;
+  check(hit);
+  assert.equal(hit.stores.filter((x) => x === "cache.put " + LOG_KEY).length, puts);
+  // The hit read only row 1 of the Log, no rows.
+  assert.equal(valueReads(hit.sheets.Log).length - reads, 1);
+});
+
+test("a tapped check-in sent again on a hit reads the whole Log and replays", () => {
+  const { s } = cacheKiosk({ log: [LOG_HEADER, ruthOpen()] });
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null, tapFor())).ok, true);
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  storeMapWith(s, RUTH);
+  const again = plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null, tapFor({ attempt: 2 })));
+  assert.equal(again.replayed, true);
+  assert.equal(lastLine(s), "Log cache: hit, then full read (retried tap)");
+  // A first send on a hit decides from the map.
+  storeMapWith(s, RUTH);
+  const first = plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null, tapFor({ tapId: TAP_B })));
+  assert.equal(first.ok, true);
+  assert.equal(lastLine(s), "Log cache: hit");
+});
+
+test("a tapped check-out on a hit whose row isn't open in the map reads the whole Log and replays", () => {
+  const { s } = cacheKiosk({ log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00"), ruthOpen()] });
+  storeMapWith(s, RUTH);
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null, outTapFor("s-sam"))).ok, true);
+  assert.equal(lastLine(s), "Log cache: hit");
+  storeMapWith(s, RUTH);
+  const log = logSnapshot(s);
+  const again = plain(
+    s.ctx.apiCheckOut(CODE, SAM.id, null, null, outTapFor("s-sam", { attempt: 2 })),
+  );
+  assert.equal(again.replayed, true);
+  assert.equal(lastLine(s), "Log cache: hit, then full read (refused NOT_IN)");
+  assert.equal(logSnapshot(s), log);
+  assert.equal(flagCount(s), 0);
+});

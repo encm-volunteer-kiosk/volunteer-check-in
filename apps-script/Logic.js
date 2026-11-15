@@ -1285,17 +1285,6 @@ function autoClockOutWindowMs(text) {
   return parseAutoClockOutHours(text) * 3600000;
 }
 
-/**
- * The Log dates the kiosk list reads: yesterday and today. Every readable time on a row is
- * on its Date (rowTimeMs) and the window is at most 24 hours, so a row still in the window
- * is dated one of these. The one exception is the night clocks spring forward with the
- * window at 24: a tap just before midnight two days back is still in it for that hour.
- * The list misses that row; check-in reads the whole Log and refuses with ALREADY_IN.
- */
-function recentLogDates(todayDate) {
-  return [addDays(todayDate, -1), todayDate];
-}
-
 /** Count and total whole minutes, from milestoneHours, of this token's closed rows. */
 function closedTotals(entries, token) {
   let shifts = 0;

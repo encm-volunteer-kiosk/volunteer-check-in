@@ -4,9 +4,27 @@
  *
  * Every api* function takes the kiosk access code first and returns
  * {ok: true, ...result} or {ok: false, refusal, message}. It throws only on a real
- * failure (a Sheets error, a missing or repeated Log header, a bad setting). The page
- * never receives a phone number, a User Token, a Profiles row, a start date, or anyone's
- * shift count or hours. Log columns are found by header on every call.
+ * failure (a Sheets error, a missing or repeated Log header, a bad setting). Log columns
+ * are found by header on every call.
+ *
+ * What the page receives. It gets no phone number, User Token, Profiles row, start date,
+ * row number, shift count or hours. The volunteer list carries, for every volunteer, the
+ * one boolean of the missed check-out notice, and for a checked-in volunteer the Shift ID
+ * of their open row (whatever the Log's cell holds: a random ID on kiosk and admin rows,
+ * free text on a row staff typed), when that row leaves the window, and the minutes of
+ * this shift at which a check-out would show a milestone, only those reachable this
+ * shift. Those let the tablet show a check-in or check-out at the tap.
+ *
+ * A check-in or check-out the tablet already showed comes with a tap (readTap, Logic.js):
+ * a tap ID, which is a check-in's Shift ID, the Shift ID a check-out closes, the tap's
+ * age by the tablet's clock, the send count and what the tablet showed. The stated time
+ * is the server's time less the tap's age. A later send of a tap that was saved finds its
+ * row and writes nothing (replayed); a later send reads the whole Log when the cache
+ * would answer from the map. What the tablet showed is compared with the server's
+ * decision, and each difference is a Flags reason on the row written. A refusal of a
+ * tapped save (other than BUSY) writes no Log cell and one Flags row naming the tap
+ * (raiseTapRefusal_). A tap that can't be read is refused TAP_UNREADABLE before the lock,
+ * with no Flags row.
  *
  * A check-in or check-out takes Settings once, before the lock, and uses them for the
  * access code and for everything inside the lock; a Settings edit made while the call
@@ -57,37 +75,58 @@ function apiCheckAccess(code) {
 
 /**
  * {ok: true, volunteers: [{id, firstName, lastName, checkedIn, openShiftArrival,
- * needsPhoneCheck}], longShiftHours}. checkedIn is true when the volunteer has an open row
- * the tablet can still check out: one checked in less than "Auto clock-out after hours"
- * ago, past midnight too, or one dated today whose check-in time can't be read.
+ * needsPhoneCheck, missedSignOut, openShiftId, openUntil, checkOutMilestones}],
+ * longShiftHours, milestones, serverNow}. checkedIn is true when the volunteer has an open
+ * row the tablet can still check out: one checked in less than "Auto clock-out after
+ * hours" ago, past midnight too, or one dated today whose check-in time can't be read.
  * openShiftArrival is the ISO stated arrival of that row, else null; it is also null when
  * the row's check-in time can't be read, and the volunteer is still checked in. id is the
- * hashed Volunteer ID; the raw User Token never leaves the server. longShiftHours is "Long
- * shift flag hours" (parseLongShiftHours), the time in past which the page marks a card.
- * Reads only yesterday's and today's rows.
+ * hashed Volunteer ID; the raw User Token never leaves the server. missedSignOut,
+ * openShiftId, openUntil and checkOutMilestones are as volunteerSummaries (Logic.js) gives
+ * them. longShiftHours is "Long shift flag hours" (parseLongShiftHours), the time in past
+ * which the page marks a card. milestones are [{id, title, message}], the texts the steps
+ * name. serverNow is the server's clock in ms, taken last, so the page can tell how far
+ * its own clock is off.
+ *
+ * Reads every row of every Profiles volunteer (listLogStates_), since the notice answer
+ * and the milestone steps need the whole history.
  */
 function apiListVolunteers(code) {
   const settings = refreshSettingsCache_();
   const denied = accessRefusal_(code, settings);
   if (denied) return denied;
-  const now = new Date();
-  const today = centralDate_(now);
   const volunteers = getProfiles_(settings);
+  const states = listLogStates_(volunteers);
+  const now = new Date();
   return {
     ok: true,
     volunteers: volunteerSummaries(
       volunteers,
-      volunteerLogStates(
-        readRecentLog_(recentLogDates(today), readLogColumns_()),
-        volunteers.map((v) => v.token),
-      ),
+      states,
       now.getTime(),
       autoClockOutWindowMs(settings["Auto clock-out after hours"]),
-      today,
+      centralDate_(now),
       settings["Kiosk launch date"],
     ),
     longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
+    milestones: milestones().map((m) => ({ id: m.id, title: m.title, message: m.message })),
+    serverNow: Date.now(),
   };
+}
+
+/**
+ * Every Profiles volunteer's Log state, for the list. With the Log cache off, one read of
+ * the whole Log (readLogMiss_). With it on, readLogState_ with every Profiles token: the
+ * cached map's states on a hit, the whole Log on a miss. The list stores no map: it holds
+ * no lock, so a map it stored could miss a check-out written meanwhile; only the kiosk's
+ * locked calls store one.
+ */
+function listLogStates_(volunteers) {
+  if (!logCacheSwitchOn_()) return readLogMiss_([], volunteers).map.states;
+  return readLogState_(
+    volunteers.map((v) => v.token),
+    volunteers,
+  ).map.states;
 }
 
 /**
@@ -101,10 +140,21 @@ function apiListVolunteers(code) {
  * they didn't make (missedSignOut, Logic.js), so the page can remind them; it is about
  * the volunteer just checked in and says nothing else. ALREADY_IN while the volunteer has
  * an open row checked in less than "Auto clock-out after hours" ago.
+ *
+ * tap, when given, is a check-in the tablet already showed (readTap, Logic.js), sent with
+ * arrivalIso and digits null. The arrival is the server's time less the tap's age, and the
+ * new row's Shift ID is the tap's ID. When the volunteer already has a row with that ID,
+ * nothing is written and the reply is {ok: true, id, shiftId, arrivedAt, tappedAt,
+ * missedSignOut: false, replayed: true}, with that row's times (null when unreadable). A
+ * notice the tablet showed that isn't the server's answer is flagged on the new row. A
+ * refusal writes one Flags row (raiseTapRefusal_). TAP_UNREADABLE when the tap can't be
+ * read, before the lock.
  */
-function apiCheckIn(code, id, arrivalIso, digits) {
+function apiCheckIn(code, id, arrivalIso, digits, tap) {
   const { settings, denied } = settingsForCode_(code);
   if (denied) return denied;
+  const t = readTap(tap, "in");
+  if (t && t.unreadable) return refusal("TAP_UNREADABLE");
   const run = logCacheRun_();
   return withLock_(
     () =>
@@ -113,10 +163,16 @@ function apiCheckIn(code, id, arrivalIso, digits) {
         const today = centralDate_(now);
         const volunteers = getProfiles_(settings);
         const who = resolveVolunteer(volunteers, id, digits);
-        if (who.refusal) return refusal(who.refusal);
+        if (who.refusal) {
+          return refuseTap_(t, "in", who.refusal, findVolunteer(volunteers, id), now.getTime());
+        }
         const tokens = [who.volunteer.token];
         let log = kioskLogRead_(run, tokens, volunteers);
-        const arrivedMs = arrivalMsFromIso(arrivalIso);
+        // A later send may find the row its first send wrote, which only the whole Log holds.
+        if (t && t.attempt > 1 && log.hit) {
+          log = kioskFullRead_(run, tokens, volunteers, "retried tap");
+        }
+        const arrivedMs = t ? now.getTime() - t.ageMs : arrivalMsFromIso(arrivalIso);
         const input = {
           volunteers,
           id,
@@ -128,6 +184,8 @@ function apiCheckIn(code, id, arrivalIso, digits) {
           arrivedDate: Number.isFinite(arrivedMs) ? centralDate_(new Date(arrivedMs)) : "",
           flagMinutes: parseFlagMinutes(settings["Arrival flag minutes"]),
           launchDate: settings["Kiosk launch date"],
+          tapShiftId: t ? t.tapId : null,
+          shownMissed: t ? t.shown.missedSignOut : null,
         };
         let decision = log.hit
           ? decideCheckIn({ ...input, states: log.map.states })
@@ -137,18 +195,31 @@ function apiCheckIn(code, id, arrivalIso, digits) {
           log = kioskFullRead_(run, tokens, volunteers, "refused " + decision.refusal);
           decision = decideCheckIn({ ...input, entries: log.entries });
         }
+        if (decision.replay) {
+          keepLogMap_(run, log);
+          const e = decision.replay;
+          return {
+            ok: true,
+            id: decision.volunteer.id,
+            shiftId: t.tapId,
+            arrivedAt: isoOrNull_(shiftStartMs(e)),
+            tappedAt: isoOrNull_(e.recordedInMs),
+            missedSignOut: false,
+            replayed: true,
+          };
+        }
         if (decision.refusal) {
           keepLogMap_(run, log);
-          return refusal(decision.refusal);
+          return refuseTap_(t, "in", decision.refusal, who.volunteer, now.getTime());
         }
         const flagPlan = planFlags_(decision.flags);
-        const shiftId = Utilities.getUuid();
+        const shiftId = t ? t.tapId : Utilities.getUuid();
         const cells = checkInCells(
           decision.volunteer,
           today,
           now.getTime(),
           decision.arrivedMs,
-          decision.flag,
+          decision.flags.reduce(appendText, ""),
           shiftId,
         );
         if (run.on) forgetLogMap_();
@@ -199,20 +270,35 @@ function apiCheckIn(code, id, arrivalIso, digits) {
  * check-out whose stated hours are more than "Long shift flag hours" is flagged. BUSY
  * when the open row, read again just before the write, is no longer the row decided on
  * (staff sorted, inserted or deleted Log rows meanwhile); nothing is written then.
+ *
+ * tap, when given, is a check-out the tablet already showed (readTap, Logic.js), sent with
+ * digits and checkOutIso null. It closes the row with the tap's Shift ID when that row was
+ * open to the tablet at the tap, stating the server's time less the tap's age. When a
+ * kiosk already closed that row, nothing is written and the reply is {ok: true, id,
+ * signedOutAt, tappedAt, minutes, milestone: null, replayed: true}, with that row's times
+ * and minutes (null when unreadable). A milestone the tablet showed that isn't the
+ * server's is flagged on the row. A refusal other than BUSY writes one Flags row
+ * (raiseTapRefusal_). TAP_UNREADABLE when the tap can't be read, before the lock.
  */
-function apiCheckOut(code, id, digits, checkOutIso) {
+function apiCheckOut(code, id, digits, checkOutIso, tap) {
   const { settings, denied } = settingsForCode_(code);
   if (denied) return denied;
+  const t = readTap(tap, "out");
+  if (t && t.unreadable) return refusal("TAP_UNREADABLE");
   const run = logCacheRun_();
   return withLock_(
     () =>
       withLogCacheLine_(run, () => {
         const now = new Date();
         const volunteers = getProfiles_(settings);
+        const tapped = findVolunteer(volunteers, id);
         const wanted = checkOutTokens(volunteers, id, digits);
-        if (wanted.refusal) return refusal(wanted.refusal);
+        if (wanted.refusal) return refuseTap_(t, "out", wanted.refusal, tapped, now.getTime());
         let log = kioskLogRead_(run, wanted.tokens, volunteers);
-        const outMs = arrivalMsFromIso(checkOutIso);
+        const outMs = t ? now.getTime() - t.ageMs : arrivalMsFromIso(checkOutIso);
+        const tapInput = t
+          ? { tapShiftId: t.shiftId, atMs: outMs, shownMilestone: t.shown.milestoneId }
+          : {};
         const input = {
           volunteers,
           id,
@@ -225,6 +311,7 @@ function apiCheckOut(code, id, digits, checkOutIso) {
           flagMinutes: parseFlagMinutes(settings["Check-out flag minutes"]),
           longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
           launchDate: settings["Kiosk launch date"],
+          ...tapInput,
         };
         let planned = null;
         if (log.hit) {
@@ -234,9 +321,23 @@ function apiCheckOut(code, id, digits, checkOutIso) {
         }
         if (!planned) {
           const decision = decideCheckOut({ ...input, entries: log.entries });
+          if (decision.replay) {
+            keepLogMap_(run, log);
+            const e = decision.replay;
+            const hours = hoursCell(e.statedHours);
+            return {
+              ok: true,
+              id: decision.volunteer.id,
+              signedOutAt: isoOrNull_(e.statedOutMs),
+              tappedAt: isoOrNull_(e.recordedOutMs),
+              minutes: isFinite(hours) ? minutesFromHours(hours) : null,
+              milestone: null,
+              replayed: true,
+            };
+          }
           if (decision.refusal) {
             keepLogMap_(run, log);
-            return refusal(decision.refusal);
+            return refuseTap_(t, "out", decision.refusal, tapped, now.getTime());
           }
           const flagPlan = planFlags_(decision.flags);
           // Staff may sort, insert or delete Log rows while the call runs, which moves rows
@@ -304,10 +405,13 @@ function apiCheckOut(code, id, digits, checkOutIso) {
  * same Shift ID and User Token, and a decision made again with that row in place of the
  * cached one must close the same row with the same flags. That second decision is the one
  * written, so its cells keep the row's Admin Alerts? and its Flags rows carry the row's
- * Name and Date.
+ * Name and Date. A tapped check-out passes its tap in input; the map holds the row it
+ * names only while that row is open, so a row already closed is NOT_IN here and is found
+ * on the whole Log.
  */
 function checkOutOnHit_(input, log) {
   const first = decideCheckOut({ ...input, states: log.map.states });
+  if (first.replay) return { why: "replay" };
   if (first.refusal) return { why: "refused " + first.refusal };
   if (!cellString(first.open.shiftId)) return { why: "no Shift ID" };
   const flagPlan = planFlags_(first.flags);
@@ -317,6 +421,47 @@ function checkOutOnHit_(input, log) {
   const second = states ? decideCheckOut({ ...input, states }) : null;
   if (!sameCheckOutPlan(first, second)) return { why: "decided differently" };
   return { decision: second, flagPlan };
+}
+
+/** ms as an ISO time, or null when it isn't a finite number. */
+function isoOrNull_(ms) {
+  return typeof ms === "number" && isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+/**
+ * The refusal of code; for a tapped save (t from readTap), first the Flags row of
+ * raiseTapRefusal_. volunteer is the Profiles volunteer the tap named, or null.
+ */
+function refuseTap_(t, kind, code, volunteer, nowMs) {
+  if (t) raiseTapRefusal_(t, kind, code, volunteer, nowMs);
+  return refusal(code);
+}
+
+/**
+ * One Flags row for a tapped save the server refused, after the tablet showed it saved,
+ * under the call's lock and before the refusal is returned; no Log cell is written. Date
+ * is the Central date of the tap, Name the Profiles name when the volunteer was found,
+ * else the name the tablet sent; Shift ID the tap's ID for a check-in and the row it named
+ * for a check-out; Log Row blank. The reason is tapRefusalReason (Logic.js). BUSY is
+ * retried and ACCESS keeps the save on the tablet, so neither is flagged. A broken Flags
+ * tab is logged and never changes the reply (raiseFlags_).
+ */
+function raiseTapRefusal_(t, kind, code, volunteer, nowMs) {
+  if (code === "BUSY" || code === "ACCESS" || code === "TAP_UNREADABLE") return;
+  const tapAt = new Date(nowMs - t.ageMs);
+  const reasons = [tapRefusalReason(kind, clockLabel(zoneClock_(tapAt, kioskTimeZone())), code)];
+  raiseFlags_(
+    {
+      date: centralDate_(tapAt),
+      name: volunteer ? volunteerFullName(volunteer) : t.name,
+      shiftId: kind === "in" ? t.tapId : t.shiftId,
+      raisedAtMs: nowMs,
+      source: kind === "in" ? flagSources().checkIn : flagSources().checkOut,
+      logRow: null,
+    },
+    reasons,
+    planFlags_(reasons),
+  );
 }
 
 /**

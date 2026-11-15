@@ -3012,19 +3012,16 @@ test("a row with no readable tap is measured from its start; one with no time is
   assert.equal(find(both, NOW).row, 5);
 });
 
-test("the night clocks spring forward, a 24-hour window keeps a row two dates back that the list doesn't read", () => {
+test("the night clocks spring forward, a 24-hour window keeps a row two dates back, and the list reads it", () => {
   // 2027-03-14 is the spring-forward date. Tapped 23:30 on the 13th; the window ends at
   // 00:30 on the 15th, which is 24 hours later.
   const window = L.autoClockOutWindowMs("24");
   const row = { ...tapped(2, "2027-03-13", "23:30"), status: "open" };
   const now = C("2027-03-15", "00:15");
-  assert.deepEqual(plain(L.recentLogDates("2027-03-15")), ["2027-03-14", "2027-03-15"]);
-  const listedRows = [row].filter((e) =>
-    L.recentLogDates("2027-03-15").includes(L.rowDate(e.dateText)),
-  );
-  const [listed] = plain(summaries([VOL], listedRows, now, window, "2027-03-15"));
-  assert.equal(listed.checkedIn, false);
-  // Check-in reads the whole Log, so it is refused until the hour has passed.
+  // The list reads every row, so it says checked in, as check-in's refusal does.
+  const [listed] = plain(summaries([VOL], [row], now, window, "2027-03-15"));
+  assert.equal(listed.checkedIn, true);
+  assert.equal(listed.openUntil, new Date(C("2027-03-15", "00:30")).toISOString());
   const at = (ms) => ({
     entries: [row],
     nowMs: ms,
@@ -3037,6 +3034,10 @@ test("the night clocks spring forward, a 24-hour window keeps a row two dates ba
   const later = checkIn(at(C("2027-03-15", "00:31")));
   assert.equal(later.refusal, undefined);
   assert.equal(later.missedSignOut, true);
+  assert.equal(
+    plain(summaries([VOL], [row], C("2027-03-15", "00:31"), window, "2027-03-15"))[0].checkedIn,
+    false,
+  );
 });
 
 test("check-in is refused while a row is in the window and accepted once it has left it", () => {
