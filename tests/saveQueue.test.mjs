@@ -487,12 +487,27 @@ test("writeQueue is false on a store that throws, and round-trips otherwise", ()
   );
 });
 
+// A queue stored by a page with working locks, and a stamp that matches it, so an enqueue
+// on this storage is refused only by what the test means to check.
+async function storedQueueAndStamp(storage) {
+  const start = await changeQueue(makeEnv({ storage }), touch);
+  assert.equal(start.stored, true);
+  return { epoch: start.queue.epoch, seq: start.queue.seq, requestedAt: T0 - MIN };
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
 test("changeQueue without Web Locks or storage stores nothing and writes nothing", async () => {
   const storage = fakeStorage();
+  // A stamp that matches the stored queue: with locks this enqueue would be stored.
+  const stamp = await storedQueueAndStamp(storage);
+  const before = storage.getItem(SAVE_QUEUE_KEY);
   const env = makeEnv({ locks: null, storage });
-  const r = await changeQueue(env, enqueue(saveFor("in", ana), null));
+  const r = await changeQueue(env, enqueue(saveFor("in", ana), stamp));
   assert.equal(r.stored, false);
-  assert.equal(storage.items.size, 0);
+  assert.equal(r.refused, null);
+  assert.equal(afterEnqueue(r), "wait");
+  assert.equal(storage.getItem(SAVE_QUEUE_KEY), before);
   const noStore = makeEnv({ storage: null });
   assert.equal((await changeQueue(noStore, touch)).stored, false);
   // A blocked store: the change is not stored.
@@ -511,15 +526,35 @@ test("changeQueue without Web Locks or storage stores nothing and writes nothing
   );
 });
 
-// A queue stored by a page with working locks, and a stamp that matches it, so an enqueue
-// on this storage is refused only by what the test means to check.
-async function storedQueueAndStamp(storage) {
-  const start = await changeQueue(makeEnv({ storage }), touch);
-  assert.equal(start.stored, true);
-  return { epoch: start.queue.epoch, seq: start.queue.seq, requestedAt: T0 - MIN };
-}
-
-const flush = () => new Promise((resolve) => setImmediate(resolve));
+test("a lock request that rejects stores nothing, and the runner rejects", async () => {
+  const storage = fakeStorage();
+  const stamp = await storedQueueAndStamp(storage);
+  const before = storage.getItem(SAVE_QUEUE_KEY);
+  const rejecting = {
+    request: async () => {
+      throw new DOMException("Web Locks are not allowed here", "SecurityError");
+    },
+  };
+  const env = makeEnv({ locks: rejecting, storage });
+  const r = await changeQueue(env, enqueue(saveFor("in", ana), stamp));
+  assert.equal(r.stored, false);
+  assert.equal(r.refused, null);
+  assert.equal(afterEnqueue(r), "wait");
+  assert.equal(storage.getItem(SAVE_QUEUE_KEY), before);
+  // The page catches the runner's rejection and sends nothing.
+  let sent = 0;
+  await assert.rejects(
+    runOnce(env, {
+      online: () => true,
+      send: async () => {
+        sent += 1;
+        return {};
+      },
+      wait: () => new Promise(() => {}),
+    }),
+  );
+  assert.equal(sent, 0);
+});
 
 test("a lock request that never settles is given up: nothing stored, now or later", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
