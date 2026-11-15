@@ -275,6 +275,7 @@ function refusalMessages() {
     CHECKOUT_BEFORE_ARRIVAL:
       "Your check-out time can't be before your arrival time. Please choose a later time.",
     BUSY: "The kiosk is busy. Please try again.",
+    TAP_UNREADABLE: "A kiosk tap can't be read.",
     ADMIN_EXPIRED: "This window has expired. Close it and open the Kiosk admin menu again.",
     ADMIN_INITIALS: "Please enter your initials, letters only.",
     ADMIN_NOTE_TOO_LONG: "Please keep the note to 500 characters or fewer.",
@@ -1284,17 +1285,6 @@ function autoClockOutWindowMs(text) {
   return parseAutoClockOutHours(text) * 3600000;
 }
 
-/**
- * The Log dates the kiosk list reads: yesterday and today. Every readable time on a row is
- * on its Date (rowTimeMs) and the window is at most 24 hours, so a row still in the window
- * is dated one of these. The one exception is the night clocks spring forward with the
- * window at 24: a tap just before midnight two days back is still in it for that hour.
- * The list misses that row; check-in reads the whole Log and refuses with ALREADY_IN.
- */
-function recentLogDates(todayDate) {
-  return [addDays(todayDate, -1), todayDate];
-}
-
 /** Count and total whole minutes, from milestoneHours, of this token's closed rows. */
 function closedTotals(entries, token) {
   let shifts = 0;
@@ -1308,16 +1298,32 @@ function closedTotals(entries, token) {
 }
 
 /**
- * The list the page gets: the hashed ID only, and no phone, start date, token or row.
- * checkedIn is the test check-in and check-out use, an open row the tablet can still
- * check out (findOpenShift), so it holds past midnight for the window after the tap, and
- * holds even when that row's start can't be read. openShiftArrival is that row's start,
- * or null when there is no such row or its start can't be read.
+ * The list the page gets: the hashed ID only, and no phone, start date, token, row, shift
+ * count or hours. states maps each volunteer's User Token to their Log state
+ * (volunteerLogStates over every row of every volunteer); a volunteer without one reads as
+ * having no rows. checkedIn is the test check-in and check-out use, an open row the
+ * tablet can still check out (findOpenShift), so it holds past midnight for the window
+ * after the tap, and holds even when that row's start can't be read. openShiftArrival is
+ * that row's start, or null when there is no such row or its start can't be read.
+ *
+ * What lets the tablet show a check-in or check-out at the tap: missedSignOut, what a
+ * check-in now would answer (logStateMissedSignOut); openShiftId, the open row's Shift ID
+ * as a tap may name it (tapShiftId), else null; openUntil, when that row leaves the
+ * window (checkedInMs + windowMs), else null; and checkOutMilestones, the milestone a
+ * check-out would show by the minutes of this shift (checkOutMilestoneSteps, up to the
+ * longest shift an in-window check-out can state), or null when there is no open row or
+ * its start can't be read.
  */
-function volunteerSummaries(volunteers, entries, nowMs, windowMs, todayDate) {
+function volunteerSummaries(volunteers, states, nowMs, windowMs, todayDate, launchDate) {
   return volunteers.map((v) => {
-    const open = findOpenShift(entries, v.token, nowMs, windowMs, todayDate);
+    const state = hasLogState(states, v.token) ? logStateOf(states, v.token) : emptyLogState();
+    const open = findOpenShift(state.open, v.token, nowMs, windowMs, todayDate);
     const startMs = open ? shiftStartMs(open) : NaN;
+    const untilMs = open ? checkedInMs(open) + windowMs : NaN;
+    const steps =
+      isFinite(startMs) && isFinite(untilMs)
+        ? checkOutMilestoneSteps(state, v, launchDate, Math.ceil((untilMs - startMs) / 60000) + 1)
+        : null;
     return {
       id: v.id,
       firstName: v.firstName,
@@ -1325,6 +1331,10 @@ function volunteerSummaries(volunteers, entries, nowMs, windowMs, todayDate) {
       checkedIn: Boolean(open),
       openShiftArrival: isFinite(startMs) ? new Date(startMs).toISOString() : null,
       needsPhoneCheck: v.needsPhoneCheck,
+      missedSignOut: logStateMissedSignOut(state, launchDate),
+      openShiftId: open ? tapShiftId(open.shiftId) : null,
+      openUntil: isFinite(untilMs) ? new Date(untilMs).toISOString() : null,
+      checkOutMilestones: steps,
     };
   });
 }
@@ -1421,27 +1431,31 @@ function hoursNumberText(hours) {
 /**
  * The flags a kiosk check-out raises, in the order Admin Alerts? gets them: the check-out
  * flag when there is one, then the long-shift flag (longShiftAlert) when there is one,
- * then unreadableStartAlert() when the open row has no readable start. The Flags tab gets
- * one row for each, so it and Admin Alerts? never disagree.
+ * then unreadableStartAlert() when the open row has no readable start, then each of extra
+ * (more reasons, such as a tapped save's milestone mismatch) that isn't blank. The Flags
+ * tab gets one row for each, so it and Admin Alerts? never disagree.
  */
-function checkOutFlags(open, flag, longFlag) {
+function checkOutFlags(open, flag, longFlag, extra) {
   const flags = [];
   if (cellString(flag)) flags.push(cellString(flag));
   if (cellString(longFlag)) flags.push(cellString(longFlag));
   if (!hasReadableStart(open)) flags.push(unreadableStartAlert());
+  (extra || []).forEach((reason) => {
+    if (cellString(reason)) flags.push(cellString(reason));
+  });
   return flags;
 }
 
 /**
  * The cells a kiosk check-out writes on the open row. nowMs is the tap (Check-Out
  * Recorded), statedOutMs the stated check-out, flag the check-out flag or '', longFlag the
- * long-shift flag or ''. Each hours
+ * long-shift flag or '', extra more reasons as checkOutFlags takes them. Each hours
  * value pairs times of one kind and is blank when either is unreadable. Admin Alerts? is
  * written only when checkOutFlags has something to add, and then keeps what the cell
  * held. A row whose start can't be read closes with blank stated hours and an alert
  * saying so, not with a zero.
  */
-function checkOutCells(open, nowMs, statedOutMs, flag, longFlag) {
+function checkOutCells(open, nowMs, statedOutMs, flag, longFlag, extra) {
   const H = logHeaderNames();
   const cells = {
     [H.recordedOut]: nowMs,
@@ -1451,7 +1465,7 @@ function checkOutCells(open, nowMs, statedOutMs, flag, longFlag) {
     [H.status]: "closed",
     [H.outBy]: "kiosk",
   };
-  const flags = checkOutFlags(open, flag, longFlag);
+  const flags = checkOutFlags(open, flag, longFlag, extra);
   if (flags.length) cells[H.alerts] = sheetText(flags.reduce(appendText, open.alerts));
   return cells;
 }
@@ -1484,27 +1498,46 @@ function decisionEntries(input, tokens) {
  * Log state (volunteerLogStates), and the decision is then the one entries would give.
  * When both are given, entries decide. A states map without the resolved volunteer's
  * token throws.
+ *
+ * A tapped check-in (readTap) also gives tapShiftId, the tap's ID and the new row's Shift
+ * ID, and shownMissed, the notice answer the tablet showed (null or absent for none).
+ * When one of the volunteer's rows already has that Shift ID, at any status, the tap was
+ * saved by an earlier send: {replay: entry, volunteer}, and nothing is to be written. When
+ * shownMissed is a boolean that isn't missedSignOut, flags gains the reason
+ * (noticeMismatchReason) after the arrival flag. On states only open rows are looked at
+ * for the replay, which holds for a tap's first send: its Shift ID is new.
  */
 function decideCheckIn(input) {
   const who = resolveVolunteer(input.volunteers, input.id, input.digits);
   if (who.refusal) return { refusal: who.refusal };
   const volunteer = who.volunteer;
   const entries = decisionEntries(input, [volunteer.token]);
+  const tapId = typeof input.tapShiftId === "string" ? input.tapShiftId : "";
+  if (tapId) {
+    const replay = entries.filter(
+      (e) => isTokenRow(e, volunteer.token) && cellString(e.shiftId) === tapId,
+    )[0];
+    if (replay) return { replay, volunteer };
+  }
   if (findOpenShift(entries, volunteer.token, input.nowMs, input.windowMs, input.todayDate)) {
     return { refusal: "ALREADY_IN" };
   }
   const arrival = validateArrival(input.nowMs, input.arrivedMs, input.arrivedDate, input.todayDate);
   if (typeof arrival === "string") return { refusal: arrival };
   const flag = arrivalFlag(input.nowMs, arrival.arrivedMs, input.flagMinutes);
+  const missed =
+    input.entries !== undefined
+      ? missedSignOut(input.entries, volunteer.token, input.launchDate)
+      : logStateMissedSignOut(logStateOf(input.states, volunteer.token), input.launchDate);
+  const flags = flag ? [flag] : [];
+  const mismatch = noticeMismatchReason(input.shownMissed, missed);
+  if (mismatch) flags.push(mismatch);
   return {
     volunteer,
     arrivedMs: arrival.arrivedMs,
     flag,
-    flags: flag ? [flag] : [],
-    missedSignOut:
-      input.entries !== undefined
-        ? missedSignOut(input.entries, volunteer.token, input.launchDate)
-        : logStateMissedSignOut(logStateOf(input.states, volunteer.token), input.launchDate),
+    flags,
+    missedSignOut: missed,
   };
 }
 
@@ -1529,6 +1562,17 @@ function decideCheckIn(input) {
  * checkOutTokens names. An open row from a state has no Admin Alerts? or Name, so the
  * cells made from it are only a plan: the cells written come from a decision whose open
  * row is the sheet's own row (logStatesWithEntry).
+ *
+ * A tapped check-out (readTap) also gives tapShiftId, the Shift ID of the row the tablet
+ * showed closed, atMs, the tap on the server clock, and shownMilestone, the milestone id
+ * the tablet showed (null for none; undefined when it showed nothing). Among the
+ * volunteer's rows with that Shift ID: one that was open to the tablet at atMs
+ * (isTabletOpenRow) is the row closed, so a save that waited past the window still closes
+ * the row it was tapped for; else one closed by a kiosk was closed by an earlier send,
+ * {replay: entry, volunteer}, and nothing is to be written; else NOT_IN. The stated
+ * check-out is then atMs, or the row's start when atMs is before it. When shownMilestone
+ * isn't the milestone worked out here, flags gains the reason (milestoneMismatchReason)
+ * last. On states a closed row isn't held, so a replay there reads as NOT_IN.
  */
 function decideCheckOut(input) {
   const wanted = checkOutTokens(input.volunteers, input.id, input.digits);
@@ -1536,49 +1580,234 @@ function decideCheckOut(input) {
   const who = resolveCheckOut(input.entries !== undefined ? input : { ...input, entries });
   if (who.refusal) return { refusal: who.refusal };
   const volunteer = who.volunteer;
-  const open = findOpenShift(
-    entries,
-    volunteer.token,
-    input.nowMs,
-    input.windowMs,
-    input.todayDate,
-  );
-  if (!open) return { refusal: "NOT_IN" };
+  const tapId = typeof input.tapShiftId === "string" ? input.tapShiftId : "";
+  let open;
+  let outMs = input.outMs;
+  if (tapId) {
+    const named = entries.filter(
+      (e) => isTokenRow(e, volunteer.token) && cellString(e.shiftId) === tapId,
+    );
+    open =
+      named.filter((e) => isTabletOpenRow(e, input.atMs, input.windowMs, input.todayDate))[0] ||
+      null;
+    if (!open) {
+      const replay = named.filter(
+        (e) => isStatus(e, "closed") && entrySource(e.outBy) === "kiosk",
+      )[0];
+      return replay ? { replay, volunteer } : { refusal: "NOT_IN" };
+    }
+    const start = shiftStartMs(open);
+    outMs = isFinite(start) && input.atMs < start ? start : input.atMs;
+  } else {
+    open = findOpenShift(entries, volunteer.token, input.nowMs, input.windowMs, input.todayDate);
+    if (!open) return { refusal: "NOT_IN" };
+  }
   const out = validateCheckOut(
     input.nowMs,
-    input.outMs,
+    outMs,
     input.outDate,
     input.todayDate,
     shiftStartMs(open),
   );
   if (typeof out === "string") return { refusal: out };
   const flag = checkOutFlag(input.nowMs, out.outMs, input.flagMinutes);
-  const longFlag = longShiftAlert(pairHours(shiftStartMs(open), out.outMs), input.longShiftHours);
-  const cells = checkOutCells(open, input.nowMs, out.outMs, flag, longFlag);
-  const H = logHeaderNames();
+  const statedHours = pairHours(shiftStartMs(open), out.outMs);
+  const longFlag = longShiftAlert(statedHours, input.longShiftHours);
   const minutes = minutesFromHours(
-    milestoneHours({ ...open, statedHours: hoursCell(cells[H.statedHours]) }),
+    milestoneHours({ ...open, statedHours: hoursCell(statedHours) }),
   );
   const before =
     input.entries !== undefined
       ? closedTotals(input.entries, volunteer.token)
       : logStateOf(input.states, volunteer.token);
+  const milestone = milestoneCrossed(
+    before.shifts,
+    before.minutes,
+    minutes,
+    volunteer.startDate,
+    input.launchDate,
+  );
+  const extra = tapId ? [milestoneMismatchReason(input.shownMilestone, milestone)] : [];
   return {
     volunteer,
     row: open.row,
-    cells,
+    cells: checkOutCells(open, input.nowMs, out.outMs, flag, longFlag, extra),
     minutes,
-    milestone: milestoneCrossed(
-      before.shifts,
-      before.minutes,
-      minutes,
-      volunteer.startDate,
-      input.launchDate,
-    ),
+    milestone,
     statedOutMs: out.outMs,
-    flags: checkOutFlags(open, flag, longFlag),
+    flags: checkOutFlags(open, flag, longFlag, extra),
     open,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Kiosk taps
+//
+// A tablet that showed a check-in or check-out at the tap, before the server answered,
+// sends the save later with a tap: {tapId, shiftId, tapAt, sentAt, attempt, shown, name}.
+// tapId is a v4 UUID made at the tap and is a check-in's Shift ID, so a retry finds the
+// row its first send wrote. shiftId is the Shift ID of the open row a check-out closes.
+// tapAt and sentAt are two readings of the tablet clock; their difference is the tap's
+// age, which the server takes from its own clock. attempt counts the sends of the tap,
+// 1 for the first. shown is what the tablet showed: {missedSignOut} for a check-in,
+// {milestoneId} for a check-out. name is the name the tablet showed.
+
+/** The longest Shift ID a tap may name. */
+function tapShiftIdMaxLength() {
+  return 200;
+}
+
+/**
+ * The Shift ID a tap may name: the trimmed text, or null when it is empty, longer than
+ * tapShiftIdMaxLength(), or not text. The list sends an open row's Shift ID through this
+ * too, so a check-out the tablet can show is one whose tap the server can read.
+ */
+function tapShiftId(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  return text && text.length <= tapShiftIdMaxLength() ? text : null;
+}
+
+/** True when text is a lowercase v4 UUID. */
+function isTapId(text) {
+  return (
+    typeof text === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(text)
+  );
+}
+
+/**
+ * A tap the page sent with a check-in (kind "in") or check-out ("out"). null when there is
+ * none (undefined or null), so the call is an untapped one. Otherwise {tapId, shiftId,
+ * ageMs, attempt, shown, name}, or {unreadable: true} when the tap isn't an object, its
+ * tapId isn't a lowercase v4 UUID, a check-out's shiftId isn't one tapShiftId accepts,
+ * attempt isn't a whole number of at least 1, or shown isn't the shape for the kind.
+ * shiftId is null for a check-in. ageMs is sentAt - tapAt, 0 when that is negative or
+ * either isn't a finite number. name is cut to 100 characters, "" when it isn't text.
+ */
+function readTap(tap, kind) {
+  if (tap === undefined || tap === null) return null;
+  const bad = { unreadable: true };
+  if (typeof tap !== "object" || Array.isArray(tap)) return bad;
+  if (kind !== "in" && kind !== "out") return bad;
+  if (!isTapId(tap.tapId)) return bad;
+  const shiftId = kind === "out" ? tapShiftId(tap.shiftId) : null;
+  if (kind === "out" && !shiftId) return bad;
+  if (!Number.isInteger(tap.attempt) || tap.attempt < 1) return bad;
+  const shown = tap.shown;
+  if (!shown || typeof shown !== "object" || Array.isArray(shown)) return bad;
+  let readShown;
+  if (kind === "in") {
+    if (typeof shown.missedSignOut !== "boolean") return bad;
+    readShown = { missedSignOut: shown.missedSignOut };
+  } else {
+    const id = shown.milestoneId;
+    if (id !== null && typeof id !== "string") return bad;
+    readShown = { milestoneId: id };
+  }
+  const finite = (n) => typeof n === "number" && isFinite(n);
+  return {
+    tapId: tap.tapId,
+    shiftId,
+    ageMs: finite(tap.sentAt) && finite(tap.tapAt) ? Math.max(0, tap.sentAt - tap.tapAt) : 0,
+    attempt: tap.attempt,
+    shown: readShown,
+    name: typeof tap.name === "string" ? tap.name.slice(0, 100) : "",
+  };
+}
+
+/**
+ * The Log headers a tapped decision reads from a volunteer's rows that aren't open: User
+ * Token, Status, Shift ID and Check-Out Entered By. A read that gives a tapped check-in or
+ * check-out fewer columns than the whole Log must give these for every row of the
+ * volunteer, any status and any date, and the full width of their open rows.
+ */
+function tapLogFields() {
+  const H = logHeaderNames();
+  return [H.token, H.status, H.shiftId, H.outBy];
+}
+
+/**
+ * The milestone a check-out shows, by the minutes of this shift, for a volunteer whose
+ * closed rows are state's (shifts and minutes): [{fromMinutes, id}], in order from 0. A
+ * check-out of add minutes crosses the id of the last step whose fromMinutes is at most
+ * add (null for none), which is milestoneCrossed(state.shifts, state.minutes, add,
+ * volunteer.startDate, launchDate). The answer changes only where an hours milestone is
+ * reached, so a step starts at 0 and at each such point up to maxMinutes, the longest
+ * shift the check-out can state; points past it are left out. Steps in a row with the same
+ * id are one step.
+ */
+function checkOutMilestoneSteps(state, volunteer, launchDate, maxMinutes) {
+  const breaks = [0];
+  milestones().forEach((m) => {
+    if (m.kind !== "hours") return;
+    const at = m.threshold * 60 - state.minutes;
+    if (!(at > 0 && at <= maxMinutes) || breaks.indexOf(at) >= 0) return;
+    let i = breaks.length;
+    while (breaks[i - 1] > at) i--;
+    breaks.splice(i, 0, at);
+  });
+  const steps = [];
+  breaks.forEach((at) => {
+    const crossed = milestoneCrossed(
+      state.shifts,
+      state.minutes,
+      at,
+      volunteer.startDate,
+      launchDate,
+    );
+    const id = crossed ? crossed.id : null;
+    if (!steps.length || steps[steps.length - 1].id !== id) steps.push({ fromMinutes: at, id });
+  });
+  return steps;
+}
+
+/**
+ * The Flags reason for a tapped save the server refused, after the tablet showed it saved.
+ * kind is "in" or "out", tapClock the tap's Central time as the Flags tab prints it
+ * ("9:02 AM"), code the refusal.
+ */
+function tapRefusalReason(kind, tapClock, code) {
+  const what = (kind === "out" ? "a check-out" : "a check-in") + " at " + tapClock;
+  if (kind === "in" && code === "ALREADY_IN") {
+    return (
+      "tablet showed " + what + "; the volunteer was already checked in, so no row was written"
+    );
+  }
+  if (kind === "out" && code === "NOT_IN") {
+    return (
+      "tablet showed " +
+      what +
+      "; the shift wasn't open to the tablet (closed by staff or the auto clock-out, or" +
+      " missing), so nothing was written"
+    );
+  }
+  return "tablet showed " + what + " as saved, but the server refused it (" + code + ")";
+}
+
+/** The Flags reason when the missed check-out notice the tablet showed isn't the server's. */
+function noticeMismatchReason(shownMissed, missed) {
+  if (typeof shownMissed !== "boolean" || shownMissed === missed) return "";
+  return missed
+    ? "missed check-out notice not shown on the tablet"
+    : "missed check-out notice shown on the tablet in error";
+}
+
+/**
+ * The Flags reason when the milestone the tablet showed (an id, or null for none) isn't
+ * the one the server worked out from the Log; "" when they agree or the tablet showed
+ * nothing (undefined).
+ */
+function milestoneMismatchReason(shownId, milestone) {
+  if (shownId === undefined) return "";
+  const decided = milestone ? milestone.id : null;
+  if (shownId === decided) return "";
+  const titleOf = (id) => {
+    if (id === null) return "none";
+    const found = milestones().filter((m) => m.id === id)[0];
+    return found ? found.title : String(id);
+  };
+  return "milestone on the tablet: " + titleOf(shownId) + "; from the Log: " + titleOf(decided);
 }
 
 // ---------------------------------------------------------------------------

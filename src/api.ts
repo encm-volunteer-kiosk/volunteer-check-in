@@ -9,13 +9,17 @@ import {
   checkIn,
   checkOut,
   isCheckedInAt,
+  checkInWindowMs,
   isToday,
   kioskStore,
+  localMilestones,
   missedSignOut,
   type KioskData,
   type Milestone,
+  type MilestoneStep,
   type Volunteer,
 } from "./data";
+import type { Tap } from "./saveQueue";
 import { DEFAULT_LONG_SHIFT_HOURS, longShiftHoursOf } from "./cardTime";
 import { nameKey } from "./sameName";
 
@@ -32,51 +36,75 @@ export type VolunteerSummary = {
   // That row's stated arrival. After midnight it can be on yesterday's date.
   openShiftArrival: string | null;
   needsPhoneCheck: boolean;
+  // A server older than instant results sends none of the four below.
+  // What a check-in now would answer for the missed check-out notice.
+  missedSignOut?: boolean;
+  // The open row's Shift ID, and when it leaves the window (ISO); null when not checked in.
+  openShiftId?: string | null;
+  openUntil?: string | null;
+  // The milestone a check-out shows by the minutes of this shift; null when not checked in.
+  checkOutMilestones?: MilestoneStep[] | null;
 };
 
 // id is the volunteer the server acted on. In a same-name group the phone digits pick the
 // member, so it can differ from the entry the volunteer tapped. missedSignOut is true when
 // the volunteer's last shift ended without their own Check Out (still open, or closed by the
-// auto clock-out or staff): the page then shows the missed check-out notice.
+// auto clock-out or staff): the page then shows the missed check-out notice. replayed is
+// true when a tapped check-in's row was already written by an earlier send of the same tap;
+// nothing was written, and the times are the row's when it has them, else null.
 export type CheckInResult = {
   id: string;
   shiftId: string;
-  arrivedAt: string;
-  tappedAt: string;
+  arrivedAt: string | null;
+  tappedAt: string | null;
   missedSignOut: boolean;
+  replayed?: boolean;
 };
 // signedOutAt is the stated check-out (the chosen time, or the tap when none was chosen);
-// tappedAt is the server's clock at the tap.
+// tappedAt is the server's clock at the tap. replayed as for a check-in: the named row was
+// already closed by a kiosk.
 export type CheckOutResult = {
   id: string;
-  signedOutAt: string;
-  tappedAt: string;
-  minutes: number;
+  signedOutAt: string | null;
+  tappedAt: string | null;
+  minutes: number | null;
   milestone: Milestone | null;
+  replayed?: boolean;
 };
 
-// The list reply: the volunteers, and the sheet's "Long shift flag hours", past which a
-// checked-in card turns amber (8 when the server sends none).
-export type VolunteerList = { volunteers: VolunteerSummary[]; longShiftHours: number };
+// The list reply: the volunteers, the sheet's "Long shift flag hours", past which a
+// checked-in card turns amber (8 when the server sends none), the milestone texts a
+// check-out's steps name, and the server's clock during the call (null from an older server,
+// whose list then can't decide an instant result).
+export type VolunteerList = {
+  volunteers: VolunteerSummary[];
+  longShiftHours: number;
+  milestones: Milestone[];
+  serverNow: number | null;
+};
 
 export interface KioskApi {
   checkAccess(code: string): Promise<true | Refusal>;
   listVolunteers(code: string): Promise<VolunteerList | Refusal>;
   // arrivalIso is the time chosen in the arrival picker, or null for now: the server then
-  // uses its own clock, so the tablet's clock never reaches the Log.
+  // uses its own clock, so a fixed error in the tablet's clock doesn't reach the Log. tap is
+  // a queued save's tap (saveQueue.ts): the server then states the tap's time, from its age.
   checkIn(
     code: string,
     id: string,
     arrivalIso: string | null,
     phoneLast4: string | null,
+    tap?: Tap,
   ): Promise<CheckInResult | Refusal>;
   // checkOutIso is the time chosen in the check-out picker, or null for now, as for arrival.
-  // It is the last argument, so the server still takes a call from an older page without it.
+  // It comes after the digits, so the server still takes a call from an older page without
+  // it; tap comes last for the same reason.
   checkOut(
     code: string,
     id: string,
     phoneLast4: string | null,
     checkOutIso: string | null,
+    tap?: Tap,
   ): Promise<CheckOutResult | Refusal>;
 }
 
@@ -97,6 +125,28 @@ export function toVolunteer(summary: VolunteerSummary): Volunteer {
     completedShiftCount: 0,
     totalVolunteerMinutes: 0,
     needsPhoneCheck: summary.needsPhoneCheck,
+    missedSignOut: typeof summary.missedSignOut === "boolean" ? summary.missedSignOut : undefined,
+    openShiftId: summary.openShiftId,
+    openUntil: summary.openUntil,
+    checkOutMilestones: summary.checkOutMilestones,
+  };
+}
+
+const isMilestone = (m: unknown): m is Milestone =>
+  typeof m === "object" &&
+  m !== null &&
+  ["id", "title", "message"].every((k) => typeof (m as Record<string, unknown>)[k] === "string");
+
+/** The list reply's milestone texts and server clock, each empty or null when not sent. */
+export function listExtrasOf(reply: Record<string, unknown>): {
+  milestones: Milestone[];
+  serverNow: number | null;
+} {
+  const milestones = Array.isArray(reply.milestones) ? reply.milestones.filter(isMilestone) : [];
+  const now = reply.serverNow;
+  return {
+    milestones,
+    serverNow: typeof now === "number" && Number.isFinite(now) ? now : null,
   };
 }
 
@@ -136,21 +186,40 @@ export const gasApi: KioskApi = {
     return {
       volunteers: reply.volunteers as VolunteerSummary[],
       longShiftHours: longShiftHoursOf(reply),
+      ...listExtrasOf(reply),
     };
   },
-  async checkIn(code, id, arrivalIso, phoneLast4) {
-    const reply = await run((r) => r.apiCheckIn(code, id, arrivalIso, phoneLast4));
+  // Without a tap the call carries today's four arguments.
+  async checkIn(code, id, arrivalIso, phoneLast4, tap) {
+    const reply = await run((r) =>
+      tap
+        ? r.apiCheckIn(code, id, arrivalIso, phoneLast4, tap)
+        : r.apiCheckIn(code, id, arrivalIso, phoneLast4),
+    );
     if (!reply.ok) return refusalOf(reply);
     const { id: actedOn, shiftId, arrivedAt, tappedAt } = reply;
     // A server older than the notice sends no missedSignOut: no notice.
     const missed = reply.missedSignOut === true;
-    return { id: actedOn, shiftId, arrivedAt, tappedAt, missedSignOut: missed } as CheckInResult;
+    const replayed = reply.replayed === true;
+    return {
+      id: actedOn,
+      shiftId,
+      arrivedAt,
+      tappedAt,
+      missedSignOut: missed,
+      replayed,
+    } as CheckInResult;
   },
-  async checkOut(code, id, phoneLast4, checkOutIso) {
-    const reply = await run((r) => r.apiCheckOut(code, id, phoneLast4, checkOutIso));
+  async checkOut(code, id, phoneLast4, checkOutIso, tap) {
+    const reply = await run((r) =>
+      tap
+        ? r.apiCheckOut(code, id, phoneLast4, checkOutIso, tap)
+        : r.apiCheckOut(code, id, phoneLast4, checkOutIso),
+    );
     if (!reply.ok) return refusalOf(reply);
     const { id: actedOn, signedOutAt, tappedAt, minutes, milestone } = reply;
-    return { id: actedOn, signedOutAt, tappedAt, minutes, milestone } as CheckOutResult;
+    const replayed = reply.replayed === true;
+    return { id: actedOn, signedOutAt, tappedAt, minutes, milestone, replayed } as CheckOutResult;
   },
 };
 
@@ -171,6 +240,7 @@ const refusalMessages: Record<string, string> = {
   PHONE_NEEDED: "Please enter the last four digits of your phone number.",
   PHONE_WRONG: "Those digits don't match our records. Please try again or see a board member.",
   PHONE_MISSING: "We need to confirm who you are. Please see a board member.",
+  TAP_UNREADABLE: "A kiosk tap can't be read.",
 };
 
 const refuse = (code: string): Refusal => ({ refusal: code, message: refusalMessages[code] });
@@ -271,6 +341,28 @@ function localResolveCheckOut(
   return localPhoneLast4[tapped.id] ? "PHONE_NEEDED" : "PHONE_MISSING";
 }
 
+/** The Shift ID of the volunteer's open shift in the local store, or null. */
+function localOpenShiftId(data: KioskData, volunteer: Volunteer): string | null {
+  if (!volunteer.currentCheckIn) return null;
+  const open = [...data.events]
+    .reverse()
+    .find(
+      (e) =>
+        e.volunteerId === volunteer.id &&
+        e.eventType === "check_in" &&
+        e.timestamp === volunteer.currentCheckIn,
+    );
+  if (!open) return null;
+  const closed = data.events.some((e) => e.shiftId === open.shiftId && e.eventType === "check_out");
+  return closed ? null : open.shiftId;
+}
+
+// As on the server: a tap happened its age (two readings of the tablet clock) before now.
+function localTapAge(tap: Tap): number {
+  const ok = (n: unknown) => typeof n === "number" && Number.isFinite(n);
+  return ok(tap.sentAt) && ok(tap.tapAt) ? Math.max(0, tap.sentAt - tap.tapAt) : 0;
+}
+
 /** The volunteer acted on, or the refusal, common to check-in and check-out. */
 function localLookup(code: string, id: string, digits: string | null, checkout = false) {
   if (!localCodeOk(code)) return { refusal: refuse("ACCESS") };
@@ -296,6 +388,7 @@ export const localApi: KioskApi & { reset(): void } = {
       .filter((v) => v.active)
       .map((v) => {
         const checkedIn = isCheckedInAt(v, now);
+        const windowFrom = Date.parse(v.currentCheckInTappedAt ?? v.currentCheckIn ?? "");
         return {
           id: v.id,
           firstName: v.firstName,
@@ -303,23 +396,57 @@ export const localApi: KioskApi & { reset(): void } = {
           checkedIn,
           openShiftArrival: checkedIn ? v.currentCheckIn : null,
           needsPhoneCheck: sharesName(data, v),
+          missedSignOut: missedSignOut(data, v.id),
+          openShiftId: checkedIn ? localOpenShiftId(data, v) : null,
+          openUntil:
+            checkedIn && Number.isFinite(windowFrom)
+              ? new Date(windowFrom + checkInWindowMs).toISOString()
+              : null,
+          // The local store has no milestone steps, so a local check-out waits for its reply.
+          checkOutMilestones: null,
         };
       });
-    return { volunteers, longShiftHours: DEFAULT_LONG_SHIFT_HOURS };
+    return {
+      volunteers,
+      longShiftHours: DEFAULT_LONG_SHIFT_HOURS,
+      milestones: localMilestones,
+      serverNow: Date.now(),
+    };
   },
-  async checkIn(code, id, arrivalIso, phoneLast4) {
+  async checkIn(code, id, arrivalIso, phoneLast4, tap) {
     const found = localLookup(code, id, phoneLast4);
     if (found.refusal) return found.refusal;
     const { data, volunteer } = found;
     const now = Date.now();
+    // A tap whose shift is already written is a send repeated: nothing more is written.
+    const written =
+      tap &&
+      data.events.find(
+        (e) =>
+          e.eventType === "check_in" && e.shiftId === tap.tapId && e.volunteerId === volunteer.id,
+      );
+    if (written) {
+      return {
+        id: volunteer.id,
+        shiftId: written.shiftId,
+        arrivedAt: written.timestamp,
+        tappedAt: null,
+        missedSignOut: false,
+        replayed: true,
+      };
+    }
     if (isCheckedInAt(volunteer, now)) return refuse("ALREADY_IN");
-    const arrived = localStatedTime(arrivalIso, now, true);
+    const arrived = tap
+      ? isToday(new Date(now - localTapAge(tap)).toISOString())
+        ? now - localTapAge(tap)
+        : "OTHER_DAY"
+      : localStatedTime(arrivalIso, now, true);
     if (typeof arrived === "string") return refuse(`ARRIVAL_${arrived}`);
     const arrivedAt = new Date(arrived).toISOString();
     const tappedAt = new Date(now).toISOString();
     // Read before the new shift is written, as on the server.
     const missed = missedSignOut(data, volunteer.id);
-    const next = checkIn(data, volunteer.id, arrivedAt, tappedAt);
+    const next = checkIn(data, volunteer.id, arrivedAt, tappedAt, tap?.tapId);
     await kioskStore.save(next);
     localData = next;
     return {
@@ -330,13 +457,35 @@ export const localApi: KioskApi & { reset(): void } = {
       missedSignOut: missed,
     };
   },
-  async checkOut(code, id, phoneLast4, checkOutIso) {
+  async checkOut(code, id, phoneLast4, checkOutIso, tap) {
     const found = localLookup(code, id, phoneLast4, true);
     if (found.refusal) return found.refusal;
     const { data, volunteer } = found;
     const now = Date.now();
+    // A tap naming a shift already checked out is a send repeated: nothing more is written.
+    const closed =
+      tap &&
+      data.events.find(
+        (e) =>
+          e.eventType === "check_out" &&
+          e.shiftId === tap.shiftId &&
+          e.volunteerId === volunteer.id,
+      );
+    if (closed) {
+      return {
+        id: volunteer.id,
+        signedOutAt: closed.timestamp,
+        tappedAt: null,
+        minutes: null,
+        milestone: null,
+        replayed: true,
+      };
+    }
     if (!volunteer.currentCheckIn || !isCheckedInAt(volunteer, now)) return refuse("NOT_IN");
-    const out = localStatedTime(checkOutIso, now, false);
+    if (tap && localOpenShiftId(data, volunteer) !== tap.shiftId) return refuse("NOT_IN");
+    const out = tap
+      ? Math.max(now - localTapAge(tap), Date.parse(volunteer.currentCheckIn))
+      : localStatedTime(checkOutIso, now, false);
     if (typeof out === "string") return refuse(`CHECKOUT_${out}`);
     // Equal to the arrival is accepted.
     if (out < Date.parse(volunteer.currentCheckIn)) return refuse("CHECKOUT_BEFORE_ARRIVAL");

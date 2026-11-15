@@ -821,34 +821,6 @@ function readLogRowAt_(row, width, cols, read, shiftId) {
 }
 
 /**
- * Log rows dated on any of dates (yyyy-MM-dd), in any row order. Reads the Date column
- * found by the header map, then only the block of rows from the first to the last of
- * those, across the full width. The kiosk list reads yesterday and today with it
- * (recentLogDates, Logic.js).
- */
-function readRecentLog_(dates, cols) {
-  const sheet = sheet_(LOG_TAB);
-  const last = sheet.getLastRow();
-  if (last < 2) return [];
-  const wanted = {};
-  (dates || []).forEach((d) => {
-    if (d) wanted[d] = true;
-  });
-  const dateCells = sheet.getRange(2, cols[logHeaderNames().date] + 1, last - 1, 1).getValues();
-  const rows = [];
-  dateCells.forEach((cells, i) => {
-    if (wanted[rowDate(cellText_(cells[0]))]) rows.push(i + 2);
-  });
-  if (!rows.length) return [];
-  const first = rows[0];
-  const values = sheet
-    .getRange(first, 1, rows[rows.length - 1] - first + 1, sheet.getLastColumn())
-    .getValues();
-  const read = logRead_();
-  return rows.map((row) => logEntry(values[row - first], row, cols, read));
-}
-
-/**
  * The Shifts tab's windows as shiftsTabWindows (Logic.js) gives them, {windows, problem},
  * read once. The tab is staff's and only ever read. A missing tab gives no windows and a
  * problem line; so does a tab with no Shifts, Start and Finish header row. Start and Finish

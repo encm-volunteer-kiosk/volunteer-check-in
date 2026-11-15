@@ -20,7 +20,19 @@ export type Volunteer = {
   // Shares a first and last name with another volunteer, so the kiosk asks for the last
   // four digits of their phone number.
   needsPhoneCheck?: boolean;
+  // From the server's list, read by an instant check-in or check-out (saveQueue.ts). A list
+  // from a server without them leaves them undefined, and then every tap waits.
+  // What a check-in now would answer for the missed check-out notice.
+  missedSignOut?: boolean;
+  // The open row's Shift ID, and when that row leaves the window (ISO), or null.
+  openShiftId?: string | null;
+  openUntil?: string | null;
+  // The milestone a check-out shows, by the minutes of this shift, or null.
+  checkOutMilestones?: MilestoneStep[] | null;
 };
+
+// From fromMinutes of this shift on, a check-out shows milestone id (null for none).
+export type MilestoneStep = { fromMinutes: number; id: string | null };
 
 export type VolunteerEvent = {
   id: string;
@@ -238,19 +250,45 @@ export const kioskStore = {
   },
 };
 
+// The local store's milestones, in the order the server checks them.
+export const localMilestones: Milestone[] = [
+  {
+    id: "shift-1",
+    title: "First completed shift",
+    message: "Your first day making a difference. Welcome to the neighborhood!",
+  },
+  {
+    id: "shift-10",
+    title: "10 shifts",
+    message: "10 times showing up for your neighbors. Thank you!",
+  },
+  {
+    id: "shift-25",
+    title: "25 shifts",
+    message: "25 shifts of showing up for East Nashville. That's something special.",
+  },
+  { id: "hours-50", title: "50 hours", message: "50 hours of care, kindness, and community." },
+  {
+    id: "hours-100",
+    title: "100 hours",
+    message: "100 hours of making East Nashville stronger.",
+  },
+];
+
 // timestamp is the stated arrival, tappedAt the moment Check In was tapped. An open shift
 // that has left the window stays open, without a check-out, as the auto clock-out finds it.
+// shiftId is the new shift's ID: a tapped check-in's tap ID, else a new one.
 export function checkIn(
   data: KioskData,
   volunteerId: string,
   timestamp: string,
   tappedAt = new Date().toISOString(),
+  shiftId: string = crypto.randomUUID(),
 ): KioskData {
   const volunteer = data.volunteers.find((v) => v.id === volunteerId);
   if (!volunteer || isCheckedInAt(volunteer, Date.parse(tappedAt))) {
     throw new Error("Volunteer is already checked in");
   }
-  const shiftId = crypto.randomUUID();
   return {
     ...data,
     volunteers: data.volunteers.map((v) =>
@@ -301,29 +339,7 @@ export function checkOut(
     minutes: volunteer.totalVolunteerMinutes,
   };
   const after = { shifts: before.shifts + 1, minutes: before.minutes + duration };
-  const candidates: Milestone[] = [
-    {
-      id: "shift-1",
-      title: "First completed shift",
-      message: "Your first day making a difference. Welcome to the neighborhood!",
-    },
-    {
-      id: "shift-10",
-      title: "10 shifts",
-      message: "10 times showing up for your neighbors. Thank you!",
-    },
-    {
-      id: "shift-25",
-      title: "25 shifts",
-      message: "25 shifts of showing up for East Nashville. That's something special.",
-    },
-    { id: "hours-50", title: "50 hours", message: "50 hours of care, kindness, and community." },
-    {
-      id: "hours-100",
-      title: "100 hours",
-      message: "100 hours of making East Nashville stronger.",
-    },
-  ];
+  const candidates = localMilestones;
   const earned =
     candidates.find((m) => {
       const key = `${volunteerId}:${m.id}`;

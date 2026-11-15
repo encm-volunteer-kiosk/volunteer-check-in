@@ -6,12 +6,19 @@ interface GoogleScriptRunner {
   withFailureHandler(handler: (error: Error) => void): GoogleScriptRunner;
   apiCheckAccess(code: string): void;
   apiListVolunteers(code: string): void;
-  apiCheckIn(code: string, id: string, arrivalIso: string | null, phoneLast4: string | null): void;
+  apiCheckIn(
+    code: string,
+    id: string,
+    arrivalIso: string | null,
+    phoneLast4: string | null,
+    tap?: object,
+  ): void;
   apiCheckOut(
     code: string,
     id: string,
     phoneLast4: string | null,
     checkOutIso: string | null,
+    tap?: object,
   ): void;
 }
 

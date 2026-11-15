@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   api,
   isRefusal,
@@ -14,11 +14,12 @@ import { appreciationMessages, isToday, type Milestone, type Volunteer } from ".
 import {
   clearStoredList,
   listStateAfterFailure,
-  markVolunteerIn,
+  noListExtras,
   readStoredList,
   retriesList,
   storeList,
   wakeRefreshDue,
+  type ListExtras,
   type ListState,
   type ListStorage,
 } from "./listStore";
@@ -55,6 +56,39 @@ import {
   type Screen,
   type StatusCode,
 } from "./saveFlow";
+import {
+  afterEnqueue,
+  changeQueue,
+  codeMatches,
+  dismissFailed,
+  dropMark,
+  enqueue,
+  heldMarkCovered,
+  newSave,
+  newTapId,
+  nextRunDelay,
+  overlay,
+  qualifies,
+  readQueue,
+  runOnce,
+  runnerGate,
+  SAVE_QUEUE_KEY,
+  SELECT_REFRESH_MS,
+  SERVER_MAX_MS,
+  stampNow,
+  stillSavingText,
+  storeForegroundMark,
+  stuckSaves,
+  touch,
+  type Change,
+  type FailedSave,
+  type ListStamp,
+  type Mark,
+  type QueuedSave,
+  type QueueEnv,
+  type RunResult,
+  type SaveQueue,
+} from "./saveQueue";
 
 // What the result screens show. The first name and kind come from the save, not the list.
 type Result = SaveOwner & {
@@ -273,9 +307,12 @@ function Welcome({
   onSelect,
   onSearchOpen,
   focusOnOpen,
+  banner,
 }: {
   volunteers: Volunteer[];
   listState: ListState;
+  // The staff banner for saves that didn't land, above the name box.
+  banner: ReactNode;
   clock: CardClock;
   onSelect: (v: Volunteer) => void;
   // Whether the name box takes focus on its own when the screen opens. Not when a tap
@@ -327,6 +364,7 @@ function Welcome({
       </section>
 
       <section className="name-search-card" aria-label="Find your volunteer profile">
+        {banner}
         <label className="search-field name-search-field">
           <Icon name="search" size={29} />
           <span className="sr-only">Type your first and last name</span>
@@ -447,10 +485,13 @@ function Welcome({
 
 function CheckedInSidebar({
   volunteers,
+  saving,
   clock,
   onSelect,
 }: {
   volunteers: Volunteer[];
+  // The saves waiting in the tablet's queue: a line under the title says how many.
+  saving: QueuedSave[];
   clock: CardClock;
   onSelect: (v: Volunteer) => void;
 }) {
@@ -467,6 +508,13 @@ function CheckedInSidebar({
   return (
     <aside className={`checkin-sidebar`}>
       <h2 className="checkin-sidebar-title">Checked In</h2>
+      {saving.length > 0 && (
+        <p className="sidebar-saving" role="status">
+          {saving.length === 1
+            ? `Saving 1 ${saving[0].kind === "in" ? "check-in" : "check-out"}…`
+            : `Saving ${saving.length}…`}
+        </p>
+      )}
       {checkedIn.length === 0 ? (
         <p className="sidebar-empty">No one checked in yet.</p>
       ) : (
@@ -684,6 +732,88 @@ function Confirmation({
         />
       )}
     </>
+  );
+}
+
+/**
+ * The staff banner on the welcome screen: saves that failed, queued saves tapped more than
+ * 10 minutes ago, and a save queue that couldn't be read. A board member clears the failed
+ * lines with the kiosk access code, checked on the tablet, so it works offline. "Not saved
+ * yet" lines can't be dismissed: they go when their saves land or fail.
+ */
+function SaveBanner({
+  failed,
+  stuck,
+  unreadable,
+  onDismiss,
+}: {
+  failed: FailedSave[];
+  stuck: QueuedSave[];
+  unreadable: boolean;
+  // True when the typed code is the kiosk's and the lines were cleared.
+  onDismiss: (typed: string) => boolean;
+}) {
+  const [asking, setAsking] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [wrong, setWrong] = useState(false);
+  if (!failed.length && !stuck.length && !unreadable) return null;
+  const what = (kind: SaveKind) => (kind === "in" ? "check-in" : "check-out");
+  const at = (ms: number) => formatTime(new Date(ms).toISOString());
+  const dismissable = failed.length > 0 || unreadable;
+  return (
+    <div className="save-banner" role="alert">
+      {dismissable && <strong>These didn&apos;t save. Please tell a board member.</strong>}
+      <ul>
+        {failed.map((f) => (
+          <li key={f.key}>
+            {f.name}: {what(f.kind)} at {at(f.tapAt)}. {f.reason}
+            {f.maybeSaved ? " It may have saved; check the Log." : ""}
+          </li>
+        ))}
+        {unreadable && (
+          <li>
+            The tablet&apos;s list of unsaved taps couldn&apos;t be read. Please check the Log.
+          </li>
+        )}
+        {stuck.map((s) => (
+          <li key={s.key}>
+            Not saved yet: {s.firstName} {s.lastName}, {what(s.kind)} at {at(s.tapAt)}. The tablet
+            keeps trying.
+          </li>
+        ))}
+      </ul>
+      {dismissable &&
+        (asking ? (
+          <form
+            className="save-banner-code"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (onDismiss(typed)) {
+                setAsking(false);
+                setTyped("");
+                setWrong(false);
+              } else setWrong(true);
+            }}
+          >
+            <label>
+              Board member: kiosk access code
+              <input
+                type="password"
+                value={typed}
+                onChange={(event) => setTyped(event.target.value)}
+                autoComplete="off"
+                autoFocus
+              />
+            </label>
+            <button type="submit">Clear</button>
+            {wrong && <p>That&apos;s not the kiosk code.</p>}
+          </form>
+        ) : (
+          <button type="button" onClick={() => setAsking(true)}>
+            Dismiss
+          </button>
+        ))}
+    </div>
   );
 }
 
@@ -1140,6 +1270,9 @@ function listStorage(): ListStorage | null {
 export default function App() {
   const [code, setCode] = useState<string | null>(readStoredCode);
   const codeRef = useRef(code);
+  // The code was already in storage when the page started: the tablet's storage survived a
+  // reload, so a queued save will too. Without that, every tap waits for the server.
+  const codeKept = useRef(code !== null);
   const [setupError, setSetupError] = useState("");
   // A list kept from before the reload shows at once; the refresh below replaces it.
   const [keptList] = useState(() => readStoredList(listStorage(), code, Date.now()));
@@ -1155,6 +1288,40 @@ export default function App() {
   const listSavedAt = useRef<number | null>(keptList?.savedAt ?? null);
   const listRequested = useRef(0);
   const listApplied = useRef(0);
+  // What the list in use carries beside its volunteers: milestone texts, the tablet clock's
+  // offset from the server's, and the stamp of its request (saveQueue.ts).
+  const listExtras = useRef<ListExtras>(keptList ?? noListExtras);
+  const [listStamp, setListStamp] = useState<ListStamp | null>(keptList?.listStamp ?? null);
+  // The save queue in localStorage, shared by every kiosk tab. The copy here is for
+  // rendering: every change goes through changeQueue, which reads and writes storage.
+  const queueEnv = useMemo<QueueEnv>(
+    () => ({
+      locks: typeof navigator !== "undefined" && navigator.locks ? navigator.locks : null,
+      storage: listStorage(),
+      newEpoch: newTapId,
+      now: () => Date.now(),
+    }),
+    [],
+  );
+  const [queue, setQueueState] = useState<SaveQueue>(() => readQueue(listStorage(), newTapId));
+  const queueRef = useRef(queue);
+  // The page's first queue change, which list requests wait for, so their stamp reads the
+  // stored queue.
+  const queueStarted = useRef<Promise<unknown>>(Promise.resolve());
+  // Marks of this page's foreground saves that couldn't be stored, held here for the overlay
+  // until a list asked for after them is in use.
+  const [heldMarks, setHeldMarksState] = useState<Mark[]>([]);
+  const heldMarksRef = useRef<Mark[]>([]);
+  // This page is running a queue attempt (it holds, or is asking for, the runner lock).
+  const runnerActive = useRef(false);
+  const runnerTimer = useRef<number | null>(null);
+  // An instant tap is being stored; a second tap meanwhile is ignored.
+  const instantBusy = useRef(false);
+  // The list the screens show: the server's, with this tablet's saves and marks over it.
+  const shown = useMemo(
+    () => overlay(volunteers, queue, listStamp, heldMarks),
+    [volunteers, queue, listStamp, heldMarks],
+  );
   const [messageIndex, setMessageIndex] = useState(0);
   // The volunteer is using the welcome screen's name box: on a landscape tablet the Checked
   // In panel slides aside and the name card centers (index.css, src/searchOpen.ts).
@@ -1189,8 +1356,8 @@ export default function App() {
   // A check-out sent without digits was refused because another of the name is checked in.
   const [anotherIn, setAnotherIn] = useState(false);
   const inactivityRef = useRef<number | null>(null);
-  const selected = volunteers.find((v) => v.id === selectedId) ?? null;
-  const checkOutFloorMs = selected ? checkOutLowerBound(selected, volunteers) : null;
+  const selected = shown.find((v) => v.id === selectedId) ?? null;
+  const checkOutFloorMs = selected ? checkOutLowerBound(selected, shown) : null;
   const checkOutMinMinutes = checkOutFloorMs === null ? null : centralMinutesOf(checkOutFloorMs);
   // The check-out picker is offered only when the lower bound is today and at least one
   // quarter hour lies between it and now. The picker offers times of today only, so an
@@ -1228,12 +1395,16 @@ export default function App() {
     setArrivalPicker(false);
     setCheckOutTime(pickTime(centralTimeValue()));
     setCheckOutPicker(false);
-    const asked = digitsAskedAtTap(isCheckedIn(volunteer), volunteer, volunteers);
+    const asked = digitsAskedAtTap(isCheckedIn(volunteer), volunteer, shown);
     setDigitsAsked(asked);
     setAnotherIn(false);
     setPhoneStep(asked ? "entry" : null);
     setPhoneDigits("");
     setScreen(isCheckedIn(volunteer) ? "checkout" : "confirm");
+    // A list more than a minute old is refreshed while the volunteer reads the screen, so an
+    // instant result is decided on a newer one when it lands first. Nothing waits for it.
+    const arrived = listSavedAt.current;
+    if (arrived === null || Date.now() - arrived > SELECT_REFRESH_MS) refreshList();
   };
 
   const applyCode = (next: string | null) => {
@@ -1241,6 +1412,8 @@ export default function App() {
     storeCode(next);
     clearStoredList(listStorage());
     listSavedAt.current = null;
+    listExtras.current = noListExtras;
+    setListStamp(null);
     setCode(next);
     setVolunteers([]);
     setListState("loading");
@@ -1265,25 +1438,134 @@ export default function App() {
     const seq = ++listRequested.current;
     const isCurrent = () => seq > listApplied.current && codeRef.current === requestCode;
     const failed = () => setListState(listStateAfterFailure);
-    api.listVolunteers(requestCode).then(
-      (reply) => {
-        if (!isCurrent()) return;
-        listApplied.current = seq;
-        if (isRefusal(reply)) {
-          if (reply.refusal === "ACCESS") lockKiosk(reply.message);
-          else failed();
-          return;
-        }
-        listSavedAt.current = Date.now();
-        setVolunteers(reply.volunteers.map(toVolunteer));
-        setLongShiftHours(reply.longShiftHours);
-        setListState("ready");
-      },
+    void queueStarted.current.then(() => {
+      // The stamp: what the stored queue held when the list was asked for.
+      const stamp = stampNow(listStorage(), newTapId, Date.now());
+      api.listVolunteers(requestCode).then(
+        (reply) => {
+          if (!isCurrent()) return;
+          listApplied.current = seq;
+          if (isRefusal(reply)) {
+            if (reply.refusal === "ACCESS") lockKiosk(reply.message);
+            else failed();
+            return;
+          }
+          const receivedAt = Date.now();
+          listSavedAt.current = receivedAt;
+          listExtras.current = {
+            milestones: reply.milestones,
+            clockOffsetMs: reply.serverNow === null ? null : reply.serverNow - receivedAt,
+            listStamp: stamp,
+          };
+          setListStamp(stamp);
+          setHeldMarks(heldMarksRef.current.filter((m) => !heldMarkCovered(m, stamp)));
+          setVolunteers(reply.volunteers.map(toVolunteer));
+          setLongShiftHours(reply.longShiftHours);
+          setListState("ready");
+        },
+        () => {
+          if (isCurrent()) failed();
+        },
+      );
+    });
+  }
+
+  // A queue from storage or a change: rendered, and when its last save has left, the list
+  // is refreshed so the volunteers' saved state shows from the server.
+  function setQueue(next: SaveQueue) {
+    const emptied = queueRef.current.saves.length > 0 && next.saves.length === 0;
+    queueRef.current = next;
+    setQueueState(next);
+    if (emptied) refreshList();
+  }
+
+  async function changeSaves(change: Change) {
+    const result = await changeQueue(queueEnv, change);
+    setQueue(result.queue);
+    return result;
+  }
+
+  function setHeldMarks(next: Mark[]) {
+    heldMarksRef.current = next;
+    setHeldMarksState(next);
+  }
+
+  // A foreground save's mark: stored in the queue, or held here when it can't be (and then
+  // the kept list is removed, so a reload can't trust a list from before the save). False
+  // when the mark before a send was refused because the volunteer has a queued save.
+  async function foregroundMark(mark: Omit<Mark, "seq">, beforeSend = false) {
+    const result = await storeForegroundMark(queueEnv, mark, listStorage(), beforeSend);
+    setQueue(result.queue);
+    if (result.refused === "queued") return false;
+    const others = heldMarksRef.current.filter((m) => m.key !== mark.key);
+    setHeldMarks(result.stored ? others : [...others, { ...mark, seq: 0 }]);
+    return true;
+  }
+
+  // A foreground save the server refused wrote nothing: its mark goes.
+  async function dropForegroundMark(key: string) {
+    await changeSaves(dropMark(key));
+    setHeldMarks(heldMarksRef.current.filter((m) => m.key !== key));
+  }
+
+  function armRunner(ms: number) {
+    if (runnerTimer.current !== null) clearTimeout(runnerTimer.current);
+    runnerTimer.current = window.setTimeout(
       () => {
-        if (isCurrent()) failed();
+        runnerTimer.current = null;
+        void kickRunner();
       },
+      Math.max(0, ms),
     );
   }
+
+  // One attempt at the queue's head, when this page is visible, has a code and no
+  // foreground save is pending; then the next run is timed from what it found.
+  async function kickRunner() {
+    if (runnerActive.current) return;
+    const gate = runnerGate({
+      hasCode: Boolean(codeRef.current),
+      visible: document.visibilityState === "visible",
+      foregroundPending: saveFlow.current.pending !== null,
+      queued: queueRef.current.saves.length,
+    });
+    if (gate !== "run") {
+      if (gate !== null) armRunner(gate);
+      return;
+    }
+    runnerActive.current = true;
+    let ran: RunResult = { status: "busy" };
+    try {
+      ran = await runOnce(queueEnv, {
+        online: () => navigator.onLine,
+        send: (save, tap) => {
+          const sendCode = codeRef.current ?? "";
+          return save.kind === "in"
+            ? api.checkIn(sendCode, save.volunteerId, null, null, tap)
+            : api.checkOut(sendCode, save.volunteerId, null, null, tap);
+        },
+        wait: (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
+        onQueue: setQueue,
+      });
+    } catch {
+    } finally {
+      runnerActive.current = false;
+    }
+    const next = nextRunDelay(ran, {
+      now: Date.now(),
+      online: navigator.onLine,
+      hasLocks: queueEnv.locks !== null,
+      queued: queueRef.current.saves.length,
+    });
+    if (next === "lock") lockKiosk(refusalMessage("ACCESS"));
+    else if (next !== null) armRunner(next);
+  }
+
+  // The first queue change creates the stored queue, and its epoch, before the first list
+  // request reads its stamp.
+  useEffect(() => {
+    queueStarted.current = changeSaves(touch);
+  }, []);
 
   useEffect(() => {
     if (!code) return;
@@ -1322,26 +1604,60 @@ export default function App() {
     };
   }, [code]);
 
-  // After its own check-in or check-out the page shows the volunteer's new state until the
-  // next list arrives. A list asked for before the change is out of date and is dropped.
-  function markVolunteer(id: string, arrival: string | null) {
-    listApplied.current = listRequested.current;
-    setVolunteers((list) => markVolunteerIn(list, id, arrival));
-  }
+  // The runner runs when the page opens with a code, comes back into view, comes back
+  // online, and when another tab changes the queue. Each re-reads the queue from storage.
+  useEffect(() => {
+    if (!code) return;
+    const kick = () => void kickRunner();
+    const reread = () => setQueue(readQueue(listStorage(), newTapId));
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      reread();
+      kick();
+    };
+    const onPageShow = (event: PageTransitionEvent) => {
+      reread();
+      if (event.persisted) kick();
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== SAVE_QUEUE_KEY && event.key !== null) return;
+      reread();
+      kick();
+    };
+    void queueStarted.current.then(kick);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", onPageShow);
+    window.addEventListener("online", kick);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", onPageShow);
+      window.removeEventListener("online", kick);
+      window.removeEventListener("storage", onStorage);
+      if (runnerTimer.current !== null) clearTimeout(runnerTimer.current);
+    };
+  }, [code]);
 
-  // Keeps the list on the tablet when a server list arrives and after the page marks a
-  // volunteer. A marked list keeps its server list's savedAt, so it ages from that list.
+  // Keeps the server list on the tablet when it arrives, with what it carries beside the
+  // volunteers. The kept list is the server's: this tablet's saves are in the queue.
   useEffect(() => {
     const savedAt = listSavedAt.current;
     if (codeRef.current && savedAt !== null)
-      storeList(listStorage(), codeRef.current, savedAt, volunteers, longShiftHours);
+      storeList(
+        listStorage(),
+        codeRef.current,
+        savedAt,
+        volunteers,
+        longShiftHours,
+        listExtras.current,
+      );
   }, [volunteers, longShiftHours]);
 
   // Runs again when the screen changes, so a save that ends back on confirm or checkout for
   // a volunteer who left the list meanwhile goes home instead of showing a blank screen.
   useEffect(() => {
     if (goesHomeWhenListLosesVolunteer(screen, listState, selectedId, selected !== null)) goHome();
-  }, [volunteers, screen]);
+  }, [shown, screen]);
 
   useEffect(() => {
     const ms = inactivityMs(screen);
@@ -1380,6 +1696,7 @@ export default function App() {
         setResult(resultOf(taken.save, {}));
         setScreen("unconfirmed");
         refreshList();
+        void kickRunner();
       },
       msUntil(WATCHDOG_MS, Date.now() - startedAt),
     );
@@ -1459,6 +1776,120 @@ export default function App() {
     return taken.save;
   }
 
+  /**
+   * An instant check-in or check-out: the result shows at the tap and the save waits in the
+   * queue. False when the tap goes the waiting way instead. A volunteer with a queued save
+   * gets the still-saving line and no save at all, since a save sent now would reach the
+   * server before the queued one.
+   */
+  async function tryInstant(kind: SaveKind, entry: Volunteer): Promise<boolean> {
+    const now = Date.now();
+    const savingLine = (q: SaveQueue) =>
+      stillSavingText(q, entry.id, {
+        online: navigator.onLine,
+        now,
+        runnerHeld: runnerActive.current,
+      });
+    const still = savingLine(queueRef.current);
+    if (still) {
+      setError(still);
+      return true;
+    }
+    const extras = listExtras.current;
+    const ctx = {
+      hasCode: Boolean(codeRef.current),
+      codeKept: codeKept.current,
+      foregroundPending: saveFlow.current.pending !== null,
+      listState,
+      now,
+      listStamp,
+      clockOffsetMs: extras.clockOffsetMs,
+      queue: queueRef.current,
+      heldMarks: heldMarksRef.current,
+      arrivalPicker,
+      checkOutPicker,
+    };
+    if (!qualifies(kind, entry, ctx)) return false;
+    const save = newSave(kind, entry, now);
+    const milestoneId = "milestoneId" in save.shown ? save.shown.milestoneId : null;
+    const milestone =
+      milestoneId === null ? null : (extras.milestones.find((m) => m.id === milestoneId) ?? null);
+    // A step naming a milestone the list has no text for: the server's answer shows it.
+    if (milestoneId !== null && !milestone) return false;
+    const stored = await changeSaves(enqueue(save, listStamp));
+    const path = afterEnqueue(stored);
+    if (path === "still-saving") setError(savingLine(stored.queue) ?? "");
+    if (path !== "instant") return path === "still-saving";
+    closeTabletKeyboard();
+    if (kind === "in") {
+      setResult({
+        firstName: entry.firstName,
+        kind,
+        time: save.arrival ?? undefined,
+        message: nextMessage(),
+      });
+      setScreen(entry.missedSignOut ? "notice" : "success-in");
+    } else {
+      setResult({ firstName: entry.firstName, kind, milestone, message: nextMessage() });
+      setScreen("success-out");
+    }
+    void kickRunner();
+    return true;
+  }
+
+  // Runs tryInstant once at a time; true when the tap was handled there.
+  async function instantTap(kind: SaveKind, entry: Volunteer): Promise<boolean> {
+    if (instantBusy.current) return true;
+    instantBusy.current = true;
+    try {
+      return await tryInstant(kind, entry);
+    } finally {
+      instantBusy.current = false;
+    }
+  }
+
+  /**
+   * Before a foreground save is sent its mark is stored as unknown, open until the server
+   * can no longer write; the reply replaces it with what the server did, or removes it for a
+   * refusal, which wrote nothing. A reply that never comes leaves the unknown mark, so the
+   * volunteer's next tap waits for a list asked for after the server stopped. null, with
+   * nothing to send, when the stored queue holds a save for the volunteer.
+   */
+  async function markBeforeSend(volunteerId: string) {
+    const key = newTapId();
+    const startedAt = Date.now();
+    const marked = await foregroundMark(
+      {
+        key,
+        volunteerId,
+        at: startedAt,
+        listAfter: startedAt + SERVER_MAX_MS,
+        state: "unknown",
+        arrival: null,
+      },
+      true,
+    );
+    return marked ? key : null;
+  }
+
+  // Another tab queued a save for the volunteer after this page last read the queue: the
+  // foreground save isn't sent, and the volunteer gets the still-saving line, as a tap
+  // with a queued save does.
+  function endWithStillSaving(seq: number, volunteerId: string) {
+    const ended = endSave(seq);
+    if (ended) {
+      setScreen(ended.from);
+      setError(
+        stillSavingText(queueRef.current, volunteerId, {
+          online: navigator.onLine,
+          now: Date.now(),
+          runnerHeld: runnerActive.current,
+        }) ?? "",
+      );
+    }
+    void kickRunner();
+  }
+
   async function handleConfirm() {
     if (!selected || saveFlow.current.pending || !code) return;
     if (digitsMissing(digitsAsked, phoneDigits)) {
@@ -1466,12 +1897,18 @@ export default function App() {
       return;
     }
     setError("");
+    if (await instantTap("in", selected)) return;
     const timestamp = arrivalPicker ? pickedTimeToIso(arrivalTime) : null;
     if (timestamp && new Date(timestamp).getTime() > Date.now() + 60_000) {
       setError("Your arrival time cannot be in the future. Please choose an earlier time.");
       return;
     }
     const seq = beginSave("in", selected, "confirm");
+    const markKey = await markBeforeSend(selected.id);
+    if (markKey === null) {
+      endWithStillSaving(seq, selected.id);
+      return;
+    }
     let reply: Awaited<ReturnType<typeof api.checkIn>> | null = null;
     try {
       reply = await api.checkIn(
@@ -1481,6 +1918,18 @@ export default function App() {
         digitsToSend(digitsAsked, phoneDigits),
       );
     } catch {}
+    // The server is done with the call, whether or not the reply is still current.
+    if (reply && isRefusal(reply)) await dropForegroundMark(markKey);
+    else if (reply) {
+      await foregroundMark({
+        key: markKey,
+        volunteerId: reply.id,
+        at: Date.now(),
+        listAfter: 0,
+        state: "in",
+        arrival: reply.arrivedAt,
+      });
+    }
     const ended = endSave(seq);
     try {
       if (!ended) return;
@@ -1493,13 +1942,15 @@ export default function App() {
         showRefusal(reply, ended);
       } else {
         // In a same-name group the server picks the member by the digits, so the entry it
-        // acted on can be another one than the entry tapped; that is the one marked.
-        markVolunteer(reply.id, reply.arrivedAt);
-        setResult(resultOf(ended, { time: reply.arrivedAt, message: nextMessage() }));
+        // acted on can be another one than the entry tapped; that is the one marked above.
+        // A list asked for before the save is out of date and is dropped.
+        listApplied.current = listRequested.current;
+        setResult(resultOf(ended, { time: reply.arrivedAt ?? undefined, message: nextMessage() }));
         setScreen(reply.missedSignOut ? "notice" : "success-in");
       }
     } finally {
       refreshList();
+      void kickRunner();
     }
   }
 
@@ -1510,6 +1961,7 @@ export default function App() {
       return;
     }
     setError("");
+    if (await instantTap("out", selected)) return;
     // The page's own checks use the server's messages. The server checks again against its
     // clock and the shift it acts on.
     const timestamp = checkOutPicker ? pickedTimeToIso(checkOutTime) : null;
@@ -1525,6 +1977,11 @@ export default function App() {
       }
     }
     const seq = beginSave("out", selected, "checkout");
+    const markKey = await markBeforeSend(selected.id);
+    if (markKey === null) {
+      endWithStillSaving(seq, selected.id);
+      return;
+    }
     let reply: Awaited<ReturnType<typeof api.checkOut>> | null = null;
     try {
       reply = await api.checkOut(
@@ -1534,6 +1991,17 @@ export default function App() {
         timestamp,
       );
     } catch {}
+    if (reply && isRefusal(reply)) await dropForegroundMark(markKey);
+    else if (reply) {
+      await foregroundMark({
+        key: markKey,
+        volunteerId: reply.id,
+        at: Date.now(),
+        listAfter: 0,
+        state: "out",
+        arrival: null,
+      });
+    }
     const ended = endSave(seq);
     try {
       if (!ended) return;
@@ -1545,11 +2013,11 @@ export default function App() {
       } else if (isRefusal(reply)) {
         showRefusal(reply, ended);
       } else {
-        markVolunteer(reply.id, null);
+        listApplied.current = listRequested.current;
         setResult(
           resultOf(ended, {
-            time: reply.signedOutAt,
-            duration: reply.minutes,
+            time: reply.signedOutAt ?? undefined,
+            duration: reply.minutes ?? undefined,
             milestone: reply.milestone,
             message: nextMessage(),
           }),
@@ -1558,7 +2026,15 @@ export default function App() {
       }
     } finally {
       refreshList();
+      void kickRunner();
     }
+  }
+
+  // The kiosk code typed into the banner clears its failed lines in every tab.
+  function dismissBanner(typed: string) {
+    if (!codeMatches(typed, codeRef.current)) return false;
+    void changeSaves(dismissFailed());
+    return true;
   }
 
   const phoneProps = {
@@ -1587,14 +2063,27 @@ export default function App() {
         <>
           <Header />
           <Welcome
-            volunteers={volunteers}
+            volunteers={shown}
             listState={listState}
             clock={cardClock}
             onSelect={select}
             onSearchOpen={setSearchOpen}
             focusOnOpen={focusNameBox}
+            banner={
+              <SaveBanner
+                failed={queue.failed}
+                stuck={stuckSaves(queue, nowMs)}
+                unreadable={queue.unreadable}
+                onDismiss={dismissBanner}
+              />
+            }
           />
-          <CheckedInSidebar volunteers={volunteers} clock={cardClock} onSelect={select} />
+          <CheckedInSidebar
+            volunteers={shown}
+            saving={queue.saves}
+            clock={cardClock}
+            onSelect={select}
+          />
         </>
       )}
       {code && screen === "confirm" && selected && (
