@@ -1760,7 +1760,10 @@ steps have not yet been tried on ENCM's iPad; check step 4 when you set it up.
 
 In landscape the welcome screen keeps the name box at the top of the screen, so the box and
 the names under it fit above the on-screen keyboard; while someone types, the Checked In
-column slides aside and comes back when the keyboard closes. Keep one Safari tab open and
+column slides aside and comes back when the keyboard closes. On the phone step (the last
+four digits, for a name two volunteers share), the card moves to the top of the screen and
+drops its heading while the box is in use, so the box and both buttons stay above the
+keyboard. Keep one Safari tab open and
 the page zoom (the "AA" menu) at 100%, since a second tab's tab bar or another zoom moves
 the page down and can put the names under the keyboard.
 

@@ -561,7 +561,10 @@ function PhoneDigits({
         type="text"
         inputMode="numeric"
         pattern="[0-9]*"
-        autoComplete="off"
+        // Not "off": Safari ignores that and offers to fill in a contact's phone number, which
+        // would put the iPad owner's last four digits in the box. A code field gets no
+        // contact suggestions, and the number keyboard still comes from inputMode.
+        autoComplete="one-time-code"
         autoCorrect="off"
         spellCheck={false}
         enterKeyHint="done"
@@ -620,7 +623,9 @@ function Confirmation({
     <>
       <main className={`center-screen screen-enter${hasKeyboard ? " has-keyboard" : ""}`}>
         {!hasKeyboard && <BackButton onClick={onBack} />}
-        <section className={`panel confirmation-panel${hasKeyboard ? " with-keyboard" : ""}`}>
+        <section
+          className={`panel confirmation-panel${hasKeyboard ? " with-keyboard" : ""}${phoneStep === "entry" ? " phone-check" : ""}`}
+        >
           <div className="spark">
             <i />
             <i />
