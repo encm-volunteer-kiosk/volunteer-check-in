@@ -429,6 +429,12 @@ function Welcome({
         </div>
       </section>
 
+      {/* The logo and date, here under the name card instead of above it on a landscape tablet. */}
+      <div className="welcome-header">
+        <img className="logo" src={logo} alt="East Nashville Care Market" />
+        <DateBlock />
+      </div>
+
       <p className="tagline">Good neighbors change lives.</p>
     </main>
   );
@@ -455,11 +461,6 @@ function CheckedInSidebar({
 
   return (
     <aside className={`checkin-sidebar`}>
-      {/* The logo and date, here instead of above the name box on a landscape tablet. */}
-      <div className="sidebar-header">
-        <img className="logo" src={logo} alt="East Nashville Care Market" />
-        <DateBlock />
-      </div>
       <h2 className="checkin-sidebar-title">Checked In</h2>
       {checkedIn.length === 0 ? (
         <p className="sidebar-empty">No one checked in yet.</p>

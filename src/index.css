@@ -1461,10 +1461,10 @@
   }
 }
 
-/* The greeting inside the results area and the logo and date at the top of the Checked In
-   panel show only in the landscape layout below. */
+/* The greeting inside the results area and the logo and date under the name card show only
+   in the landscape layout below. */
 .results-greeting,
-.sidebar-header {
+.welcome-header {
   display: none;
 }
 
@@ -1550,21 +1550,32 @@
       transform var(--slide-duration) var(--slide-ease),
       visibility 0s linear 0s;
   }
-  /* Each block as wide as its content and inside the panel's content width. */
-  .app-shell.screen-welcome:not(.setup) .sidebar-header {
-    display: grid;
-    gap: 10px;
-    justify-items: start;
-    margin-bottom: 6px;
+  /* The logo and date in one row under the name card, as wide as the card: the logo at its
+     left edge, the date at its right. The row comes after the card, so nothing above the
+     box's bottom edge depends on it, and the keyboard covers it while it is up. */
+  .app-shell.screen-welcome:not(.setup) .welcome-header {
+    width: min(720px, 100%);
+    margin: 48px auto 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    transition: transform var(--slide-duration) var(--slide-ease);
   }
-  .app-shell.screen-welcome:not(.setup) .sidebar-header .logo {
-    width: min(180px, calc(100% - 22px));
+  .app-shell.screen-welcome:not(.setup) .welcome-header .logo {
+    width: 180px;
     margin: 0;
   }
-  .app-shell.screen-welcome:not(.setup) .sidebar-header .date {
-    max-width: 100%;
+  .app-shell.screen-welcome:not(.setup) .welcome-header .date {
     margin: 0;
-    text-align: left;
+  }
+  /* The row shows only where it ends inside the frame. It ends at 367 pt, and a block past
+     the frame's bottom gives the page a scroll range, which lets Safari move the box on a
+     tap. Below 400 pt tall (a landscape phone, never a kiosk) it is left out; the 32 pt over
+     its bottom edge leave room for a taller date or logo. */
+  @media (max-height: 399px) {
+    .app-shell.screen-welcome:not(.setup) .welcome-header {
+      display: none;
+    }
   }
 
   /* While the volunteer uses the name box, the panel slides off to the right and the card
@@ -1574,6 +1585,10 @@
      again from the first frame of its slide back. The move stays a transition even with
      reduced motion: Safari puts the caret back in the box when a transition ends. */
   .app-shell.screen-welcome:not(.setup).search-open .name-search-card {
+    transform: translateX(calc(var(--sidebar-width) / 2));
+  }
+  /* The logo and date row slides with the card, by the same move and timing. */
+  .app-shell.screen-welcome:not(.setup).search-open .welcome-header {
     transform: translateX(calc(var(--sidebar-width) / 2));
   }
   .app-shell.screen-welcome:not(.setup).search-open .checkin-sidebar {
