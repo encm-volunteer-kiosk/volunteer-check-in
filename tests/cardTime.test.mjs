@@ -84,3 +84,18 @@ test("the long-shift number comes from the list reply, else 8", () => {
     assert.equal(longShiftHoursOf(reply), 8, String(value));
   }
 });
+
+test("the Checked In panel's cards hide the time; the search results keep it", async () => {
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(
+    css,
+    /\n\.checkin-sidebar \.checkout-action,\n\.checkin-sidebar \.in-time \{\n  display: none;\n\}/,
+  );
+  // No other rule names .in-time inside the panel, so nothing shows it again.
+  assert.equal(css.match(/checkin-sidebar[^{}]*\.in-time/g).length, 1);
+  // The card still renders the time (the search results show it) and still turns amber.
+  assert.match(app, /<span className="in-time">\{time\.text\}<\/span>/);
+  assert.match(app, /\$\{time\?\.late \? " late" : ""\}/);
+});

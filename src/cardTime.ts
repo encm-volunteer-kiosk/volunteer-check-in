@@ -1,4 +1,5 @@
-// The check-in time on a checked-in volunteer's card. The card shows the stated arrival
+// The check-in time on a checked-in volunteer's card in the name search's results (the
+// Checked In panel hides the text and keeps the amber). The card shows the stated arrival
 // ("in 2:55 PM"). Once the volunteer has been in for more than the sheet's "Long shift flag
 // hours", the whole card turns amber and shows the time in instead ("10h 10m in"), so a
 // forgotten check-out stands out. A checked-in volunteer with no readable time shows
