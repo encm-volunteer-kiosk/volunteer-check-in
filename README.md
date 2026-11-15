@@ -1940,6 +1940,8 @@ pnpm push        build:gas, then clasp push
 ```
 src/, public/, index.html   kiosk front end (React 19, Vite, Tailwind 4) from Figma Make
 src/api.ts                  the page's calls: Apps Script when served by it, else local
+src/replies.ts              server replies as the page reads them: google.script.run drops a
+                            null field, so a missing nullable field reads as null
 .figma/, AGENTS.md          Figma Make's project files; keep them so Figma Make can re-import
 apps-script/Api.js          doGet and the api* functions the page calls
 apps-script/Admin.js        the Kiosk admin menu and its dialogs' server functions

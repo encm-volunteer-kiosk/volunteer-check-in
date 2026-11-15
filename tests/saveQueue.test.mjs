@@ -56,6 +56,8 @@ import {
   writeQueue,
 } from "../src/saveQueue.ts";
 import { LIST_STORE_KEY } from "../src/listStore.ts";
+import { stepsWithNulls } from "../src/replies.ts";
+import { viaScriptRun } from "./scriptRun.mjs";
 
 const L = {};
 vm.runInNewContext(readFileSync(new URL("../apps-script/Logic.js", import.meta.url), "utf8"), L);
@@ -338,7 +340,10 @@ test("shiftMinutes and milestoneFor equal the server's functions on a grid", () 
       for (const startDate of ["2025-06-01", "2026-03-01", ""]) {
         const state = { shifts, minutes };
         const maxMinutes = 12 * 60 + 1;
-        const steps = plain(L.checkOutMilestoneSteps(state, { startDate }, launch, maxMinutes));
+        // As the page reads them: through google.script.run, then replies.ts.
+        const steps = stepsWithNulls(
+          viaScriptRun(L.checkOutMilestoneSteps(state, { startDate }, launch, maxMinutes)),
+        );
         for (let add = 0; add <= maxMinutes; add += 7) {
           // A tap 0-59 s past the minute, as the server reads it.
           const tapMs = start + add * MIN + (add % 60) * 1000;

@@ -351,6 +351,59 @@ test("a kept list keeps what an instant result reads, and the list request's sta
   assert.equal(kept.volunteers[1].checkOutMilestones, null);
 });
 
+test("a list kept with the nulls google.script.run dropped is still used, and a step with no id reads as null", () => {
+  // As a page that read the list without filling the dropped nulls back kept it: a
+  // checked-out volunteer with none of the open-row fields, and a no-milestone step with no
+  // id.
+  const storage = fakeStorage();
+  storage.setItem(
+    LIST_STORE_KEY,
+    JSON.stringify({
+      version: LIST_STORE_VERSION,
+      code: "4417",
+      savedAt: T0,
+      volunteers: [
+        {
+          id: "h-ana",
+          firstName: "Ana",
+          lastName: "Lopez",
+          checkedIn: false,
+          currentCheckIn: null,
+          needsPhoneCheck: false,
+          missedSignOut: false,
+        },
+        {
+          id: "h-ben",
+          firstName: "Ben",
+          lastName: "Okafor",
+          checkedIn: true,
+          currentCheckIn: "2026-11-13T15:30:00.000Z",
+          needsPhoneCheck: false,
+          missedSignOut: false,
+          openShiftId: "shift-ben",
+          openUntil: "2026-11-14T03:30:00.000Z",
+          checkOutMilestones: [{ fromMinutes: 0 }, { fromMinutes: 95, id: "hours-50" }],
+        },
+      ],
+      longShiftHours: 8,
+      milestones: [],
+      clockOffsetMs: 0,
+      listStamp: { epoch: "e-1", seq: 7, requestedAt: T0 - 900 },
+    }),
+  );
+  const kept = readStoredList(storage, "4417", T0 + MINUTE);
+  assert.notEqual(kept, null);
+  assert.deepEqual(kept.volunteers[1].checkOutMilestones, [
+    { fromMinutes: 0, id: null },
+    { fromMinutes: 95, id: "hours-50" },
+  ]);
+  // A step with an id of another type is still refused.
+  const entry = JSON.parse(storage.items.get(LIST_STORE_KEY));
+  entry.volunteers[1].checkOutMilestones = [{ fromMinutes: 0, id: 7 }];
+  storage.setItem(LIST_STORE_KEY, JSON.stringify(entry));
+  assert.equal(readStoredList(storage, "4417", T0 + MINUTE), null);
+});
+
 test("a list from a server without the new fields is kept without them, so its taps wait", () => {
   const storage = fakeStorage();
   storeList(storage, "4417", T0, list, 8);
