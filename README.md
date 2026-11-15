@@ -26,11 +26,29 @@ so hours can be credited to each volunteer and reported to grantmakers.
   hours (Shift ID starting `import-`) are skipped, so a paper shift is never taken for a
   missed check-out. Nothing is stored for it: the check-in that shows the notice is the
   shift looked at next time, so each missed check-out shows it once.
-- **Check-in time on cards**: each checked-in card shows when the volunteer checked in.
-  Once they have been in more than "Long shift flag hours" (Settings), the whole card
-  turns amber and shows how long instead, so a missed check-out stands out. This needs
+- **Check-in time on cards**: a checked-in card in the name search's results shows when
+  the volunteer checked in; the Checked In panel shows the name alone. Once they have been
+  in more than "Long shift flag hours" (Settings), the whole card turns amber, and a search
+  result shows how long instead, so a missed check-out stands out. This needs
   "Long shift flag hours" below "Auto clock-out after hours", since a card leaves the
   list when the auto clock-out window has passed.
+- **Instant check-ins and check-outs**: a normal tap shows its result at once, the
+  missed-check-out notice included, from the volunteer list the tablet already holds, and
+  the save runs behind it. The tablet keeps unsent saves in its own storage, so they survive
+  a reload or the iPad sleeping, and sends them one at a time with a tap ID, so a save sent
+  twice writes one row. While any are waiting, the Checked In panel shows "Saving…". The
+  stated time is the time of the tap, worked out on the server from how long ago the tap
+  was. These taps still wait for the server, as before: a volunteer who shares a name and
+  types phone digits, a changed arrival or check-out time, a list that is too old or
+  doesn't agree with the tap, a tablet clock more than a minute off, a check-out close to a
+  milestone or to the auto clock-out window, a volunteer whose earlier save may still be
+  landing, and any tap when the browser can't store the queue or lock it.
+- **Unsaved taps banner**: if a save is refused or gives up, the welcome screen shows a
+  banner naming the volunteer, the kind of tap and its time ("These didn't save. Please
+  tell a board member."). A save still unsent after 10 minutes shows as "Not saved yet"
+  until it lands. A board member clears the banner with the kiosk access code; it works
+  offline and clears it in every kiosk tab. A refused save also has a Flags row. A tap
+  that never reached the server is only on the tablet; enter that shift with Add a shift.
 - **Server**: Apps Script (`apps-script/`) bound to a Check-In Log spreadsheet with Log
   and Settings tabs. Each shift is one Log row. The Log uses ENCM's own column names from
   their "2026-11 Log" sketch, then four columns of the kiosk's: Status, who entered the
@@ -95,10 +113,10 @@ one of the kiosk's texts.
 | B      | Day                            | The weekday of that date: Monday, Tuesday and so on.                   |
 | C      | Volunteer Name                 | First and last name from Volunteer Profiles.                           |
 | D      | Volunteer Role/Type            | Left blank for staff. The kiosk never writes it; reports group by it.  |
-| E      | Check-In Recorded (timestamp)  | The server's clock when the volunteer tapped Check In.                 |
-| F      | Check-In Stated (user)         | The arrival time the volunteer chose, or E when they chose none.       |
-| G      | Check-Out Recorded (timestamp) | The server's clock when the volunteer tapped Check Out.                |
-| H      | Check-Out Stated (user)        | The check-out time the volunteer chose, or G when they chose none.     |
+| E      | Check-In Recorded (timestamp)  | The server's clock when the check-in reached it.                       |
+| F      | Check-In Stated (user)         | The arrival time the volunteer chose, or the time of their tap.        |
+| G      | Check-Out Recorded (timestamp) | The server's clock when the check-out reached it.                      |
+| H      | Check-Out Stated (user)        | The check-out time the volunteer chose, or the time of their tap.      |
 | I      | Hours Served (timestamps)      | G minus E, in hours to 2 decimals.                                     |
 | J      | Hours Served (stated)          | H minus F, in hours to 2 decimals.                                     |
 | K      | Admin Alerts?                  | A note for staff when a stated time is far from the tap (below).       |
@@ -179,7 +197,13 @@ prefers the name User Token. Profiles may head that column either "Onboarding To
 
 The Log holds each volunteer's User Token unhashed, and the token is the secret in the
 volunteer's onboarding link. **Share the Check-In Log spreadsheet as narrowly as Volunteer
-Profiles.** The tablet never receives the token: it gets a hashed ID instead.
+Profiles.** The tablet never receives the token: it gets a hashed ID instead. The list the
+tablet holds also carries no phone, Profiles row, start date or row number. It does carry,
+for every volunteer, whether their last shift ended without their own check-out; and for
+each checked-in volunteer the Shift ID of their open row (as the Log cell holds it, which
+is free text on a row typed by hand), when that row leaves the auto clock-out window, and
+the minutes into this shift at which a milestone would show. Someone near the 50- or
+100-hour mark could have their total worked out from that last item.
 
 If a volunteer's token is regenerated in Profiles, the kiosk counts their shifts from zero
 again. Staff can see the old token in the Log and change it by hand.
@@ -283,6 +307,12 @@ one row per flag, so staff can tick it off once someone has looked at it. The Lo
 still the record: Admin Alerts? keeps every flag. The Log check (see below) adds a second
 kind: a problem it found on a Log row. Those are on the Flags tab only, never in Admin
 Alerts?.
+
+A save the tablet sent later can add two more kinds. When the tablet showed a result the
+server didn't reach (for example "already checked in", or a shift staff had closed), no
+Log cell is written and a Flags row starts "tablet showed …" and says what the server
+found. When the tablet showed a different missed-check-out notice or milestone than the
+server worked out, the row is written and the difference is a flag on it.
 
 Only the kiosk adds Flags rows, at check-in and at check-out, the auto clock-out, one per
 row it closes or skips, Import past hours, for names it couldn't match and for paper shifts
