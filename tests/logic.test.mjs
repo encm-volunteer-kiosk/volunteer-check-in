@@ -1217,6 +1217,19 @@ const entry = (row, fields) => ({
   ...fields,
 });
 const WINDOW = 12 * HOUR;
+/** volunteerSummaries on the states of these entries, as the list builds them. */
+const summaries = (volunteers, entries, nowMs, windowMs, todayDate, launchDate = LAUNCH) =>
+  L.volunteerSummaries(
+    volunteers,
+    L.volunteerLogStates(
+      entries,
+      volunteers.map((v) => v.token),
+    ),
+    nowMs,
+    windowMs,
+    todayDate,
+    launchDate,
+  );
 
 test("findOpenShift matches by token and ignores rows out of the window and closed rows", () => {
   const find = (entries, token = TOKEN) => L.findOpenShift(entries, token, NOW, WINDOW, TODAY);
@@ -1315,7 +1328,7 @@ test("volunteerSummaries gives the arrival of an open row in the window and no p
     }),
     entry(3, { statedInMs: NaN, recordedInMs: NOW - HOUR }),
   ];
-  assert.deepEqual(plain(L.volunteerSummaries(volunteers, entries, NOW, WINDOW, TODAY)), [
+  assert.deepEqual(plain(summaries(volunteers, entries, NOW, WINDOW, TODAY)), [
     {
       id: ID,
       firstName: "Sam",
@@ -1323,6 +1336,10 @@ test("volunteerSummaries gives the arrival of an open row in the window and no p
       checkedIn: true,
       openShiftArrival: new Date(NOW - HOUR).toISOString(),
       needsPhoneCheck: true,
+      missedSignOut: true,
+      openShiftId: "shift-3",
+      openUntil: new Date(NOW - HOUR + WINDOW).toISOString(),
+      checkOutMilestones: [{ fromMinutes: 0, id: null }],
     },
     {
       id: "bbbbbbbbbbbbbbbb",
@@ -1331,6 +1348,10 @@ test("volunteerSummaries gives the arrival of an open row in the window and no p
       checkedIn: false,
       openShiftArrival: null,
       needsPhoneCheck: false,
+      missedSignOut: true,
+      openShiftId: null,
+      openUntil: null,
+      checkOutMilestones: null,
     },
   ]);
 });
@@ -1642,7 +1663,7 @@ test("an open row today with both check-in times typed with no date shows its ar
     READ,
   );
   assert.equal(L.hasReadableStart(open), true);
-  const [summary] = plain(L.volunteerSummaries([VOL], [open], NOW, WINDOW, TODAY));
+  const [summary] = plain(summaries([VOL], [open], NOW, WINDOW, TODAY));
   assert.equal(summary.checkedIn, true);
   assert.equal(summary.openShiftArrival, T("08:00").toISOString());
   const out = checkOut({ entries: [open] });
@@ -1665,7 +1686,7 @@ test("an open row today with both check-in times unreadable still shows as check
   const open = L.logEntry(openRowWithStart("9ish", "9ish"), 9, L.logColumns(LOG_HEADERS), READ);
   assert.equal(L.hasReadableStart(open), false);
   // The list says checked in, by the same test check-in uses, with no arrival to show.
-  const [summary] = plain(L.volunteerSummaries([VOL], [open], NOW, WINDOW, TODAY));
+  const [summary] = plain(summaries([VOL], [open], NOW, WINDOW, TODAY));
   assert.equal(summary.checkedIn, true);
   assert.equal(summary.openShiftArrival, null);
   assert.deepEqual(checkIn({ entries: [open], arrivedMs: null, arrivedDate: "" }), {
@@ -2504,6 +2525,7 @@ test("refusal gives each code its exact message", () => {
     CHECKOUT_BEFORE_ARRIVAL:
       "Your check-out time can't be before your arrival time. Please choose a later time.",
     BUSY: "The kiosk is busy. Please try again.",
+    TAP_UNREADABLE: "A kiosk tap can't be read.",
     ADMIN_EXPIRED: "This window has expired. Close it and open the Kiosk admin menu again.",
     ADMIN_INITIALS: "Please enter your initials, letters only.",
     ADMIN_NOTE_TOO_LONG: "Please keep the note to 500 characters or fewer.",
@@ -2953,7 +2975,7 @@ test("a 22:00 check-in is found at 01:00 and gone when 12 hours have passed sinc
   assert.equal(job(C(TODAY, "04:00")), 0);
   assert.equal(job(C(TODAY, "09:59")), 0);
   assert.equal(job(C(TODAY, "10:00")), 1);
-  const [listed] = plain(L.volunteerSummaries([VOL], [row], C(TODAY, "01:00"), WINDOW, TODAY));
+  const [listed] = plain(summaries([VOL], [row], C(TODAY, "01:00"), WINDOW, TODAY));
   assert.equal(listed.checkedIn, true);
   assert.equal(listed.openShiftArrival, new Date(C(YESTERDAY, "22:00")).toISOString());
 });
@@ -2964,7 +2986,7 @@ test("with a 10-hour window a 16:00 tap stating 08:00 can check out until 02:00,
   const row = tapped(2, YESTERDAY, "16:00", "08:00");
   const at = (hhmm) => ({ nowMs: C(TODAY, hhmm), windowMs: window, entries: [row] });
   const listed = (hhmm) =>
-    plain(L.volunteerSummaries([VOL], [row], C(TODAY, hhmm), window, TODAY))[0].checkedIn;
+    plain(summaries([VOL], [row], C(TODAY, hhmm), window, TODAY))[0].checkedIn;
   assert.equal(listed("01:59"), true);
   assert.equal(listed("02:00"), false);
   const out = checkOut(at("01:59"));
@@ -3000,7 +3022,7 @@ test("the night clocks spring forward, a 24-hour window keeps a row two dates ba
   const listedRows = [row].filter((e) =>
     L.recentLogDates("2027-03-15").includes(L.rowDate(e.dateText)),
   );
-  const [listed] = plain(L.volunteerSummaries([VOL], listedRows, now, window, "2027-03-15"));
+  const [listed] = plain(summaries([VOL], listedRows, now, window, "2027-03-15"));
   assert.equal(listed.checkedIn, false);
   // Check-in reads the whole Log, so it is refused until the hour has passed.
   const at = (ms) => ({
@@ -3814,4 +3836,449 @@ test("decisions on the volunteer's own rows equal decisions on the whole Log", (
   ]) {
     assert.ok(tally[key] > 0, "no case reached " + key + ": " + exact(tally));
   }
+});
+
+// ---------------------------------------------------------------------------
+// Kiosk taps
+
+const TAP_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
+const inTap = (fields = {}) => ({
+  tapId: TAP_ID,
+  shiftId: null,
+  tapAt: 1000,
+  sentAt: 4000,
+  attempt: 1,
+  shown: { missedSignOut: false },
+  name: "Sam Lee",
+  ...fields,
+});
+const outTap = (fields = {}) =>
+  inTap({ shiftId: "shift-9", shown: { milestoneId: null }, ...fields });
+
+test("readTap reads a check-in and a check-out tap, and none as null", () => {
+  assert.equal(L.readTap(undefined, "in"), null);
+  assert.equal(L.readTap(null, "out"), null);
+  assert.deepEqual(plain(L.readTap(inTap(), "in")), {
+    tapId: TAP_ID,
+    shiftId: null,
+    ageMs: 3000,
+    attempt: 1,
+    shown: { missedSignOut: false },
+    name: "Sam Lee",
+  });
+  assert.deepEqual(plain(L.readTap(outTap({ shiftId: "  shift-9 ", attempt: 3 }), "out")), {
+    tapId: TAP_ID,
+    shiftId: "shift-9",
+    ageMs: 3000,
+    attempt: 3,
+    shown: { milestoneId: null },
+    name: "Sam Lee",
+  });
+  assert.equal(
+    L.readTap(outTap({ shown: { milestoneId: "hours-50" } }), "out").shown.milestoneId,
+    "hours-50",
+  );
+});
+
+test("readTap takes a negative age or unreadable clock readings as 0 and cuts the name", () => {
+  assert.equal(L.readTap(inTap({ tapAt: 5000, sentAt: 4000 }), "in").ageMs, 0);
+  assert.equal(L.readTap(inTap({ sentAt: "4000" }), "in").ageMs, 0);
+  assert.equal(L.readTap(inTap({ tapAt: NaN }), "in").ageMs, 0);
+  assert.equal(L.readTap(inTap({ tapAt: undefined }), "in").ageMs, 0);
+  assert.equal(L.readTap(inTap({ sentAt: Infinity }), "in").ageMs, 0);
+  assert.equal(L.readTap(inTap({ name: "x".repeat(150) }), "in").name, "x".repeat(100));
+  assert.equal(L.readTap(inTap({ name: 7 }), "in").name, "");
+});
+
+test("readTap answers unreadable for every malformed tap", () => {
+  const bad = [
+    ["not an object", "tap", "in"],
+    ["an array", [], "in"],
+    ["no tapId", inTap({ tapId: undefined }), "in"],
+    ["uppercase tapId", inTap({ tapId: TAP_ID.toUpperCase() }), "in"],
+    ["v1 tapId", inTap({ tapId: "0f8fad5b-d9cb-169f-a165-70867728950e" }), "in"],
+    ["bad variant", inTap({ tapId: "0f8fad5b-d9cb-469f-c165-70867728950e" }), "in"],
+    ["out with no shiftId", outTap({ shiftId: null }), "out"],
+    ["out with a blank shiftId", outTap({ shiftId: "   " }), "out"],
+    ["out with a long shiftId", outTap({ shiftId: "s".repeat(201) }), "out"],
+    ["out with a number shiftId", outTap({ shiftId: 9 }), "out"],
+    ["attempt 0", inTap({ attempt: 0 }), "in"],
+    ["attempt 1.5", inTap({ attempt: 1.5 }), "in"],
+    ["attempt as text", inTap({ attempt: "1" }), "in"],
+    ["in with an out shape", inTap({ shown: { milestoneId: null } }), "in"],
+    ["in with a text notice", inTap({ shown: { missedSignOut: "false" } }), "in"],
+    ["out with an in shape", outTap({ shown: { missedSignOut: false } }), "out"],
+    ["out with a number milestone", outTap({ shown: { milestoneId: 3 } }), "out"],
+    ["no shown", inTap({ shown: null }), "in"],
+    ["another kind", inTap(), "sideways"],
+  ];
+  for (const [what, tap, kind] of bad) {
+    assert.deepEqual(plain(L.readTap(tap, kind)), { unreadable: true }, what);
+  }
+  assert.equal(L.readTap(outTap({ shiftId: "s".repeat(200) }), "out").shiftId, "s".repeat(200));
+});
+
+test("tapRefusalReason names the tap and what the server did", () => {
+  assert.equal(
+    L.tapRefusalReason("in", "9:02 AM", "ALREADY_IN"),
+    "tablet showed a check-in at 9:02 AM; the volunteer was already checked in, so no row was written",
+  );
+  assert.equal(
+    L.tapRefusalReason("out", "4:10 PM", "NOT_IN"),
+    "tablet showed a check-out at 4:10 PM; the shift wasn't open to the tablet (closed by staff or the auto clock-out, or missing), so nothing was written",
+  );
+  assert.equal(
+    L.tapRefusalReason("in", "9:02 AM", "NOT_FOUND"),
+    "tablet showed a check-in at 9:02 AM as saved, but the server refused it (NOT_FOUND)",
+  );
+  assert.equal(
+    L.tapRefusalReason("out", "4:10 PM", "PHONE_NEEDED"),
+    "tablet showed a check-out at 4:10 PM as saved, but the server refused it (PHONE_NEEDED)",
+  );
+});
+
+test("decideCheckIn with a tap replays a row of the volunteer with its Shift ID at any status", () => {
+  const tapped = (fields) => checkIn({ tapShiftId: TAP_ID, shownMissed: false, ...fields });
+  for (const fields of [
+    { status: "open" },
+    { status: "closed", outBy: "kiosk" },
+    { status: "closed", outBy: "JP" },
+    { status: "closed", outBy: "auto-close" },
+    { status: "open", recordedInMs: NOW - 30 * HOUR, dateText: "2026-11-10" },
+    { status: "" },
+  ]) {
+    const row = entry(7, { shiftId: TAP_ID, ...fields });
+    assert.deepEqual(tapped({ entries: [row] }), { replay: plain(row), volunteer: VOL });
+  }
+  // Another volunteer's row with that Shift ID is not this tap.
+  const other = entry(7, { shiftId: TAP_ID, token: OTHER_TOKEN, status: "closed" });
+  assert.equal(tapped({ entries: [other] }).replay, undefined);
+  assert.equal(tapped({ entries: [other] }).volunteer.id, ID);
+  // An open row with another Shift ID is a real ALREADY_IN.
+  assert.deepEqual(tapped({ entries: [entry(8, {})] }), { refusal: "ALREADY_IN" });
+  // Without a tap, a row that happens to carry the ID changes nothing.
+  assert.deepEqual(checkIn({ entries: [entry(7, { shiftId: TAP_ID })] }), {
+    refusal: "ALREADY_IN",
+  });
+});
+
+test("decideCheckIn with a tap flags the arrival past the flag minutes and a notice the tablet got wrong", () => {
+  const tapped = (fields) => checkIn({ tapShiftId: TAP_ID, shownMissed: false, ...fields });
+  assert.equal(tapped({ arrivedMs: NOW - 15 * MIN }).flag, "");
+  assert.deepEqual(tapped({ arrivedMs: NOW - 15 * MIN }).flags, []);
+  assert.equal(tapped({ arrivedMs: NOW - 16 * MIN }).flag, "arrival differs by 16 min");
+  const missedRow = entry(3, { dateText: "2026-11-10", status: "closed", outBy: "auto-close" });
+  // The server says missed; the tablet showed no notice.
+  const notShown = tapped({ entries: [missedRow], arrivedMs: NOW - 20 * MIN });
+  assert.equal(notShown.missedSignOut, true);
+  assert.deepEqual(notShown.flags, [
+    "arrival differs by 20 min",
+    "missed check-out notice not shown on the tablet",
+  ]);
+  assert.equal(notShown.flag, "arrival differs by 20 min");
+  // The tablet showed the notice; the server says the last check-out was the volunteer's.
+  const kioskRow = { ...missedRow, outBy: "kiosk" };
+  assert.deepEqual(tapped({ entries: [kioskRow], arrivedMs: NOW, shownMissed: true }).flags, [
+    "missed check-out notice shown on the tablet in error",
+  ]);
+  // Agreeing, or no tap, adds nothing.
+  assert.deepEqual(tapped({ entries: [missedRow], arrivedMs: NOW, shownMissed: true }).flags, []);
+  assert.deepEqual(checkIn({ entries: [missedRow], arrivedMs: NOW }).flags, []);
+  assert.deepEqual(checkIn({ entries: [missedRow], arrivedMs: NOW, shownMissed: null }).flags, []);
+});
+
+test("decideCheckIn with a tap's first send decides the same on states as on entries", () => {
+  const logs = [
+    [],
+    [entry(3, { dateText: "2026-11-10", status: "closed", outBy: "kiosk" })],
+    [entry(3, { dateText: "2026-11-10", status: "closed", outBy: "JP" })],
+    [entry(8, {})],
+    [entry(7, { shiftId: TAP_ID })],
+    [entry(8, { recordedInMs: NOW - 13 * HOUR, statedInMs: NOW - 13 * HOUR })],
+  ];
+  for (const entries of logs) {
+    for (const shownMissed of [true, false]) {
+      const input = { tapShiftId: TAP_ID, shownMissed, arrivedMs: NOW - 16 * MIN };
+      const states = L.volunteerLogStates(entries, [TOKEN]);
+      const onStates = checkIn({ ...input, entries: undefined, states });
+      const onEntries = checkIn({ ...input, entries });
+      if (onEntries.replay) {
+        assert.equal(onStates.replay.row, onEntries.replay.row);
+        assert.equal(onStates.replay.shiftId, onEntries.replay.shiftId);
+      } else assert.deepEqual(onStates, onEntries);
+    }
+  }
+});
+
+const tapOut = (fields) =>
+  checkOut({
+    tapShiftId: "shift-9",
+    atMs: NOW - 5 * MIN,
+    outMs: NOW - 5 * MIN,
+    outDate: TODAY,
+    shownMilestone: "shift-1",
+    ...fields,
+  });
+
+test("decideCheckOut with a tap closes the named row at the tap", () => {
+  const out = tapOut({});
+  assert.equal(out.row, 9);
+  assert.equal(out.statedOutMs, NOW - 5 * MIN);
+  assert.equal(out.cells[H.recordedOut], NOW);
+  assert.equal(out.cells[H.statedOut], NOW - 5 * MIN);
+  assert.equal(out.milestone.id, "shift-1");
+  assert.deepEqual(out.flags, []);
+  assert.equal(out.cells[H.alerts], undefined);
+  // findOpenShift would pick row 10, the later start; the tap names row 9.
+  const later = entry(10, { recordedInMs: NOW - HOUR, statedInMs: NOW - HOUR });
+  assert.equal(L.findOpenShift([entry(9, {}), later], TOKEN, NOW, WINDOW, TODAY).row, 10);
+  assert.equal(tapOut({ entries: [entry(9, {}), later] }).row, 9);
+  assert.equal(checkOut({ entries: [entry(9, {}), later] }).row, 10);
+});
+
+test("decideCheckOut with a tap judges the window at the tap", () => {
+  // Checked in 12 h 1 min before the server's now: out of the window now, in it at the tap.
+  const old = entry(9, { recordedInMs: NOW - 12 * HOUR - MIN, statedInMs: NOW - 12 * HOUR - MIN });
+  assert.deepEqual(checkOut({ entries: [old] }), { refusal: "NOT_IN" });
+  const out = tapOut({
+    entries: [old],
+    atMs: NOW - 30 * MIN,
+    outMs: NOW - 30 * MIN,
+    longShiftHours: 24,
+  });
+  assert.equal(out.row, 9);
+  assert.equal(out.statedOutMs, NOW - 30 * MIN);
+  assert.equal(out.cells[H.alerts], "check-out differs by 30 min");
+  // Out of the window at the tap too: NOT_IN.
+  assert.deepEqual(tapOut({ entries: [old], atMs: NOW - MIN, outMs: NOW - MIN }), {
+    refusal: "NOT_IN",
+  });
+});
+
+test("decideCheckOut with a tap replays a kiosk-closed row and refuses one closed otherwise", () => {
+  const closed = (outBy) => entry(9, { status: "closed", outBy, statedHours: 2 });
+  assert.deepEqual(tapOut({ entries: [closed("kiosk")] }), {
+    replay: plain(closed("kiosk")),
+    volunteer: VOL,
+  });
+  assert.deepEqual(tapOut({ entries: [closed(" Kiosk ")] }).replay.row, 9);
+  for (const outBy of ["JP", "auto-close", ""]) {
+    assert.deepEqual(tapOut({ entries: [closed(outBy)] }), { refusal: "NOT_IN" }, outBy);
+  }
+  // Missing, or another volunteer's row with that Shift ID.
+  assert.deepEqual(tapOut({ entries: [] }), { refusal: "NOT_IN" });
+  assert.deepEqual(tapOut({ entries: [entry(9, { token: OTHER_TOKEN })] }), { refusal: "NOT_IN" });
+  assert.deepEqual(tapOut({ entries: [entry(9, { shiftId: "shift-other" })] }), {
+    refusal: "NOT_IN",
+  });
+});
+
+test("decideCheckOut with a tap before the row's start states the start", () => {
+  const fresh = entry(9, { recordedInMs: NOW - MIN, statedInMs: NOW - MIN });
+  const out = tapOut({ entries: [fresh], atMs: NOW - 3 * MIN, outMs: NOW - 3 * MIN });
+  assert.equal(out.statedOutMs, NOW - MIN);
+  assert.equal(out.cells[H.statedHours], 0);
+  // Without a readable start the tap's time stands.
+  const noStart = entry(9, { recordedInMs: NaN, statedInMs: NaN });
+  assert.equal(tapOut({ entries: [noStart] }).statedOutMs, NOW - 5 * MIN);
+});
+
+test("decideCheckOut with a tap flags a milestone the tablet got wrong, in Admin Alerts? and flags alike", () => {
+  const out = tapOut({ shownMilestone: null });
+  const reason = "milestone on the tablet: none; from the Log: First completed shift";
+  assert.deepEqual(out.flags, [reason]);
+  assert.equal(out.cells[H.alerts], reason);
+  const wrong = tapOut({
+    shownMilestone: "hours-50",
+    entries: [entry(9, { alerts: "staff note" })],
+    atMs: NOW - 20 * MIN,
+    outMs: NOW - 20 * MIN,
+  });
+  const reason2 = "milestone on the tablet: 50 hours; from the Log: First completed shift";
+  assert.deepEqual(wrong.flags, ["check-out differs by 20 min", reason2]);
+  assert.equal(wrong.cells[H.alerts], "staff note; check-out differs by 20 min; " + reason2);
+  // Agreeing adds nothing; no tap compares nothing.
+  assert.deepEqual(tapOut({ shownMilestone: "shift-1" }).flags, []);
+  assert.deepEqual(checkOut({ shownMilestone: null }).flags, []);
+});
+
+test("a tapped decision on rows that aren't open carrying only the tap fields matches the whole rows", () => {
+  const cols = L.logColumns(LOG_HEADERS);
+  const keyOf = Object.fromEntries(Object.entries(H).map(([k, h]) => [h, k]));
+  // What the untapped decision of each kind reads from a row that isn't open.
+  const untapped = { in: [H.date], out: [H.statedHours] };
+  const light = (e, headers) => {
+    const byHeader = {};
+    headers.forEach((h) => {
+      const v = e[keyOf[h] === "date" ? "dateText" : keyOf[h]];
+      byHeader[h] = typeof v === "number" && !Number.isFinite(v) ? "" : v;
+    });
+    return L.logEntry(logRow(LOG_HEADERS, byHeader), e.row, cols, READ);
+  };
+  const trim = (entries, headers) =>
+    entries.map((e) => (L.isStatus(e, "open") ? e : light(e, headers)));
+  const shape = (d) => (d.replay ? { replay: d.replay.row, volunteer: d.volunteer } : d);
+  const history = [2, 3, 4].map((n) =>
+    entry(n, { status: "closed", outBy: "kiosk", statedHours: 3, dateText: "2026-11-0" + (n + 2) }),
+  );
+  const fields = (kind) => [...L.tapLogFields(), ...untapped[kind]];
+
+  const inCases = [
+    [entry(7, { shiftId: TAP_ID, status: "closed", outBy: "kiosk" })],
+    [entry(7, { shiftId: TAP_ID, status: "closed", outBy: "JP" })],
+    [entry(7, { shiftId: TAP_ID, status: "closed", outBy: "auto-close" })],
+    [entry(7, { shiftId: TAP_ID, status: "open", recordedInMs: NOW - 30 * HOUR })],
+    [entry(7, { shiftId: TAP_ID, status: "closed", token: OTHER_TOKEN })],
+    [entry(8, {})],
+    [entry(6, { dateText: "2026-11-10", status: "closed", outBy: "JP" })],
+    [],
+  ];
+  for (const extra of inCases) {
+    for (const shownMissed of [true, false]) {
+      const entries = [...history, ...extra];
+      const input = { tapShiftId: TAP_ID, shownMissed, arrivedMs: NOW - 16 * MIN };
+      const whole = shape(checkIn({ ...input, entries }));
+      const trimmed = shape(checkIn({ ...input, entries: trim(entries, fields("in")) }));
+      assert.deepEqual(trimmed, whole);
+    }
+  }
+
+  const outCases = [
+    { entries: [entry(9, {})] },
+    { entries: [entry(9, { status: "closed", outBy: "kiosk", statedHours: 2 })] },
+    { entries: [entry(9, { status: "closed", outBy: "JP", statedHours: 2 })] },
+    { entries: [entry(9, { status: "closed", outBy: "auto-close", statedHours: 2 })] },
+    { entries: [] },
+    {
+      entries: [
+        entry(9, { recordedInMs: NOW - 12 * HOUR - MIN, statedInMs: NOW - 12 * HOUR - MIN }),
+      ],
+      atMs: NOW - 30 * MIN,
+      outMs: NOW - 30 * MIN,
+    },
+  ];
+  for (const c of outCases) {
+    for (const shownMilestone of [null, "shift-1", "hours-50"]) {
+      const entries = [...history, ...c.entries];
+      const input = { ...c, shownMilestone };
+      const whole = shape(tapOut({ ...input, entries }));
+      const trimmed = shape(tapOut({ ...input, entries: trim(entries, fields("out")) }));
+      assert.deepEqual(trimmed, whole);
+    }
+  }
+
+  // Without Check-Out Entered By, the kiosk-closed row the first send closed reads as typed.
+  const kioskClosed = [entry(9, { status: "closed", outBy: "kiosk", statedHours: 2 })];
+  const noOutBy = fields("out").filter((h) => h !== H.outBy);
+  assert.equal(tapOut({ entries: kioskClosed }).replay.row, 9);
+  assert.deepEqual(tapOut({ entries: trim(kioskClosed, noOutBy) }), { refusal: "NOT_IN" });
+});
+
+test("checkOutMilestoneSteps gives what milestoneCrossed gives for every minute of the shift", () => {
+  for (const shifts of [0, 1, 9, 10, 24, 25, 30]) {
+    for (const minutes of [0, 2999, 3000 - 30, 5999, 6000 - 600, 9000]) {
+      for (const startDate of ["2026-10-01", "2026-11-05", ""]) {
+        for (const maxMinutes of [0, 30, 721]) {
+          const state = { shifts, minutes, last: null, open: [] };
+          const steps = plain(L.checkOutMilestoneSteps(state, { startDate }, LAUNCH, maxMinutes));
+          assert.equal(steps[0].fromMinutes, 0);
+          steps.forEach((s, i) => {
+            assert.ok(s.fromMinutes <= maxMinutes);
+            if (i) assert.notEqual(s.id, steps[i - 1].id);
+            if (i) assert.ok(s.fromMinutes > steps[i - 1].fromMinutes);
+          });
+          for (let add = 0; add <= maxMinutes; add++) {
+            const step = steps.filter((s) => s.fromMinutes <= add).pop();
+            const crossed = L.milestoneCrossed(shifts, minutes, add, startDate, LAUNCH);
+            assert.equal(
+              step.id,
+              crossed ? crossed.id : null,
+              [shifts, minutes, startDate, add].join(),
+            );
+          }
+        }
+      }
+    }
+  }
+  // A step past the longest shift is left out.
+  const near = { shifts: 3, minutes: 6000 - 600, last: null, open: [] };
+  assert.deepEqual(plain(L.checkOutMilestoneSteps(near, { startDate: "" }, LAUNCH, 599)), [
+    { fromMinutes: 0, id: null },
+  ]);
+  assert.deepEqual(plain(L.checkOutMilestoneSteps(near, { startDate: "" }, LAUNCH, 600)), [
+    { fromMinutes: 0, id: null },
+    { fromMinutes: 600, id: "hours-100" },
+  ]);
+});
+
+test("volunteerSummaries on states carries exactly the listed fields and the notice answer entries give", () => {
+  const tokens = ["t-a", "t-b", "t-c", "t-d", "t-e", "t-f"];
+  const vols = tokens.map((token, i) => ({
+    ...VOL,
+    id: "id-" + i,
+    token,
+    startDate: i % 2 ? "2026-11-05" : "2026-01-01",
+  }));
+  const row = (n, token, fields) => entry(n, { token, shiftId: "s-" + n, ...fields });
+  const entries = [
+    // a: last row closed by the kiosk; b: closed by staff; c: open in the window.
+    row(2, "t-a", { status: "closed", outBy: "kiosk", dateText: "2026-11-10", statedHours: 2 }),
+    row(3, "t-b", { status: "closed", outBy: "JP", dateText: "2026-11-10", statedHours: 2 }),
+    row(4, "t-c", { status: "closed", outBy: "JP", dateText: "2026-11-09", statedHours: 49.5 }),
+    row(5, "t-c", {}),
+    // d: an open row left out of the window; then an import row after it, which never counts.
+    row(6, "t-d", { dateText: "2026-11-10", recordedInMs: NOW - 40 * HOUR }),
+    row(7, "t-d", { status: "closed", outBy: "", dateText: "2026-11-11", shiftId: "import-x" }),
+    // e: only rows before the launch date.
+    row(8, "t-e", { status: "closed", outBy: "JP", dateText: "2026-10-10", statedHours: 1 }),
+    // f: open with a Shift ID too long for a tap.
+    row(9, "t-f", { shiftId: "s".repeat(201) }),
+  ];
+  const states = L.volunteerLogStates(entries, tokens);
+  const listed = plain(L.volunteerSummaries(vols, states, NOW, WINDOW, TODAY, LAUNCH));
+  const keys = [
+    "id",
+    "firstName",
+    "lastName",
+    "checkedIn",
+    "openShiftArrival",
+    "needsPhoneCheck",
+    "missedSignOut",
+    "openShiftId",
+    "openUntil",
+    "checkOutMilestones",
+  ];
+  listed.forEach((v, i) => {
+    assert.deepEqual(Object.keys(v), keys);
+    assert.equal(v.missedSignOut, L.missedSignOut(entries, tokens[i], LAUNCH), tokens[i]);
+  });
+  assert.deepEqual(
+    listed.map((v) => v.missedSignOut),
+    [false, true, true, true, false, true],
+  );
+  const c = listed[2];
+  assert.equal(c.checkedIn, true);
+  assert.equal(c.openShiftId, "s-5");
+  assert.equal(c.openUntil, new Date(NOW - 2 * HOUR + WINDOW).toISOString());
+  // 49.5 hours closed: 50 hours comes 30 minutes into this shift.
+  assert.deepEqual(c.checkOutMilestones, [
+    { fromMinutes: 0, id: null },
+    { fromMinutes: 30, id: "hours-50" },
+  ]);
+  assert.equal(listed[3].checkedIn, false);
+  assert.equal(listed[3].openShiftId, null);
+  assert.equal(listed[3].checkOutMilestones, null);
+  // A Shift ID a tap couldn't name isn't listed, so the tablet waits for the server.
+  assert.equal(listed[5].checkedIn, true);
+  assert.equal(listed[5].openShiftId, null);
+  // A volunteer with no state reads as having no rows.
+  const [none] = plain(
+    L.volunteerSummaries([{ ...VOL, token: "t-z" }], states, NOW, WINDOW, TODAY, LAUNCH),
+  );
+  assert.equal(none.checkedIn, false);
+  assert.equal(none.missedSignOut, false);
+});
+
+test("tapLogFields names the four Log headers a tapped decision reads from rows that aren't open", () => {
+  assert.deepEqual(plain(L.tapLogFields()), [H.token, H.status, H.shiftId, H.outBy]);
 });

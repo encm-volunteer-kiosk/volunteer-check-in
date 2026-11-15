@@ -72,14 +72,19 @@ function apiListVolunteers(code) {
   if (denied) return denied;
   const now = new Date();
   const today = centralDate_(now);
+  const volunteers = getProfiles_(settings);
   return {
     ok: true,
     volunteers: volunteerSummaries(
-      getProfiles_(settings),
-      readRecentLog_(recentLogDates(today), readLogColumns_()),
+      volunteers,
+      volunteerLogStates(
+        readRecentLog_(recentLogDates(today), readLogColumns_()),
+        volunteers.map((v) => v.token),
+      ),
       now.getTime(),
       autoClockOutWindowMs(settings["Auto clock-out after hours"]),
       today,
+      settings["Kiosk launch date"],
     ),
     longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
   };
