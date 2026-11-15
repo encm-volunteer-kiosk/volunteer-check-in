@@ -8,6 +8,7 @@ import {
   centralDay,
   clearStoredList,
   LIST_STORE_KEY,
+  LIST_STORE_VERSION,
   listStateAfterFailure,
   markVolunteerIn,
   readStoredList,
@@ -97,13 +98,41 @@ test("a list 10 minutes old, from yesterday, with a savedAt in the future, or fo
   }
 });
 
+// A volunteer as a kept list holds one.
+const stored = {
+  id: "h-ana",
+  firstName: "Ana",
+  lastName: "Lopez",
+  checkedIn: false,
+  currentCheckIn: null,
+  needsPhoneCheck: false,
+};
+
 test("an entry that is not a kept list is ignored and removed", () => {
-  const good = { version: 2, code: "4417", savedAt: T0, volunteers: [], longShiftHours: 8 };
+  const good = {
+    version: LIST_STORE_VERSION,
+    code: "4417",
+    savedAt: T0,
+    volunteers: [],
+    longShiftHours: 8,
+    milestones: [],
+    clockOffsetMs: null,
+    listStamp: null,
+  };
   const bad = [
     "not json",
     "null",
-    JSON.stringify({ ...good, version: 3 }),
+    JSON.stringify({ ...good, version: 2 }),
+    JSON.stringify({ ...good, version: 4 }),
     JSON.stringify({ ...good, savedAt: "yesterday" }),
+    JSON.stringify({ ...good, milestones: undefined }),
+    JSON.stringify({ ...good, clockOffsetMs: "soon" }),
+    JSON.stringify({ ...good, listStamp: { epoch: "e" } }),
+    JSON.stringify({ ...good, volunteers: [{ ...stored, missedSignOut: "yes" }] }),
+    JSON.stringify({
+      ...good,
+      volunteers: [{ ...stored, checkOutMilestones: [{ fromMinutes: "0" }] }],
+    }),
     JSON.stringify({ ...good, volunteers: "none" }),
     JSON.stringify({ ...good, volunteers: [{ id: "h-ana", firstName: "Ana" }] }),
   ];
@@ -119,6 +148,9 @@ test("an entry that is not a kept list is ignored and removed", () => {
     savedAt: T0,
     volunteers: [],
     longShiftHours: 8,
+    milestones: [],
+    clockOffsetMs: null,
+    listStamp: null,
   });
 });
 
@@ -132,7 +164,16 @@ test("a kept list keeps the long-shift number", () => {
 });
 
 test("a list kept before the long-shift number, or without a good one, is ignored and removed", () => {
-  const good = { version: 2, code: "4417", savedAt: T0, volunteers: [], longShiftHours: 8 };
+  const good = {
+    version: LIST_STORE_VERSION,
+    code: "4417",
+    savedAt: T0,
+    volunteers: [],
+    longShiftHours: 8,
+    milestones: [],
+    clockOffsetMs: null,
+    listStamp: null,
+  };
   const { longShiftHours, ...noNumber } = good;
   const bad = [
     ["version 1", { version: 1, code: "4417", savedAt: T0, volunteers: [] }],
@@ -237,8 +278,11 @@ test("a stored entry holds names, hashed id, the checked-in flag and arrival, an
   storeList(storage, "4417", T0, [local], 8);
   const entry = JSON.parse(storage.items.get(LIST_STORE_KEY));
   assert.deepEqual(Object.keys(entry).sort(), [
+    "clockOffsetMs",
     "code",
+    "listStamp",
     "longShiftHours",
+    "milestones",
     "savedAt",
     "version",
     "volunteers",
@@ -281,4 +325,87 @@ test("coming back into view refreshes the list at most once every 30 s", () => {
   assert.equal(wakeRefreshDue(T0 + 29_999, T0, false), false);
   assert.equal(wakeRefreshDue(T0 + 30_000, T0, false), true);
   assert.equal(wakeRefreshDue(T0 + 5 * MINUTE, T0, false), true);
+});
+
+test("a kept list keeps what an instant result reads, and the list request's stamp", () => {
+  const storage = fakeStorage();
+  const steps = [
+    { fromMinutes: 0, id: null },
+    { fromMinutes: 95, id: "hours-50" },
+  ];
+  const ben = volunteer("h-ben", "Ben", "Okafor", {
+    checkedIn: true,
+    currentCheckIn: "2026-11-13T15:30:00.000Z",
+    missedSignOut: false,
+    openShiftId: "shift-ben",
+    openUntil: "2026-11-14T03:30:00.000Z",
+    checkOutMilestones: steps,
+    completedShiftCount: 30,
+    totalVolunteerMinutes: 2905,
+  });
+  const ana = volunteer("h-ana", "Ana", "Lopez", {
+    missedSignOut: true,
+    openShiftId: null,
+    openUntil: null,
+    checkOutMilestones: null,
+  });
+  const extras = {
+    milestones: [{ id: "hours-50", title: "50 hours", message: "Thank you." }],
+    clockOffsetMs: -1200,
+    listStamp: { epoch: "e-1", seq: 7, requestedAt: T0 - 900 },
+  };
+  storeList(storage, "4417", T0, [ben, ana], 8, extras);
+  const entry = JSON.parse(storage.items.get(LIST_STORE_KEY));
+  assert.equal(entry.version, 3);
+  assert.deepEqual(Object.keys(entry.volunteers[0]).sort(), [
+    "checkOutMilestones",
+    "checkedIn",
+    "currentCheckIn",
+    "firstName",
+    "id",
+    "lastName",
+    "missedSignOut",
+    "needsPhoneCheck",
+    "openShiftId",
+    "openUntil",
+  ]);
+  assert.doesNotMatch(storage.items.get(LIST_STORE_KEY), /2905|"30"/);
+  const kept = readStoredList(storage, "4417", T0 + MINUTE);
+  assert.deepEqual(kept.milestones, extras.milestones);
+  assert.equal(kept.clockOffsetMs, -1200);
+  assert.deepEqual(kept.listStamp, extras.listStamp);
+  const keptBen = kept.volunteers[0];
+  assert.equal(keptBen.missedSignOut, false);
+  assert.equal(keptBen.openShiftId, "shift-ben");
+  assert.equal(keptBen.openUntil, "2026-11-14T03:30:00.000Z");
+  assert.deepEqual(keptBen.checkOutMilestones, steps);
+  assert.equal(kept.volunteers[1].missedSignOut, true);
+  assert.equal(kept.volunteers[1].openShiftId, null);
+  assert.equal(kept.volunteers[1].checkOutMilestones, null);
+});
+
+test("a list from a server without the new fields is kept without them, so its taps wait", () => {
+  const storage = fakeStorage();
+  storeList(storage, "4417", T0, list, 8);
+  const kept = readStoredList(storage, "4417", T0 + MINUTE);
+  assert.equal("missedSignOut" in kept.volunteers[0], false);
+  assert.equal("checkOutMilestones" in kept.volunteers[1], false);
+  assert.equal(kept.clockOffsetMs, null);
+  assert.equal(kept.listStamp, null);
+});
+
+test("a list kept by the page before instant results (version 2) is dropped on read", () => {
+  const storage = fakeStorage();
+  storage.setItem(
+    LIST_STORE_KEY,
+    JSON.stringify({
+      version: 2,
+      code: "4417",
+      savedAt: T0,
+      volunteers: [stored],
+      longShiftHours: 8,
+    }),
+  );
+  assert.equal(readStoredList(storage, "4417", T0 + MINUTE), null);
+  assert.equal(storage.items.has(LIST_STORE_KEY), false);
 });

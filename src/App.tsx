@@ -1495,7 +1495,7 @@ export default function App() {
         // In a same-name group the server picks the member by the digits, so the entry it
         // acted on can be another one than the entry tapped; that is the one marked.
         markVolunteer(reply.id, reply.arrivedAt);
-        setResult(resultOf(ended, { time: reply.arrivedAt, message: nextMessage() }));
+        setResult(resultOf(ended, { time: reply.arrivedAt ?? undefined, message: nextMessage() }));
         setScreen(reply.missedSignOut ? "notice" : "success-in");
       }
     } finally {
@@ -1548,8 +1548,8 @@ export default function App() {
         markVolunteer(reply.id, null);
         setResult(
           resultOf(ended, {
-            time: reply.signedOutAt,
-            duration: reply.minutes,
+            time: reply.signedOutAt ?? undefined,
+            duration: reply.minutes ?? undefined,
             milestone: reply.milestone,
             message: nextMessage(),
           }),

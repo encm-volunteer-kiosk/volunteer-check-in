@@ -8,10 +8,17 @@
 // that arrival, not from the last write, and a clock that stepped back can't keep it alive.
 // An entry that fails any check is removed when it is read.
 //
+// The kept list is the server's list as it arrived, never the page's view of it with this
+// tablet's own saves laid over: those live in the save queue (saveQueue.ts). It keeps what an
+// instant check-in or check-out reads: each volunteer's missed check-out answer, open Shift
+// ID, window end and milestone steps, the milestone texts, the tablet clock's offset from the
+// server's, and the stamp of the list request, which says when it was asked for.
+//
 // Plain TypeScript only (no enums, namespaces or parameter properties): the tests import
 // this file in Node, which strips the types without a loader.
 
-import type { Volunteer } from "./data";
+import type { Milestone, MilestoneStep, Volunteer } from "./data";
+import type { ListStamp } from "./saveQueue.ts";
 
 // "stored": the list came from storage and the first refresh hasn't landed yet.
 export type ListState = "loading" | "stored" | "ready" | "failed";
@@ -21,12 +28,13 @@ export type ListStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 export const LIST_STORE_KEY = "encm-kiosk-volunteer-list";
 // Bump when the stored shape changes, so old entries are ignored and removed.
-export const LIST_STORE_VERSION = 2;
+export const LIST_STORE_VERSION = 3;
 export const STORED_LIST_MAX_AGE_MS = 10 * 60_000;
 
 const TZ = "America/Chicago";
 
-// Only what the kiosk shows or needs to pick a screen: no phone digits, token or Profiles row.
+// Only what the kiosk shows or needs to pick a screen and decide an instant result: no phone
+// digits, token or Profiles row. A field the server didn't send is left out.
 type StoredVolunteer = {
   id: string;
   firstName: string;
@@ -34,7 +42,22 @@ type StoredVolunteer = {
   checkedIn: boolean;
   currentCheckIn: string | null;
   needsPhoneCheck: boolean;
+  missedSignOut?: boolean;
+  openShiftId?: string | null;
+  openUntil?: string | null;
+  checkOutMilestones?: MilestoneStep[] | null;
 };
+
+// What a kept list holds beside its volunteers and long-shift number. clockOffsetMs is null
+// when the server sent no clock; listStamp is null when the page sent the request before it
+// had a save queue.
+export type ListExtras = {
+  milestones: Milestone[];
+  clockOffsetMs: number | null;
+  listStamp: ListStamp | null;
+};
+
+export const noListExtras: ListExtras = { milestones: [], clockOffsetMs: null, listStamp: null };
 
 type StoredList = {
   version: number;
@@ -43,7 +66,7 @@ type StoredList = {
   volunteers: StoredVolunteer[];
   // The sheet's "Long shift flag hours" from the same list reply: when a card turns amber.
   longShiftHours: number;
-};
+} & ListExtras;
 
 /** The Central calendar day of an instant, as YYYY-MM-DD. */
 export function centralDay(ms: number): string {
@@ -55,6 +78,14 @@ export function centralDay(ms: number): string {
   }).format(new Date(ms));
 }
 
+// The fields an instant result reads, each only when the list carried it.
+const instantFields = (v: Volunteer | StoredVolunteer) => ({
+  ...(typeof v.missedSignOut === "boolean" ? { missedSignOut: v.missedSignOut } : {}),
+  ...(v.openShiftId !== undefined ? { openShiftId: v.openShiftId } : {}),
+  ...(v.openUntil !== undefined ? { openUntil: v.openUntil } : {}),
+  ...(v.checkOutMilestones !== undefined ? { checkOutMilestones: v.checkOutMilestones } : {}),
+});
+
 const toStored = (v: Volunteer): StoredVolunteer => ({
   id: v.id,
   firstName: v.firstName,
@@ -62,6 +93,7 @@ const toStored = (v: Volunteer): StoredVolunteer => ({
   checkedIn: Boolean(v.checkedIn),
   currentCheckIn: v.currentCheckIn ?? null,
   needsPhoneCheck: Boolean(v.needsPhoneCheck),
+  ...instantFields(v),
 });
 
 // The same volunteer the server's list gives (see toVolunteer in api.ts).
@@ -76,7 +108,28 @@ const fromStored = (v: StoredVolunteer): Volunteer => ({
   completedShiftCount: 0,
   totalVolunteerMinutes: 0,
   needsPhoneCheck: v.needsPhoneCheck,
+  ...instantFields(v),
 });
+
+const isNumber = (n: unknown) => typeof n === "number" && Number.isFinite(n);
+const isTextOrNull = (t: unknown) => t === null || typeof t === "string";
+const absentOr = (r: Record<string, unknown>, key: string, ok: (v: unknown) => boolean) =>
+  !(key in r) || ok(r[key]);
+const isStep = (s: unknown) =>
+  typeof s === "object" &&
+  s !== null &&
+  isNumber((s as MilestoneStep).fromMinutes) &&
+  isTextOrNull((s as MilestoneStep).id);
+const isMilestone = (m: unknown) =>
+  typeof m === "object" &&
+  m !== null &&
+  ["id", "title", "message"].every((k) => typeof (m as Record<string, unknown>)[k] === "string");
+const isStamp = (s: unknown) =>
+  s === null ||
+  (typeof s === "object" &&
+    typeof (s as ListStamp).epoch === "string" &&
+    isNumber((s as ListStamp).seq) &&
+    isNumber((s as ListStamp).requestedAt));
 
 const isStoredVolunteer = (v: unknown): v is StoredVolunteer => {
   if (typeof v !== "object" || v === null) return false;
@@ -87,15 +140,18 @@ const isStoredVolunteer = (v: unknown): v is StoredVolunteer => {
     typeof r.lastName === "string" &&
     typeof r.checkedIn === "boolean" &&
     (r.currentCheckIn === null || typeof r.currentCheckIn === "string") &&
-    typeof r.needsPhoneCheck === "boolean"
+    typeof r.needsPhoneCheck === "boolean" &&
+    absentOr(r, "missedSignOut", (x) => typeof x === "boolean") &&
+    absentOr(r, "openShiftId", isTextOrNull) &&
+    absentOr(r, "openUntil", isTextOrNull) &&
+    absentOr(r, "checkOutMilestones", (x) => x === null || (Array.isArray(x) && x.every(isStep)))
   );
 };
 
 /**
- * Keeps the list and its reply's long-shift number. savedAt is when its server list arrived:
- * a write after the page marks a volunteer passes the same savedAt, so the list doesn't look
- * newer than the server's. A storage error is ignored; the page then loads as it would
- * without a kept list.
+ * Keeps the server list and its reply's long-shift number, milestone texts, clock offset and
+ * request stamp. savedAt is when its server list arrived. A storage error is ignored; the
+ * page then loads as it would without a kept list.
  */
 export function storeList(
   storage: ListStorage | null,
@@ -103,6 +159,7 @@ export function storeList(
   savedAt: number,
   volunteers: Volunteer[],
   longShiftHours: number,
+  extras: ListExtras = noListExtras,
 ): void {
   const entry: StoredList = {
     version: LIST_STORE_VERSION,
@@ -110,6 +167,9 @@ export function storeList(
     savedAt,
     volunteers: volunteers.map(toStored),
     longShiftHours,
+    milestones: extras.milestones,
+    clockOffsetMs: extras.clockOffsetMs,
+    listStamp: extras.listStamp,
   };
   try {
     storage?.setItem(LIST_STORE_KEY, JSON.stringify(entry));
@@ -124,15 +184,15 @@ export function clearStoredList(storage: ListStorage | null): void {
 }
 
 /**
- * The kept list, when its server list arrived, and its long-shift number, when it was saved
- * for this code, on now's Central day, and 0 <= now - savedAt < 10 minutes. Otherwise null,
- * and an entry that is there is removed. A storage error gives null.
+ * The kept list, when its server list arrived, its long-shift number and the rest it keeps,
+ * when it was saved for this code, on now's Central day, and 0 <= now - savedAt < 10
+ * minutes. Otherwise null, and an entry that is there is removed. A storage error gives null.
  */
 export function readStoredList(
   storage: ListStorage | null,
   code: string | null,
   now: number,
-): { savedAt: number; volunteers: Volunteer[]; longShiftHours: number } | null {
+): ({ savedAt: number; volunteers: Volunteer[]; longShiftHours: number } & ListExtras) | null {
   let raw: string | null;
   try {
     raw = storage ? storage.getItem(LIST_STORE_KEY) : null;
@@ -153,6 +213,9 @@ export function readStoredList(
     savedAt: usable.savedAt,
     volunteers: usable.volunteers.map(fromStored),
     longShiftHours: usable.longShiftHours,
+    milestones: usable.milestones,
+    clockOffsetMs: usable.clockOffsetMs,
+    listStamp: usable.listStamp,
   };
 }
 
@@ -167,6 +230,9 @@ function usableEntry(entry: unknown, code: string | null, now: number): StoredLi
   if (!Array.isArray(e.volunteers) || !e.volunteers.every(isStoredVolunteer)) return null;
   const hours = e.longShiftHours;
   if (typeof hours !== "number" || !Number.isFinite(hours) || hours <= 0) return null;
+  if (!Array.isArray(e.milestones) || !e.milestones.every(isMilestone)) return null;
+  if (!(e.clockOffsetMs === null || isNumber(e.clockOffsetMs))) return null;
+  if (!isStamp(e.listStamp)) return null;
   return entry as StoredList;
 }
 

@@ -173,3 +173,68 @@ test("a name nobody shares checks out without digits, as before", async () => {
   const api = await storeWith([]);
   assert.equal((await api.checkOut(CODE, "vol-8", null, null)).id, "vol-8");
 });
+
+const tapFor = (kind, extra = {}) => ({
+  tapId: crypto.randomUUID(),
+  shiftId: null,
+  tapAt: Date.now() - 3 * MIN,
+  sentAt: Date.now(),
+  attempt: 1,
+  shown: kind === "in" ? { missedSignOut: false } : { milestoneId: null },
+  name: "Jordan Rivera",
+  ...extra,
+});
+
+test("a tapped check-in sent twice makes one event and the second replies replayed", async () => {
+  const api = await storeWith([]);
+  const tap = tapFor("in");
+  const first = await api.checkIn(CODE, "vol-1", null, null, tap);
+  assert.equal(first.refusal, undefined, JSON.stringify(first));
+  assert.equal(first.shiftId, tap.tapId, "the tap ID is the new Shift ID");
+  // Stated at the tap: now minus its age.
+  const stated = Date.parse(first.arrivedAt);
+  assert.ok(Math.abs(stated - (Date.now() - 3 * MIN)) < 5_000, first.arrivedAt);
+  const second = await api.checkIn(CODE, "vol-1", null, null, { ...tap, attempt: 2 });
+  assert.equal(second.replayed, true);
+  assert.equal(second.missedSignOut, false);
+  const events = JSON.parse(localStorage.getItem(STORAGE_KEY)).events.filter(
+    (e) => e.shiftId === tap.tapId,
+  );
+  assert.equal(events.length, 1);
+  // A different tap for the same volunteer is a real ALREADY_IN.
+  const other = await api.checkIn(CODE, "vol-1", null, null, tapFor("in"));
+  assert.equal(other.refusal, "ALREADY_IN");
+});
+
+test("the local list carries the notice answer, the open Shift ID and window, and no steps", async () => {
+  const api = await storeWith([J1]);
+  const list = await api.listVolunteers(CODE);
+  assert.equal(typeof list.serverNow, "number");
+  assert.ok(list.milestones.some((m) => m.id === "hours-50"));
+  const jordan = list.volunteers.find((v) => v.id === J1);
+  assert.equal(jordan.openShiftId, `shift-${J1}`);
+  assert.equal(Date.parse(jordan.openUntil) - Date.parse(jordan.openShiftArrival), 12 * 60 * MIN);
+  assert.equal(jordan.checkOutMilestones, null, "local check-outs wait for their reply");
+  const jennifer = list.volunteers.find((v) => v.id === "vol-3");
+  assert.equal(jennifer.missedSignOut, true, "her last shift was closed by the auto clock-out");
+  assert.equal(jennifer.openShiftId, null);
+  assert.equal(list.volunteers.find((v) => v.id === "vol-2").missedSignOut, false);
+});
+
+test("a tapped check-out closes the named shift once; again it replies replayed", async () => {
+  const api = await storeWith(["vol-1"]);
+  const tap = tapFor("out", { shiftId: "shift-vol-1", name: "Sarah Johnson" });
+  const first = await api.checkOut(CODE, "vol-1", null, null, tap);
+  assert.equal(first.refusal, undefined, JSON.stringify(first));
+  assert.equal(first.minutes, 57, "stated at the tap, three minutes before the send");
+  const second = await api.checkOut(CODE, "vol-1", null, null, { ...tap, attempt: 2 });
+  assert.equal(second.replayed, true);
+  assert.equal(second.milestone, null);
+  // A tap naming another shift is NOT_IN.
+  const again = await storeWith(["vol-1"]);
+  const wrong = await again.checkOut(CODE, "vol-1", null, null, {
+    ...tap,
+    shiftId: "someone-else",
+  });
+  assert.equal(wrong.refusal, "NOT_IN");
+});
