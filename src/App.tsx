@@ -77,6 +77,8 @@ import {
   SERVER_MAX_MS,
   stampNow,
   stillSavingText,
+  savingLineShown,
+  nextSlowAt,
   storeForegroundMark,
   stuckSaves,
   touch,
@@ -490,11 +492,30 @@ function CheckedInSidebar({
   onSelect,
 }: {
   volunteers: Volunteer[];
-  // The saves waiting in the tablet's queue: a line under the title says how many.
+  // The saves waiting in the tablet's queue: once one has waited SLOW_SAVE_MS, a line
+  // under the title says how many.
   saving: QueuedSave[];
   clock: CardClock;
   onSelect: (v: Volunteer) => void;
 }) {
+  // Read again when the next queued save turns slow, so the line shows on time.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const at = nextSlowAt(saving, now);
+    if (at === null) return;
+    // Capped at setTimeout's largest delay: a longer one fires at once, over and over.
+    const wait = Math.min(2_147_483_647, Math.max(0, at - Date.now()));
+    const id = window.setTimeout(() => setNow(Date.now()), wait);
+    return () => window.clearTimeout(id);
+  }, [saving, now]);
+  // Once shown, the line stays until the queue is empty, so it doesn't blink off when a
+  // slow save lands ahead of a newer one.
+  const slowNow = savingLineShown(saving, Math.max(now, Date.now()));
+  const [held, setHeld] = useState(false);
+  if (saving.length === 0 && held) setHeld(false);
+  if (saving.length > 0 && slowNow && !held) setHeld(true);
+  const showSaving = saving.length > 0 && (held || slowNow);
+
   // Earliest check-in first. A volunteer whose check-in time can't be read is still
   // checked in, and goes last.
   const arrival = (v: Volunteer) =>
@@ -508,7 +529,7 @@ function CheckedInSidebar({
   return (
     <aside className={`checkin-sidebar`}>
       <h2 className="checkin-sidebar-title">Checked In</h2>
-      {saving.length > 0 && (
+      {showSaving && (
         <p className="sidebar-saving" role="status">
           {saving.length === 1
             ? `Saving 1 ${saving[0].kind === "in" ? "check-in" : "check-out"}…`

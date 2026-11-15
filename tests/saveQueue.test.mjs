@@ -49,7 +49,10 @@ import {
   stampNow,
   stillSavingText,
   storeForegroundMark,
+  SLOW_SAVE_MS,
   STUCK_MS,
+  savingLineShown,
+  nextSlowAt,
   stuckSaves,
   takeDue,
   touch,
@@ -1078,6 +1081,25 @@ test("stuckSaves: queued saves tapped more than 10 minutes ago", () => {
     stuckSaves(q, T0 + STUCK_MS + 1).map((s) => s.volunteerId),
     [ana.id],
   );
+});
+
+test("savingLineShown: only once a queued save has waited SLOW_SAVE_MS", () => {
+  const saves = [saveFor("in", ana, T0), saveFor("out", ben, T0 + 3_000)];
+  assert.equal(SLOW_SAVE_MS, 10_000);
+  assert.equal(savingLineShown([], T0 + STUCK_MS), false);
+  assert.equal(savingLineShown(saves, T0), false);
+  assert.equal(savingLineShown(saves, T0 + SLOW_SAVE_MS - 1), false);
+  assert.equal(savingLineShown(saves, T0 + SLOW_SAVE_MS), true);
+  // A save loaded from storage after a reload, tapped long ago, shows at once.
+  assert.equal(savingLineShown([saveFor("in", ana, T0 - STUCK_MS)], T0), true);
+});
+
+test("nextSlowAt: when the next queued save turns slow", () => {
+  const saves = [saveFor("in", ana, T0), saveFor("out", ben, T0 + 3_000)];
+  assert.equal(nextSlowAt([], T0), null);
+  assert.equal(nextSlowAt(saves, T0), T0 + SLOW_SAVE_MS);
+  assert.equal(nextSlowAt(saves, T0 + SLOW_SAVE_MS), T0 + 3_000 + SLOW_SAVE_MS);
+  assert.equal(nextSlowAt(saves, T0 + 3_000 + SLOW_SAVE_MS), null);
 });
 
 test("stillSavingText for each case", () => {
