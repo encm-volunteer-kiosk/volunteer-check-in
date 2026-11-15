@@ -442,6 +442,11 @@ const isStep = (s: unknown) =>
 
 export type QualifyContext = TrustContext & {
   hasCode: boolean;
+  // The page found the access code in storage when it started, so this tablet's storage
+  // survives a reload. A code typed since the page started is no such evidence: where the
+  // browser keeps the frame's storage only for the session, a reload would also wipe the
+  // queue, so every tap waits.
+  codeKept: boolean;
   foregroundPending: boolean;
   // The stored queue as the page last read it; changeQueue checks rules 3 and 6 again.
   queue: SaveQueue;
@@ -453,7 +458,8 @@ export type QualifyContext = TrustContext & {
 
 /**
  * The first rule a tap fails, or null when it qualifies for an instant result:
- * 1 an access code and no foreground save pending; 2 a trusted list; 3 no change by this
+ * 1 an access code, found in storage when the page started, and no foreground save pending;
+ * 2 a trusted list; 3 no change by this
  * tablet to the volunteer since the list was asked for; 4 no phone check; 5 no time picked;
  * 6 no queued save for the volunteer; 7 (check-in) not checked in and the list carries the
  * missed check-out answer; 8 (check-out) checked in, with the open row's Shift ID, its
@@ -466,7 +472,7 @@ export function qualifyFailure(
   entry: ListEntry,
   ctx: QualifyContext,
 ): number | null {
-  if (!ctx.hasCode || ctx.foregroundPending) return 1;
+  if (!ctx.hasCode || !ctx.codeKept || ctx.foregroundPending) return 1;
   if (!listTrusted(ctx)) return 2;
   if (
     hasMarkSince(ctx.queue, entry.id, ctx.listStamp) ||

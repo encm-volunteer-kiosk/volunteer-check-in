@@ -1269,6 +1269,9 @@ function listStorage(): ListStorage | null {
 export default function App() {
   const [code, setCode] = useState<string | null>(readStoredCode);
   const codeRef = useRef(code);
+  // The code was already in storage when the page started: the tablet's storage survived a
+  // reload, so a queued save will too. Without that, every tap waits for the server.
+  const codeKept = useRef(code !== null);
   const [setupError, setSetupError] = useState("");
   // A list kept from before the reload shows at once; the refresh below replaces it.
   const [keptList] = useState(() => readStoredList(listStorage(), code, Date.now()));
@@ -1782,6 +1785,7 @@ export default function App() {
     const extras = listExtras.current;
     const ctx = {
       hasCode: Boolean(codeRef.current),
+      codeKept: codeKept.current,
       foregroundPending: saveFlow.current.pending !== null,
       listState,
       now,

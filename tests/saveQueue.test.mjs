@@ -162,6 +162,7 @@ const ben = {
 function baseCtx(queue, extra = {}) {
   return {
     hasCode: true,
+    codeKept: true,
     foregroundPending: false,
     listState: "ready",
     now: T0,
@@ -191,6 +192,8 @@ test("each rule failing alone sends the tap the waiting way", () => {
   const q = freshQueue("e1");
   const cases = [
     [1, "in", ana, { hasCode: false }],
+    [1, "in", ana, { codeKept: false }],
+    [1, "out", ben, { codeKept: false }],
     [1, "in", ana, { foregroundPending: true }],
     [2, "in", ana, { listState: "failed" }],
     [2, "in", ana, { listState: "loading" }],
@@ -228,6 +231,17 @@ test("each rule failing alone sends the tap the waiting way", () => {
   // Exactly the margin before the window ends still qualifies.
   const edge = { ...ben, openUntil: new Date(T0 + 2 * MIN).toISOString() };
   assert.equal(qualifyFailure("out", edge, baseCtx(q)), null);
+});
+
+test("taps are instant only when the access code was in storage when the page started", () => {
+  const q = freshQueue("e1");
+  // The code was read from storage at start: the storage survived a reload.
+  assert.equal(qualifyFailure("in", ana, baseCtx(q, { codeKept: true })), null);
+  assert.equal(qualifyFailure("out", ben, baseCtx(q, { codeKept: true })), null);
+  // The code was typed on this page: every tap waits for the server, as without the queue.
+  assert.equal(qualifyFailure("in", ana, baseCtx(q, { codeKept: false })), 1);
+  assert.equal(qualifyFailure("out", ben, baseCtx(q, { codeKept: false })), 1);
+  assert.equal(qualifies("in", ana, baseCtx(q, { codeKept: false })), false);
 });
 
 test("rule 3: a mark newer than the list, or a new epoch, waits", () => {
