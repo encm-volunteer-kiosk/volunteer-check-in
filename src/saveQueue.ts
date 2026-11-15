@@ -582,6 +582,24 @@ export function addMark(mark: Omit<Mark, "seq">): Change {
   });
 }
 
+/** Removes the mark of this save: a foreground save the server refused wrote nothing. */
+export function dropMark(key: string): Change {
+  return (queue) =>
+    queue.marks.some((m) => m.key === key)
+      ? { ...queue, marks: queue.marks.filter((m) => m.key !== key) }
+      : { refused: "gone" };
+}
+
+/** The stamp of a list asked for now: the stored queue's epoch and seq, and the tablet time. */
+export function stampNow(
+  storage: QueueStorage | null,
+  newEpoch: () => string,
+  now: number,
+): ListStamp {
+  const q = readQueue(storage, newEpoch);
+  return { epoch: q.epoch, seq: q.seq, requestedAt: now };
+}
+
 /** Clears the failed lines and the unreadable line. */
 export function dismissFailed(): Change {
   return (queue) => ({ ...queue, failed: [], unreadable: false });
@@ -783,6 +801,40 @@ export async function runOnce(env: QueueEnv, deps: RunDeps): Promise<RunResult> 
     },
   );
   return ran;
+}
+
+/**
+ * When this page tries the runner again after a run, in ms from now, or null for no timer
+ * (an event will), or "lock" when the server refused the kiosk code. Another page sending
+ * (busy) gets a short timer while saves are queued, so a page that closed or froze holding
+ * the runner lock doesn't leave a due save waiting for the next wake or storage event.
+ * Offline, the online event starts the runner.
+ */
+export function nextRunDelay(
+  ran: RunResult,
+  ctx: { now: number; online: boolean; hasLocks: boolean; queued: number },
+): number | null | "lock" {
+  switch (ran.status) {
+    case "busy":
+      return ctx.hasLocks && ctx.queued > 0 ? RUNNER_BUSY_RETRY_MS : null;
+    case "idle":
+      return ran.nextTryAt !== null && ctx.online ? Math.max(1_000, ran.nextTryAt - ctx.now) : null;
+    case "unstored":
+      return Math.max(0, ran.retryAt - ctx.now);
+    case "sent":
+      return ran.outcome === "lock" ? "lock" : 0;
+  }
+}
+
+/**
+ * Where an instant tap goes after its enqueue: "instant" when the save was stored; the
+ * still-saving line when the volunteer already had a queued save (another tab queued it
+ * after this page last read the queue), since a save sent now would reach the server first;
+ * otherwise (a newer mark, or nothing stored) the waiting way.
+ */
+export function afterEnqueue(result: ChangeResult): "instant" | "still-saving" | "wait" {
+  if (result.refused === "queued") return "still-saving";
+  return result.stored ? "instant" : "wait";
 }
 
 // ---------------------------------------------------------------------------------------

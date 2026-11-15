@@ -895,6 +895,63 @@
 .error-notice svg {
   flex-shrink: 0;
 }
+/* The staff banner for saves that didn't land, above the name box. */
+.save-banner {
+  margin-bottom: 12px;
+  padding: 11px 13px;
+  border: 1.5px solid var(--error);
+  border-radius: 12px;
+  background: #fff0ed;
+  color: #812b29;
+  text-align: left;
+  font-size: 14px;
+  font-weight: 700;
+}
+.save-banner ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  list-style: disc;
+  font-weight: 600;
+}
+.save-banner > button,
+.save-banner-code button {
+  margin-top: 8px;
+  padding: 6px 14px;
+  border: 1.5px solid #812b29;
+  border-radius: 10px;
+  background: white;
+  color: #812b29;
+  font-weight: 800;
+}
+.save-banner-code {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+.save-banner-code label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.save-banner-code input {
+  padding: 6px 10px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  background: white;
+  color: var(--text);
+}
+.save-banner-code p {
+  flex-basis: 100%;
+  margin: 0;
+}
+/* Under the Checked In title while the tablet holds saves for the server. */
+.sidebar-saving {
+  margin: -4px 0 10px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+}
 .spinner {
   width: 18px;
   height: 18px;

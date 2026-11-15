@@ -11,11 +11,13 @@ import vm from "node:vm";
 import {
   addMark,
   afterAttempt,
+  afterEnqueue,
   ATTEMPT_MS,
   BACKOFF_MS,
   changeQueue,
   codeMatches,
   dismissFailed,
+  dropMark,
   dueSave,
   enqueue,
   freshQueue,
@@ -28,18 +30,21 @@ import {
   nearBoundary,
   newSave,
   newTapId,
+  nextRunDelay,
   outcomeOf,
   overlay,
   qualifies,
   qualifyFailure,
   readQueue,
   runOnce,
+  RUNNER_BUSY_RETRY_MS,
   SAVE_QUEUE_KEY,
   SAVE_QUEUE_LOCK,
   SAVE_QUEUE_VERSION,
   SAVE_RUNNER_LOCK,
   SERVER_MAX_MS,
   shiftMinutes,
+  stampNow,
   stillSavingText,
   storeForegroundMark,
   STUCK_MS,
@@ -1025,4 +1030,104 @@ test("takeDue counts the head's send in the queue as stored", () => {
   const taken = takeDue(T0 + 5, true)(q);
   assert.equal(taken.saves[0].sends, 1);
   assert.equal(taken.saves[0].lastSendAt, T0 + 5);
+});
+
+test("a refused foreground save's mark is removed; the stamp reads the stored queue", async () => {
+  const env = makeEnv();
+  await changeQueue(
+    env,
+    addMark({
+      key: "fg",
+      volunteerId: ana.id,
+      at: T0,
+      listAfter: T0 + SERVER_MAX_MS,
+      state: "unknown",
+      arrival: null,
+    }),
+  );
+  const r = await changeQueue(env, dropMark("fg"));
+  assert.equal(r.stored, true);
+  assert.deepEqual(r.queue.marks, []);
+  assert.equal((await changeQueue(env, dropMark("fg"))).refused, "gone");
+  assert.deepEqual(
+    stampNow(env.storage, () => "x", T0 + 5),
+    {
+      epoch: r.queue.epoch,
+      seq: r.queue.seq,
+      requestedAt: T0 + 5,
+    },
+  );
+});
+
+test("the runner looks again soon while another page holds its lock and saves are queued", () => {
+  const ctx = { now: T0, online: true, hasLocks: true, queued: 1 };
+  assert.equal(nextRunDelay({ status: "busy" }, ctx), RUNNER_BUSY_RETRY_MS);
+  assert.equal(nextRunDelay({ status: "busy" }, { ...ctx, queued: 0 }), null);
+  assert.equal(nextRunDelay({ status: "busy" }, { ...ctx, hasLocks: false }), null, "no Web Locks");
+  const idle = (nextTryAt) => ({ status: "idle", queue: freshQueue("e"), nextTryAt });
+  assert.equal(nextRunDelay(idle(T0 + 20_000), ctx), 20_000);
+  assert.equal(nextRunDelay(idle(T0), ctx), 1_000, "never a tight loop");
+  assert.equal(nextRunDelay(idle(null), ctx), null);
+  assert.equal(
+    nextRunDelay(idle(T0), { ...ctx, online: false }),
+    null,
+    "the online event starts it",
+  );
+  assert.equal(
+    nextRunDelay({ status: "unstored", retryAt: T0 + BACKOFF_MS[0] }, ctx),
+    BACKOFF_MS[0],
+  );
+  const sent = (outcome) => ({ status: "sent", outcome, queue: freshQueue("e"), late: null });
+  assert.equal(nextRunDelay(sent("landed"), ctx), 0);
+  assert.equal(nextRunDelay(sent("retry"), ctx), 0);
+  assert.equal(nextRunDelay(sent("lock"), ctx), "lock");
+});
+
+test("an enqueue refused for a queued save shows the still-saving line; a newer mark waits", async () => {
+  const { a, b } = twoPages();
+  const start = await changeQueue(a, touch);
+  const stamp = { epoch: start.queue.epoch, seq: start.queue.seq, requestedAt: T0 };
+  assert.equal(afterEnqueue(await changeQueue(b, enqueue(saveFor("in", ana), stamp))), "instant");
+  assert.equal(
+    afterEnqueue(await changeQueue(a, enqueue(saveFor("in", ana), stamp))),
+    "still-saving",
+  );
+  await changeQueue(
+    b,
+    addMark({ key: "fg", volunteerId: ben.id, at: T0, listAfter: 0, state: "out", arrival: null }),
+  );
+  assert.equal(afterEnqueue(await changeQueue(a, enqueue(saveFor("out", ben), stamp))), "wait");
+  // Storage full: the tap waits, and nothing is queued.
+  a.storage.full = true;
+  const cy = { ...ana, id: "vol-3" };
+  assert.equal(afterEnqueue(await changeQueue(a, enqueue(saveFor("in", cy), stamp))), "wait");
+  assert.equal(stored(a.storage).saves.length, 1);
+  // No Web Locks: the tap waits.
+  const noLocks = makeEnv({ locks: null });
+  assert.equal(afterEnqueue(await changeQueue(noLocks, enqueue(saveFor("in", cy), null))), "wait");
+});
+
+test("with storage full a foreground mark is held in memory: the card flips and a re-tap waits", async () => {
+  const env = makeEnv();
+  const start = await changeQueue(env, touch);
+  const stamp = { epoch: start.queue.epoch, seq: start.queue.seq, requestedAt: T0 - MIN };
+  env.storage.full = true;
+  const mark = {
+    key: "fg",
+    volunteerId: ana.id,
+    at: T0,
+    listAfter: 0,
+    state: "in",
+    arrival: "2026-11-13T16:00:00.000Z",
+  };
+  const r = await storeForegroundMark(env, mark, fakeStorage());
+  assert.equal(r.stored, false);
+  // The page holds it, as App.tsx does when the mark isn't stored.
+  const held = [{ ...mark, seq: 0 }];
+  const shown = overlay([ana], r.queue, stamp, held);
+  assert.equal(shown[0].checkedIn, true);
+  assert.equal(
+    qualifyFailure("in", ana, baseCtx(r.queue, { listStamp: stamp, heldMarks: held })),
+    3,
+  );
 });

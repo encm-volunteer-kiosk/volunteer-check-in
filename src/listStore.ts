@@ -236,20 +236,6 @@ function usableEntry(entry: unknown, code: string | null, now: number): StoredLi
   return entry as StoredList;
 }
 
-/**
- * The list after the page's own check-in (arrival is the stated arrival) or check-out
- * (arrival null) of volunteer id, until the next list arrives.
- */
-export function markVolunteerIn(
-  list: Volunteer[],
-  id: string,
-  arrival: string | null,
-): Volunteer[] {
-  return list.map((v) =>
-    v.id === id ? { ...v, checkedIn: arrival !== null, currentCheckIn: arrival } : v,
-  );
-}
-
 /** The list state after a failed refresh: a list on screen, kept or fresh, stays. */
 export function listStateAfterFailure(state: ListState): ListState {
   return state === "ready" || state === "stored" ? state : "failed";

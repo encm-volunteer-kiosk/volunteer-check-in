@@ -10,7 +10,6 @@ import {
   LIST_STORE_KEY,
   LIST_STORE_VERSION,
   listStateAfterFailure,
-  markVolunteerIn,
   readStoredList,
   retriesList,
   storeList,
@@ -213,38 +212,6 @@ test("storage that throws on read or write is ignored", () => {
   };
   assert.equal(readStoredList(readOnly, "4417", T0), null);
   assert.doesNotThrow(() => storeList(readOnly, "4417", T0, list, 8));
-});
-
-test("a stored list keeps its server list's age when written again after a mark", () => {
-  const storage = fakeStorage();
-  storeList(storage, "4417", T0, list, 8);
-  // Nine minutes later the page checks Ana in and writes the marked list with the same savedAt.
-  const arrival = "2026-11-13T16:09:00.000Z";
-  const marked = markVolunteerIn(list, "h-ana", arrival);
-  storeList(storage, "4417", T0, marked, 8);
-  const kept = readStoredList(storage, "4417", T0 + 9 * MINUTE + 30_000);
-  assert.ok(kept);
-  assert.equal(kept.savedAt, T0);
-  const ana = kept.volunteers.find((v) => v.id === "h-ana");
-  assert.equal(ana.checkedIn, true);
-  assert.equal(ana.currentCheckIn, arrival);
-  // Ten minutes after the server list, not after the write, it is too old.
-  assert.equal(readStoredList(storage, "4417", T0 + 10 * MINUTE), null);
-  assert.equal(storage.items.has(LIST_STORE_KEY), false);
-});
-
-test("a check-out mark clears the flag and the arrival of that volunteer only", () => {
-  const marked = markVolunteerIn(list, "h-ben", null);
-  assert.deepEqual(
-    marked.map((v) => [v.id, v.checkedIn, v.currentCheckIn]),
-    [
-      ["h-ana", false, null],
-      ["h-ben", false, null],
-      ["h-cy", false, null],
-    ],
-  );
-  assert.notEqual(marked, list);
-  assert.equal(list[1].checkedIn, true, "the old list is not changed");
 });
 
 test("changing or clearing the code clears the stored list", () => {
