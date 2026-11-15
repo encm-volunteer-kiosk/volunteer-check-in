@@ -15,17 +15,18 @@ so hours can be credited to each volunteer and reported to grantmakers.
   before they volunteer. The first time, a board member types the kiosk access code
   from the Settings tab; the tablet remembers it.
 - **Check-out reminders**: every check-in ends on a "You're checked in." screen with the
-  line "Don't forget to check out before you leave." When the volunteer's last shift
-  ended without their own Check Out, a notice comes first: "Welcome back, Sam! Last time
-  you didn't check out. Please tap Check Out before you leave today." It has one button,
-  Got it, which leads to the checked-in screen, and it never shows a time. Left untouched
-  for 60 seconds it goes back to the welcome screen; the check-in is already saved. The
-  last shift counts as missed when it is still open, or was closed by anything other than
-  the volunteer's tap: the auto clock-out, Fix a sign-out, Add a shift, or a row typed by
-  hand. Only shifts dated on or after "Kiosk launch date" count, and rows from Import past
-  hours (Shift ID starting `import-`) are skipped, so a paper shift is never taken for a
-  missed check-out. Nothing is stored for it: the check-in that shows the notice is the
-  shift looked at next time, so each missed check-out shows it once.
+  line "Don't forget to check out before you leave." When the volunteer's last shift ended
+  without their own Check Out, a notice comes first: "Welcome back, Sam! Last time you
+  didn't check out. Please tap Check Out before you leave today." It has one button, Got
+  it, which leads to the checked-in screen, and it never shows a time. Left untouched for
+  60 seconds it goes back to the welcome screen; the check-in doesn't wait on the button,
+  since it is already saved or queued to save. The last shift counts as missed when it is
+  still open, or was closed by anything other than the volunteer's tap: the auto
+  clock-out, Fix a sign-out, Add a shift, or a row typed by hand. Only shifts dated on or
+  after "Kiosk launch date" count, and rows from Import past hours (Shift ID starting
+  `import-`) are skipped, so a paper shift is never taken for a missed check-out. Nothing
+  is stored for it: the check-in that shows the notice is the shift looked at next time,
+  so each missed check-out shows it once.
 - **Check-in time on cards**: a checked-in card in the name search's results shows when
   the volunteer checked in; the Checked In panel shows the name alone. Once they have been
   in more than "Long shift flag hours" (Settings), the whole card turns amber, and a search
@@ -34,15 +35,19 @@ so hours can be credited to each volunteer and reported to grantmakers.
   list when the auto clock-out window has passed.
 - **Instant check-ins and check-outs**: a normal tap shows its result at once, the
   missed-check-out notice included, from the volunteer list the tablet already holds, and
-  the save runs behind it. The tablet keeps unsent saves in its own storage, so they survive
-  a reload or the iPad sleeping, and sends them one at a time with a tap ID, so a save sent
-  twice writes one row. While any are waiting, the Checked In panel shows "Saving…". The
-  stated time is the time of the tap, worked out on the server from how long ago the tap
-  was. These taps still wait for the server, as before: a volunteer who shares a name and
-  types phone digits, a changed arrival or check-out time, a list that is too old or
-  doesn't agree with the tap, a tablet clock more than a minute off, a check-out close to a
-  milestone or to the auto clock-out window, a volunteer whose earlier save may still be
-  landing, and any tap when the browser can't store the queue or lock it.
+  the save runs behind it. The tablet keeps unsent saves in its own storage, so they
+  survive a reload or the iPad sleeping, and sends them one at a time with a tap ID, so a
+  save sent twice writes one row. While any are waiting, the Checked In panel shows
+  "Saving…". The stated time is the time of the tap, worked out on the server from how
+  long ago the tap was. These taps still wait for the server, as before: a volunteer who
+  shares a name and types phone digits, a changed arrival or check-out time, a list that
+  is too old or doesn't agree with the tap, a tablet clock more than a minute off, a
+  check-out close to a milestone or to the auto clock-out window, a volunteer this tablet
+  saved after its list was fetched, and any tap when the browser can't store the queue or
+  lock it. Taps are instant only once the tablet has kept its access code through a
+  reload: when the code was typed since the page opened, every tap waits. A volunteer
+  whose earlier tap is still in the queue gets a line saying so ("We're still saving your
+  last check-in…") and nothing is saved for the new tap.
 - **Unsaved taps banner**: if a save is refused or gives up, the welcome screen shows a
   banner naming the volunteer, the kind of tap and its time ("These didn't save. Please
   tell a board member."). A save still unsent after 10 minutes shows as "Not saved yet"
@@ -308,8 +313,9 @@ still the record: Admin Alerts? keeps every flag. The Log check (see below) adds
 kind: a problem it found on a Log row. Those are on the Flags tab only, never in Admin
 Alerts?.
 
-A save the tablet sent later can add two more kinds. When the tablet showed a result the
-server didn't reach (for example "already checked in", or a shift staff had closed), no
+A save the tablet sent later can add two more kinds. When the server couldn't make the
+save the tablet had shown (for example the tablet showed a check-in and the server found
+the volunteer already checked in, or a check-out of a shift staff had already closed), no
 Log cell is written and a Flags row starts "tablet showed …" and says what the server
 found. When the tablet showed a different missed-check-out notice or milestone than the
 server worked out, the row is written and the difference is a flag on it.
