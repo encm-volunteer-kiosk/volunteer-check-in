@@ -639,6 +639,16 @@ export function addMark(mark: Omit<Mark, "seq">): Change {
   });
 }
 
+/**
+ * Adds the mark a foreground save stores before it is sent, refused when the volunteer has a
+ * queued save: another tab queued it after this page last read the queue, and a save sent
+ * now would reach the server before the queued one.
+ */
+export function addMarkBeforeSend(mark: Omit<Mark, "seq">): Change {
+  return (queue) =>
+    hasQueuedFor(queue, mark.volunteerId) ? { refused: "queued" } : addMark(mark)(queue);
+}
+
 /** Removes the mark of this save: a foreground save the server refused wrote nothing. */
 export function dropMark(key: string): Change {
   return (queue) =>
@@ -1000,14 +1010,16 @@ export function stillSavingText(
 /**
  * Stores the mark of a foreground save. When it can't be stored the kept list is removed,
  * so a reload can't trust a list from before that save; the page then holds the mark in
- * memory for the overlay.
+ * memory for the overlay. Before the send (beforeSend) the mark is refused, and nothing
+ * should be sent, when the volunteer has a queued save.
  */
 export async function storeForegroundMark(
   env: QueueEnv,
   mark: Omit<Mark, "seq">,
   listStorage: ListStorage | null,
+  beforeSend = false,
 ): Promise<ChangeResult> {
-  const result = await changeQueue(env, addMark(mark));
-  if (!result.stored) clearStoredList(listStorage);
+  const result = await changeQueue(env, beforeSend ? addMarkBeforeSend(mark) : addMark(mark));
+  if (!result.stored && result.refused !== "queued") clearStoredList(listStorage);
   return result;
 }

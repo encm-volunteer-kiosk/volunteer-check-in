@@ -1491,12 +1491,15 @@ export default function App() {
   }
 
   // A foreground save's mark: stored in the queue, or held here when it can't be (and then
-  // the kept list is removed, so a reload can't trust a list from before the save).
-  async function foregroundMark(mark: Omit<Mark, "seq">) {
-    const result = await storeForegroundMark(queueEnv, mark, listStorage());
+  // the kept list is removed, so a reload can't trust a list from before the save). False
+  // when the mark before a send was refused because the volunteer has a queued save.
+  async function foregroundMark(mark: Omit<Mark, "seq">, beforeSend = false) {
+    const result = await storeForegroundMark(queueEnv, mark, listStorage(), beforeSend);
     setQueue(result.queue);
+    if (result.refused === "queued") return false;
     const others = heldMarksRef.current.filter((m) => m.key !== mark.key);
     setHeldMarks(result.stored ? others : [...others, { ...mark, seq: 0 }]);
+    return true;
   }
 
   // A foreground save the server refused wrote nothing: its mark goes.
@@ -1849,20 +1852,42 @@ export default function App() {
    * Before a foreground save is sent its mark is stored as unknown, open until the server
    * can no longer write; the reply replaces it with what the server did, or removes it for a
    * refusal, which wrote nothing. A reply that never comes leaves the unknown mark, so the
-   * volunteer's next tap waits for a list asked for after the server stopped.
+   * volunteer's next tap waits for a list asked for after the server stopped. null, with
+   * nothing to send, when the stored queue holds a save for the volunteer.
    */
   async function markBeforeSend(volunteerId: string) {
     const key = newTapId();
     const startedAt = Date.now();
-    await foregroundMark({
-      key,
-      volunteerId,
-      at: startedAt,
-      listAfter: startedAt + SERVER_MAX_MS,
-      state: "unknown",
-      arrival: null,
-    });
-    return key;
+    const marked = await foregroundMark(
+      {
+        key,
+        volunteerId,
+        at: startedAt,
+        listAfter: startedAt + SERVER_MAX_MS,
+        state: "unknown",
+        arrival: null,
+      },
+      true,
+    );
+    return marked ? key : null;
+  }
+
+  // Another tab queued a save for the volunteer after this page last read the queue: the
+  // foreground save isn't sent, and the volunteer gets the still-saving line, as a tap
+  // with a queued save does.
+  function endWithStillSaving(seq: number, volunteerId: string) {
+    const ended = endSave(seq);
+    if (ended) {
+      setScreen(ended.from);
+      setError(
+        stillSavingText(queueRef.current, volunteerId, {
+          online: navigator.onLine,
+          now: Date.now(),
+          runnerHeld: runnerActive.current,
+        }) ?? "",
+      );
+    }
+    void kickRunner();
   }
 
   async function handleConfirm() {
@@ -1880,6 +1905,10 @@ export default function App() {
     }
     const seq = beginSave("in", selected, "confirm");
     const markKey = await markBeforeSend(selected.id);
+    if (markKey === null) {
+      endWithStillSaving(seq, selected.id);
+      return;
+    }
     let reply: Awaited<ReturnType<typeof api.checkIn>> | null = null;
     try {
       reply = await api.checkIn(
@@ -1949,6 +1978,10 @@ export default function App() {
     }
     const seq = beginSave("out", selected, "checkout");
     const markKey = await markBeforeSend(selected.id);
+    if (markKey === null) {
+      endWithStillSaving(seq, selected.id);
+      return;
+    }
     let reply: Awaited<ReturnType<typeof api.checkOut>> | null = null;
     try {
       reply = await api.checkOut(

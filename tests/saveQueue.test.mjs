@@ -947,6 +947,35 @@ test("a foreground save's mark: stored before the send, replaced by its reply", 
   );
 });
 
+test("a foreground save isn't sent when another tab has queued a save for the volunteer", async () => {
+  const { a, b } = twoPages();
+  const start = await changeQueue(a, touch);
+  const stamp = { epoch: start.queue.epoch, seq: start.queue.seq, requestedAt: T0 - MIN };
+  // Page B queues Ana; page A's copy in memory doesn't have it yet.
+  assert.equal((await changeQueue(b, enqueue(saveFor("in", ana), stamp))).stored, true);
+  const listStorage = fakeStorage();
+  listStorage.items.set(LIST_STORE_KEY, "{}");
+  const mark = { key: "fg", volunteerId: ana.id, at: T0, listAfter: T0 + SERVER_MAX_MS };
+  const refused = await storeForegroundMark(
+    a,
+    { ...mark, state: "unknown", arrival: null },
+    listStorage,
+    true,
+  );
+  assert.equal(refused.refused, "queued");
+  assert.equal(refused.stored, false);
+  assert.equal(stored(a.storage).marks.length, 0);
+  // The page shows the still-saving line from the queue it read; the kept list stays.
+  assert.ok(stillSavingText(refused.queue, ana.id, { online: true, now: T0, runnerHeld: false }));
+  assert.equal(listStorage.items.has(LIST_STORE_KEY), true);
+  // Ben has nothing queued: his mark is stored before the send.
+  const benMark = { ...mark, key: "fg-ben", volunteerId: ben.id, state: "unknown", arrival: null };
+  assert.equal((await storeForegroundMark(a, benMark, listStorage, true)).stored, true);
+  // The mark a reply leaves is stored whatever is queued.
+  const reply = { ...mark, key: "fg-2", listAfter: 0, state: "in", arrival: null };
+  assert.equal((await storeForegroundMark(a, reply, listStorage)).stored, true);
+});
+
 test("a foreground mark that can't be stored clears the kept list", async () => {
   const listStorage = fakeStorage();
   listStorage.items.set(LIST_STORE_KEY, "{}");
