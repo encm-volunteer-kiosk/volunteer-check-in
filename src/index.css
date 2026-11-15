@@ -104,7 +104,10 @@
   padding-right: 0;
 }
 
-.checkin-sidebar .checkout-action {
+/* The panel's cards show the name alone: the panel is narrow, and the time would cut the
+   name short. A long shift still turns the card amber. */
+.checkin-sidebar .checkout-action,
+.checkin-sidebar .in-time {
   display: none;
 }
 
