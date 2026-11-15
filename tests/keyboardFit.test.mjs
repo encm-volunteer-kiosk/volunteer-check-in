@@ -10,6 +10,9 @@
 // - the keyboard's top is at frame y 246, and the results area keeps 11 pt clear of it, so it
 //   must end by frame y 235;
 // - the results area shows two whole rows and part of a third.
+//
+// The logo and date sit in a row under the name card there, below everything these limits
+// cover, and slide with the card while the name box is in use.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -156,7 +159,7 @@ test("every length from the screen's top to the results area's bottom is one of 
   );
 });
 
-test("the panel slides aside by transform and visibility only, inside the landscape block", () => {
+test("the panel slides aside and the card and the logo and date row slide right, by transform and visibility only, inside the landscape block", () => {
   const open = rules.filter((r) => r.selector.includes("search-open"));
   assert.ok(open.length >= 2, "rules for the card and the panel");
   for (const rule of open) {
@@ -173,6 +176,17 @@ test("the panel slides aside by transform and visibility only, inside the landsc
   assert.equal(scoped(card, "transform"), "translateX(calc(var(--sidebar-width) / 2))");
   assert.equal(scoped(panel, "transform"), "translateX(100%)");
   assert.equal(scoped(panel, "visibility"), "hidden");
+  // The logo and date row moves with the card: the same move, the same timing.
+  const row = `${SHELL}.search-open .welcome-header`;
+  assert.equal(scoped(row, "transform"), scoped(card, "transform"));
+  assert.equal(
+    scoped(`${SHELL} .welcome-header`, "transition"),
+    scoped(`${SHELL} .name-search-card`, "transition"),
+  );
+  assert.equal(
+    scoped(`${SHELL} .welcome-header`, "transition"),
+    "transform var(--slide-duration) var(--slide-ease)",
+  );
 
   const motion = [
     scoped(`${SHELL} .name-search-card`, "transition"),
@@ -189,7 +203,10 @@ test("the panel slides aside by transform and visibility only, inside the landsc
   // A slide must stay a transition (Safari puts the caret back in the box at its end).
   for (const rule of rules) {
     const touches = selectorsOf(rule).some(
-      (s) => s.endsWith(".name-search-card") || s.endsWith(".checkin-sidebar"),
+      (s) =>
+        s.endsWith(".name-search-card") ||
+        s.endsWith(".checkin-sidebar") ||
+        s.endsWith(".welcome-header"),
     );
     if (!touches) continue;
     assert.notEqual(rule.decls.transition, "none", rule.selector);
@@ -197,6 +214,64 @@ test("the panel slides aside by transform and visibility only, inside the landsc
     // Only the transition shorthand times the slide; a separate duration would override it.
     assert.equal(rule.decls["transition-duration"], undefined, rule.selector);
   }
+});
+
+test("the logo and date sit under the card, not in the panel", () => {
+  assert.ok(!app.includes("sidebar-header"), "App.tsx has no sidebar-header");
+  assert.ok(!css.includes("sidebar-header"), "index.css has no sidebar-header");
+
+  const welcome = app.slice(
+    app.indexOf("function Welcome("),
+    app.indexOf("function CheckedInSidebar("),
+  );
+  const card = welcome.indexOf('aria-label="Find your volunteer profile"');
+  const start = welcome.indexOf('<div className="welcome-header">');
+  assert.ok(card > 0, "the name card");
+  assert.ok(start > card, "the row comes after the name card");
+  assert.ok(start < welcome.indexOf('className="tagline"'), "and before the tagline");
+  const row = welcome.slice(start, welcome.indexOf("</div>", start));
+  assert.match(row, /className="logo"/);
+  assert.match(row, /<DateBlock \/>/);
+
+  const sidebarStart = app.indexOf("function CheckedInSidebar(");
+  const sidebar = app.slice(sidebarStart, app.indexOf("\nfunction ", sidebarStart + 1));
+  assert.ok(!sidebar.includes('className="logo"'), "no logo in the panel");
+  assert.ok(!sidebar.includes("<DateBlock"), "no date in the panel");
+
+  // Hidden everywhere but the landscape block.
+  const rowSelector = `${SHELL} .welcome-header`;
+  const base = rules.filter(
+    (r) => r.media.length === 0 && selectorsOf(r).includes(".welcome-header"),
+  );
+  assert.equal(base.length, 1);
+  assert.equal(base[0].decls.display, "none");
+  assert.equal(scoped(rowSelector, "display"), "flex");
+  assert.equal(scoped(rowSelector, "margin"), "48px auto 0");
+  assert.equal(scoped(rowSelector, "width"), "min(720px, 100%)");
+  assert.equal(scoped(`${rowSelector} .logo`, "width"), "180px");
+
+  // It sits where the page puts it: no rule places or moves it, except the slide.
+  for (const rule of rules) {
+    if (!rule.selector.includes(".welcome-header") || rule.selector.includes("search-open"))
+      continue;
+    for (const prop of ["position", "top", "transform"])
+      assert.equal(rule.decls[prop], undefined, `${rule.selector} sets ${prop}`);
+  }
+
+  // A frame under 400 pt tall leaves the row out, so it never ends past the frame's bottom.
+  const short = rules.filter(
+    (r) =>
+      inScope(r) &&
+      r.media.length === 2 &&
+      r.media[1] === "@media (max-height: 399px)" &&
+      selectorsOf(r).includes(rowSelector),
+  );
+  assert.equal(short.length, 1, "one short-frame rule for the row");
+  assert.equal(short[0].decls.display, "none");
+  const shown = rules.findIndex(
+    (r) => inScope(r) && r.media.length === 1 && selectorsOf(r).includes(rowSelector),
+  );
+  assert.ok(rules.indexOf(short[0]) > shown, "the short-frame rule comes after the row's own");
 });
 
 test("with reduced motion the panel hides at once, leaving no strip at the edge", () => {
