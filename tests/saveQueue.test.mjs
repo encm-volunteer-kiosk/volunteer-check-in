@@ -23,6 +23,7 @@ import {
   freshQueue,
   hasMarkSince,
   LIST_TRUST_MS,
+  LOCK_WAIT_MS,
   listTrusted,
   markSent,
   MAX_SENDS,
@@ -508,6 +509,58 @@ test("changeQueue without Web Locks or storage stores nothing and writes nothing
       status: "busy",
     },
   );
+});
+
+// A queue stored by a page with working locks, and a stamp that matches it, so an enqueue
+// on this storage is refused only by what the test means to check.
+async function storedQueueAndStamp(storage) {
+  const start = await changeQueue(makeEnv({ storage }), touch);
+  assert.equal(start.stored, true);
+  return { epoch: start.queue.epoch, seq: start.queue.seq, requestedAt: T0 - MIN };
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test("a lock request that never settles is given up: nothing stored, now or later", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const storage = fakeStorage();
+  const stamp = await storedQueueAndStamp(storage);
+  const before = storage.getItem(SAVE_QUEUE_KEY);
+  const grants = [];
+  const hanging = {
+    request: (_name, _options, callback) => {
+      grants.push(callback);
+      return new Promise(() => {});
+    },
+  };
+  const env = makeEnv({ locks: hanging, storage });
+  let done = null;
+  const pending = changeQueue(env, enqueue(saveFor("in", ana), stamp)).then((r) => (done = r));
+  t.mock.timers.tick(LOCK_WAIT_MS - 1);
+  await flush();
+  assert.equal(done, null);
+  t.mock.timers.tick(1);
+  await pending;
+  assert.equal(done.stored, false);
+  assert.equal(afterEnqueue(done), "wait");
+  assert.equal(storage.getItem(SAVE_QUEUE_KEY), before);
+  // The lock granted after the page gave up: the change isn't made then either.
+  await grants[0]({});
+  assert.equal(storage.getItem(SAVE_QUEUE_KEY), before);
+  // The runner counts a lock that doesn't answer as busy, and sends nothing.
+  let sent = 0;
+  const ran = runOnce(env, {
+    online: () => true,
+    send: async () => {
+      sent += 1;
+      return {};
+    },
+    wait: () => new Promise(() => {}),
+  });
+  t.mock.timers.tick(LOCK_WAIT_MS);
+  assert.deepEqual(await ran, { status: "busy" });
+  await grants[1]({});
+  assert.equal(sent, 0);
 });
 
 test("the start change creates the queue and keeps an unreadable flag for the banner", async () => {

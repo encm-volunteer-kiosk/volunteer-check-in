@@ -48,6 +48,9 @@ export const STUCK_MS = 600_000;
 export const SERVER_MAX_MS = 390_000;
 // When another page holds the runner lock, this page looks again after this long.
 export const RUNNER_BUSY_RETRY_MS = 5_000;
+// A Web Lock not granted within this long is given up, so a page whose lock requests never
+// settle falls back to waiting for the server rather than hanging.
+export const LOCK_WAIT_MS = 2_000;
 
 export type SaveKind = "in" | "out";
 export type Shown = { missedSignOut: boolean } | { milestoneId: string | null };
@@ -338,23 +341,71 @@ function applyChange(env: QueueEnv, change: Change): ChangeResult {
 }
 
 /**
+ * Runs callback inside the named Web Lock and resolves with what it returns, or with
+ * gaveUp() when the lock isn't granted within LOCK_WAIT_MS. A grant that comes after that
+ * runs nothing, so work given up never happens later. Once granted, the callback is waited
+ * for in full. A request that rejects rejects.
+ */
+function withLock<T>(
+  locks: LockManagerLike,
+  name: string,
+  options: { mode?: "exclusive" | "shared"; ifAvailable?: boolean },
+  callback: (lock: unknown) => T | Promise<T>,
+  gaveUp: () => T,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let state: "waiting" | "running" | "gave-up" = "waiting";
+    const timer = setTimeout(() => {
+      if (state !== "waiting") return;
+      state = "gave-up";
+      resolve(gaveUp());
+    }, LOCK_WAIT_MS);
+    let request: Promise<T | undefined>;
+    try {
+      request = locks.request(name, options, (lock) => {
+        if (state !== "waiting") return undefined;
+        state = "running";
+        clearTimeout(timer);
+        return callback(lock);
+      });
+    } catch (error) {
+      request = Promise.reject(error);
+    }
+    request.then(
+      (value) => {
+        if (state === "running") resolve(value as T);
+      },
+      (error) => {
+        clearTimeout(timer);
+        if (state === "gave-up") return;
+        state = "gave-up";
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
  * Applies one change to the stored queue: inside the Web Lock SAVE_QUEUE_LOCK it reads the
  * queue from storage, applies the change, adds 1 to seq and writes it back, with nothing
  * awaited in between. The only writer of SAVE_QUEUE_KEY. Resolves with the queue as stored
  * (the queue as read when the change was refused or not stored), whether it was stored, and
- * why a change refused itself. Without Web Locks or storage nothing is written and stored is
- * false.
+ * why a change refused itself. Without Web Locks or storage, or when the lock request rejects
+ * or isn't granted within LOCK_WAIT_MS, nothing is written and stored is false.
  */
 export async function changeQueue(env: QueueEnv, change: Change): Promise<ChangeResult> {
-  if (!env.locks || !env.storage) {
-    return { queue: readCurrent(env), stored: false, refused: null };
-  }
+  const notStored = (): ChangeResult => ({ queue: readCurrent(env), stored: false, refused: null });
+  if (!env.locks || !env.storage) return notStored();
   try {
-    return await env.locks.request(SAVE_QUEUE_LOCK, { mode: "exclusive" }, () =>
-      applyChange(env, change),
+    return await withLock(
+      env.locks,
+      SAVE_QUEUE_LOCK,
+      { mode: "exclusive" },
+      () => applyChange(env, change),
+      notStored,
     );
   } catch {
-    return { queue: readCurrent(env), stored: false, refused: null };
+    return notStored();
   }
 }
 
@@ -731,7 +782,8 @@ export type RunDeps = {
 };
 
 export type RunResult =
-  // Another page holds the runner lock, or there are no Web Locks.
+  // Another page holds the runner lock, there are no Web Locks, or the lock wasn't granted
+  // in time.
   | { status: "busy" }
   // No save is due; the head's nextTryAt, or null for an empty queue.
   | { status: "idle"; queue: SaveQueue; nextTryAt: number | null }
@@ -747,7 +799,9 @@ export type RunResult =
  */
 export async function runOnce(env: QueueEnv, deps: RunDeps): Promise<RunResult> {
   if (!env.locks) return { status: "busy" };
-  const ran = await env.locks.request(
+  // A runner lock request that isn't answered in time counts as busy.
+  const ran = await withLock(
+    env.locks,
     SAVE_RUNNER_LOCK,
     { mode: "exclusive", ifAvailable: true },
     async (lock): Promise<RunResult> => {
@@ -805,6 +859,7 @@ export async function runOnce(env: QueueEnv, deps: RunDeps): Promise<RunResult> 
       if (after.stored) deps.onQueue?.(after.queue);
       return { status: "sent", outcome: result.outcome, queue: after.queue, late };
     },
+    (): RunResult => ({ status: "busy" }),
   );
   return ran;
 }
