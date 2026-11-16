@@ -294,6 +294,9 @@ function refusalMessages() {
     ADMIN_BAD_ROW:
       "That row's date or check-in time can't be read, so its hours can't be worked out. Fix the row in the sheet first.",
     ADMIN_BAD_MONTH: "Please choose a month.",
+    ADMIN_BAD_PERIOD: "Please choose a period.",
+    ADMIN_BAD_RANGE: "Please enter both dates, as yyyy-mm-dd.",
+    ADMIN_RANGE_ORDER: "The From date is after the To date.",
     ADMIN_REMOVE_REASON: "Please enter a reason for removing this shift.",
     ADMIN_REMOVE_NO_ID:
       "That row has no Shift ID, so the menu can't remove it. Delete it in the sheet by hand.",
@@ -3826,10 +3829,15 @@ function reportEntry(cells, row, cols, read) {
   return entry;
 }
 
+/** A Date text that is exactly yyyy-MM-dd and a real day, trimmed, else "". */
+function dayKey(dateText) {
+  const s = cellString(dateText);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) && parseStartDate(s) === s ? s : "";
+}
+
 /** "yyyy-MM" of a Date text that is exactly yyyy-MM-dd and a real day, else "". */
 function monthKey(dateText) {
-  const s = cellString(dateText);
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) && parseStartDate(s) === s ? s.slice(0, 7) : "";
+  return dayKey(dateText).slice(0, 7);
 }
 
 /** The month before a "yyyy-MM" month. */
@@ -3856,6 +3864,200 @@ function monthName(month) {
     "December",
   ];
   return names[Number(month.slice(5, 7)) - 1] + " " + month.slice(0, 4);
+}
+
+/** The month after a "yyyy-MM" month. */
+function nextMonth(month) {
+  const year = Number(month.slice(0, 4));
+  const m = Number(month.slice(5, 7));
+  return m === 12
+    ? String(year + 1).padStart(4, "0") + "-01"
+    : month.slice(0, 4) + "-" + String(m + 1).padStart(2, "0");
+}
+
+/** The last day of a "yyyy-MM" month, as "yyyy-MM-dd". */
+function monthLastDay(month) {
+  const year = Number(month.slice(0, 4));
+  const m = Number(month.slice(5, 7));
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1];
+  return month + "-" + days;
+}
+
+/** "2026-Q4" for the month "2026-11". */
+function quarterOf(month) {
+  return month.slice(0, 4) + "-Q" + (Math.floor((Number(month.slice(5, 7)) - 1) / 3) + 1);
+}
+
+/** "Q4 2026" for "2026-Q4". */
+function quarterName(quarter) {
+  return quarter.slice(5) + " " + quarter.slice(0, 4);
+}
+
+/** "Q4 2026 (October to December)" for "2026-Q4", as the report window lists it. */
+function quarterLabel(quarter) {
+  const period = quarterPeriod(quarter);
+  const name = (day) => monthName(day.slice(0, 7)).split(" ")[0];
+  return quarterName(quarter) + " (" + name(period.from) + " to " + name(period.to) + ")";
+}
+
+/*
+ * A report period is {kind, key, from, to, unfinished}:
+ * - kind is "month", "quarter", "year", "range" or "all";
+ * - key names it: "2026-11", "2026-Q4", "2026", "2026-03-15 to 2026-06-30" or "all time",
+ *   and a report tab is named "Report " + key;
+ * - from and to are its first and last days, yyyy-MM-dd, both included; null for all time;
+ * - unfinished is true when its last day is after the day it was asked for (reportPeriod).
+ * A row is in the period when its day (dayKey) is on or after from and on or before to;
+ * all time takes every row with a day. For a month that is exactly monthKey's month.
+ */
+
+/** The period of a "yyyy-MM" month. */
+function monthPeriod(month) {
+  return {
+    kind: "month",
+    key: month,
+    from: month + "-01",
+    to: monthLastDay(month),
+    unfinished: false,
+  };
+}
+
+/** The period of a "yyyy-Qn" calendar quarter. */
+function quarterPeriod(quarter) {
+  const year = quarter.slice(0, 4);
+  const last = Number(quarter.slice(6)) * 3;
+  return {
+    kind: "quarter",
+    key: quarter,
+    from: year + "-" + String(last - 2).padStart(2, "0") + "-01",
+    to: monthLastDay(year + "-" + String(last).padStart(2, "0")),
+    unfinished: false,
+  };
+}
+
+/** The period of a "yyyy" calendar year. */
+function yearPeriod(year) {
+  return { kind: "year", key: year, from: year + "-01-01", to: year + "-12-31", unfinished: false };
+}
+
+/** The period of the days from to to, both yyyy-MM-dd and both included. */
+function rangePeriod(from, to) {
+  return { kind: "range", key: from + " to " + to, from, to, unfinished: false };
+}
+
+/** All time: every row with a day. */
+function allTimePeriod() {
+  return { kind: "all", key: "all time", from: null, to: null, unfinished: false };
+}
+
+/** A period as given, or the month period of a "yyyy-MM" text (the form older calls pass). */
+function asPeriod(periodOrMonth) {
+  return typeof periodOrMonth === "string" ? monthPeriod(periodOrMonth) : periodOrMonth;
+}
+
+/** True when day (a dayKey, "" for none) is in the period. */
+function inPeriod(day, period) {
+  return (
+    Boolean(day) &&
+    (period.from === null || day >= period.from) &&
+    (period.to === null || day <= period.to)
+  );
+}
+
+/** The period a report compares against: the month, quarter or year before; else null. */
+function previousPeriod(period) {
+  if (period.kind === "month") return monthPeriod(previousMonth(period.key));
+  if (period.kind === "year") return yearPeriod(String(Number(period.key) - 1).padStart(4, "0"));
+  if (period.kind === "quarter") {
+    const year = Number(period.key.slice(0, 4));
+    const q = Number(period.key.slice(6));
+    return quarterPeriod(
+      q === 1 ? String(year - 1).padStart(4, "0") + "-Q4" : period.key.slice(0, 4) + "-Q" + (q - 1),
+    );
+  }
+  return null;
+}
+
+/** A period's name in a heading: "November 2026", "Q4 2026", "2026", its dates, or "all time". */
+function periodName(period) {
+  if (period.kind === "month") return monthName(period.key);
+  if (period.kind === "quarter") return quarterName(period.key);
+  return period.key;
+}
+
+/**
+ * The period a report window's form asks for, as {period} or {refusal: code}. todayDate is
+ * the Central yyyy-MM-dd. form.period is "month" (also when blank or missing, so a window
+ * opened before periods existed still makes month reports), "quarter", "year", "range" or
+ * "all"; only the fields of that kind are read: month "yyyy-MM", quarter "yyyy-Qn", year
+ * "yyyy", from and to "yyyy-MM-dd". Text is trimmed. Refusals, in this order:
+ * ADMIN_BAD_PERIOD for an unknown kind or a quarter or year in the wrong shape;
+ * ADMIN_BAD_MONTH as reportMonthRefusal gives it; ADMIN_BAD_RANGE when a date is missing or
+ * not a real yyyy-MM-dd day; ADMIN_RANGE_ORDER when from is after to; ADMIN_FUTURE when the
+ * first day is after todayDate. All time is never refused. A period whose last day is after
+ * todayDate is allowed and marked unfinished.
+ */
+function reportPeriod(form, todayDate) {
+  const f = form || {};
+  const kind = cellString(f.period).toLowerCase() || "month";
+  let period;
+  if (kind === "all") return { period: allTimePeriod() };
+  if (kind === "month") {
+    const month = cellString(f.month);
+    const bad = reportMonthRefusal(month, todayDate);
+    if (bad) return { refusal: bad };
+    period = monthPeriod(month);
+  } else if (kind === "quarter") {
+    const quarter = cellString(f.quarter);
+    if (!/^\d{4}-Q[1-4]$/.test(quarter)) return { refusal: "ADMIN_BAD_PERIOD" };
+    period = quarterPeriod(quarter);
+  } else if (kind === "year") {
+    const year = cellString(f.year);
+    if (!/^\d{4}$/.test(year)) return { refusal: "ADMIN_BAD_PERIOD" };
+    period = yearPeriod(year);
+  } else if (kind === "range") {
+    const from = dayKey(f.from);
+    const to = dayKey(f.to);
+    if (!from || !to) return { refusal: "ADMIN_BAD_RANGE" };
+    if (from > to) return { refusal: "ADMIN_RANGE_ORDER" };
+    period = rangePeriod(from, to);
+  } else {
+    return { refusal: "ADMIN_BAD_PERIOD" };
+  }
+  if (period.from > todayDate) return { refusal: "ADMIN_FUTURE" };
+  period.unfinished = period.to > todayDate;
+  return { period };
+}
+
+/**
+ * The report window's lists, as {months, defaultMonth, quarters, defaultQuarter, years,
+ * defaultYear, today}. months and defaultMonth are reportMonths'. quarters and years are
+ * those of a dated Log row up to the current one, plus the current one, newest first; the
+ * default is the one before the current one when it is listed, else the current one, the
+ * months' rule. today is todayDate, the Central yyyy-MM-dd. entries need only dateText.
+ */
+function reportPeriodLists(entries, todayDate) {
+  const listed = reportMonths(entries, todayDate);
+  const current = monthKey(todayDate);
+  const unique = (list) => Array.from(new Set(list)).sort().reverse();
+  // Every listed month is up to the current one, so its quarter and year are too; a later
+  // month of the current quarter or year adds nothing the current one doesn't.
+  const quarters = unique(listed.months.map(quarterOf));
+  const years = unique(listed.months.map((m) => m.slice(0, 4)));
+  const thisQuarter = quarterOf(current);
+  const lastQuarter = previousPeriod(quarterPeriod(thisQuarter)).key;
+  const thisYear = current.slice(0, 4);
+  const lastYear = String(Number(thisYear) - 1).padStart(4, "0");
+  return {
+    months: listed.months,
+    defaultMonth: listed.defaultMonth,
+    quarters,
+    defaultQuarter: quarters.indexOf(lastQuarter) >= 0 ? lastQuarter : thisQuarter,
+    years,
+    defaultYear: years.indexOf(lastYear) >= 0 ? lastYear : thisYear,
+    today: todayDate,
+  };
 }
 
 /** True for a row a report counts: Status closed (trimmed, any case) and a User Token. */
@@ -3955,22 +4157,24 @@ function firstShifts(entries) {
 }
 
 /**
- * Total stated hours, shifts, volunteers and new volunteers for one month: {hundredths, shifts, headcount, newVolunteers (count)}.
- * first is firstShifts(entries).
+ * Total stated hours, shifts, volunteers and new volunteers for one month or period:
+ * {hundredths, shifts, headcount, newVolunteers (count)}. month is a "yyyy-MM" or a report
+ * period; a new volunteer is one whose first shift is in it. first is firstShifts(entries).
  */
 function monthFigures(entries, month, first) {
+  const period = asPeriod(month);
   let hundredths = 0;
   let shifts = 0;
   const tokens = new Set();
   entries.forEach((e) => {
-    if (!isCountedRow(e) || monthKey(e.dateText) !== month) return;
+    if (!isCountedRow(e) || !inPeriod(dayKey(e.dateText), period)) return;
     shifts += 1;
     hundredths += reportHundredths(e.statedHoursCell);
     tokens.add(cellString(e.token));
   });
   let newVolunteers = 0;
   tokens.forEach((t) => {
-    if (monthKey(first.get(t).dateText) === month) newVolunteers += 1;
+    if (inPeriod(dayKey(first.get(t).dateText), period)) newVolunteers += 1;
   });
   return { hundredths, shifts, headcount: tokens.size, newVolunteers };
 }
@@ -4027,14 +4231,16 @@ function labelOrder(a, b) {
 }
 
 /**
- * Every milestone crossed in a month, as [{token, row, date, id, title}] ordered by date,
- * Log row, then milestones() order. For each token its counted rows with a month are walked
- * in reportRowOrder, each adding one shift and minutesFromHours of its stated hours, as the
- * kiosk counts at check-out. A milestone is crossed in the month when the row that reaches
- * its threshold is dated in the month. First completed shift is left out: it needs
+ * Every milestone crossed in a month or period (a "yyyy-MM" or a report period), as
+ * [{token, row, date, id, title}] ordered by date, Log row, then milestones() order. For
+ * each token its counted rows with a month are walked, over the whole Log, in
+ * reportRowOrder, each adding one shift and minutesFromHours of its stated hours, as the
+ * kiosk counts at check-out. A milestone is crossed in the period when the row that reaches
+ * its threshold is dated in the period. First completed shift is left out: it needs
  * Profiles' start date, and new volunteers already show first shifts.
  */
 function milestonesCrossedIn(entries, month) {
+  const period = asPeriod(month);
   const byToken = new Map();
   entries.forEach((e) => {
     if (!isCountedRow(e) || !monthKey(e.dateText)) return;
@@ -4051,7 +4257,7 @@ function milestonesCrossedIn(entries, month) {
     rows.forEach((e) => {
       const afterShifts = shifts + 1;
       const afterMinutes = minutes + minutesFromHours(milestoneHours(e));
-      if (monthKey(e.dateText) === month) {
+      if (inPeriod(dayKey(e.dateText), period)) {
         list.forEach((m, order) => {
           const hit =
             m.kind === "shifts"
@@ -4086,21 +4292,27 @@ function milestonesCrossedIn(entries, month) {
 }
 
 /**
- * The rows a month's report lists for review, as [{id, title, rows: [{row, date, name,
- * status, detail}]}] in this order, each group's rows by Log row:
- * - open: open rows in the month (they count nowhere);
- * - flagged: rows in the month whose Admin Alerts? isn't blank (detail: the alerts);
- * - admin: rows in the month with initials on either end (detail: "in JP, out JP");
- * - status: rows in the month whose Status isn't open or closed, blank included (not counted);
- * - source: rows in the month with an end typed into the sheet (blank) or entered by
- *   another source (detail names each such end);
- * - hours: counted rows in the month whose stated hours cell isn't a number of 0 or more
+ * The rows a report lists for review, as [{id, title, rows: [{row, date, name, status,
+ * detail}]}] in this order, each group's rows by Log row. month is a "yyyy-MM" or a report
+ * period, and "in the period" below means a row dated in it:
+ * - open: open rows in the period (they count nowhere);
+ * - flagged: rows in the period whose Admin Alerts? isn't blank (detail: the alerts);
+ * - admin: rows in the period with initials on either end (detail: "in JP, out JP");
+ * - status: rows in the period whose Status isn't open or closed, blank included (not
+ *   counted);
+ * - source: rows in the period with an end typed into the sheet (blank) or entered by
+ *   another source (detail names each such end). An end the paper import entered (Entered
+ *   By importEnteredBy(), trimmed, any case) is not listed: an imported row that reached the
+ *   Log is listed only in the groups for a real problem;
+ * - hours: counted rows in the period whose stated hours cell isn't a number of 0 or more
  *   (they add a shift and 0 hours, or a text number's hours);
- * - noToken: closed rows in the month with no User Token (not counted);
+ * - noToken: closed rows in the period with no User Token (not counted);
  * - noDate: rows anywhere in the Log whose Date isn't yyyy-MM-dd (in no month). Rows with
  *   nothing in Date, Volunteer Name, User Token, Status and Shift ID are not rows.
  */
 function reviewGroups(entries, month) {
+  const period = asPeriod(month);
+  const imported = importEnteredBy().toLowerCase();
   const groups = [
     { id: "open", title: "Open shifts, not counted" },
     { id: "flagged", title: "Flagged rows (Admin Alerts? not blank)" },
@@ -4121,12 +4333,12 @@ function reviewGroups(entries, month) {
     detail: detail || "",
   });
   entries.forEach((e) => {
-    const m = monthKey(e.dateText);
-    if (!m) {
+    const day = dayKey(e.dateText);
+    if (!day) {
       if (!isBlankLogRow(e)) by.noDate.push(line(e, ""));
       return;
     }
-    if (m !== month) return;
+    if (!inPeriod(day, period)) return;
     const open = isStatus(e, "open");
     const closed = isStatus(e, "closed");
     const ends = [
@@ -4139,7 +4351,7 @@ function reviewGroups(entries, month) {
     if (initials.length) by.admin.push(line(e, initials.join(", ")));
     if (!open && !closed) by.status.push(line(e, ""));
     const odd = ends
-      .filter((x) => x[1] === "typed" || x[1] === "other")
+      .filter((x) => x[1] === "typed" || (x[1] === "other" && x[2].toLowerCase() !== imported))
       .map((x) => x[0] + (x[1] === "typed" ? " typed into the sheet" : ' "' + x[2] + '"'));
     if (odd.length) by.source.push(line(e, odd.join(", ")));
     const j = e.statedHoursCell;
@@ -4220,36 +4432,126 @@ function groupTable(counted, field, columnMissing) {
 }
 
 /**
- * Every calculation of one month's report, from reportEntry rows of the whole Log. month is
- * "yyyy-MM". rateCents is parseMoneyCents of the Settings value: a number, null (blank) or
- * NaN (can't be read). cols is the reportColumns map, used only to tell whether Role/Type
- * and Activity are there; without it both are taken as present. No clock and no sheet.
+ * The by-month and by-year tables of a period, from its counted rows in one pass. counted
+ * is the period's counted rows, first is firstShifts(entries), figures the period's
+ * monthFigures. Returns {byMonth, byYear}, each [{key, label, shifts, hundredths,
+ * headcount, newVolunteers}] or null when the kind has no such table:
+ * - byMonth for every kind but month; byYear for a range or all time whose month rows fall
+ *   in two or more calendar years.
+ * - The rows run from the first to the last month (or year) in the period that holds a
+ *   counted row, with zeros between; nothing else sets the bounds. No counted row, no rows.
+ * - A month or year is labelled by its dates when the period's first day is after its first
+ *   day or the period's last day is before its last day ("2026-03-15 to 2026-03-31", from
+ *   the later first day to the earlier last day); any other shows its name ("March 2026",
+ *   "2026"). All time has no days of its own, so it shows names.
+ * - headcount is the volunteers with a counted row in that month (or year) of the period;
+ *   newVolunteers those whose first shift is in it and in the period, so they add up to the
+ *   period's while headcounts don't.
+ */
+function periodTables(counted, period, first) {
+  if (period.kind === "month") return { byMonth: null, byYear: null };
+  const months = new Map();
+  const years = new Map();
+  const bucket = (map, key) => {
+    if (!map.has(key))
+      map.set(key, { shifts: 0, hundredths: 0, tokens: new Set(), newVolunteers: 0 });
+    return map.get(key);
+  };
+  const newTokens = new Set();
+  counted.forEach((e) => {
+    const day = dayKey(e.dateText);
+    const token = cellString(e.token);
+    const hundredths = reportHundredths(e.statedHoursCell);
+    [bucket(months, day.slice(0, 7)), bucket(years, day.slice(0, 4))].forEach((b) => {
+      b.shifts += 1;
+      b.hundredths += hundredths;
+      b.tokens.add(token);
+    });
+    if (newTokens.has(token)) return;
+    const firstDay = dayKey(first.get(token).dateText);
+    if (!inPeriod(firstDay, period)) return;
+    newTokens.add(token);
+    bucket(months, firstDay.slice(0, 7)).newVolunteers += 1;
+    bucket(years, firstDay.slice(0, 4)).newVolunteers += 1;
+  });
+  const label = (firstDay, lastDay, name) => {
+    const cutStart = period.from !== null && period.from > firstDay;
+    const cutEnd = period.to !== null && period.to < lastDay;
+    if (!cutStart && !cutEnd) return name;
+    return (cutStart ? period.from : firstDay) + " to " + (cutEnd ? period.to : lastDay);
+  };
+  const row = (map, key, firstDay, lastDay, name) => {
+    const b = map.get(key);
+    return {
+      key,
+      label: label(firstDay, lastDay, name),
+      shifts: b ? b.shifts : 0,
+      hundredths: b ? b.hundredths : 0,
+      headcount: b ? b.tokens.size : 0,
+      newVolunteers: b ? b.newVolunteers : 0,
+    };
+  };
+  const monthKeys = Array.from(months.keys()).sort();
+  const byMonth = [];
+  if (monthKeys.length) {
+    const last = monthKeys[monthKeys.length - 1];
+    for (let m = monthKeys[0]; m <= last; m = nextMonth(m)) {
+      byMonth.push(row(months, m, m + "-01", monthLastDay(m), monthName(m)));
+    }
+  }
+  let byYear = null;
+  if ((period.kind === "range" || period.kind === "all") && byMonth.length) {
+    const firstYear = Number(byMonth[0].key.slice(0, 4));
+    const lastYear = Number(byMonth[byMonth.length - 1].key.slice(0, 4));
+    if (lastYear > firstYear) {
+      byYear = [];
+      for (let y = firstYear; y <= lastYear; y++) {
+        const key = String(y).padStart(4, "0");
+        byYear.push(row(years, key, key + "-01-01", key + "-12-31", key));
+      }
+    }
+  }
+  return { byMonth, byYear };
+}
+
+/**
+ * Every calculation of one period's report, from reportEntry rows of the whole Log. period
+ * is a report period (reportPeriod). rateCents is parseMoneyCents of the Settings value: a
+ * number, null (blank) or NaN (can't be read). cols is the reportColumns map, used only to
+ * tell whether Role/Type and Activity are there; without it both are taken as present. No
+ * clock and no sheet. "In the period" means a row dated in it (inPeriod).
  *
  * Returns {
- *   month, previousMonth, yearStart,
+ *   period,
  *   hundredths, shifts, headcount,                       total stated hours, shifts, volunteers
  *   volunteers: [{label, shifts, hundredths}],           hours and shifts per volunteer, by label
  *   newVolunteers: [label],                              new volunteers, by label
+ *   newVolunteerShifts: [{label, date}],                 the same with each first shift's date
  *   averageHundredths: number or null,                   average shift, null with no shifts
  *   weekdays: [{day, shifts, hundredths}],               by weekday, Monday to Sunday
  *   roleType, activity: {columnMissing, groups},         by Role/Type and by Activity
  *   adjustments: {compared, adjusted, statedMinusRecordedHundredths},   adjustments
- *   review: reviewGroups(entries, month), openCount,     rows to review, open count
- *   yearToDate: {hundredths, shifts, headcount},         year to date
+ *   review: reviewGroups(entries, period), openCount,    rows to review, open count
+ *   yearToDate: {hundredths, shifts, headcount} or null, 1 January to the period's last day,
+ *                                                        for a month or quarter only
  *   milestones: [{label, title, date, row}],             milestones crossed
  *   value: {rateCents, cents, message},                  volunteer value, cents null with a message
- *   monthOverMonth: monthOverMonth(...)                  month over month
+ *   previous: the period compared against, or null       previousPeriod
+ *   comparison: monthOverMonth(...) or null              against previous
+ *   byMonth, byYear: periodTables' tables or null
+ *   span: {first, last} or null                          all time only: the first and last day
+ *                                                        of any dated Log row, null with none
  * }. Nothing in it is a User Token.
  */
-function monthReport(entries, month, rateCents, cols) {
+function periodReport(entries, period, rateCents, cols) {
   const H = logHeaderNames();
   const missing = (header) =>
     Boolean(cols) && !(typeof cols[header] === "number" && cols[header] >= 0);
   const first = firstShifts(entries);
-  const counted = entries.filter((e) => isCountedRow(e) && monthKey(e.dateText) === month);
+  const counted = entries.filter((e) => isCountedRow(e) && inPeriod(dayKey(e.dateText), period));
   const labels = volunteerLabels(counted, first);
-  const figures = monthFigures(entries, month, first);
-  const before = previousMonth(month);
+  const figures = monthFigures(entries, period, first);
+  const before = previousPeriod(period);
 
   const perToken = new Map();
   counted.forEach((e) => {
@@ -4263,11 +4565,11 @@ function monthReport(entries, month, rateCents, cols) {
     .map((t) => ({ ...labels.get(t), ...perToken.get(t) }))
     .sort(labelOrder)
     .map((v) => ({ label: v.label, shifts: v.shifts, hundredths: v.hundredths }));
-  const newVolunteers = Array.from(perToken.keys())
-    .filter((t) => monthKey(first.get(t).dateText) === month)
-    .map((t) => labels.get(t))
+  const newVolunteerShifts = Array.from(perToken.keys())
+    .filter((t) => inPeriod(dayKey(first.get(t).dateText), period))
+    .map((t) => ({ ...labels.get(t), date: dayKey(first.get(t).dateText) }))
     .sort(labelOrder)
-    .map((v) => v.label);
+    .map((v) => ({ label: v.label, date: v.date }));
 
   const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   const weekdays = days.map((day) => ({ day, shifts: 0, hundredths: 0 }));
@@ -4300,18 +4602,32 @@ function monthReport(entries, month, rateCents, cols) {
     gap += reportHundredths(e.statedHoursCell) - reportHundredths(e.recordedHoursCell);
   });
 
-  const review = reviewGroups(entries, month);
-  const yearStart = month.slice(0, 4) + "-01";
-  let ytdHundredths = 0;
-  let ytdShifts = 0;
-  const ytdTokens = new Set();
-  entries.forEach((e) => {
-    const m = monthKey(e.dateText);
-    if (!isCountedRow(e) || !m || m < yearStart || m > month) return;
-    ytdShifts += 1;
-    ytdHundredths += reportHundredths(e.statedHoursCell);
-    ytdTokens.add(cellString(e.token));
-  });
+  const review = reviewGroups(entries, period);
+  let yearToDate = null;
+  if (period.kind === "month" || period.kind === "quarter") {
+    const ytd = rangePeriod(period.from.slice(0, 4) + "-01-01", period.to);
+    let ytdHundredths = 0;
+    let ytdShifts = 0;
+    const ytdTokens = new Set();
+    entries.forEach((e) => {
+      if (!isCountedRow(e) || !inPeriod(dayKey(e.dateText), ytd)) return;
+      ytdShifts += 1;
+      ytdHundredths += reportHundredths(e.statedHoursCell);
+      ytdTokens.add(cellString(e.token));
+    });
+    yearToDate = { hundredths: ytdHundredths, shifts: ytdShifts, headcount: ytdTokens.size };
+  }
+
+  let span = null;
+  if (period.kind === "all") {
+    entries.forEach((e) => {
+      const day = dayKey(e.dateText);
+      if (!day) return;
+      if (!span) span = { first: day, last: day };
+      if (day < span.first) span.first = day;
+      if (day > span.last) span.last = day;
+    });
+  }
 
   const rateReadable = typeof rateCents === "number" && isFinite(rateCents) && rateCents >= 0;
   let value;
@@ -4327,15 +4643,15 @@ function monthReport(entries, month, rateCents, cols) {
     value = { rateCents: null, cents: null, message: hourValueUnreadableMessage() };
   }
 
+  const tables = periodTables(counted, period, first);
   return {
-    month,
-    previousMonth: before,
-    yearStart,
+    period,
     hundredths: figures.hundredths,
     shifts: figures.shifts,
     headcount: figures.headcount,
     volunteers,
-    newVolunteers,
+    newVolunteers: newVolunteerShifts.map((v) => v.label),
+    newVolunteerShifts,
     averageHundredths: figures.shifts ? Math.round(figures.hundredths / figures.shifts) : null,
     weekdays,
     roleType: groupTable(counted, "roleType", missing(H.role)),
@@ -4343,15 +4659,53 @@ function monthReport(entries, month, rateCents, cols) {
     adjustments: { compared, adjusted, statedMinusRecordedHundredths: gap },
     review,
     openCount: review[0].rows.length,
-    yearToDate: { hundredths: ytdHundredths, shifts: ytdShifts, headcount: ytdTokens.size },
-    milestones: milestonesCrossedIn(entries, month).map((m) => ({
+    yearToDate,
+    milestones: milestonesCrossedIn(entries, period).map((m) => ({
       label: labels.get(m.token).label,
       title: m.title,
       date: m.date,
       row: m.row,
     })),
     value,
-    monthOverMonth: monthOverMonth(figures, monthFigures(entries, before, first)),
+    previous: before,
+    comparison: before ? monthOverMonth(figures, monthFigures(entries, before, first)) : null,
+    byMonth: tables.byMonth,
+    byYear: tables.byYear,
+    span,
+  };
+}
+
+/**
+ * Every calculation of one month's report: periodReport for the month "yyyy-MM", in the
+ * shape month reports have always had. Returns {
+ *   month, previousMonth, yearStart,
+ *   hundredths, shifts, headcount, volunteers, newVolunteers, averageHundredths, weekdays,
+ *   roleType, activity, adjustments, review, openCount, yearToDate, milestones, value,
+ *   monthOverMonth: monthOverMonth(...)                  month over month
+ * }, each as periodReport gives it. Nothing in it is a User Token.
+ */
+function monthReport(entries, month, rateCents, cols) {
+  const r = periodReport(entries, monthPeriod(month), rateCents, cols);
+  return {
+    month,
+    previousMonth: r.previous.key,
+    yearStart: month.slice(0, 4) + "-01",
+    hundredths: r.hundredths,
+    shifts: r.shifts,
+    headcount: r.headcount,
+    volunteers: r.volunteers,
+    newVolunteers: r.newVolunteers,
+    averageHundredths: r.averageHundredths,
+    weekdays: r.weekdays,
+    roleType: r.roleType,
+    activity: r.activity,
+    adjustments: r.adjustments,
+    review: r.review,
+    openCount: r.openCount,
+    yearToDate: r.yearToDate,
+    milestones: r.milestones,
+    value: r.value,
+    monthOverMonth: r.comparison,
   };
 }
 
@@ -4369,13 +4723,22 @@ function moneyText(cents) {
   return "$" + dollars + "." + String(cents % 100).padStart(2, "0");
 }
 
-/** The report's first lines' open-shift sentence, or "" when the month has none. */
-function openShiftsLine(count) {
+/**
+ * The report's first lines' open-shift sentence, or "" when there are none. It says "in
+ * this month" unless period is a report period of another kind, then "in this period".
+ */
+function openShiftsLine(count, period) {
   if (!count) return "";
+  const where =
+    period && typeof period === "object" && period.kind !== "month" ? "period" : "month";
   return count === 1
-    ? "1 open shift in this month is not counted. Close it with Fix a sign-out, then make the report again."
+    ? "1 open shift in this " +
+        where +
+        " is not counted. Close it with Fix a sign-out, then make the report again."
     : count +
-        " open shifts in this month are not counted. Close them with Fix a sign-out, then make the report again.";
+        " open shifts in this " +
+        where +
+        " are not counted. Close them with Fix a sign-out, then make the report again.";
 }
 
 /**
@@ -4383,9 +4746,15 @@ function openShiftsLine(count) {
  * rectangular arrays of the same shape, to be written with setNumberFormats and then
  * setValues; kinds says what each row is, for its look (reportTabLook): "title" (the
  * first line), "section" (a section's or table's title), "header" (a table's column
- * headers), "blank" or "body". report is monthReport's
- * result, month its "yyyy-MM", initials the admin's (already normalized), madeAtText when
- * the report was made, such as "2026-12-01 9:14 AM".
+ * headers), "blank" or "body". report is periodReport's result for period (or monthReport's
+ * for a month, with month its "yyyy-MM" in place of the period), initials the admin's
+ * (already normalized), madeAtText when the report was made, such as "2026-12-01 9:14 AM".
+ *
+ * A month report keeps the month report's title and sections. Every other kind is titled
+ * "Hours report for ...", says so when its last day hasn't come, and shows the sections its
+ * report holds: a quarter or year comparison, a quarter's year to date, Hours by year and
+ * Hours by month, and (quarter, year and range) a New volunteers table in place of the
+ * summary's names.
  *
  * Every text cell has already been through sheetText and has the format "@" (plain text),
  * so no name or date is read as a formula or a date. Hours are numbers formatted "0.00",
@@ -4393,6 +4762,8 @@ function openShiftsLine(count) {
  * cell holds a User Token.
  */
 function reportRows(report, month, initials, madeAtText) {
+  const period = asPeriod(month);
+  const isMonth = period.kind === "month";
   const values = [];
   const formats = [];
   const kinds = [];
@@ -4413,7 +4784,7 @@ function reportRows(report, month, initials, madeAtText) {
     rows.forEach((r) => add(...r));
   };
 
-  addAs("title", "Monthly report for " + monthName(month) + " (" + month + ")");
+  addAs("title", reportTitle(period, report.span));
   add(
     "Counts closed shifts with a User Token, using stated hours. Made " +
       cellString(madeAtText) +
@@ -4421,14 +4792,25 @@ function reportRows(report, month, initials, madeAtText) {
       cellString(initials) +
       " from the Log tab.",
   );
-  if (report.openCount) add(openShiftsLine(report.openCount));
+  if (!isMonth && period.unfinished) {
+    add(
+      "This period runs to " +
+        period.to +
+        ", which hasn't come yet, so this report shows the Log as it is so far.",
+    );
+  }
+  if (report.openCount) add(openShiftsLine(report.openCount, period));
 
   blank();
   addAs("section", "Summary");
   add("Stated hours", Hh(report.hundredths));
   add("Shifts", N(report.shifts));
   add("Volunteers", N(report.headcount));
-  add("New volunteers", N(report.newVolunteers.length), report.newVolunteers.join(", "));
+  if (isMonth) {
+    add("New volunteers", N(report.newVolunteers.length), report.newVolunteers.join(", "));
+  } else {
+    add("New volunteers", N(report.newVolunteers.length));
+  }
   add(
     "Average shift (hours)",
     report.averageHundredths === null ? "" : Hh(report.averageHundredths),
@@ -4446,27 +4828,66 @@ function reportRows(report, month, initials, madeAtText) {
   add("Adjusted shifts", N(adj.adjusted), "of " + adj.compared + " compared");
   add("Stated minus recorded (hours)", hoursText(adj.statedMinusRecordedHundredths, true));
 
-  blank();
-  addAs(
-    "section",
-    "Month over month",
-    monthName(month),
-    monthName(report.previousMonth),
-    "Change",
-    "% change",
-  );
-  report.monthOverMonth.forEach((r) => {
-    const amount = (n) => (r.unit === "hours" ? Hh(n) : N(n));
-    const change =
-      r.unit === "hours" ? hoursText(r.change, true) : (r.change > 0 ? "+" : "") + String(r.change);
-    add(r.label, amount(r.current), amount(r.previous), change, r.percent);
-  });
+  const comparison = report.comparison || report.monthOverMonth;
+  const previous = previousPeriod(period);
+  if (comparison && previous) {
+    const titles = {
+      month: "Month over month",
+      quarter: "Quarter over quarter",
+      year: "Year over year",
+    };
+    blank();
+    addAs(
+      "section",
+      titles[period.kind],
+      periodName(period),
+      periodName(previous),
+      "Change",
+      "% change",
+    );
+    comparison.forEach((r) => {
+      const amount = (n) => (r.unit === "hours" ? Hh(n) : N(n));
+      const change =
+        r.unit === "hours"
+          ? hoursText(r.change, true)
+          : (r.change > 0 ? "+" : "") + String(r.change);
+      add(r.label, amount(r.current), amount(r.previous), change, r.percent);
+    });
+  }
 
-  blank();
-  addAs("section", "Year to date", monthName(report.yearStart) + " to " + monthName(month));
-  add("Stated hours", Hh(report.yearToDate.hundredths));
-  add("Shifts", N(report.yearToDate.shifts));
-  add("Volunteers", N(report.yearToDate.headcount));
+  if (report.yearToDate) {
+    const lastMonth = period.to.slice(0, 7);
+    blank();
+    addAs(
+      "section",
+      "Year to date",
+      monthName(lastMonth.slice(0, 4) + "-01") + " to " + monthName(lastMonth),
+    );
+    add("Stated hours", Hh(report.yearToDate.hundredths));
+    add("Shifts", N(report.yearToDate.shifts));
+    add("Volunteers", N(report.yearToDate.headcount));
+  }
+
+  [
+    ["Hours by year", "Year", report.byYear],
+    ["Hours by month", "Month", report.byMonth],
+  ].forEach(([title, name, list]) => {
+    if (!list) return;
+    table(
+      title,
+      [name, "Shifts", "Stated hours", "Volunteers", "New volunteers"],
+      list.map((r) => [r.label, N(r.shifts), Hh(r.hundredths), N(r.headcount), N(r.newVolunteers)]),
+    );
+    if (list.length) {
+      add(
+        "Total",
+        N(report.shifts),
+        Hh(report.hundredths),
+        N(report.headcount),
+        N(report.newVolunteers.length),
+      );
+    }
+  });
 
   const hoursRows = (list, labelKey) =>
     list.map((g) => [g[labelKey], N(g.shifts), Hh(g.hundredths)]);
@@ -4476,6 +4897,13 @@ function reportRows(report, month, initials, madeAtText) {
     hoursRows(report.volunteers, "label"),
   );
   if (report.volunteers.length) add("Total", N(report.shifts), Hh(report.hundredths));
+  if (period.kind === "quarter" || period.kind === "year" || period.kind === "range") {
+    table(
+      "New volunteers",
+      ["Volunteer", "First shift"],
+      report.newVolunteerShifts.map((v) => [v.label, v.date]),
+    );
+  }
   table("Hours by weekday", ["Day", "Shifts", "Stated hours"], hoursRows(report.weekdays, "day"));
   [
     ["Role/Type", report.roleType],
@@ -4485,7 +4913,7 @@ function reportRows(report, month, initials, madeAtText) {
     table(title, [name, "Shifts", "Stated hours"], hoursRows(t.groups, "label"));
   });
   table(
-    "Milestones crossed this month",
+    isMonth ? "Milestones crossed this month" : "Milestones crossed in this period",
     ["Volunteer", "Milestone", "Date", "Log row"],
     report.milestones.map((m) => [m.label, m.title, m.date, N(m.row)]),
   );
@@ -4510,13 +4938,36 @@ function reportRows(report, month, initials, madeAtText) {
 }
 
 /**
- * The name of a new report tab: "Report 2026-11", or "Report 2026-11 (2)", "(3)" ... when
- * taken. Sheets tab names are unique without regard to case, so taken names are compared
- * that way.
+ * A report tab's first line: "Monthly report for November 2026 (2026-11)" for a month;
+ * "Hours report for Q4 2026 (2026-10-01 to 2026-12-31)", "Hours report for 2026
+ * (2026-01-01 to 2026-12-31)", "Hours report for 2026-03-15 to 2026-06-30", and for all
+ * time "Hours report for all time (first to last)" from span (periodReport's), or "(no
+ * dated rows)" without one.
  */
-function reportTabName(month, existingNames) {
+function reportTitle(period, span) {
+  if (period.kind === "month") {
+    return "Monthly report for " + monthName(period.key) + " (" + period.key + ")";
+  }
+  if (period.kind === "range") return "Hours report for " + period.key;
+  if (period.kind === "all") {
+    return (
+      "Hours report for all time (" +
+      (span ? span.first + " to " + span.last : "no dated rows") +
+      ")"
+    );
+  }
+  return "Hours report for " + periodName(period) + " (" + period.from + " to " + period.to + ")";
+}
+
+/**
+ * The name of a new report tab: "Report " and the period's key ("Report 2026-11", "Report
+ * 2026-Q4", "Report 2026", "Report 2026-03-15 to 2026-06-30", "Report all time"), or with
+ * " (2)", " (3)" ... when taken. period may be a "yyyy-MM" month. Sheets tab names are
+ * unique without regard to case, so taken names are compared that way.
+ */
+function reportTabName(period, existingNames) {
   const taken = new Set((existingNames || []).map((n) => cellString(n).toLowerCase()));
-  const base = "Report " + month;
+  const base = "Report " + (typeof period === "string" ? period : period.key);
   if (!taken.has(base.toLowerCase())) return base;
   for (let i = 2; ; i++) {
     const name = base + " (" + i + ")";
