@@ -66,13 +66,13 @@ so hours can be credited to each volunteer and reported to grantmakers.
   digits only when another volunteer with the same name is checked in too.
 - **Kiosk admin menu**: a menu in the Check-In Log spreadsheet for staff to add a shift a
   volunteer forgot to log, to close one they forgot to sign out of, to move a wrong shift
-  out of the Log and back, to check the Log for broken rows, to make a monthly report, to
+  out of the Log and back, to check the Log for broken rows, to make an hours report, to
   email volunteers their hours, or to refresh the Hours tab (see below).
 - **Flags tab**: each alert the kiosk writes is also copied to a Flags tab, one row per
   alert, for staff to tick off as reviewed (see Flags tab).
 - **Reports**: the Hours tab, tables and slicers for hours over any period you pick, a
-  frozen monthly report with CSV and PDF downloads, saved filter views on the Log, and a
-  warning when someone edits a column the kiosk fills (see Reports).
+  frozen hours report for any period with CSV and PDF downloads, saved filter views on the
+  Log, and a warning when someone edits a column the kiosk fills (see Reports).
 - **Daily jobs**: a weekly email of flags to staff, an auto clock-out at about 4 AM that
   closes shifts nobody checked out of, with a guessed time, flagged, and a refresh of the
   Hours tab at about 5 AM (see Daily jobs).
@@ -1545,7 +1545,7 @@ carries the date. A period with no counted rows makes a report of zeros.
 The window refuses, and says why, when:
 
 - the initials are missing or aren't 1 to 5 letters;
-- no period is chosen ("Please choose a period."), or no month ("Please choose a month.");
+- the period can't be read ("Please choose a period."), or no month ("Please choose a month.");
 - a date range is missing a date, or a date isn't a real day ("Please enter both dates, as
   yyyy-mm-dd.");
 - the From date is after the To date ("The From date is after the To date.");
@@ -1885,7 +1885,7 @@ nothing, except that it puts its look and its help back.
     kiosk text, since it describes the wrong column. A deleted note comes back at the
     next run.
   - The How to tab, last: who to ask for help, short walkthroughs for staff (review
-    flags, fix a sign-out, add, remove and restore a shift, the monthly report, email
+    flags, fix a sign-out, add, remove and restore a shift, the hours report, email
     volunteers their hours, the flags email, changing a setting, the Hours tab), a "Please don't" list, and every Log and
     Flags header note. Its first section, "Problems with the kiosk", is one cell holding a
     formula (in the General format; every other cell is plain text) that reads the
