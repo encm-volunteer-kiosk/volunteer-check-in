@@ -515,8 +515,8 @@ once.
 ## Kiosk admin menu
 
 Opening the Check-In Log spreadsheet adds a **Kiosk admin** menu with nine items: Add a
-shift, Fix a sign-out, Remove a shift, Restore a shift, Monthly report, Email hours, Import
-past hours, Refresh Hours and Check the Log now. Monthly report and Refresh Hours are
+shift, Fix a sign-out, Remove a shift, Restore a shift, Hours report, Email hours, Import
+past hours, Refresh Hours and Check the Log now. Hours report and Refresh Hours are
 described under Reports, and Email hours below. The sheet's How to tab (see What setupSheets does) walks staff through each item
 in plain words. Check the Log now runs the Log check that otherwise runs at about 5 AM (see Daily
 jobs) and says what it found and how many new Flags rows it added. Anyone who can edit the
@@ -550,7 +550,7 @@ a reply with no message. Refresh Hours and Check the Log now add the same line t
 that reports an error: a refresh that failed or found no Hours tabs, or a Log check that
 failed. A refusal, a busy message or a run's result is shown as it is, since each says
 what to do. With the row blank, the error is shown alone. A Settings tab that can't be
-read doesn't stop the shift or Monthly report windows opening; they just have no contact
+read doesn't stop the shift or Hours report windows opening; they just have no contact
 line. Import past hours needs Settings to open, so there it stops with Google's error.
 
 The "type to search" box in Add a shift, Fix a sign-out, Remove a shift, Restore a shift
@@ -1192,8 +1192,9 @@ Log cell. No report shows a User Token: tokens are read only to tell volunteers 
 
 - the **Hours** tab, tables of stated hours, shifts and volunteers for any period you pick
   with its slicers, as of its last refresh;
-- **Monthly report** in the Kiosk admin menu, which writes a report tab for a month and
-  gives you that tab as a CSV or PDF download;
+- **Hours report** in the Kiosk admin menu, which writes a report tab for any period (a
+  month, a quarter, a year, a date range or all time) and gives you that tab as a CSV or
+  PDF download;
 - saved **filter views** on the Log, for finding rows to check;
 - a **warning** when someone edits a column the kiosk fills.
 
@@ -1210,12 +1211,13 @@ Log cell. No report shows a User Token: tokens are read only to tell volunteers 
   it counts in no month's figures and is listed for review in every report. The Day
   column is never read; the weekday comes from the Date.
 - A **volunteer** is a User Token. The report shows the Volunteer Name from that
-  volunteer's latest counted shift in the month; the Hours tab shows it from their latest
+  volunteer's latest counted shift in the period; the Hours tab shows it from their latest
   counted shift in the whole Log (see Hours tab).
 - An **open** row (Status `open`) counts nowhere: no shift, no hours, not a volunteer.
-  The report lists open rows first under rows to review, and its first lines say how many
-  there are: "N open shifts in this month are not counted. Close them with Fix a
-  sign-out, then make the report again."
+  The report lists open rows in the period first under rows to review, and its first lines
+  say how many there are: "N open shifts in this month are not counted. Close them with
+  Fix a sign-out, then make the report again." A report for anything but a month says
+  "in this period".
 - A row **added or closed with the Kiosk admin menu** counts like any other closed row
   with a User Token, using its stated hours. It has no recorded time for the end the admin
   entered, so it is never in the adjustments comparison. It is listed under rows entered
@@ -1228,10 +1230,12 @@ Log cell. No report shows a User Token: tokens are read only to tell volunteers 
   not counted and is listed for review.
 - **Imported rows** (Import past hours, Kiosk admin menu) are `closed`, have a User
   Token and Hours Served (stated), and count in the month of their Date. They have no
-  times, so they are never in the adjustments comparison; a report lists them under rows
-  entered another way (`in "import", out "import"`), and an unmatched one under flagged
-  rows too. A report for an imported month lists every imported row for review. Importing
-  changes reports made afterwards, including for kiosk months:
+  times, so they are never in the adjustments comparison. A report doesn't list a row for
+  review just because it was imported: an end entered by the import is left out of rows
+  entered another way, in every report, a month's included. An imported row is listed only
+  in the groups for a real problem, such as flagged rows when its name wasn't matched, or
+  stated hours that are blank. If someone later types over one end, that end is listed as
+  before. Importing changes reports made afterwards, including for kiosk months:
   - **New volunteers**: a volunteer's first shift is their first in the whole Log, so a
     volunteer with imported shifts is new in the month of the earliest, not when they first
     used the kiosk.
@@ -1491,17 +1495,34 @@ under the lock.
 **On a phone or tablet.** Use Hours in Sheets on a computer: the Sheets apps for phones and
 tablets can't edit pivot tables.
 
-### Monthly report
+### Hours report
 
-**Monthly report** in the Kiosk admin menu opens a small window. Choose the month (it
-starts on last month, or this month when last month has no rows) and type your initials,
-as for the other menu items.
+**Hours report…** in the Kiosk admin menu opens a small window titled "Hours report".
+Choose the **Period**, then what it asks for, and type your initials, as for the other
+menu items:
 
-The report is written to a new tab named for the month, such as `Report 2026-11`. Making
-a second report for the same month makes a new tab, `Report 2026-11 (2)`. The script
-never changes a report tab after writing it, so each one is a record of the Log as it was
-when the report was made. Delete old report tabs by hand when you no longer need them.
-Report tabs warn before an edit.
+- **Month**: a month from the list. It starts on last month, or this month when last
+  month has no rows. The window opens on Month, so a month report is made as before.
+- **Quarter**: a calendar quarter, such as "Q4 2026 (October to December)". It starts on
+  last quarter, or this quarter when last quarter has no rows.
+- **Year**: a calendar year. It starts on last year, or this year when last year has no
+  rows. Once rows from an earlier year are on the Log (an import of paper hours, say),
+  the list opens on last year until the year ends, so pick this year to see this year so
+  far.
+- **Date range**: From and To, both included. They start on 1 January of this year and
+  today. To may be after today; From may not. For a fiscal year, type its dates. Where a
+  browser shows a plain box instead of a date picker, type the date as `yyyy-mm-dd`.
+- **All time**: every row in the Log with a readable Date.
+
+The lists hold every month, quarter or year with a dated row up to now, plus the current
+one, newest first.
+
+The report is written to a new tab named for the period: `Report 2026-11` for a month,
+`Report 2026-Q4`, `Report 2026`, `Report 2026-03-15 to 2026-06-30` or `Report all time`.
+Month tabs keep the names they have always had. Making a second report for the same
+period makes a new tab, `Report 2026-11 (2)`. The script never changes a report tab after
+writing it, so each one is a record of the Log as it was when the report was made. Delete
+old report tabs by hand when you no longer need them. Report tabs warn before an edit.
 
 Report tabs are styled when they're written: the title, the section headings, each
 table's header row, column widths and a blue tab. The styling shows in the PDF too; what
@@ -1514,36 +1535,52 @@ to Google who can open the spreadsheet.
 
 The report's first lines say what it counts and who made it: "Counts closed shifts with a
 User Token, using stated hours. Made 2026-12-01 9:14 AM by JP from the Log tab." Log row
-numbers in the report are as of that moment; sorting the Log later changes them.
+numbers in the report are as of that moment; sorting the Log later changes them. A period
+that hasn't ended (this month, this quarter, this year, or a range whose To is after
+today) covers the whole period and counts what the Log holds so far. A quarter, year or
+range report then says so: "This period runs to 2026-12-31, which hasn't come yet, so
+this report shows the Log as it is so far." A month report doesn't; its "Made" line
+carries the date. A period with no counted rows makes a report of zeros.
 
 The window refuses, and says why, when:
 
 - the initials are missing or aren't 1 to 5 letters;
-- no month is chosen ("Please choose a month."), or the month is after this one;
+- no period is chosen ("Please choose a period."), or no month ("Please choose a month.");
+- a date range is missing a date, or a date isn't a real day ("Please enter both dates, as
+  yyyy-mm-dd.");
+- the From date is after the To date ("The From date is after the To date.");
+- the period starts after today, such as next month, next quarter or a From after today;
 - the kiosk is busy writing a row. Try again in a moment;
 - the window has been open more than 30 minutes. Close it and open the menu again.
 
 If the Log is missing a column the kiosk needs, the window shows the same message the kiosk
 gives, and no report is made. Run `setupSheets`, then try again.
 
+A window opened before an update to this script still makes month reports: close it and
+open the menu again to get the Period choice.
+
 ### What the report shows
 
-Every figure uses the month's counted rows and their stated hours, unless it says
-otherwise.
+Every figure uses the period's counted rows (rows whose Date falls in the period) and
+their stated hours, unless it says otherwise. A month report has the sections it has
+always had; the other periods add or leave out a few, as below.
 
-1. **Stated hours**: the month's stated hours added up. A stated hours cell that is blank,
-   negative or not a number adds nothing. A number typed as text, such as "2.5", is read
-   as that number. Each such row is listed for review, which is why the total can differ
-   from a plain SUM of the column on those rows.
+1. **Stated hours**: the period's stated hours added up. A stated hours cell that is
+   blank, negative or not a number adds nothing. A number typed as text, such as "2.5", is
+   read as that number. Each such row is listed for review, which is why the total can
+   differ from a plain SUM of the column on those rows.
 2. **Hours per volunteer**: each volunteer's shifts and stated hours, by name, with a
    total line. When two volunteers share a name, each name gets the date of that
    volunteer's first shift ("Ana Ruiz · first shift 2026-11-03"), and the Log row too if
    that date is the same.
 3. **Shifts and volunteers**: shifts is the number of counted rows; volunteers is the
    number of different User Tokens among them.
-4. **New volunteers**: volunteers whose first counted shift in the whole Log is in this
-   month, with their names. Only the Log tab is read, so in the first month the kiosk is
-   used, every volunteer is new.
+4. **New volunteers**: volunteers whose first counted shift in the whole Log is in the
+   period. A month report lists their names beside the count. A quarter, year or date
+   range report gives the count there and lists them in a **New volunteers** table with
+   the date of each one's first shift. An all-time report gives only the count, since
+   every volunteer is new there. Only the Log tab is read, so in the first month the kiosk
+   is used, every volunteer is new.
 5. **Average shift**: stated hours divided by shifts, to two decimals. Blank when there
    are no shifts.
 6. **Hours by weekday**: shifts and stated hours for each day, Monday to Sunday, from the
@@ -1560,27 +1597,45 @@ otherwise.
    shifts.
 9. **Rows to review**: lines with the date, name, Status and Log row, in these groups,
    each with its count:
-   - open shifts in the month, not counted;
-   - flagged rows in the month (Admin Alerts? not blank);
-   - rows in the month entered by an admin, with the initials;
-   - rows in the month whose Status is not `open` or `closed`, not counted;
-   - rows in the month with an end typed into the sheet or entered another way;
-   - counted shifts in the month whose stated hours are blank, text or negative;
-   - closed rows in the month with no User Token, not counted;
-   - rows anywhere in the Log whose Date isn't `yyyy-MM-dd`, in no month.
-10. **Year to date and milestones**: stated hours, shifts and volunteers from 1 January to
-    the end of the month. Then every milestone a volunteer crossed this month (10 shifts,
-    50 hours and so on), counted over the whole Log with stated hours, the way the kiosk
-    counts them. A milestone is listed on the date of the shift that reached it. A shift
-    added later with Add a shift for an earlier date can move that date. The first
-    completed shift isn't listed here; new volunteers covers it. A shift whose Date can't
-    be read has no place in date order, so it is left out of new volunteers and
-    milestones, and listed for review.
+   - open shifts in the period, not counted;
+   - flagged rows in the period (Admin Alerts? not blank);
+   - rows in the period entered by an admin, with the initials;
+   - rows in the period whose Status is not `open` or `closed`, not counted;
+   - rows in the period with an end typed into the sheet or entered another way. An end
+     entered by Import past hours is left out of this group (see Which rows count);
+   - counted shifts in the period whose stated hours are blank, text or negative;
+   - closed rows in the period with no User Token, not counted;
+   - rows anywhere in the Log whose Date isn't `yyyy-MM-dd`, in no month, in every report.
+10. **Year to date and milestones**: a month report gives stated hours, shifts and
+    volunteers from 1 January to the end of the month, and a quarter report from 1 January
+    to the end of the quarter. A year is its own year to date, and a date range or all time
+    isn't tied to one year, so they have none. Then every milestone a volunteer crossed in
+    the period (10 shifts, 50 hours and so on), counted over the whole Log with stated
+    hours, the way the kiosk counts them. A milestone is listed on the date of the shift
+    that reached it. A shift added later with Add a shift for an earlier date can move that
+    date. The first completed shift isn't listed here; new volunteers covers it. A shift
+    whose Date can't be read has no place in date order, so it is left out of new
+    volunteers and milestones, and listed for review.
 11. **Volunteer value**: stated hours times the "Volunteer hour value" in Settings, to the
     cent.
-12. **Month over month**: stated hours, shifts, volunteers and new volunteers for this
-    month and the month before, with the change and the percent change to one decimal.
-    The percent shows "n/a" when the month before had none.
+12. **Comparison**: a month report has **Month over month**: stated hours, shifts,
+    volunteers and new volunteers for this month and the month before, with the change
+    and the percent change to one decimal. The percent shows "n/a" when the month before
+    had none. A quarter report has **Quarter over quarter** against the quarter before, and
+    a year report **Year over year** against the year before, the same way. A date range
+    has no natural "before" and all time has nothing before it, so they have none. For a
+    period that hasn't ended, the comparison sets part of a period against a whole one.
+13. **Hours by month** (every period but a month): shifts, stated hours, volunteers and new
+    volunteers for each month, from the first to the last month in the period that holds a
+    counted row, with months between that have none shown as zeros. A month the period
+    only partly covers is named by its dates, such as "2026-03-15 to 2026-03-31"; a whole
+    month by its name. A Total line follows. Its volunteers figure is the number of
+    different volunteers in the whole period, not the sum of the column, since one
+    volunteer can work in several months; new volunteers do add up. With no counted rows
+    the table says "(none)".
+14. **Hours by year** (a date range or all time whose months fall in two or more calendar
+    years): the same columns for each year, years the period only partly covers named by
+    their dates, with a Total line on the same rule.
 
 ### Volunteer hour value
 
@@ -1947,10 +2002,10 @@ src/replies.ts              server replies as the page reads them: google.script
 apps-script/Api.js          doGet and the api* functions the page calls
 apps-script/Admin.js        the Kiosk admin menu and its dialogs' server functions
 apps-script/AdminDialog.html the admin dialogs (plain HTML and JavaScript, committed source)
-apps-script/Reports.js      setupReports, the Hours refresh and the Monthly report menu item's server functions
+apps-script/Reports.js      setupReports, the Hours refresh and the Hours report menu item's server functions
 apps-script/Jobs.js         the daily jobs: setupDailyJobs, removeDailyJobs, the weekly flags email, the nightly Hours refresh
 apps-script/HoursSort.js    the Hours tab's sort boxes: the on-edit handler that re-sorts a table when a box changes
-apps-script/Report.html     the Monthly report window (plain HTML and JavaScript, committed source)
+apps-script/Report.html     the Hours report window (plain HTML and JavaScript, committed source)
 apps-script/Import.js       the Import past hours menu item: preview, write, ledger and flags
 apps-script/ImportDialog.html the Import past hours dialog (plain HTML and JavaScript, committed source)
 apps-script/Logic.js        the rules, as plain functions the Node tests load

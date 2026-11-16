@@ -558,11 +558,11 @@ test("the two hours email rows are the last two Settings rows, blank by default,
   );
 });
 
-test("How to has the Email hours steps, after the monthly report", () => {
+test("How to has the Email hours steps, after the hours report", () => {
   const sections = plain(L.howToSections());
   const at = sections.findIndex((s) => s.title === "Email volunteers their hours");
   assert.ok(at > 0);
-  assert.equal(sections[at - 1].title, "Make the monthly report");
+  assert.equal(sections[at - 1].title, "Make an hours report");
   const texts = sections[at].lines.map((l) => l.text);
   assert.ok(texts.includes("1. Kiosk admin > Email hours…"));
   const all = texts.join("\n");

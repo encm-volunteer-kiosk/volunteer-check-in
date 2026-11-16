@@ -5225,7 +5225,7 @@ function reportProtectionPrefixes() {
 function reportTabDescription() {
   return (
     reportProtectionPrefixes().reportTab +
-    " written once by the Kiosk admin menu's Monthly report, and never changed by the script. To correct it, fix the Log and make the report again."
+    " written once by the Kiosk admin menu's Hours report, and never changed by the script. To correct it, fix the Log and make the report again."
   );
 }
 
@@ -9582,15 +9582,18 @@ function howToSections() {
       ],
     },
     {
-      title: "Make the monthly report",
+      title: "Make an hours report",
       lines: [
         step("1. Kiosk admin > Hours report…"),
-        step("2. Choose the month, type your initials and press Make report."),
         step(
-          "3. The report goes on a new tab named for the month, such as Report 2026-11. The window then shows Download CSV and Download PDF links for that tab.",
+          "2. Choose the period: Month, Quarter, Year, Date range or All time. Then choose the month, quarter or year, or type the From and To dates.",
+        ),
+        step("3. Type your initials and press Make report."),
+        step(
+          "4. The report goes on a new tab named for the period, such as Report 2026-11, Report 2026-Q4, Report 2026, Report 2026-03-15 to 2026-06-30 or Report all time. The window then shows Download CSV and Download PDF links for that tab.",
         ),
         tip(
-          "The report's dollar figure uses Volunteer hour value on the Settings tab. Making the same month again makes a second tab; delete old report tabs when you're done with them.",
+          "The report's dollar figure uses Volunteer hour value on the Settings tab. Making the same report again makes a second tab; delete old report tabs when you're done with them.",
         ),
       ],
     },
