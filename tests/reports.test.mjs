@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { GOLDEN_LOGS, GOLDEN_MADE, goldenEntries } from "./report-golden-logs.mjs";
 
 const root = new URL("../", import.meta.url);
 const L = {};
@@ -1248,4 +1249,825 @@ test("setupReportsMessage names the account the sort boxes run as, or why their 
       without.split("\n"),
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// The golden month: every month report as main 2e7c0da made it, but for imported ends
+
+const SOURCE_GROUP = "Rows with an end typed into the sheet or entered another way: ";
+
+/**
+ * A month report's cells as main made them, with the one change since: an end the paper
+ * import entered leaves the source group. A line whose listed ends were all imported goes;
+ * a line that also named another end keeps that end only; the group's count drops by the
+ * lines gone, and its header row goes when none is left. Returns {rows, gone, trimmed}.
+ */
+function withoutImportedEnds(rows) {
+  const at = rows.values.findIndex((r) => String(r[0]).startsWith(SOURCE_GROUP));
+  assert.ok(at > 0, "the source group is in every report");
+  const count = Number(rows.values[at][0].slice(SOURCE_GROUP.length));
+  const bodyFrom = at + 2;
+  const kept = [];
+  let gone = 0;
+  let trimmed = 0;
+  for (let i = bodyFrom; i < bodyFrom + count; i++) {
+    const parts = String(rows.values[i][4]).split(", ");
+    const left = parts.filter((p) => !/^(in|out) "import"$/i.test(p));
+    if (!left.length) {
+      gone += 1;
+      continue;
+    }
+    if (left.length < parts.length) trimmed += 1;
+    const values = rows.values[i].slice();
+    values[4] = left.join(", ");
+    kept.push({ values, formats: rows.formats[i], kind: rows.kinds[i] });
+  }
+  const out = { values: [], formats: [], kinds: [] };
+  const push = (values, formats, kind) => {
+    out.values.push(values);
+    out.formats.push(formats);
+    out.kinds.push(kind);
+  };
+  for (let i = 0; i < at; i++) push(rows.values[i], rows.formats[i], rows.kinds[i]);
+  const section = rows.values[at].slice();
+  section[0] = SOURCE_GROUP + kept.length;
+  push(section, rows.formats[at], rows.kinds[at]);
+  if (count && kept.length) push(rows.values[at + 1], rows.formats[at + 1], rows.kinds[at + 1]);
+  kept.forEach((k) => push(k.values, k.formats, k.kind));
+  for (let i = count ? bodyFrom + count : at + 1; i < rows.values.length; i++) {
+    push(rows.values[i], rows.formats[i], rows.kinds[i]);
+  }
+  return { rows: out, gone, trimmed };
+}
+
+test("golden month: every month report equals main's, cell for cell, but for imported ends", () => {
+  const golden = JSON.parse(readFileSync(new URL("tests/report-golden.json", root), "utf8"));
+  assert.equal(golden.rev, "2e7c0da");
+  const byLog = new Map(GOLDEN_LOGS.map((log) => [log.name, log]));
+  let gone = 0;
+  let trimmed = 0;
+  let cases = 0;
+  for (const c of golden.cases) {
+    const { entries, cols } = goldenEntries(L, byLog.get(c.log));
+    const expected = withoutImportedEnds({ values: c.values, formats: c.formats, kinds: c.kinds });
+    gone += expected.gone;
+    trimmed += expected.trimmed;
+    const label = c.log + " " + c.month + " at " + c.rate;
+    const viaMonth = plain(
+      L.reportRows(
+        L.monthReport(entries, c.month, c.rate, cols),
+        c.month,
+        GOLDEN_MADE.initials,
+        GOLDEN_MADE.madeAt,
+      ),
+    );
+    assert.deepEqual(viaMonth, expected.rows, label + " (monthReport)");
+    const { period } = L.reportPeriod({ period: "month", month: c.month }, "2026-12-31");
+    const viaPeriod = plain(
+      L.reportRows(
+        L.periodReport(entries, period, c.rate, cols),
+        period,
+        GOLDEN_MADE.initials,
+        GOLDEN_MADE.madeAt,
+      ),
+    );
+    assert.deepEqual(viaPeriod, expected.rows, label + " (periodReport)");
+    cases += 1;
+  }
+  const made = GOLDEN_LOGS.reduce((n, log) => n + log.months.length * log.rates.length, 0);
+  assert.equal(cases, made, "the fixture holds every golden Log's every month");
+  assert.ok(gone > 0, "a line of only imported ends leaves the group");
+  assert.ok(trimmed > 0, "a line with another end keeps that end only");
+});
+
+// ---------------------------------------------------------------------------
+// Imported ends in the review groups
+
+/** A row as the paper import writes it: closed, stated times only, "import" at both ends. */
+function importedShift(date, name, token, hours, extra = {}) {
+  return {
+    date,
+    name,
+    token,
+    status: "closed",
+    statedIn: at(date, "09:00"),
+    statedOut: at(date, "10:00"),
+    statedHours: hours,
+    inBy: "import",
+    outBy: "import",
+    shiftId: "imp-" + date + "-" + token,
+    ...extra,
+  };
+}
+
+const IMPORTED = [
+  importedShift("2026-09-01", "Ivy Paz", "tI", 1),
+  importedShift("2026-09-02", "Ivy Paz", "tI", 1, { outBy: "" }),
+  importedShift("2026-09-03", "Jo Kim", "tJ", 1, { inBy: " IMPORT ", outBy: "Import" }),
+  importedShift("2026-09-04", "Jo Kim", "tJ", 1, { outBy: "auto-close" }),
+  importedShift("2026-09-05", "Kai Roe", "import:kai roe", 1, { alerts: "name not matched" }),
+  importedShift("2026-09-06", "Kai Roe", "import:kai roe", ""),
+  {
+    date: "2026-09-07",
+    name: "Lu Wei",
+    token: "tL",
+    status: "open",
+    statedIn: at("2026-09-07", "09:00"),
+    inBy: "import",
+    shiftId: "imp-open",
+  },
+  importedShift("2026-09-08", "Ivy Paz", "tI", 1, { outBy: "kiosk" }),
+  importedShift("2026-09-09", "Ivy Paz", "tI", 1, { outBy: "JP" }),
+];
+
+for (const [kind, form] of [
+  ["a month", { period: "month", month: "2026-09" }],
+  ["all time", { period: "all" }],
+]) {
+  test("imported ends leave the source group and nothing else, for " + kind, () => {
+    const { period } = L.reportPeriod(form, "2026-11-16");
+    const r = plain(L.periodReport(entriesFor(IMPORTED), period, null));
+    const rows = Object.fromEntries(
+      r.review.map((g) => [g.id, g.rows.map((x) => [x.row, x.detail])]),
+    );
+    assert.deepEqual(rows.source, [
+      [3, "out typed into the sheet"],
+      [5, 'out "auto-close"'],
+    ]);
+    assert.deepEqual(rows.flagged, [[6, "name not matched"]]);
+    assert.deepEqual(rows.hours, [[7, "stated hours blank"]]);
+    assert.deepEqual(rows.open, [[8, ""]], "an open imported row is still an open shift");
+    assert.deepEqual(rows.admin, [[10, "out JP"]]);
+    assert.deepEqual(rows.status, []);
+    assert.deepEqual(rows.noToken, []);
+    assert.equal(r.shifts, 8, "imported rows count as they always have");
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Periods
+
+test("dayKey and monthKey", () => {
+  assert.equal(L.dayKey("2026-11-14"), "2026-11-14");
+  assert.equal(L.dayKey(" 2026-11-14 "), "2026-11-14");
+  assert.equal(L.dayKey("2024-02-29"), "2024-02-29");
+  assert.equal(L.dayKey("2026-02-29"), "");
+  assert.equal(L.dayKey("2026-02-30"), "");
+  assert.equal(L.dayKey("11/14/2026"), "");
+  assert.equal(L.dayKey(""), "");
+  assert.equal(L.monthKey("2026-11-14"), "2026-11");
+  assert.equal(L.monthKey("2026-02-30"), "");
+});
+
+test("period bounds: quarters, a leap February, 31 December, a range across a year end", () => {
+  const bounds = (p) => [p.kind, p.key, p.from, p.to];
+  assert.deepEqual(bounds(L.quarterPeriod("2026-Q1")), [
+    "quarter",
+    "2026-Q1",
+    "2026-01-01",
+    "2026-03-31",
+  ]);
+  assert.deepEqual(bounds(L.quarterPeriod("2026-Q2")), [
+    "quarter",
+    "2026-Q2",
+    "2026-04-01",
+    "2026-06-30",
+  ]);
+  assert.deepEqual(bounds(L.quarterPeriod("2026-Q3")), [
+    "quarter",
+    "2026-Q3",
+    "2026-07-01",
+    "2026-09-30",
+  ]);
+  assert.deepEqual(bounds(L.quarterPeriod("2026-Q4")), [
+    "quarter",
+    "2026-Q4",
+    "2026-10-01",
+    "2026-12-31",
+  ]);
+  assert.deepEqual(bounds(L.monthPeriod("2024-02")), [
+    "month",
+    "2024-02",
+    "2024-02-01",
+    "2024-02-29",
+  ]);
+  assert.deepEqual(bounds(L.monthPeriod("2026-02")), [
+    "month",
+    "2026-02",
+    "2026-02-01",
+    "2026-02-28",
+  ]);
+  assert.deepEqual(bounds(L.yearPeriod("2026")), ["year", "2026", "2026-01-01", "2026-12-31"]);
+  assert.deepEqual(bounds(L.allTimePeriod()), ["all", "all time", null, null]);
+  const range = L.rangePeriod("2025-12-15", "2026-01-10");
+  assert.equal(range.key, "2025-12-15 to 2026-01-10");
+  for (const [day, inside] of [
+    ["2025-12-14", false],
+    ["2025-12-15", true],
+    ["2025-12-31", true],
+    ["2026-01-01", true],
+    ["2026-01-10", true],
+    ["2026-01-11", false],
+  ]) {
+    assert.equal(L.inPeriod(day, range), inside, day);
+  }
+  assert.equal(L.inPeriod("2026-12-31", L.yearPeriod("2026")), true);
+  assert.equal(L.inPeriod("2027-01-01", L.yearPeriod("2026")), false);
+  assert.equal(L.inPeriod("2024-02-29", L.quarterPeriod("2024-Q1")), true);
+  assert.equal(L.inPeriod("1900-01-01", L.allTimePeriod()), true);
+  assert.equal(L.inPeriod("", L.allTimePeriod()), false, "an undated row is in no period");
+  assert.equal(L.previousPeriod(L.quarterPeriod("2026-Q1")).key, "2025-Q4");
+  assert.equal(L.previousPeriod(L.quarterPeriod("2026-Q3")).key, "2026-Q2");
+  assert.equal(L.previousPeriod(L.yearPeriod("2026")).key, "2025");
+  assert.equal(L.previousPeriod(L.monthPeriod("2026-01")).key, "2025-12");
+  assert.equal(L.previousPeriod(range), null);
+  assert.equal(L.previousPeriod(L.allTimePeriod()), null);
+  assert.equal(L.quarterLabel("2026-Q4"), "Q4 2026 (October to December)");
+  assert.equal(L.quarterLabel("2026-Q1"), "Q1 2026 (January to March)");
+});
+
+test("reportPeriod: each kind, and a form with no period is a month", () => {
+  const today = "2026-11-16";
+  const got = (form) => plain(L.reportPeriod(form, today));
+  assert.deepEqual(got({ month: "2026-10" }), {
+    period: {
+      kind: "month",
+      key: "2026-10",
+      from: "2026-10-01",
+      to: "2026-10-31",
+      unfinished: false,
+    },
+  });
+  assert.deepEqual(got({ period: "", month: "2026-11" }).period.unfinished, true);
+  assert.deepEqual(got({ period: "quarter", quarter: "2026-Q3" }).period, {
+    kind: "quarter",
+    key: "2026-Q3",
+    from: "2026-07-01",
+    to: "2026-09-30",
+    unfinished: false,
+  });
+  assert.equal(got({ period: "quarter", quarter: "2026-Q4" }).period.unfinished, true);
+  assert.deepEqual(got({ period: "year", year: "2025" }).period, {
+    kind: "year",
+    key: "2025",
+    from: "2025-01-01",
+    to: "2025-12-31",
+    unfinished: false,
+  });
+  assert.equal(got({ period: "year", year: "2026" }).period.unfinished, true);
+  assert.deepEqual(got({ period: "range", from: "2026-03-15", to: "2026-06-30" }).period, {
+    kind: "range",
+    key: "2026-03-15 to 2026-06-30",
+    from: "2026-03-15",
+    to: "2026-06-30",
+    unfinished: false,
+  });
+  assert.deepEqual(got({ period: "all", month: "2099-01" }).period, {
+    kind: "all",
+    key: "all time",
+    from: null,
+    to: null,
+    unfinished: false,
+  });
+  // Only the fields of the kind are read.
+  assert.equal(got({ period: "year", year: "2025", month: "bad", from: "x" }).period.key, "2025");
+  // Spaces are trimmed.
+  assert.equal(got({ period: " Quarter ", quarter: " 2026-Q2 " }).period.key, "2026-Q2");
+  assert.equal(
+    got({ period: "range", from: " 2026-01-01 ", to: " 2026-01-02 " }).period.key,
+    "2026-01-01 to 2026-01-02",
+  );
+});
+
+test("reportPeriod refuses in order and writes nothing it can't read", () => {
+  const today = "2026-11-16";
+  const refused = (form) => L.reportPeriod(form, today).refusal;
+  assert.equal(refused({ period: "week" }), "ADMIN_BAD_PERIOD");
+  assert.equal(refused({ period: "quarter", quarter: "2026-Q5" }), "ADMIN_BAD_PERIOD");
+  assert.equal(refused({ period: "quarter", quarter: "2026Q4" }), "ADMIN_BAD_PERIOD");
+  assert.equal(refused({ period: "quarter" }), "ADMIN_BAD_PERIOD");
+  assert.equal(refused({ period: "year", year: "26" }), "ADMIN_BAD_PERIOD");
+  assert.equal(refused({ period: "year", year: "2026-01" }), "ADMIN_BAD_PERIOD");
+  assert.equal(refused({}), "ADMIN_BAD_MONTH");
+  assert.equal(refused({ month: "2026-13" }), "ADMIN_BAD_MONTH");
+  assert.equal(refused({ period: "month", month: "2026-12" }), "ADMIN_FUTURE");
+  assert.equal(refused({ period: "range", to: "2026-01-01" }), "ADMIN_BAD_RANGE");
+  assert.equal(refused({ period: "range", from: "2026-01-01" }), "ADMIN_BAD_RANGE");
+  assert.equal(
+    refused({ period: "range", from: "2026-02-30", to: "2026-03-01" }),
+    "ADMIN_BAD_RANGE",
+  );
+  assert.equal(
+    refused({ period: "range", from: "01/02/2026", to: "2026-03-01" }),
+    "ADMIN_BAD_RANGE",
+  );
+  assert.equal(
+    refused({ period: "range", from: "2026-03-02", to: "2026-03-01" }),
+    "ADMIN_RANGE_ORDER",
+  );
+  // The order check comes before the future check.
+  assert.equal(
+    refused({ period: "range", from: "2027-03-02", to: "2027-03-01" }),
+    "ADMIN_RANGE_ORDER",
+  );
+  assert.equal(refused({ period: "range", from: "2026-11-17", to: "2026-12-01" }), "ADMIN_FUTURE");
+  assert.equal(refused({ period: "quarter", quarter: "2027-Q1" }), "ADMIN_FUTURE");
+  assert.equal(refused({ period: "year", year: "2027" }), "ADMIN_FUTURE");
+  // A range that starts by today may end after it; so may a one-day range on today.
+  const open = L.reportPeriod({ period: "range", from: "2026-11-01", to: "2027-01-31" }, today);
+  assert.equal(open.refusal, undefined);
+  assert.equal(open.period.unfinished, true);
+  const one = L.reportPeriod({ period: "range", from: today, to: today }, today);
+  assert.equal(one.period.unfinished, false);
+  for (const code of ["ADMIN_BAD_PERIOD", "ADMIN_BAD_RANGE", "ADMIN_RANGE_ORDER"]) {
+    assert.equal(plain(L.refusal(code)).ok, false);
+  }
+  assert.equal(L.refusal("ADMIN_BAD_PERIOD").message, "Please choose a period.");
+  assert.equal(L.refusal("ADMIN_BAD_RANGE").message, "Please enter both dates, as yyyy-mm-dd.");
+  assert.equal(L.refusal("ADMIN_RANGE_ORDER").message, "The From date is after the To date.");
+});
+
+// A year of shifts: Ana every month from January, Ben from October, Cal once in December.
+const YEAR_LOG = [];
+for (let m = 1; m <= 12; m++) {
+  const month = "2026-" + String(m).padStart(2, "0");
+  YEAR_LOG.push(kioskShift(month + "-05", "Ana Ruiz", "tA", "09:00", "11:00", { statedHours: 2 }));
+  if (m >= 10) {
+    YEAR_LOG.push(
+      kioskShift(month + "-06", "Ben Ott", "tB", "09:00", "12:30", { statedHours: 3.5 }),
+    );
+  }
+}
+YEAR_LOG.push(kioskShift("2026-12-07", "Cal Diaz", "tC", "09:00", "10:00", { statedHours: 1 }));
+YEAR_LOG.push(kioskShift("2025-12-20", "Dee Fox", "tD", "09:00", "10:00", { statedHours: 1.25 }));
+
+const reportFor = (rows, form, today = "2026-12-31", rate = null) => {
+  const got = L.reportPeriod(form, today);
+  assert.equal(got.refusal, undefined, JSON.stringify(form));
+  return plain(L.periodReport(entriesFor(rows), got.period, rate));
+};
+
+test("a quarter's and a year's sums are their months' sums; volunteers are a distinct count", () => {
+  const sum = (reports, key) => reports.reduce((n, r) => n + r[key], 0);
+  const newCount = (reports) => reports.reduce((n, r) => n + r.newVolunteers.length, 0);
+  const months = (list) => list.map((m) => reportFor(YEAR_LOG, { month: m }));
+  const q4 = reportFor(YEAR_LOG, { period: "quarter", quarter: "2026-Q4" });
+  const q4Months = months(["2026-10", "2026-11", "2026-12"]);
+  assert.equal(q4.shifts, sum(q4Months, "shifts"));
+  assert.equal(q4.hundredths, sum(q4Months, "hundredths"));
+  assert.equal(q4.newVolunteers.length, newCount(q4Months));
+  assert.deepEqual(q4.newVolunteers, ["Ben Ott", "Cal Diaz"]);
+  assert.equal(q4.headcount, 3);
+  assert.ok(sum(q4Months, "headcount") > q4.headcount, "a volunteer in two months counts once");
+  const year = reportFor(YEAR_LOG, { period: "year", year: "2026" });
+  const yearMonths = months(
+    Array.from({ length: 12 }, (_, i) => "2026-" + String(i + 1).padStart(2, "0")),
+  );
+  assert.equal(year.shifts, sum(yearMonths, "shifts"));
+  assert.equal(year.hundredths, sum(yearMonths, "hundredths"));
+  assert.equal(year.newVolunteers.length, newCount(yearMonths));
+  assert.equal(year.headcount, 3);
+  assert.deepEqual(year.newVolunteerShifts, [
+    { label: "Ana Ruiz", date: "2026-01-05" },
+    { label: "Ben Ott", date: "2026-10-06" },
+    { label: "Cal Diaz", date: "2026-12-07" },
+  ]);
+});
+
+test("all time's stated hours and shifts equal the Hours tab's all-time totals", () => {
+  const rows = YEAR_LOG.concat([
+    {
+      date: "11/02/2026",
+      name: "Eve",
+      token: "tE",
+      status: "closed",
+      statedHours: 9,
+      shiftId: "u",
+    },
+    kioskShift("2026-03-03", "Fay", "", "09:00", "10:00", { statedHours: 1 }),
+    kioskShift("2026-03-04", "Fay", "tF", "09:00", "10:00", { status: "open" }),
+  ]);
+  const all = reportFor(rows, { period: "all" });
+  const t = plain(L.hoursTable(entriesFor(rows), [], () => "09:00"));
+  const hoursAt = t.header.indexOf("Hours");
+  assert.ok(hoursAt >= 0);
+  const hundredths = t.rows.reduce((n, r) => n + Math.round(r[hoursAt] * 100), 0);
+  assert.equal(all.shifts, t.rows.length);
+  assert.equal(all.hundredths, hundredths);
+});
+
+/** The first cell of each section row above Rows to review, and the first lines. */
+function outline(rows) {
+  const at = rows.values.findIndex((r) => r[0] === "Rows to review");
+  const sections = rows.values
+    .slice(0, at)
+    .filter((r, i) => rows.kinds[i] === "section")
+    .map((r) => r[0]);
+  const firstBlank = rows.kinds.indexOf("blank");
+  return {
+    title: rows.values[0][0],
+    lines: rows.values.slice(1, firstBlank).map((r) => r[0]),
+    sections,
+  };
+}
+
+const rowsFor = (rows, form, today) => {
+  const got = L.reportPeriod(form, today);
+  return plain(
+    L.reportRows(
+      L.periodReport(entriesFor(rows), got.period, 3479),
+      got.period,
+      "JP",
+      "2026-11-16 9:00 AM",
+    ),
+  );
+};
+
+test("each kind gets its sections and no others; only quarter, year and range say they haven't ended", () => {
+  const today = "2026-11-16";
+  const common = ["Hours per volunteer"];
+  const tail = ["Hours by weekday", "Hours by Role/Type", "Hours by Activity"];
+  const cases = [
+    [
+      { month: "2026-11" },
+      "Monthly report for November 2026 (2026-11)",
+      [
+        "Summary",
+        "Month over month",
+        "Year to date",
+        ...common,
+        ...tail,
+        "Milestones crossed this month",
+      ],
+    ],
+    [
+      { period: "quarter", quarter: "2026-Q4" },
+      "Hours report for Q4 2026 (2026-10-01 to 2026-12-31)",
+      [
+        "Summary",
+        "Quarter over quarter",
+        "Year to date",
+        "Hours by month",
+        ...common,
+        "New volunteers",
+        ...tail,
+        "Milestones crossed in this period",
+      ],
+    ],
+    [
+      { period: "year", year: "2026" },
+      "Hours report for 2026 (2026-01-01 to 2026-12-31)",
+      [
+        "Summary",
+        "Year over year",
+        "Hours by month",
+        ...common,
+        "New volunteers",
+        ...tail,
+        "Milestones crossed in this period",
+      ],
+    ],
+    [
+      { period: "range", from: "2025-12-01", to: "2026-12-31" },
+      "Hours report for 2025-12-01 to 2026-12-31",
+      [
+        "Summary",
+        "Hours by year",
+        "Hours by month",
+        ...common,
+        "New volunteers",
+        ...tail,
+        "Milestones crossed in this period",
+      ],
+    ],
+    [
+      { period: "all" },
+      "Hours report for all time (2025-12-20 to 2026-12-07)",
+      [
+        "Summary",
+        "Hours by year",
+        "Hours by month",
+        ...common,
+        ...tail,
+        "Milestones crossed in this period",
+      ],
+    ],
+  ];
+  for (const [form, title, sections] of cases) {
+    const o = outline(rowsFor(YEAR_LOG, form, today));
+    assert.equal(o.title, title);
+    assert.deepEqual(o.sections, sections, title);
+    const unfinished = o.lines.filter((l) => /hasn't come yet/.test(l));
+    if (form.period === "quarter" || form.period === "year" || form.period === "range") {
+      assert.deepEqual(unfinished, [
+        "This period runs to 2026-12-31, which hasn't come yet, so this report shows the Log as it is so far.",
+      ]);
+    } else {
+      assert.deepEqual(unfinished, [], title);
+    }
+  }
+  // A period that has ended doesn't say so.
+  assert.equal(
+    outline(rowsFor(YEAR_LOG, { period: "quarter", quarter: "2026-Q4" }, "2027-01-02")).lines
+      .length,
+    1,
+  );
+});
+
+test("the comparison and year to date of a quarter, and the summary keeps only the count", () => {
+  const rows = rowsFor(YEAR_LOG, { period: "quarter", quarter: "2026-Q4" }, "2027-01-02");
+  const find = (text) => rows.values.findIndex((r) => r[0] === text);
+  assert.deepEqual(rows.values[find("Quarter over quarter")], [
+    "Quarter over quarter",
+    "Q4 2026",
+    "Q3 2026",
+    "Change",
+    "% change",
+  ]);
+  assert.deepEqual(rows.values[find("Quarter over quarter") + 2], [
+    "Shifts",
+    7,
+    3,
+    "+4",
+    "+133.3%",
+  ]);
+  assert.deepEqual(rows.values[find("Year to date")], [
+    "Year to date",
+    "January 2026 to December 2026",
+    "",
+    "",
+    "",
+  ]);
+  assert.deepEqual(rows.values[find("Year to date") + 2], ["Shifts", 16, "", "", ""]);
+  assert.deepEqual(rows.values[find("New volunteers")], ["New volunteers", 2, "", "", ""]);
+  const table = rows.values.findIndex(
+    (r, i) => r[0] === "New volunteers" && rows.kinds[i] === "section",
+  );
+  assert.deepEqual(rows.values.slice(table + 1, table + 4), [
+    ["Volunteer", "First shift", "", "", ""],
+    ["Ben Ott", "2026-10-06", "", "", ""],
+    ["Cal Diaz", "2026-12-07", "", "", ""],
+  ]);
+  const year = rowsFor(YEAR_LOG, { period: "year", year: "2026" }, "2027-01-02");
+  assert.deepEqual(
+    year.values.find((r) => r[0] === "Year over year"),
+    ["Year over year", "2026", "2025", "Change", "% change"],
+  );
+  const all = rowsFor(YEAR_LOG, { period: "all" }, "2027-01-02");
+  assert.deepEqual(
+    all.values.find((r) => r[0] === "New volunteers"),
+    ["New volunteers", 4, "", "", ""],
+  );
+});
+
+/** The rows of a by-month or by-year table, from its header to before the next blank row. */
+function tableRows(rows, title) {
+  const at = rows.values.findIndex((r, i) => r[0] === title && rows.kinds[i] === "section");
+  if (at < 0) return null;
+  const end = rows.kinds.indexOf("blank", at);
+  return rows.values.slice(at + 2, end < 0 ? undefined : end);
+}
+
+test("hours by month: from the first to the last month holding a counted row, zeros between, a Total", () => {
+  const rows = [
+    kioskShift("2026-02-10", "Ana Ruiz", "tA", "09:00", "11:00", { statedHours: 2 }),
+    kioskShift("2026-05-10", "Ana Ruiz", "tA", "09:00", "11:00", { statedHours: 2 }),
+    kioskShift("2026-05-11", "Ben Ott", "tB", "09:00", "10:00", { statedHours: 1 }),
+    kioskShift("2026-07-01", "Cal", "", "09:00", "10:00", { statedHours: 1 }),
+    { date: "2026-08-01", name: "Dee", token: "tD", status: "open", shiftId: "o" },
+  ];
+  const year = rowsFor(rows, { period: "year", year: "2026" }, "2026-11-16");
+  assert.deepEqual(tableRows(year, "Hours by month"), [
+    ["February 2026", 1, 2, 1, 1],
+    ["March 2026", 0, 0, 0, 0],
+    ["April 2026", 0, 0, 0, 0],
+    ["May 2026", 2, 3, 2, 1],
+    ["Total", 3, 5, 2, 2],
+  ]);
+  assert.equal(tableRows(year, "Hours by year"), null, "a year has no by-year table");
+  const range = rowsFor(
+    rows,
+    { period: "range", from: "1900-01-01", to: "2026-11-15" },
+    "2026-11-16",
+  );
+  assert.deepEqual(
+    tableRows(range, "Hours by month").map((r) => r[0]),
+    ["February 2026", "March 2026", "April 2026", "May 2026", "Total"],
+    "a typed range doesn't set the bounds",
+  );
+  assert.equal(tableRows(range, "Hours by year"), null, "one calendar year: no by-year table");
+});
+
+test("hours by month: a cut month is labelled by its dates", () => {
+  const rows = [
+    kioskShift("2026-03-15", "Ana Ruiz", "tA", "09:00", "11:00", { statedHours: 2 }),
+    kioskShift("2026-03-20", "Ana Ruiz", "tA", "09:00", "11:00", { statedHours: 2 }),
+    kioskShift("2026-03-31", "Ana Ruiz", "tA", "09:00", "11:00", { statedHours: 2 }),
+    kioskShift("2026-04-01", "Ben Ott", "tB", "09:00", "10:00", { statedHours: 1 }),
+    kioskShift("2026-06-30", "Ben Ott", "tB", "09:00", "10:00", { statedHours: 1 }),
+  ];
+  const labels = (form) =>
+    tableRows(rowsFor(rows, form, "2026-11-16"), "Hours by month").map((r) => r[0]);
+  assert.deepEqual(labels({ period: "range", from: "2026-03-15", to: "2026-06-30" }), [
+    "2026-03-15 to 2026-03-31",
+    "April 2026",
+    "May 2026",
+    "June 2026",
+    "Total",
+  ]);
+  assert.deepEqual(labels({ period: "range", from: "2026-03-31", to: "2026-04-15" }), [
+    "2026-03-31 to 2026-03-31",
+    "2026-04-01 to 2026-04-15",
+    "Total",
+  ]);
+  assert.deepEqual(labels({ period: "range", from: "2026-04-01", to: "2026-04-01" }), [
+    "2026-04-01 to 2026-04-01",
+    "Total",
+  ]);
+  assert.deepEqual(labels({ period: "range", from: "2026-03-15", to: "2026-03-20" }), [
+    "2026-03-15 to 2026-03-20",
+    "Total",
+  ]);
+  assert.deepEqual(labels({ period: "quarter", quarter: "2026-Q2" }), [
+    "April 2026",
+    "May 2026",
+    "June 2026",
+    "Total",
+  ]);
+});
+
+test("hours by month: no counted row shows (none) and no Total", () => {
+  const rows = [kioskShift("2026-05-10", "Ana Ruiz", "tA", "09:00", "11:00", { statedHours: 2 })];
+  const before = rowsFor(
+    rows,
+    { period: "range", from: "2020-01-01", to: "2020-12-31" },
+    "2026-11-16",
+  );
+  assert.deepEqual(tableRows(before, "Hours by month"), [["(none)", "", "", "", ""]]);
+  const undated = [
+    { date: "5/10/2026", name: "Ana", token: "tA", status: "closed", statedHours: 2, shiftId: "u" },
+  ];
+  for (const form of [
+    { period: "range", from: "2026-01-01", to: "2026-11-16" },
+    { period: "quarter", quarter: "2026-Q4" },
+  ]) {
+    assert.deepEqual(tableRows(rowsFor(undated, form, "2026-11-16"), "Hours by month"), [
+      ["(none)", "", "", "", ""],
+    ]);
+  }
+  const all = rowsFor(undated, { period: "all" }, "2026-11-16");
+  assert.equal(all.values[0][0], "Hours report for all time (no dated rows)");
+  assert.deepEqual(tableRows(all, "Hours by month"), [["(none)", "", "", "", ""]]);
+});
+
+test("hours by year: shown when the month rows span two years, cut years labelled by dates", () => {
+  const rows = [
+    kioskShift("2025-12-20", "Ana Ruiz", "tA", "09:00", "11:00", { statedHours: 2 }),
+    kioskShift("2026-01-05", "Ana Ruiz", "tA", "09:00", "11:00", { statedHours: 2 }),
+    kioskShift("2026-01-06", "Ben Ott", "tB", "09:00", "10:00", { statedHours: 1 }),
+  ];
+  const range = rowsFor(
+    rows,
+    { period: "range", from: "2025-12-15", to: "2026-01-10" },
+    "2026-11-16",
+  );
+  assert.deepEqual(tableRows(range, "Hours by year"), [
+    ["2025-12-15 to 2025-12-31", 1, 2, 1, 1],
+    ["2026-01-01 to 2026-01-10", 2, 3, 2, 1],
+    ["Total", 3, 5, 2, 2],
+  ]);
+  assert.deepEqual(tableRows(range, "Hours by month"), [
+    ["2025-12-15 to 2025-12-31", 1, 2, 1, 1],
+    ["2026-01-01 to 2026-01-10", 2, 3, 2, 1],
+    ["Total", 3, 5, 2, 2],
+  ]);
+  const all = rowsFor(rows, { period: "all" }, "2026-11-16");
+  assert.deepEqual(
+    tableRows(all, "Hours by year").map((r) => r[0]),
+    ["2025", "2026", "Total"],
+  );
+  assert.deepEqual(
+    tableRows(all, "Hours by month").map((r) => r[0]),
+    ["December 2025", "January 2026", "Total"],
+    "all time's first and last months show their names",
+  );
+});
+
+test("an uncounted row dated 2062 adds no month or year rows, while all time's title runs to 2062", () => {
+  const rows = [
+    kioskShift("2025-12-20", "Ana Ruiz", "tA", "09:00", "11:00", { statedHours: 2 }),
+    kioskShift("2026-01-05", "Ana Ruiz", "tA", "09:00", "11:00", { statedHours: 2 }),
+    kioskShift("2062-11-14", "Ana Ruiz", "tA", "09:00", "11:00", { status: "open" }),
+  ];
+  const all = rowsFor(rows, { period: "all" }, "2026-11-16");
+  assert.equal(all.values[0][0], "Hours report for all time (2025-12-20 to 2062-11-14)");
+  assert.deepEqual(
+    tableRows(all, "Hours by month").map((r) => r[0]),
+    ["December 2025", "January 2026", "Total"],
+  );
+  assert.deepEqual(
+    tableRows(all, "Hours by year").map((r) => r[0]),
+    ["2025", "2026", "Total"],
+  );
+});
+
+test("review: a row outside the period isn't listed; an undated row is, for every kind", () => {
+  const rows = [
+    kioskShift("2026-05-10", "Ana", "tA", "09:00", "10:00", {
+      status: "auto-closed",
+      statedHours: 1,
+    }),
+    kioskShift("2026-08-10", "Ben", "tB", "09:00", "10:00", {
+      status: "auto-closed",
+      statedHours: 1,
+    }),
+    { date: "5/10/2026", name: "Cal", token: "tC", status: "closed", statedHours: 1, shiftId: "u" },
+  ];
+  for (const form of [
+    { month: "2026-05" },
+    { period: "quarter", quarter: "2026-Q2" },
+    { period: "year", year: "2026" },
+    { period: "range", from: "2026-05-01", to: "2026-05-31" },
+    { period: "all" },
+  ]) {
+    const r = reportFor(rows, form, "2026-11-16");
+    const ids = (id) => r.review.find((g) => g.id === id).rows.map((x) => x.row);
+    assert.deepEqual(ids("noDate"), [4], JSON.stringify(form));
+    const status = form.period === "year" || form.period === "all" ? [2, 3] : [2];
+    assert.deepEqual(ids("status"), status, JSON.stringify(form));
+  }
+});
+
+test("the open-shift line says this period for every kind but month", () => {
+  const rows = [kioskShift("2026-05-10", "Ana", "tA", "09:00", "10:00", { status: "open" })];
+  const line = (form) => rowsFor(rows, form, "2026-11-16").values[2][0];
+  assert.match(line({ month: "2026-05" }), /^1 open shift in this month is not counted/);
+  assert.match(line({ period: "all" }), /^1 open shift in this period is not counted/);
+  assert.match(
+    L.openShiftsLine(2, L.yearPeriod("2026")),
+    /^2 open shifts in this period are not counted/,
+  );
+});
+
+test("an empty period makes a report of zeros, not a refusal", () => {
+  const r = reportFor(YEAR_LOG, { period: "quarter", quarter: "2024-Q2" }, "2026-11-16");
+  assert.equal(r.shifts, 0);
+  assert.equal(r.hundredths, 0);
+  assert.equal(r.headcount, 0);
+  assert.deepEqual(r.volunteers, []);
+  assert.deepEqual(r.byMonth, []);
+  assert.ok(r.comparison.every((c) => c.current === 0));
+  const rows = rowsFor(YEAR_LOG, { period: "quarter", quarter: "2024-Q2" }, "2026-11-16");
+  assert.deepEqual(tableRows(rows, "New volunteers"), [["(none)", "", "", "", ""]]);
+});
+
+test("reportTabName for every kind, with (2) and (3), case ignored", () => {
+  const name = (form, taken) => L.reportTabName(L.reportPeriod(form, "2026-11-16").period, taken);
+  assert.equal(name({ month: "2026-11" }), "Report 2026-11");
+  assert.equal(name({ period: "quarter", quarter: "2026-Q4" }), "Report 2026-Q4");
+  assert.equal(name({ period: "year", year: "2026" }), "Report 2026");
+  assert.equal(
+    name({ period: "range", from: "2026-03-15", to: "2026-06-30" }),
+    "Report 2026-03-15 to 2026-06-30",
+  );
+  assert.equal(name({ period: "all" }), "Report all time");
+  assert.equal(name({ period: "all" }, ["report ALL TIME"]), "Report all time (2)");
+  assert.equal(
+    name({ period: "quarter", quarter: "2026-Q4" }, ["Report 2026-q4", "REPORT 2026-Q4 (2)"]),
+    "Report 2026-Q4 (3)",
+  );
+  assert.equal(name({ period: "year", year: "2026" }, ["Report 2026-11"]), "Report 2026");
+  assert.equal(L.reportTabName("2026-11", ["Report 2026-11"]), "Report 2026-11 (2)");
+});
+
+test("reportPeriodLists: months as reportMonths; quarters and years with their defaults", () => {
+  const dated = (dates) => dates.map((d) => ({ dateText: d }));
+  const lists = (dates, today) => plain(L.reportPeriodLists(dated(dates), today));
+  const mid = lists(["2026-02-10", "2026-07-01", "2026-04-30", "bad"], "2026-06-10");
+  const months = plain(
+    L.reportMonths(dated(["2026-02-10", "2026-07-01", "2026-04-30", "bad"]), "2026-06-10"),
+  );
+  assert.deepEqual(mid.months, months.months);
+  assert.equal(mid.defaultMonth, months.defaultMonth);
+  assert.deepEqual(mid.quarters, ["2026-Q2", "2026-Q1"]);
+  assert.equal(mid.defaultQuarter, "2026-Q1");
+  assert.deepEqual(mid.years, ["2026"]);
+  assert.equal(mid.defaultYear, "2026");
+  assert.equal(mid.today, "2026-06-10");
+  const january = lists(["2025-11-03", "2025-12-30", "2024-06-01"], "2026-01-15");
+  assert.deepEqual(january.quarters, ["2026-Q1", "2025-Q4", "2024-Q2"]);
+  assert.equal(january.defaultQuarter, "2025-Q4");
+  assert.deepEqual(january.years, ["2026", "2025", "2024"]);
+  assert.equal(january.defaultYear, "2025");
+  assert.equal(january.defaultMonth, "2025-12");
+  const none = lists([], "2026-11-16");
+  assert.deepEqual(none.months, ["2026-11"]);
+  assert.deepEqual(none.quarters, ["2026-Q4"]);
+  assert.equal(none.defaultQuarter, "2026-Q4");
+  assert.deepEqual(none.years, ["2026"]);
+  assert.equal(none.defaultYear, "2026");
+  // A later row in the current quarter or year adds nothing; a later quarter isn't listed.
+  const later = lists(["2026-12-01", "2027-01-01"], "2026-11-16");
+  assert.deepEqual(later.quarters, ["2026-Q4"]);
+  assert.deepEqual(later.years, ["2026"]);
 });

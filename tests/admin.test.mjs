@@ -945,7 +945,7 @@ test("onOpen adds the menu first, and its items name the openers, Refresh Hours 
     ["Fix a sign-out…", "openFixSignOutDialog"],
     ["Remove a shift…", "openRemoveShiftDialog"],
     ["Restore a shift…", "openRestoreShiftDialog"],
-    ["Monthly report…", "openMonthlyReportDialog"],
+    ["Hours report…", "openMonthlyReportDialog"],
     ["Email hours…", "openEmailHoursDialog"],
     ["Import past hours…", "openImportDialog"],
     ["Refresh Hours", "refreshHoursNow"],
@@ -1016,7 +1016,7 @@ test("the Monthly report opener serves Report.html with a fresh key, and the key
   assert.equal(s.ctx.openMonthlyReportDialog(), undefined);
   assert.equal(s.shown.length, 1);
   const { template } = s.shown[0].output;
-  assert.equal(s.shown[0].title, "Monthly report");
+  assert.equal(s.shown[0].title, "Hours report");
   assert.equal(template.file, "Report");
   assert.ok(template.key);
   assert.ok(s.cache.has("admin-key:" + template.key));
@@ -5039,7 +5039,9 @@ const LOG_WRITE_CLASSES = {
   milestonesCrossedIn: { class: "array", why: SORTS_AN_ARRAY },
   reviewGroups: { class: "array", why: SORTS_AN_ARRAY },
   groupTable: { class: "array", why: SORTS_AN_ARRAY },
-  monthReport: { class: "array", why: SORTS_AN_ARRAY },
+  periodReport: { class: "array", why: SORTS_AN_ARRAY },
+  periodTables: { class: "array", why: SORTS_AN_ARRAY },
+  reportPeriodLists: { class: "array", why: SORTS_AN_ARRAY },
   reportMonths: { class: "array", why: SORTS_AN_ARRAY },
   hoursRows: { class: "array", why: SORTS_AN_ARRAY },
   hoursLabels: { class: "array", why: SORTS_AN_ARRAY },

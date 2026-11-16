@@ -1108,6 +1108,146 @@ test("a blank hour value prints the Settings message instead of a dollar figure"
 });
 
 // ---------------------------------------------------------------------------
+// The Hours report's other periods
+
+/** Counts the Log's value reads, each with how many lock calls had been made before it. */
+function watchLogReads(s) {
+  const log = s.sheet("Log");
+  const reads = [];
+  const getRange = log.getRange.bind(log);
+  log.getRange = (...args) => {
+    const range = getRange(...args);
+    const getValues = range.getValues.bind(range);
+    range.getValues = () => (reads.push(s.lockCalls.slice()), getValues());
+    return range;
+  };
+  return reads;
+}
+
+test("adminReportMonths also lists quarters and years with their defaults, and today", () => {
+  const s = server([...LOG, shift("2025-03-05", "Fay Lin", "tF", "09:00", "10:00", 1)]);
+  const reply = plain(s.ctx.adminReportMonths("k"));
+  const today = centralDate(Date.now());
+  assert.equal(reply.today, today);
+  const quarters = reply.quarters.map((q) => q.quarter);
+  assert.ok(quarters.includes("2026-Q4") && quarters.includes("2025-Q1"));
+  assert.deepEqual(quarters, quarters.slice().sort().reverse(), "newest first");
+  assert.deepEqual(
+    reply.quarters.find((q) => q.quarter === "2025-Q1"),
+    { quarter: "2025-Q1", label: "Q1 2025 (January to March)" },
+  );
+  assert.ok(quarters.includes(reply.defaultQuarter));
+  const years = reply.years.map((y) => y.year);
+  assert.equal(years[0], today.slice(0, 4));
+  assert.ok(years.includes("2025"));
+  assert.deepEqual(
+    reply.years.find((y) => y.year === "2025"),
+    { year: "2025", label: "2025" },
+  );
+  assert.ok(years.includes(reply.defaultYear));
+});
+
+test("adminMonthlyReport makes one protected tab for each kind, reading the Log once under the lock", () => {
+  const cases = [
+    [
+      { period: "month", month: "2026-11" },
+      "Report 2026-11",
+      /^Monthly report for November 2026 \(2026-11\)$/,
+    ],
+    [
+      { period: "quarter", quarter: "2026-Q4" },
+      "Report 2026-Q4",
+      /^Hours report for Q4 2026 \(2026-10-01 to 2026-12-31\)$/,
+    ],
+    [
+      { period: "year", year: "2026" },
+      "Report 2026",
+      /^Hours report for 2026 \(2026-01-01 to 2026-12-31\)$/,
+    ],
+    [
+      { period: "range", from: "2026-10-15", to: "2026-11-05" },
+      "Report 2026-10-15 to 2026-11-05",
+      /^Hours report for 2026-10-15 to 2026-11-05$/,
+    ],
+    [
+      { period: "all" },
+      "Report all time",
+      /^Hours report for all time \(2026-10-28 to 2026-11-10\)$/,
+    ],
+  ];
+  for (const [form, tabName, title] of cases) {
+    const s = server(LOG);
+    const logBefore = s.sheet("Log").state();
+    const reads = watchLogReads(s);
+    const sheetsBefore = s.ss.sheets.length;
+    const reply = plain(s.ctx.adminMonthlyReport("k", { ...form, initials: "jp" }));
+    assert.equal(reply.ok, true, tabName);
+    assert.equal(reply.tabName, tabName);
+    assert.equal(s.ss.sheets.length, sheetsBefore + 1, tabName + ": one new tab");
+    const tab = s.sheet(tabName);
+    assert.equal(s.ss.active, tab);
+    assert.match(reply.pdfUrl, new RegExp("gid=" + tab.sheetId + "&portrait=false"));
+    const values = tab.getRange(1, 1, tab.getLastRow(), 5).getValues();
+    assert.match(values[0][0], title);
+    assert.match(values[1][0], /by JP from the Log tab\./);
+    assert.deepEqual(
+      tab.protections.map((p) => p.state().warningOnly),
+      [true],
+    );
+    assert.equal(tab.protections[0].state().description, s.ctx.reportTabDescription());
+    const whole = reads.filter((r) => r.length === 1);
+    assert.equal(reads.length, 1, tabName + ": one read of the Log");
+    assert.deepEqual(whole, [["tryLock"]], tabName + ": read while the lock is held");
+    assert.deepEqual(s.lockCalls, ["tryLock", "release"]);
+    assert.deepEqual(s.sheet("Log").state(), logBefore);
+  }
+});
+
+test("adminMonthlyReport still takes the old month form", () => {
+  const s = server(LOG);
+  const reply = plain(s.ctx.adminMonthlyReport("k", { month: "2026-10", initials: "MK" }));
+  assert.equal(reply.tabName, "Report 2026-10");
+  const tab = s.sheet("Report 2026-10");
+  assert.equal(tab.getRange(1, 1).getValue(), "Monthly report for October 2026 (2026-10)");
+});
+
+test("adminMonthlyReport's period refusals write nothing, after the initials", () => {
+  const s = server(LOG);
+  const before = s.snapshot();
+  const cases = [
+    [{ period: "week", initials: "JP" }, "ADMIN_BAD_PERIOD"],
+    [{ period: "quarter", quarter: "2026-Q5", initials: "JP" }, "ADMIN_BAD_PERIOD"],
+    [{ period: "year", year: "26", initials: "JP" }, "ADMIN_BAD_PERIOD"],
+    [{ period: "range", from: "2026-01-01", initials: "JP" }, "ADMIN_BAD_RANGE"],
+    [{ period: "range", from: "2026-02-30", to: "2026-03-01", initials: "JP" }, "ADMIN_BAD_RANGE"],
+    [
+      { period: "range", from: "2026-03-02", to: "2026-03-01", initials: "JP" },
+      "ADMIN_RANGE_ORDER",
+    ],
+    [{ period: "range", from: "2999-01-01", to: "2999-01-02", initials: "JP" }, "ADMIN_FUTURE"],
+    [{ period: "quarter", quarter: "2999-Q1", initials: "JP" }, "ADMIN_FUTURE"],
+    [{ period: "year", year: "2999", initials: "JP" }, "ADMIN_FUTURE"],
+    [{ period: "week" }, "ADMIN_INITIALS"],
+    [{ period: "range", from: "x", initials: "1" }, "ADMIN_INITIALS"],
+  ];
+  for (const [form, code] of cases) {
+    assert.deepEqual(plain(s.ctx.adminMonthlyReport("k", form)), plain(s.ctx.refusal(code)), code);
+  }
+  assert.deepEqual(s.snapshot(), before);
+  assert.deepEqual(s.lockCalls, []);
+});
+
+test("an empty period makes a report of zeros", () => {
+  const s = server(LOG);
+  const reply = plain(
+    s.ctx.adminMonthlyReport("k", { period: "quarter", quarter: "2024-Q2", initials: "JP" }),
+  );
+  assert.equal(reply.tabName, "Report 2024-Q2");
+  const values = s.sheet("Report 2024-Q2").getRange(1, 1, 40, 5).getValues();
+  assert.deepEqual(values.find((r) => r[0] === "Shifts").slice(0, 2), ["Shifts", 0]);
+});
+
+// ---------------------------------------------------------------------------
 // The Hours tab: setupReports, the refresh, and the write rule
 
 const STATE = ["L1", "M1", "N1", "O1", "P1", "Q1"];

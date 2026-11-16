@@ -2544,6 +2544,9 @@ test("refusal gives each code its exact message", () => {
     ADMIN_BAD_ROW:
       "That row's date or check-in time can't be read, so its hours can't be worked out. Fix the row in the sheet first.",
     ADMIN_BAD_MONTH: "Please choose a month.",
+    ADMIN_BAD_PERIOD: "Please choose a period.",
+    ADMIN_BAD_RANGE: "Please enter both dates, as yyyy-mm-dd.",
+    ADMIN_RANGE_ORDER: "The From date is after the To date.",
     ADMIN_REMOVE_REASON: "Please enter a reason for removing this shift.",
     ADMIN_REMOVE_NO_ID:
       "That row has no Shift ID, so the menu can't remove it. Delete it in the sheet by hand.",
