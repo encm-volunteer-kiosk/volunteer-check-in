@@ -4,11 +4,15 @@
     <base target="_top" />
     <meta charset="utf-8" />
     <!--
-      The Monthly report dialog, served by openMonthlyReportDialog (Reports.js) as a
+      The Hours report dialog, served by openMonthlyReportDialog (Reports.js) as a
       template. The server puts the dialog key and the Kiosk contact line into the body's
       data attributes, through the escaping print scriptlet; nothing else on the page is
-      filled in by the server. Plain HTML and JavaScript, no build step. The server checks
-      the month and the initials again.
+      filled in by the server. Plain HTML and JavaScript, no build step. The Period choice
+      shows one input row: a month, quarter or year list, two dates, or a hint for all time.
+      The lists, their defaults and today all come in the adminReportMonths reply; the page
+      reads no clock. Make sends the period and only that kind's fields; the server checks
+      the period and the initials again. A date field's max limits only what the server
+      refuses: From can't be after today, To can.
     -->
     <style>
       body {
@@ -36,6 +40,19 @@
         border-radius: 4px;
       }
       select {
+        width: 100%;
+      }
+      .all-time {
+        margin-top: 12px;
+      }
+      .dates {
+        display: flex;
+        gap: 12px;
+      }
+      .dates > div {
+        flex: 1;
+      }
+      .dates input {
         width: 100%;
       }
       .initials {
@@ -97,8 +114,40 @@
   </head>
   <body data-key="<?= key ?>" data-contact="<?= contactNote ?>">
     <form id="form">
-      <label for="month">Month</label>
-      <select id="month" disabled></select>
+      <label for="period">Period</label>
+      <select id="period" disabled>
+        <option value="month">Month</option>
+        <option value="quarter">Quarter</option>
+        <option value="year">Year</option>
+        <option value="range">Date range</option>
+        <option value="all">All time</option>
+      </select>
+
+      <div id="row-month">
+        <label for="month">Month</label>
+        <select id="month" disabled></select>
+      </div>
+      <div id="row-quarter" hidden>
+        <label for="quarter">Quarter</label>
+        <select id="quarter"></select>
+      </div>
+      <div id="row-year" hidden>
+        <label for="year">Year</label>
+        <select id="year"></select>
+      </div>
+      <div id="row-range" class="dates" hidden>
+        <div>
+          <label for="from">From</label>
+          <input id="from" type="date" />
+        </div>
+        <div>
+          <label for="to">To</label>
+          <input id="to" type="date" />
+        </div>
+      </div>
+      <div id="row-all" class="hint all-time" hidden>
+        Every row in the Log with a readable Date.
+      </div>
 
       <label for="initials">Your initials</label>
       <input id="initials" class="initials" type="text" maxlength="10" autocomplete="off" />
@@ -125,8 +174,15 @@
       // with no message. A refusal's own message is shown as it is.
       const CONTACT = document.body.dataset.contact || "";
       const $ = (id) => document.getElementById(id);
+      const KINDS = ["month", "quarter", "year", "range", "all"];
       let busy = false;
       let loaded = false;
+
+      // Shows the input row of the chosen kind and hides the others.
+      function showKind() {
+        const kind = $("period").value;
+        KINDS.forEach((k) => ($("row-" + k).hidden = k !== kind));
+      }
 
       function show(text, kind) {
         const box = $("message");
@@ -159,25 +215,51 @@
           [name](KEY, ...args);
       }
 
+      function fill(id, list, key, label, value) {
+        const select = $(id);
+        list.forEach((x) => select.add(new Option(label(x), x[key])));
+        select.value = value;
+        select.disabled = false;
+      }
+
       function load() {
+        $("period").value = "month";
+        showKind();
         show("Loading…", "info");
         call("adminReportMonths", [], (reply) => {
-          const select = $("month");
-          reply.months.forEach((m) =>
-            select.add(new Option(m.label + " (" + m.month + ")", m.month)),
+          fill(
+            "month",
+            reply.months,
+            "month",
+            (m) => m.label + " (" + m.month + ")",
+            reply.defaultMonth,
           );
-          select.value = reply.defaultMonth;
-          select.disabled = false;
+          fill("quarter", reply.quarters, "quarter", (q) => q.label, reply.defaultQuarter);
+          fill("year", reply.years, "year", (y) => y.label, reply.defaultYear);
+          $("from").value = reply.today.slice(0, 4) + "-01-01";
+          $("from").max = reply.today;
+          $("to").value = reply.today;
+          $("period").disabled = false;
           loaded = true;
           setBusy(false);
           show("", "");
         });
       }
 
+      // The period and only the fields of its kind.
+      function periodFields() {
+        const period = $("period").value;
+        if (period === "range") return { period, from: $("from").value, to: $("to").value };
+        if (period === "all") return { period };
+        const fields = { period };
+        fields[period] = $(period).value;
+        return fields;
+      }
+
       function make() {
         if (busy || !loaded) return;
-        const form = { month: $("month").value, initials: $("initials").value };
-        if (!form.month) return show("Please choose a month.", "error");
+        const form = { ...periodFields(), initials: $("initials").value };
+        if (form.period === "month" && !form.month) return show("Please choose a month.", "error");
         $("links").hidden = true;
         show("Making the report…", "info");
         call("adminMonthlyReport", [form], (reply) => {
@@ -188,6 +270,7 @@
         });
       }
 
+      $("period").addEventListener("change", showKind);
       $("make").addEventListener("click", make);
       $("close").addEventListener("click", () => google.script.host.close());
       $("form").addEventListener("submit", (event) => {

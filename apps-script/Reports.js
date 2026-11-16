@@ -2,7 +2,7 @@
  * Reports on the Log: the Hours tab and its hidden source Hours data, the Log's filter
  * views and soft warnings (setupReports), the Hours refresh (refreshHoursNow from the
  * Kiosk admin menu, runHoursRefresh nightly in Jobs.js), and the Kiosk admin menu's
- * Monthly report, which writes a frozen report tab and offers it as a CSV or PDF download.
+ * Hours report, which writes a frozen report tab and offers it as a CSV or PDF download.
  *
  * Reports read the Log and never write a Log cell. On the Log tab, setupReports adds only
  * filter views titled "Kiosk: ..." and warning-only protections. Every Log read finds
@@ -741,9 +741,10 @@ function setupKioskWarnings_(log, cols) {
 }
 
 // ---------------------------------------------------------------------------
-// The Monthly report dialog
+// The Hours report dialog (the menu's "Hours report…"; its functions keep their month names,
+// which an open window calls by)
 
-/** Opens the Monthly report dialog from Report.html with a new key and the contact line in it. */
+/** Opens the Hours report dialog from Report.html with a new key and the contact line in it. */
 function openMonthlyReportDialog() {
   requireEditorRun_();
   const ui = SpreadsheetApp.getUi();
@@ -752,14 +753,16 @@ function openMonthlyReportDialog() {
   const page = HtmlService.createTemplateFromFile("Report");
   page.key = key;
   page.contactNote = kioskContactNote(kioskContact_());
-  ui.showModalDialog(page.evaluate().setWidth(460).setHeight(380), "Monthly report");
+  ui.showModalDialog(page.evaluate().setWidth(460).setHeight(460), "Hours report");
 }
 
 /**
- * {ok: true, months: [{month, label}], defaultMonth} for the dialog's month list: every
- * month with a dated Log row up to the current one, plus the current one, newest first.
- * Reads the Date column without the lock: a half-written row can't change which months
- * exist.
+ * The dialog's lists, from reportPeriodLists: {ok: true, months: [{month, label}],
+ * defaultMonth, quarters: [{quarter, label}], defaultQuarter, years: [{year, label}],
+ * defaultYear, today}. Each list holds every month, quarter or year with a dated Log row up
+ * to the current one, plus the current one, newest first; today is the Central date, which
+ * the date range starts from. Reads the Date column without the lock: a half-written row
+ * can't change which months exist.
  */
 function adminReportMonths(key) {
   const denied = adminGuard_(key);
@@ -769,7 +772,7 @@ function adminReportMonths(key) {
   const last = log.getLastRow();
   const dates =
     last < 2 ? [] : log.getRange(2, cols[logHeaderNames().date] + 1, last - 1, 1).getValues();
-  const listed = reportMonths(
+  const listed = reportPeriodLists(
     dates.map((cells) => ({ dateText: cellText_(cells[0]) })),
     centralDate_(new Date()),
   );
@@ -777,14 +780,22 @@ function adminReportMonths(key) {
     ok: true,
     months: listed.months.map((month) => ({ month, label: monthName(month) })),
     defaultMonth: listed.defaultMonth,
+    quarters: listed.quarters.map((quarter) => ({ quarter, label: quarterLabel(quarter) })),
+    defaultQuarter: listed.defaultQuarter,
+    years: listed.years.map((year) => ({ year, label: year })),
+    defaultYear: listed.defaultYear,
+    today: listed.today,
   };
 }
 
 /**
- * Writes a frozen report tab for one month. form is {month: "yyyy-MM", initials}. Reads
- * the Log under the kiosk's lock, then writes a new tab "Report yyyy-MM" (or "(2)", "(3)"
- * ... when taken); an existing report tab is never changed. Replies {ok: true, tabName,
- * csvUrl, pdfUrl}, each link a download of that tab only, or a refusal.
+ * Writes a frozen report tab for one period. form is {period, month, quarter, year, from,
+ * to, initials}: period is "month", "quarter", "year", "range" or "all", and only the
+ * fields of that kind are read (reportPeriod); a form with no period is a month, so
+ * {month: "yyyy-MM", initials} still works. Checks the initials, then the period, then
+ * reads the Log under the kiosk's lock and writes a new tab "Report " and the period's key
+ * (or "(2)", "(3)" ... when taken); an existing report tab is never changed. Replies {ok:
+ * true, tabName, csvUrl, pdfUrl}, each link a download of that tab only, or a refusal.
  */
 function adminMonthlyReport(key, form) {
   const denied = adminGuard_(key);
@@ -793,17 +804,17 @@ function adminMonthlyReport(key, form) {
   const initials = normalizeInitials(f.initials);
   if (!initials) return refusal("ADMIN_INITIALS");
   const now = new Date();
-  const month = cellString(f.month);
-  const bad = reportMonthRefusal(month, centralDate_(now));
-  if (bad) return refusal(bad);
+  const asked = reportPeriod(f, centralDate_(now));
+  if (asked.refusal) return refusal(asked.refusal);
+  const period = asked.period;
 
   const log = withLock_(readReportLog_);
   if (!log.entries) return log;
 
   const rateCents = parseMoneyCents(readSettings_()[volunteerHourValueSetting()] || "");
-  const report = monthReport(log.entries, month, rateCents, log.cols);
+  const report = periodReport(log.entries, period, rateCents, log.cols);
   const madeAt = Utilities.formatDate(now, kioskTimeZone(), "yyyy-MM-dd h:mm a");
-  const sheet = writeReportTab_(month, reportRows(report, month, initials, madeAt));
+  const sheet = writeReportTab_(period, reportRows(report, period, initials, madeAt));
   const urls = reportDownloadUrls(
     SpreadsheetApp.getActiveSpreadsheet().getId(),
     sheet.getSheetId(),
@@ -825,14 +836,15 @@ function readReportLog_() {
 }
 
 /**
- * A new tab at the end holding rows ({values, formats, kinds}, reportRows), formats
- * first, then values, one call each; styled once by reportTabLook (Logic.js); protected
- * warning-only and made the active tab. A report tab is never styled again.
+ * A new tab at the end, named by reportTabName for period (a report period, or a "yyyy-MM"
+ * month), holding rows ({values, formats, kinds}, reportRows), formats first, then values,
+ * one call each; styled once by reportTabLook (Logic.js); protected warning-only and made
+ * the active tab. A report tab is never styled again.
  */
-function writeReportTab_(month, rows) {
+function writeReportTab_(period, rows) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const name = reportTabName(
-    month,
+    period,
     ss.getSheets().map((s) => s.getName()),
   );
   const sheet = ss.insertSheet(name, ss.getNumSheets());

@@ -393,7 +393,7 @@ test("every Kiosk admin > in the staff text names a menu item exactly as the men
     "Add a shift…",
     "Remove a shift…",
     "Restore a shift…",
-    "Monthly report…",
+    "Hours report…",
     "Email hours…",
   ].forEach((l) => assert.ok(all.includes("Kiosk admin > " + l), l));
 });

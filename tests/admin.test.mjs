@@ -945,7 +945,7 @@ test("onOpen adds the menu first, and its items name the openers, Refresh Hours 
     ["Fix a sign-out…", "openFixSignOutDialog"],
     ["Remove a shift…", "openRemoveShiftDialog"],
     ["Restore a shift…", "openRestoreShiftDialog"],
-    ["Monthly report…", "openMonthlyReportDialog"],
+    ["Hours report…", "openMonthlyReportDialog"],
     ["Email hours…", "openEmailHoursDialog"],
     ["Import past hours…", "openImportDialog"],
     ["Refresh Hours", "refreshHoursNow"],
@@ -1016,7 +1016,7 @@ test("the Monthly report opener serves Report.html with a fresh key, and the key
   assert.equal(s.ctx.openMonthlyReportDialog(), undefined);
   assert.equal(s.shown.length, 1);
   const { template } = s.shown[0].output;
-  assert.equal(s.shown[0].title, "Monthly report");
+  assert.equal(s.shown[0].title, "Hours report");
   assert.equal(template.file, "Report");
   assert.ok(template.key);
   assert.ok(s.cache.has("admin-key:" + template.key));

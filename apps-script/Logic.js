@@ -9584,7 +9584,7 @@ function howToSections() {
     {
       title: "Make the monthly report",
       lines: [
-        step("1. Kiosk admin > Monthly report…"),
+        step("1. Kiosk admin > Hours report…"),
         step("2. Choose the month, type your initials and press Make report."),
         step(
           "3. The report goes on a new tab named for the month, such as Report 2026-11. The window then shows Download CSV and Download PDF links for that tab.",

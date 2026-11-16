@@ -4,7 +4,7 @@
  * check out, Remove a shift to move one Log row, found by its Shift ID, to the Removed
  * shifts tab, and Restore a shift to put one back. Each item opens a dialog from
  * AdminDialog.html, which calls the admin* functions below through google.script.run. The
- * menu's other items follow the same rule: Monthly report (Reports.js), Email hours (below:
+ * menu's other items follow the same rule: Hours report (Reports.js), Email hours (below:
  * adminHoursPreview and adminSendHours), Import past hours (Import.js), Refresh Hours
  * (refreshHoursNow, Reports.js) and Check the Log now (checkLogNow, Jobs.js). Refresh Hours and Check the Log now open no dialog, so they need
  * no key: they check requireEditorRun_ and SpreadsheetApp.getUi() before they read
@@ -45,7 +45,7 @@ function onOpen() {
     .addItem("Fix a sign-out…", "openFixSignOutDialog")
     .addItem("Remove a shift…", "openRemoveShiftDialog")
     .addItem("Restore a shift…", "openRestoreShiftDialog")
-    .addItem("Monthly report…", "openMonthlyReportDialog")
+    .addItem("Hours report…", "openMonthlyReportDialog")
     .addItem("Email hours…", "openEmailHoursDialog")
     .addItem("Import past hours…", "openImportDialog")
     .addItem("Refresh Hours", "refreshHoursNow")
