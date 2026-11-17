@@ -251,12 +251,21 @@ export function listStateAfterFailure(state: ListState): ListState {
   return state === "ready" || state === "stored" ? state : "failed";
 }
 
+/** How often a list that is still loading is asked for again, beside the call already out. */
+export const LIST_LOADING_RETRY_MS = 15_000;
+/** How often a list that failed, or a kept list waiting for its first refresh, is retried. */
+export const LIST_RETRY_MS = 30_000;
+
 /**
- * Whether the list is retried every 30 s: when it never loaded, and while a kept list
- * waits for its first refresh.
+ * How often the list is asked for again in this state, or null when it isn't. A list still
+ * loading is asked for again every 15 s, since a call to the server can hang with no answer
+ * and nothing else would ask before the next regular refresh; whichever answer comes first
+ * is used. A list that never loaded and a kept list waiting for its first refresh are retried
+ * every 30 s.
  */
-export function retriesList(state: ListState): boolean {
-  return state === "failed" || state === "stored";
+export function listRetryMs(state: ListState): number | null {
+  if (state === "loading") return LIST_LOADING_RETRY_MS;
+  return state === "failed" || state === "stored" ? LIST_RETRY_MS : null;
 }
 
 /** The shortest time between two refreshes asked for by the page coming back into view. */
