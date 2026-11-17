@@ -201,7 +201,7 @@ function settingsDescriptions() {
     [hoursEmailSignatureSetting()]:
       'Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.',
     [hoursRequestsSetting()]:
-      "Whether volunteers can ask for their hours on the tablet: Off hides the Email me my hours button; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them about every 15 minutes, leaving out unchecked shifts, once a week at most; blank or anything else means Off.",
+      "Whether volunteers can ask for their hours on the tablet: Off hides the Request my hours link on the welcome screen; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them every 15 minutes, skipping unchecked shifts, at most weekly; blank or anything else means Off.",
     [hoursRequestsLastRunSetting()]:
       "Written by the hours request job: when it was installed or removed, or a run last sent, held or failed; a run with nothing to do writes nothing, so an old time is normal. In Auto, a request still waiting a day later shows as overdue in Email hours…, which is how a stopped job shows.",
   };
@@ -3565,9 +3565,9 @@ function hoursEmailLogLine(id, result, reason) {
 // ---------------------------------------------------------------------------
 // Hours requests
 //
-// The Email me my hours button on the tablet records a request on the Hours requests tab
-// (apiRequestHours, Api.js). Settings "Hours requests" decides what happens next: Off hides
-// the button; Approve leaves the request for staff, who send it from Kiosk admin > Email
+// The Request my hours link on the tablet's welcome screen opens a name search, and the
+// confirm screen after it records a request on the Hours requests tab (apiRequestHours,
+// Api.js). Settings "Hours requests" decides what happens next: Off hides the link; Approve leaves the request for staff, who send it from Kiosk admin > Email
 // hours…, where requesters arrive ticked; Auto lets the hours request job send it by
 // itself. That job (runHoursRequests, Jobs.js) runs every 15 minutes on a trigger of its
 // own, installed with setupHoursRequestJob by an account that can open Volunteer Profiles.
@@ -10494,10 +10494,10 @@ function howToSections() {
       title: "Hours requests from the tablet",
       lines: [
         text(
-          "Hours requests on the Settings tab decides whether volunteers can ask for their hours on the tablet. Off, the default, hides the Email me my hours button. Approve shows it and leaves each request for you to send. Auto shows it and the kiosk emails each request by itself, about every 15 minutes.",
+          "Hours requests on the Settings tab decides whether volunteers can ask for their hours on the tablet. Off, the default, hides the Request my hours link on the tablet's welcome screen. Approve shows it and leaves each request for you to send. Auto shows it and the kiosk emails each request by itself, about every 15 minutes.",
         ),
         text(
-          "A tap only records a request on the Hours requests tab, one open request per volunteer. The tablet never shows an email address: the email goes to the Email cell of the volunteer's Volunteer Profiles row, as from Email hours.",
+          "A volunteer taps the link, finds their name, and taps Send on the screen that follows. That only records a request on the Hours requests tab, one open request per volunteer. Nothing on that path checks anyone in or out. The tablet never shows an email address: the email goes to the Email cell of the volunteer's Volunteer Profiles row, as from Email hours.",
         ),
         step(
           "1. Kiosk admin > Email hours… Volunteers who asked are ticked and marked Requested and the date. In Auto only held and overdue requests are ticked, since Auto sends the rest.",

@@ -570,7 +570,7 @@ test("the two hours request rows are the last two Settings rows, Off and blank, 
   const d = plain(L.settingsDescriptions());
   assert.equal(
     d["Hours requests"],
-    "Whether volunteers can ask for their hours on the tablet: Off hides the Email me my hours button; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them about every 15 minutes, leaving out unchecked shifts, once a week at most; blank or anything else means Off.",
+    "Whether volunteers can ask for their hours on the tablet: Off hides the Request my hours link on the welcome screen; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them every 15 minutes, skipping unchecked shifts, at most weekly; blank or anything else means Off.",
   );
   // The last-run row says only what it can show: idle runs write nothing.
   assert.match(d["Hours requests last run"], /^Written by the hours request job: /);
@@ -785,7 +785,8 @@ test("How to has the hours requests section after Email hours, saying what Auto 
   assert.equal(sections[at + 1].title, "The weekly flags email");
   const all = sections[at].lines.map((l) => l.text).join("\n");
   [
-    "Off, the default, hides the Email me my hours button",
+    "Off, the default, hides the Request my hours link on the tablet's welcome screen",
+    "Nothing on that path checks anyone in or out",
     "Approve",
     "Auto",
     "1. Kiosk admin > Email hours…",
