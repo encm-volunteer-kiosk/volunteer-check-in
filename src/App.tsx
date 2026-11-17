@@ -1795,12 +1795,13 @@ export default function App() {
       api.listVolunteers(requestCode).then(
         (reply) => {
           if (!isCurrent()) return;
-          listApplied.current = seq;
+          // A refusal applies nothing, so an older call's list still out can land after it.
           if (isRefusal(reply)) {
             if (reply.refusal === "ACCESS") lockKiosk(reply.message);
             else failed();
             return;
           }
+          listApplied.current = seq;
           const receivedAt = Date.now();
           listSavedAt.current = receivedAt;
           listExtras.current = {
