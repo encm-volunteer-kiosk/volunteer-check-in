@@ -2124,7 +2124,7 @@ test("apiRequestHours throws naming the tab when its header is broken", () => {
   );
 });
 
-test("the list says whether the button shows, and never the mode", () => {
+test("the list says whether the Request my hours link shows, and never the mode", () => {
   for (const [mode, on] of [
     ["Approve", true],
     ["AUTO", true],

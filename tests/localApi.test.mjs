@@ -240,9 +240,9 @@ test("a tapped check-out closes the named shift once; again it replies replayed"
 });
 
 // ---------------------------------------------------------------------------------------
-// Email me my hours
+// Request my hours
 
-test("the local list turns the hours request button on", async () => {
+test("the local list turns the Request my hours link on", async () => {
   const api = await storeWith([]);
   assert.equal((await api.listVolunteers(CODE)).hoursRequests, true);
 });

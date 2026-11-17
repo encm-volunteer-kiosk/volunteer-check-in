@@ -6,9 +6,9 @@
 // shows the result at once and puts the save in a queue kept in localStorage. It does so only
 // while saves are going through (savesGoingThrough): the server answered this page lately,
 // no call has failed or hung since, and the queue's head isn't stuck. Otherwise the tap waits
-// for the server and shows an error if the save fails, never a success that could be lost. One page at a
-// time sends the queue's head, with a tap ID the server recognises, so a retry that finds its
-// save already made writes nothing.
+// for the server and shows an error if the save fails, never a success that could be lost.
+// One page at a time sends the queue's head, with a tap ID the server recognises, so a retry
+// that finds its save already made writes nothing.
 //
 // The stored queue has one writer at a time: every change is read from storage, changed and
 // written back inside the Web Lock SAVE_QUEUE_LOCK (changeQueue below), so a second kiosk tab
