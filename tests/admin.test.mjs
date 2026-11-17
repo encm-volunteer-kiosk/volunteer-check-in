@@ -1935,6 +1935,15 @@ test("a wrong code refuses after one Settings read, before the lock", () => {
     (s) => s.ctx.apiListVolunteers(WRONG_CODE),
     (s) => s.ctx.apiCheckAccess(WRONG_CODE),
     (s) => s.ctx.apiRequestHours(WRONG_CODE, SAM.id, null),
+    (s) =>
+      s.ctx.apiChangeArrival(
+        WRONG_CODE,
+        SAM.id,
+        null,
+        "s-open",
+        at(TODAY, "08:00").toISOString(),
+        at(TODAY, "07:00").toISOString(),
+      ),
   ];
   for (const call of calls) {
     const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
@@ -5360,8 +5369,8 @@ const STAMPING_HELPERS = [
   "appendLogValues_",
 ];
 // The only callers that pass the kiosk option: the kiosk forgets the map before its write and
-// fills it after.
-const KIOSK_CALLS = ["apiCheckIn", "apiCheckOut"];
+// fills it after; an arrival change forgets it and stores none.
+const KIOSK_CALLS = ["apiChangeArrival", "apiCheckIn", "apiCheckOut"];
 const SORTS_AN_ARRAY = "sorts an array, not a range";
 const HOURS_TABS = { tab: "hoursTabName()", in: "setupHoursTabs_" };
 const HOURS_DATA = { tab: "hoursDataTabName()", in: "setupHoursTabs_" };
@@ -5598,7 +5607,7 @@ test("each Log write helper does its whole write inside stampedLogWrite_, and se
   );
 });
 
-test("only apiCheckIn and apiCheckOut pass the kiosk option, and the Log cache's own functions write no cell", () => {
+test("only the kiosk's write calls pass the kiosk option, and the Log cache's own functions write no cell", () => {
   const { functions } = scanServer();
   const passing = Object.keys(functions).filter((n) => functions[n].kiosk);
   assert.deepEqual(passing.sort(), KIOSK_CALLS);
@@ -5828,6 +5837,7 @@ test("apiListVolunteers gives the new fields from the whole Log, cache off and o
       missedSignOut: true,
       openShiftId: null,
       openUntil: null,
+      openShiftTapped: null,
       checkOutMilestones: null,
     },
     {
@@ -5840,6 +5850,7 @@ test("apiListVolunteers gives the new fields from the whole Log, cache off and o
       missedSignOut: true,
       openShiftId: "s-ruth",
       openUntil: new Date(at(TODAY, "08:30").getTime() + 12 * 3600000).toISOString(),
+      openShiftTapped: at(TODAY, "08:30").toISOString(),
       checkOutMilestones: [
         { fromMinutes: 0, id: null },
         { fromMinutes: 30, id: "hours-50" },
@@ -5908,4 +5919,173 @@ test("a tapped check-out on a hit whose row isn't open in the map reads the whol
   assert.equal(lastLine(s), "Log cache: hit, then full read (refused NOT_IN)");
   assert.equal(logSnapshot(s), log);
   assert.equal(flagCount(s), 0);
+});
+
+// ---------------------------------------------------------------------------
+// Changing the arrival of an open shift from the tablet
+
+const FROM_8 = () => at(TODAY, "08:00").toISOString();
+/** apiChangeArrival for Sam's open row s-open, shown starting at 8:00 AM. */
+const changeArrival = (s, hhmm, fields = {}) =>
+  plain(
+    s.ctx.apiChangeArrival(
+      CODE,
+      fields.id ?? SAM.id,
+      fields.digits ?? null,
+      fields.shiftId ?? "s-open",
+      fields.fromIso ?? FROM_8(),
+      at(TODAY, hhmm).toISOString(),
+    ),
+  );
+const logWrites = (s) => s.journal.filter((e) => e.startsWith("write "));
+
+test("apiChangeArrival writes Check-In Stated and one Flags row past the threshold", () => {
+  const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
+  const reply = changeArrival(s, "07:00");
+  assert.deepEqual(reply, {
+    ok: true,
+    id: SAM.id,
+    shiftId: "s-open",
+    arrivedAt: at(TODAY, "07:00").toISOString(),
+    changed: true,
+  });
+  const row = s.sheets.Log.rowByHeader(2);
+  assert.equal(row["Check-In Stated (user)"].getTime(), at(TODAY, "07:00").getTime());
+  assert.equal(row["Check-In Recorded (timestamp)"].getTime(), at(TODAY, "08:00").getTime());
+  assert.equal(
+    row["Admin Alerts?"],
+    "arrival differs by 60 min (changed at the kiosk from 8:00 AM)",
+  );
+  assert.equal(row.Status, "open");
+  assert.equal(row["Check-In Entered By"], "kiosk");
+  assert.equal(row.Notes, "staff wrote this");
+  // The table once, then the row again just before the write.
+  assert.deepEqual(valueReads(s.sheets.Log), [
+    "getValues 1,1,2," + LOG_HEADER.length,
+    "getValues 2,1,1," + LOG_HEADER.length,
+  ]);
+  const flags = s.sheets.Flags;
+  assert.equal(flags.getLastRow(), 2);
+  const flag = flags.rowByHeader(2);
+  assert.equal(flag["Raised At"].getTime(), NOW);
+  assert.equal(flag.Reason, row["Admin Alerts?"]);
+  assert.equal(flag.Source, "kiosk arrival change");
+  assert.equal(flag["Shift ID"], "s-open");
+  assert.equal(flag.Date, TODAY);
+  assert.equal(flag["Volunteer Name"], "Sam Lee");
+  assert.equal(flag["Log Row"], 2);
+  assert.equal(flag.Reviewed, false);
+  assert.deepEqual(s.errors, []);
+});
+
+test("apiChangeArrival within the threshold writes Check-In Stated only and no Flags row", () => {
+  const open = kioskOpen("s-open", TODAY, "08:00");
+  open[LOG_HEADER.indexOf("Admin\nAlerts?")] = "staff: checked";
+  const s = kiosk({ log: [LOG_HEADER, open] });
+  assert.equal(changeArrival(s, "07:45").changed, true);
+  const row = s.sheets.Log.rowByHeader(2);
+  assert.equal(row["Check-In Stated (user)"].getTime(), at(TODAY, "07:45").getTime());
+  assert.equal(row["Admin Alerts?"], "staff: checked");
+  assert.equal(s.sheets.Flags.getLastRow(), 1);
+});
+
+test("apiChangeArrival keeps Admin Alerts? as the row holds it at the write", () => {
+  const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
+  // Staff type a note in Admin Alerts? after the table is read: the row is still the same.
+  afterTableRead(s.sheets.Log, (sh) => {
+    sh.rows[1][LOG_HEADER.indexOf("Admin\nAlerts?")] = "staff note";
+  });
+  assert.equal(changeArrival(s, "07:00").changed, true);
+  assert.equal(
+    s.sheets.Log.rowByHeader(2)["Admin Alerts?"],
+    "staff note; arrival differs by 60 min (changed at the kiosk from 8:00 AM)",
+  );
+});
+
+test("apiChangeArrival to the row's own start answers changed false and writes nothing", () => {
+  const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
+  const reply = changeArrival(s, "08:00", { fromIso: at(TODAY, "07:00").toISOString() });
+  assert.deepEqual(reply, {
+    ok: true,
+    id: SAM.id,
+    shiftId: "s-open",
+    arrivedAt: at(TODAY, "08:00").toISOString(),
+    changed: false,
+  });
+  assert.deepEqual(logWrites(s), []);
+  assert.deepEqual(valueReads(s.sheets.Log), ["getValues 1,1,2," + LOG_HEADER.length]);
+});
+
+test("apiChangeArrival refusals write nothing", () => {
+  const cases = [
+    [{ fromIso: at(TODAY, "07:30").toISOString() }, "07:00", "ARRIVAL_ROW_CHANGED"],
+    [{ shiftId: "s-other" }, "07:00", "ARRIVAL_ROW_CHANGED"],
+    [{}, "09:00", "ARRIVAL_AFTER_CHECK_IN"],
+    [{}, "11:00", "ARRIVAL_FUTURE"],
+    [{ id: "nobody" }, "07:00", "NOT_FOUND"],
+  ];
+  for (const [fields, hhmm, code] of cases) {
+    const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
+    const reply = changeArrival(s, hhmm, fields);
+    assert.equal(reply.ok, false, code);
+    assert.equal(reply.refusal, code);
+    assert.equal(reply.message, plain(s.ctx.refusalMessages())[code]);
+    assert.deepEqual(logWrites(s), [], code);
+  }
+  // A volunteer with no open row.
+  const out = kiosk({ log: [LOG_HEADER] });
+  assert.equal(changeArrival(out, "07:00").refusal, "NOT_IN");
+  // A row whose Check-In Recorded is blank.
+  const typed = kioskOpen("s-open", TODAY, "08:00");
+  typed[LOG_HEADER.indexOf("Check-In\nRecorded\n(timestamp)")] = "";
+  const noTap = kiosk({ log: [LOG_HEADER, typed] });
+  assert.equal(changeArrival(noTap, "07:00").refusal, "ARRIVAL_UNCHANGEABLE");
+});
+
+test("apiChangeArrival answers BUSY and writes nothing when staff changed the row before the write", () => {
+  const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
+  const left = afterTableRead(s.sheets.Log, (sh) => {
+    sh.rows[1][LOG_HEADER.indexOf("Check-In\nStated\n(user)")] = at(TODAY, "07:30");
+  });
+  const reply = changeArrival(s, "07:00");
+  assert.deepEqual(reply, { ok: false, refusal: "BUSY", message: BUSY_TEXT });
+  assert.equal(JSON.stringify(s.sheets.Log.rows), left.rows, "the Log is as staff left it");
+  assert.deepEqual(logWrites(s), []);
+  assert.equal(s.sheets.Flags.getLastRow(), 1);
+  assert.deepEqual(s.errors, [
+    "Arrival change: Log row 2 no longer holds open Shift ID s-open as read; answered BUSY and wrote nothing.",
+  ]);
+});
+
+test("apiChangeArrival with the Log cache on reads the whole Log, forgets the map and stores none", () => {
+  const log = [
+    LOG_HEADER,
+    closedFor(SAM, "s-old", "2026-11-03", 3),
+    kioskOpen("s-open", TODAY, "08:00"),
+  ];
+  const { s } = cacheKiosk({ log });
+  storeMapWith(s);
+  const lines = linesOf(s, () => assert.equal(changeArrival(s, "07:00").changed, true));
+  assert.deepEqual(lines, [
+    "Log cache: full read (arrival change)",
+    "Log cache: not stored (an arrival change stores no map)",
+  ]);
+  assert.ok(s.stores.includes("cache.remove " + LOG_KEY), "the map is removed before the write");
+  assert.equal(s.cache.has(LOG_KEY), false, "no map is stored after the write");
+  assert.equal(
+    s.sheets.Log.rowByHeader(3)["Check-In Stated (user)"].getTime(),
+    at(TODAY, "07:00").getTime(),
+  );
+  // The next kiosk call reads the whole Log once.
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).refusal, "ALREADY_IN");
+  assert.equal(lastLine(s), "Log cache: miss (none)");
+  // A refused Change stores the map its whole read built, as other refusals do.
+  const refused = cacheKiosk({ log });
+  linesOf(refused.s, () =>
+    assert.equal(
+      changeArrival(refused.s, "07:00", { shiftId: "s-x" }).refusal,
+      "ARRIVAL_ROW_CHANGED",
+    ),
+  );
+  assert.ok(storedMap(refused.s), "a refusal stores the map");
 });
