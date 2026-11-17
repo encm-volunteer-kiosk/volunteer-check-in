@@ -273,3 +273,152 @@ test("an hours request picks the volunteer by the check-in rule", async () => {
   assert.equal((await api.requestHours("short", "vol-1", null)).refusal, "ACCESS");
   assert.deepEqual(api.hoursRequestsOpen(), [J2]);
 });
+
+// ---------------------------------------------------------------------------------------
+// Change of arrival
+
+/** The open shift's start and tap as the store holds them, read back. */
+function storedOpen(id) {
+  const data = JSON.parse(localStorage.getItem(STORAGE_KEY));
+  const v = data.volunteers.find((x) => x.id === id);
+  const event = data.events.find((e) => e.shiftId === `shift-${id}` && e.eventType === "check_in");
+  return { start: v.currentCheckIn, tapped: v.currentCheckInTappedAt, event: event.timestamp };
+}
+
+test("the local list gives the open row's tap time, and null when not checked in", async () => {
+  const api = await storeWith(["vol-1"]);
+  const list = await api.listVolunteers(CODE);
+  const sarah = list.volunteers.find((v) => v.id === "vol-1");
+  assert.equal(sarah.openShiftTapped, storedOpen("vol-1").tapped);
+  assert.equal(list.volunteers.find((v) => v.id === "vol-2").openShiftTapped, null);
+});
+
+test("a Change moves the open shift's start and keeps the tap", async () => {
+  const api = await storeWith(["vol-1"]);
+  const before = storedOpen("vol-1");
+  const earlier = new Date(Date.parse(before.tapped) - 5 * MIN).toISOString();
+  const reply = await api.changeArrival(CODE, "vol-1", null, "shift-vol-1", before.start, earlier);
+  assert.deepEqual(reply, {
+    id: "vol-1",
+    shiftId: "shift-vol-1",
+    arrivedAt: earlier,
+    changed: true,
+  });
+  const after = storedOpen("vol-1");
+  assert.equal(after.start, earlier);
+  assert.equal(after.event, earlier);
+  assert.equal(after.tapped, before.tapped, "the tap time is never moved");
+  // The list follows.
+  const listed = (await api.listVolunteers(CODE)).volunteers.find((v) => v.id === "vol-1");
+  assert.equal(listed.openShiftArrival, earlier);
+});
+
+test("a Change to the start it already has answers changed false, even with a stale start shown", async () => {
+  const api = await storeWith(["vol-1"]);
+  const { start } = storedOpen("vol-1");
+  const stale = new Date(Date.parse(start) - 30 * MIN).toISOString();
+  const reply = await api.changeArrival(CODE, "vol-1", null, "shift-vol-1", stale, start);
+  assert.equal(reply.changed, false);
+  assert.equal(reply.arrivedAt, start);
+});
+
+test("a Change refuses in the server's order", async () => {
+  let api = await storeWith(["vol-1"]);
+  const { start, tapped } = storedOpen("vol-1");
+  const earlier = new Date(Date.parse(tapped) - 5 * MIN).toISOString();
+  const change = (over = {}) => {
+    const a = { code: CODE, id: "vol-1", digits: null, shiftId: "shift-vol-1", from: start };
+    const b = { ...a, arrival: earlier, ...over };
+    return api.changeArrival(b.code, b.id, b.digits, b.shiftId, b.from, b.arrival);
+  };
+  assert.equal((await change({ code: "short" })).refusal, "ACCESS");
+  assert.equal((await change({ id: "nobody" })).refusal, "NOT_FOUND");
+  assert.equal((await change({ id: "vol-2" })).refusal, "NOT_IN");
+  assert.equal((await change({ shiftId: "another" })).refusal, "ARRIVAL_ROW_CHANGED");
+  assert.equal((await change({ shiftId: "  " })).refusal, "ARRIVAL_ROW_CHANGED");
+  assert.equal((await change({ arrival: "not a time" })).refusal, "ARRIVAL_OTHER_DAY");
+  assert.equal(
+    (await change({ arrival: new Date(Date.now() + 10 * MIN).toISOString() })).refusal,
+    "ARRIVAL_FUTURE",
+  );
+  assert.equal(
+    (await change({ arrival: new Date(Date.parse(tapped) - 26 * 60 * MIN).toISOString() })).refusal,
+    "ARRIVAL_OTHER_DAY",
+  );
+  assert.equal(
+    (await change({ arrival: new Date(Date.parse(tapped) + MIN).toISOString() })).refusal,
+    "ARRIVAL_AFTER_CHECK_IN",
+  );
+  const otherStart = new Date(Date.parse(start) - 30 * MIN).toISOString();
+  assert.equal((await change({ from: otherStart })).refusal, "ARRIVAL_ROW_CHANGED");
+  assert.equal(storedOpen("vol-1").start, start, "no refusal wrote anything");
+  // A shift stored without its tap time can't be changed.
+  const data = JSON.parse(localStorage.getItem(STORAGE_KEY));
+  data.volunteers.find((v) => v.id === "vol-1").currentCheckInTappedAt = null;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  api = await loadApi();
+  assert.equal((await change()).refusal, "ARRIVAL_UNCHANGEABLE");
+});
+
+test("a Change of a shared name follows the check-out's rule for who it is", async () => {
+  // Both in: digits are needed; the twin's digits name the twin, whose row isn't the one shown.
+  const api = await storeWith([J1, J2]);
+  const { start, tapped } = storedOpen(J1);
+  const earlier = new Date(Date.parse(tapped) - 5 * MIN).toISOString();
+  const send = (digits) => api.changeArrival(CODE, J1, digits, `shift-${J1}`, start, earlier);
+  assert.equal((await send(null)).refusal, "PHONE_NEEDED");
+  assert.equal((await send("0187")).refusal, "ARRIVAL_ROW_CHANGED");
+  assert.equal((await send("0142")).changed, true);
+  // Only the tapped member in: no digits needed.
+  const alone = await storeWith([J1]);
+  const own = storedOpen(J1);
+  const reply = await alone.changeArrival(
+    CODE,
+    J1,
+    null,
+    `shift-${J1}`,
+    own.start,
+    new Date(Date.parse(own.tapped) - 5 * MIN).toISOString(),
+  );
+  assert.equal(reply.changed, true);
+});
+
+// ---------------------------------------------------------------------------------------
+// The call record around the API
+
+test("every API call goes through the call record", async () => {
+  const { withCallRecord } = await import(`../src/api.ts?copy=${++copies}`);
+  const { callLog } = await import("../src/callRecord.ts");
+  let now = 1_000;
+  const log = callLog(() => now);
+  const calls = [];
+  const inner = new Proxy(
+    {},
+    {
+      get: (_, name) => async () => {
+        calls.push(name);
+        now += 100;
+        if (name === "requestHours") throw new Error("failed");
+        return name === "checkOut" ? { refusal: "NOT_IN", message: "m" } : true;
+      },
+    },
+  );
+  const wrapped = withCallRecord(inner, log);
+  const names = [
+    "checkAccess",
+    "listVolunteers",
+    "checkIn",
+    "checkOut",
+    "changeArrival",
+    "requestHours",
+  ];
+  for (const name of names) {
+    await wrapped[name]("code").catch(() => {});
+  }
+  assert.deepEqual(calls, names);
+  assert.deepEqual(Object.keys(wrapped).sort(), [...names].sort());
+  const record = log.read();
+  assert.equal(record.latestReply, 1_500, "a refusal is a reply");
+  assert.equal(record.latestEnded, 1_600);
+  assert.deepEqual(record.waiting, []);
+});

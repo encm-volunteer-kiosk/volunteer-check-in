@@ -11,7 +11,8 @@
 // The kept list is the server's list as it arrived, never the page's view of it with this
 // tablet's own saves laid over: those live in the save queue (saveQueue.ts). It keeps what an
 // instant check-in or check-out reads: each volunteer's missed check-out answer, open Shift
-// ID, window end and milestone steps, the milestone texts, the tablet clock's offset from the
+// ID, window end and milestone steps, the open row's tap time (which a Change of arrival
+// reads), the milestone texts, the tablet clock's offset from the
 // server's, and the stamp of the list request, which says when it was asked for.
 //
 // Plain TypeScript only (no enums, namespaces or parameter properties): the tests import
@@ -47,6 +48,7 @@ type StoredVolunteer = {
   openShiftId?: string | null;
   openUntil?: string | null;
   checkOutMilestones?: MilestoneStep[] | null;
+  openShiftTapped?: string | null;
 };
 
 // What a kept list holds beside its volunteers and long-shift number. clockOffsetMs is null
@@ -89,6 +91,7 @@ const instantFields = (v: Volunteer | StoredVolunteer) => ({
   ...(v.checkOutMilestones !== undefined
     ? { checkOutMilestones: stepsWithNulls(v.checkOutMilestones) }
     : {}),
+  ...(v.openShiftTapped !== undefined ? { openShiftTapped: v.openShiftTapped } : {}),
 });
 
 const toStored = (v: Volunteer): StoredVolunteer => ({
@@ -150,6 +153,7 @@ const isStoredVolunteer = (v: unknown): v is StoredVolunteer => {
     absentOr(r, "missedSignOut", (x) => typeof x === "boolean") &&
     absentOr(r, "openShiftId", isTextOrNull) &&
     absentOr(r, "openUntil", isTextOrNull) &&
+    absentOr(r, "openShiftTapped", isTextOrNull) &&
     absentOr(r, "checkOutMilestones", (x) => x === null || (Array.isArray(x) && x.every(isStep)))
   );
 };

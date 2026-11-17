@@ -145,6 +145,15 @@ export type ListEntry = {
   checkOutMilestones?: MilestoneStep[] | null;
 };
 
+// The page's own server calls as of a moment (callRecord.ts), all tablet ms: the latest
+// reply, the latest end without a reply (null for none yet) and the start of each call still
+// waiting for its reply.
+export type CallRecord = {
+  latestReply: number | null;
+  latestEnded: number | null;
+  waiting: number[];
+};
+
 export type Outcome = "landed" | "retry" | "lock" | "refused";
 
 export type QueueStorage = Pick<Storage, "getItem" | "setItem">;
