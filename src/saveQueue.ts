@@ -678,14 +678,21 @@ export function tapOf(save: QueuedSave, sentAt: number): Tap {
 
 /**
  * Adds a save, refused when the volunteer has a queued save or a mark newer than the list,
- * or, given the tap's time, when the queue as stored has a head that isn't flowing (another
- * tab's save may have hung since this page last read the queue).
+ * or, given a time or a clock, when the queue as stored has a head that isn't flowing
+ * (another tab's save may have hung since this page last read the queue). A clock is read
+ * inside the change, under the queue lock, so a send stamped after the tap read its own
+ * clock can't look like one from the future.
  */
-export function enqueue(save: QueuedSave, stamp: ListStamp | null, now?: number): Change {
+export function enqueue(
+  save: QueuedSave,
+  stamp: ListStamp | null,
+  now?: number | (() => number),
+): Change {
   return (queue) => {
     if (hasQueuedFor(queue, save.volunteerId)) return { refused: "queued" };
     if (hasMarkSince(queue, save.volunteerId, stamp)) return { refused: "marked" };
-    if (now !== undefined && !queueFlowing(queue, now)) return { refused: "stalled" };
+    const at = typeof now === "function" ? now() : now;
+    if (at !== undefined && !queueFlowing(queue, at)) return { refused: "stalled" };
     return { ...queue, saves: [...queue.saves, save] };
   };
 }

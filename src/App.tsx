@@ -2175,7 +2175,7 @@ export default function App() {
       milestoneId === null ? null : (extras.milestones.find((m) => m.id === milestoneId) ?? null);
     // A step naming a milestone the list has no text for: the server's answer shows it.
     if (milestoneId !== null && !milestone) return false;
-    const stored = await changeSaves(enqueue(save, listStamp, now));
+    const stored = await changeSaves(enqueue(save, listStamp, () => Date.now()));
     const path = afterEnqueue(stored);
     if (path === "still-saving") setError(savingLine(stored.queue) ?? "");
     if (path !== "instant") return path === "still-saving";

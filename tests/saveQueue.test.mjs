@@ -1474,6 +1474,19 @@ test("enqueue given the tap's time refuses a stored head that isn't flowing, and
   assert.equal(change(flowing).saves.length, 2);
 });
 
+test("enqueue given a clock reads it under the lock, so a send stamped after the tap's clock doesn't refuse", () => {
+  // The runner stamped the head's send 50 ms after the tap read its clock.
+  const justSent = headed({ tapAt: T0 - 500, sends: 1, lastSendAt: T0 + 50 });
+  assert.deepEqual(enqueue(saveFor("in", ben, T0), stampE1, T0)(justSent), { refused: "stalled" });
+  const read = enqueue(saveFor("in", ben, T0), stampE1, () => T0 + 60)(justSent);
+  assert.equal(read.saves.length, 2);
+  // A clock still refuses a head that isn't flowing.
+  const stuck = headed({ tapAt: T0 - 12_000, sends: 1, lastSendAt: T0 - 11_000 });
+  assert.deepEqual(enqueue(saveFor("in", ben, T0), stampE1, () => T0)(stuck), {
+    refused: "stalled",
+  });
+});
+
 // ---------------------------------------------------------------------------------------
 // The arrival change's mark
 
