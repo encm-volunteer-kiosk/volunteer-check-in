@@ -238,3 +238,38 @@ test("a tapped check-out closes the named shift once; again it replies replayed"
   });
   assert.equal(wrong.refusal, "NOT_IN");
 });
+
+// ---------------------------------------------------------------------------------------
+// Email me my hours
+
+test("the local list turns the hours request button on", async () => {
+  const api = await storeWith([]);
+  assert.equal((await api.listVolunteers(CODE)).hoursRequests, true);
+});
+
+test("an hours request is recorded once; a repeat while it is open writes nothing", async () => {
+  const api = await storeWith([]);
+  assert.equal(await api.requestHours(CODE, "vol-1", null), true);
+  assert.deepEqual(api.hoursRequestsOpen(), ["vol-1"]);
+  // A repeat answers the same and adds nothing.
+  assert.equal(await api.requestHours(CODE, "vol-1", null), true);
+  assert.deepEqual(api.hoursRequestsOpen(), ["vol-1"]);
+  // Nobody was checked in or out by it.
+  assert.equal(await checkedIn(api, "vol-1"), false);
+  assert.equal(await api.requestHours(CODE, "vol-2", null), true);
+  assert.deepEqual(api.hoursRequestsOpen(), ["vol-1", "vol-2"]);
+  api.reset();
+  assert.deepEqual(api.hoursRequestsOpen(), []);
+});
+
+test("an hours request picks the volunteer by the check-in rule", async () => {
+  const api = await storeWith([]);
+  assert.equal((await api.requestHours(CODE, J1, null)).refusal, "PHONE_NEEDED");
+  assert.equal((await api.requestHours(CODE, J1, "9999")).refusal, "PHONE_WRONG");
+  // The digits pick the member, as for a check-in.
+  assert.equal(await api.requestHours(CODE, J1, "0187"), true);
+  assert.deepEqual(api.hoursRequestsOpen(), [J2]);
+  assert.equal((await api.requestHours(CODE, "nobody", null)).refusal, "NOT_FOUND");
+  assert.equal((await api.requestHours("short", "vol-1", null)).refusal, "ACCESS");
+  assert.deepEqual(api.hoursRequestsOpen(), [J2]);
+});

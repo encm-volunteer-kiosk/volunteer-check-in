@@ -23,6 +23,14 @@ import {
   type ListState,
   type ListStorage,
 } from "./listStore";
+import {
+  afterHoursRequest,
+  HOURS_REQUEST_TIMEOUT_MS,
+  hoursRequestReady,
+  settleWithin,
+  showsHoursRequest,
+  type HoursRequestState,
+} from "./hoursRequestButton";
 import { searchNames } from "./nameSearch";
 import { searchOpenAfter, type SearchOpenEvent } from "./searchOpen";
 import { QuickPicks } from "./QuickPicks.tsx";
@@ -607,10 +615,13 @@ function Confirmation({
   minMinutes = 0,
   saving,
   error,
+  hoursRequests,
+  hoursRequest,
   onTimeChange,
   onOpenPicker,
   onPhoneDigitsChange,
   onPhoneContinue,
+  onRequestHours,
   onConfirm,
   onBack,
 }: {
@@ -629,16 +640,29 @@ function Confirmation({
   minMinutes?: number;
   saving: boolean;
   error: string;
+  // The list's hoursRequests, and the Email me my hours button's state on this screen.
+  hoursRequests: boolean;
+  hoursRequest: HoursRequestState;
   onTimeChange?: (time: string) => void;
   // Given only when the picker may be offered; its link shows after the phone step.
   onOpenPicker?: () => void;
   onPhoneDigitsChange: (digits: string) => void;
   onPhoneContinue: () => void;
+  onRequestHours: () => void;
   onConfirm: () => void;
   onBack: () => void;
 }) {
   const showTimeKeyboard = Boolean(!phoneStep && picker && time && onTimeChange);
   const hasKeyboard = showTimeKeyboard;
+  const offersHours = showsHoursRequest({
+    hoursRequests,
+    phoneStep,
+    picker,
+    saving,
+    volunteer,
+    digitsAsked,
+    digits: phoneDigits,
+  });
 
   return (
     <>
@@ -743,6 +767,7 @@ function Confirmation({
                 : "Forgot to check in earlier? Change your arrival time"}
             </button>
           )}
+          {offersHours && <HoursRequestButton state={hoursRequest} onRequest={onRequestHours} />}
         </section>
       </main>
       {showTimeKeyboard && (
@@ -758,6 +783,40 @@ function Confirmation({
         />
       )}
     </>
+  );
+}
+
+/**
+ * Email me my hours, under the button stack: the button, "Sending…" while the request is
+ * out, then the answer's line in its place, with the button back under a line that asks to
+ * try again. No line names an email address.
+ */
+function HoursRequestButton({
+  state,
+  onRequest,
+}: {
+  state: HoursRequestState;
+  onRequest: () => void;
+}) {
+  const button = (
+    <button
+      type="button"
+      className="text-button"
+      onClick={onRequest}
+      disabled={state.kind === "sending"}
+    >
+      {state.kind === "sending" ? "Sending…" : "Email me my hours"}
+    </button>
+  );
+  return (
+    <div className="hours-request">
+      {state.kind === "line" && (
+        <p className="hours-request-line" role="status">
+          {state.text}
+        </p>
+      )}
+      {(state.kind !== "line" || state.again) && button}
+    </div>
   );
 }
 
@@ -1400,6 +1459,9 @@ export default function App() {
   const [longShiftHours, setLongShiftHours] = useState(
     () => keptList?.longShiftHours ?? DEFAULT_LONG_SHIFT_HOURS,
   );
+  // The list's hoursRequests. The kept list doesn't hold it, so after a reload the button
+  // stays hidden until a fresh list arrives (a request can't go offline anyway).
+  const [hoursRequests, setHoursRequests] = useState(false);
   const nowMs = useMinuteNow();
   const cardClock = useMemo(() => ({ nowMs, longShiftHours }), [nowMs, longShiftHours]);
   const [listState, setListState] = useState<ListState>(keptList ? "stored" : "loading");
@@ -1474,6 +1536,15 @@ export default function App() {
   const [digitsAsked, setDigitsAsked] = useState(false);
   // A check-out sent without digits was refused because another of the name is checked in.
   const [anotherIn, setAnotherIn] = useState(false);
+  // The Email me my hours button on the open screen. hoursRequestSeq numbers the requests: a
+  // reply is shown only while its number is the current one, so leaving the screen, or
+  // tapping Check In or Check Out, drops it.
+  const [hoursRequest, setHoursRequest] = useState<HoursRequestState>(hoursRequestReady);
+  const hoursRequestSeq = useRef(0);
+  const dropHoursRequest = () => {
+    hoursRequestSeq.current += 1;
+    setHoursRequest(hoursRequestReady);
+  };
   const inactivityRef = useRef<number | null>(null);
   const selected = shown.find((v) => v.id === selectedId) ?? null;
   const checkOutFloorMs = selected ? checkOutLowerBound(selected, shown) : null;
@@ -1503,6 +1574,7 @@ export default function App() {
     setPhoneDigits("");
     setDigitsAsked(false);
     setAnotherIn(false);
+    dropHoursRequest();
   };
   // Home from a button the volunteer tapped.
   const tapHome = () => goHome(true);
@@ -1519,6 +1591,7 @@ export default function App() {
     setAnotherIn(false);
     setPhoneStep(asked ? "entry" : null);
     setPhoneDigits("");
+    dropHoursRequest();
     setScreen(isCheckedIn(volunteer) ? "checkout" : "confirm");
     // A list more than a minute old is refreshed while the volunteer reads the screen, so an
     // instant result is decided on a newer one when it lands first. Nothing waits for it.
@@ -1535,6 +1608,7 @@ export default function App() {
     setListStamp(null);
     setCode(next);
     setVolunteers([]);
+    setHoursRequests(false);
     setListState("loading");
   };
   const setSaveFlow = (next: typeof noSaves) => {
@@ -1580,6 +1654,7 @@ export default function App() {
           setHeldMarks(heldMarksRef.current.filter((m) => !heldMarkCovered(m, stamp)));
           setVolunteers(reply.volunteers.map(toVolunteer));
           setLongShiftHours(reply.longShiftHours);
+          setHoursRequests(reply.hoursRequests);
           setListState("ready");
         },
         () => {
@@ -2015,6 +2090,7 @@ export default function App() {
       setPhoneStep("entry");
       return;
     }
+    dropHoursRequest();
     setError("");
     if (await instantTap("in", selected)) return;
     const timestamp = arrivalPicker ? pickedTimeToIso(arrivalTime) : null;
@@ -2079,6 +2155,7 @@ export default function App() {
       setPhoneStep("entry");
       return;
     }
+    dropHoursRequest();
     setError("");
     if (await instantTap("out", selected)) return;
     // The page's own checks use the server's messages. The server checks again against its
@@ -2147,6 +2224,23 @@ export default function App() {
       refreshList();
       void kickRunner();
     }
+  }
+
+  // Email me my hours: records a request, beside the screen's check-in or check-out. It
+  // checks no one in or out, and a save doesn't wait for it.
+  async function requestHours() {
+    if (!selected || !code || hoursRequest.kind === "sending") return;
+    const seq = ++hoursRequestSeq.current;
+    const firstName = selected.firstName;
+    setHoursRequest({ kind: "sending" });
+    const reply = await settleWithin(
+      api.requestHours(code, selected.id, digitsToSend(digitsAsked, phoneDigits)),
+      HOURS_REQUEST_TIMEOUT_MS,
+    );
+    if (seq !== hoursRequestSeq.current) return;
+    const next = afterHoursRequest(reply, firstName);
+    if ("lock" in next) lockKiosk(next.lock);
+    else setHoursRequest(next);
   }
 
   // The kiosk code typed into the banner clears its failed lines in every tab.
@@ -2221,6 +2315,9 @@ export default function App() {
           anotherIn={anotherIn}
           saving={save !== null}
           error={error}
+          hoursRequests={hoursRequests}
+          hoursRequest={hoursRequest}
+          onRequestHours={requestHours}
           onTimeChange={(time) => setArrivalTime(pickTime(time))}
           onConfirm={handleConfirm}
           onBack={tapHome}
@@ -2247,6 +2344,9 @@ export default function App() {
           anotherIn={anotherIn}
           saving={save !== null}
           error={error}
+          hoursRequests={hoursRequests}
+          hoursRequest={hoursRequest}
+          onRequestHours={requestHours}
           onTimeChange={(time) => setCheckOutTime(pickTime(time))}
           onConfirm={handleCheckout}
           onBack={tapHome}

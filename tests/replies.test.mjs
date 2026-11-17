@@ -10,6 +10,7 @@ import vm from "node:vm";
 import {
   checkInFromServer,
   checkOutFromServer,
+  hoursRequestsOf,
   stepsWithNulls,
   summaryFromServer,
   toVolunteer,
@@ -198,4 +199,12 @@ test("check-in and check-out replies read a dropped null as null", () => {
   ]);
   assert.equal(stepsWithNulls(undefined), null);
   assert.equal(stepsWithNulls("x"), "x");
+});
+
+test("the list's hoursRequests reads as false unless the server sent true", () => {
+  assert.equal(hoursRequestsOf({ ok: true, volunteers: [] }), false, "an older server sends none");
+  assert.equal(hoursRequestsOf(viaScriptRun({ ok: true, hoursRequests: null })), false);
+  assert.equal(hoursRequestsOf({ hoursRequests: false }), false);
+  assert.equal(hoursRequestsOf({ hoursRequests: "Auto" }), false, "never the mode word");
+  assert.equal(hoursRequestsOf(viaScriptRun({ ok: true, hoursRequests: true })), true);
 });

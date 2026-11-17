@@ -880,6 +880,20 @@
 .text-button:disabled {
   opacity: 0.5;
 }
+/* Email me my hours: its own row under the arrival or check-out time link, and the line
+   that takes its place after a tap. */
+.hours-request {
+  display: grid;
+  justify-items: center;
+}
+.hours-request-line {
+  max-width: 420px;
+  margin: 14px auto 0;
+  color: var(--muted);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.4;
+}
 .error-notice {
   padding: 11px 13px;
   border-radius: 12px;
