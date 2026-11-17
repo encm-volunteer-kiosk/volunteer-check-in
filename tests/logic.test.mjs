@@ -233,7 +233,9 @@ test("settingsDefaults", () => {
   assert.equal(defaults["Kiosk contact"], "");
   assert.equal(defaults["Hours email contact"], "");
   assert.equal(defaults["Hours email signature"], "");
-  assert.equal(rows.length, 22);
+  assert.equal(defaults["Hours requests"], "Off");
+  assert.equal(defaults["Hours requests last run"], "");
+  assert.equal(rows.length, 24);
   const names = rows.map((r) => r[0]);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
@@ -245,6 +247,7 @@ test("settingsDefaults", () => {
   assert.equal(L.parseFlagsEmailOn(defaults["Flags email"]), false);
   assert.equal(L.parseWeekdaySetting(defaults["Flags email day"]), "Monday");
   assert.equal(L.parseEmailHour(defaults["Flags email hour"]), 8);
+  assert.equal(L.parseHoursRequestsMode(defaults["Hours requests"]), "off");
 });
 
 test("Auto clock-out after hours reads 10 to 24 as given and anything else as 12", () => {
@@ -2568,6 +2571,8 @@ test("refusal gives each code its exact message", () => {
       "This row has a value in a column the Log doesn't have exactly once, or whose header is blank or repeated, so it can't go back without losing that value. Give the Log one column with that header first.",
     HOURS_EMAIL_STALE: "This preview has expired or was already sent. Press Preview again.",
     HOURS_EMAIL_TOO_MANY: "Too many volunteers in one send. Press Preview again.",
+    HOURS_REQUESTS_OFF:
+      "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
   };
   for (const [code, message] of Object.entries(expected)) {
     assert.deepEqual(plain(L.refusal(code)), { ok: false, refusal: code, message });
