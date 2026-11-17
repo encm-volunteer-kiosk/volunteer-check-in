@@ -3885,6 +3885,138 @@ function hoursRequestDecide(input) {
   return { action: "send", code: "", reason: "" };
 }
 
+/** The hours request job's trigger handler (Jobs.js). It isn't one of dailyJobs(). */
+function hoursRequestJobHandler() {
+  return "runHoursRequests";
+}
+
+/** How often the hours request job's trigger runs, in minutes. */
+function hoursRequestJobMinutes() {
+  return 15;
+}
+
+/** How long the job waits for the script lock to claim; past it the run claims and sends nothing. */
+function hoursRequestClaimWaitMs() {
+  return 30000;
+}
+
+/** Once a run is this old it starts no new send. Google stops a run at 6 minutes. */
+function hoursRequestSendBudgetMs() {
+  return 4 * 60000;
+}
+
+/** The record step waits for the script lock until the run is this old. */
+function hoursRequestRecordByMs() {
+  return 5 * 60000;
+}
+
+/**
+ * The Results the job writes on its own Hours emails rows, besides "sent" and "failed: "
+ * with Google's message. A row is written as sending before its email goes; the record
+ * step settles it, and a later run marks one left sending as stopped.
+ */
+function hoursRequestResults() {
+  return {
+    sending: "sending",
+    stopped: "stopped: the automatic run ended before it recorded; the email may have gone",
+    late: "not sent: the run ran out of time",
+    quota: "not sent: Google's daily email limit is down to the reserve kept for staff",
+    unclaimed: "not sent: the run couldn't mark the request as sending",
+  };
+}
+
+/**
+ * The requests one run works on, from the tab's rows at nowMs, as {waiting, stale}:
+ * waiting are the waiting requests, oldest Requested at first (one that can't be read
+ * last, then by row); stale are the sending ones that stopped part way
+ * (hoursRequestStopped).
+ */
+function hoursRequestQueue(requests, nowMs) {
+  const at = (r) => (isFinite(r.requestedMs) ? r.requestedMs : Infinity);
+  const waiting = (requests || [])
+    .filter((r) => hoursRequestStatus(r.status) === "waiting")
+    .sort((a, b) => at(a) - at(b) || a.row - b.row);
+  const stale = (requests || []).filter((r) => hoursRequestStopped(r, nowMs));
+  return { waiting, stale };
+}
+
+/**
+ * What the record step writes for one claimed request, by how its send went, as {request,
+ * result}: request the changes to its Hours requests row ({header: value}) and result its
+ * Hours emails row's Result. outcome is "sent" (atMs when the send returned; unchecked the
+ * shifts left out), "failed" (message, Google's: the request is held, and the row keeps the
+ * message whole), or one that sent nothing: "late" (the run's time ran out), "quota"
+ * (Google's quota fell to the reserve) or "not-sent" (message). A request that sent nothing
+ * goes back to waiting with Done at, Done by and Send ID cleared, so the next run tries it.
+ */
+function hoursRequestRecordChanges(outcome, message, unchecked, atMs) {
+  const R = hoursRequestResults();
+  if (outcome === "sent") {
+    return {
+      request: { Status: "sent", Reason: hoursRequestLeftOutReason(unchecked), "Done at": atMs },
+      result: "sent",
+    };
+  }
+  if (outcome === "failed") {
+    return {
+      request: {
+        Status: "held",
+        Reason: hoursRequestHoldReason("send-failed", { message }),
+        "Done at": atMs,
+      },
+      result: "failed: " + cellString(message),
+    };
+  }
+  const result =
+    outcome === "late"
+      ? R.late
+      : outcome === "quota"
+        ? R.quota
+        : "not sent: " + cellString(message);
+  return {
+    request: { Status: "waiting", Reason: "", "Done at": "", "Done by": "", "Send ID": "" },
+    result,
+  };
+}
+
+/**
+ * The job's "Hours requests last run" text after a run that did something: "sent 2, held 1,
+ * still waiting 3". counts is {sent, held, waiting}. No names and no addresses.
+ */
+function hoursRequestRunText(counts) {
+  return "sent " + counts.sent + ", held " + counts.held + ", still waiting " + counts.waiting;
+}
+
+/**
+ * The job's one log line: "Hours requests: sent 1, held 2, still waiting 3 (checked in 1,
+ * quota 0)", then the answered and recovered counts when above 0, each hold as its
+ * Volunteer ID and reason code, and a note when the record step couldn't get the lock.
+ * counts is {sent, held, waiting, checkedIn, quota, answered, recovered, holds: [{id,
+ * code}], notRecorded}.
+ */
+function hoursRequestRunLog(counts) {
+  const parts = [
+    "Hours requests: " +
+      hoursRequestRunText(counts) +
+      " (checked in " +
+      counts.checkedIn +
+      ", quota " +
+      counts.quota +
+      ")",
+  ];
+  if (counts.answered) parts.push("answered by an earlier send " + counts.answered);
+  if (counts.recovered) parts.push("stopped part way and held " + counts.recovered);
+  if (counts.holds && counts.holds.length) {
+    parts.push("held " + counts.holds.map((h) => h.id + " " + h.code).join(", "));
+  }
+  if (counts.notRecorded) {
+    parts.push(
+      "the script lock didn't come to record, so the claimed requests and their Hours emails rows stay sending",
+    );
+  }
+  return parts.join("; ") + ".";
+}
+
 // ---------------------------------------------------------------------------
 // Removed shifts
 //

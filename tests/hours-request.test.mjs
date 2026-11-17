@@ -271,10 +271,7 @@ test("left out only with an unticked Flags row of the same Shift ID; N adds open
     listedTokens: [PAT.token, "tok-sam"],
     attach: true,
   });
-  assert.deepEqual(
-    plain(plan.allShifts.map((s) => s.row)),
-    [3, 5, 6, 7, 8, 14],
-  );
+  assert.deepEqual(plain(plan.allShifts.map((s) => s.row)), [3, 5, 6, 7, 8, 14]);
   assert.equal(plan.all.hundredths, 1200);
 });
 
@@ -306,11 +303,12 @@ test("the deadline is the first 6:00 AM Central after the request", () => {
 });
 
 test("past the deadline across both daylight-saving changes, measured on the Central clock", () => {
-  const open = (inText) => entry(30, inText.slice(0, 10), {
-    status: "open",
-    recordedInMs: centralMs(inText),
-    statedInMs: centralMs(inText),
-  });
+  const open = (inText) =>
+    entry(30, inText.slice(0, 10), {
+      status: "open",
+      recordedInMs: centralMs(inText),
+      statedInMs: centralMs(inText),
+    });
   const past = (reqText, shift, nowText) =>
     L.hoursRequestPastDeadline(centralMs(reqText), shift, centralMs(nowText), wall);
   // Clocks fall back at 2 AM on 2026-11-01: the day has 25 hours.
@@ -348,8 +346,14 @@ test("the deadline never falls before the shift began", () => {
     statedInMs: centralMs("2026-11-17 09:30"),
   });
   const asked = centralMs("2026-11-15 23:00");
-  assert.equal(L.hoursRequestPastDeadline(asked, shift, centralMs("2026-11-17 10:00"), wall), false);
-  assert.equal(L.hoursRequestPastDeadline(asked, shift, centralMs("2026-11-18 05:59"), wall), false);
+  assert.equal(
+    L.hoursRequestPastDeadline(asked, shift, centralMs("2026-11-17 10:00"), wall),
+    false,
+  );
+  assert.equal(
+    L.hoursRequestPastDeadline(asked, shift, centralMs("2026-11-18 05:59"), wall),
+    false,
+  );
   assert.equal(L.hoursRequestPastDeadline(asked, shift, centralMs("2026-11-18 06:00"), wall), true);
   // A shift with no readable time is measured from the request.
   const blank = { ...shift, recordedInMs: NaN, statedInMs: NaN };
@@ -474,9 +478,7 @@ test("the N line for 0, 1 and 3, and zero totals instead of the no-hours line", 
   assert.ok(zero.includes("  November 2026 so far: 0.00 hours (0 shifts)"), zero);
   assert.ok(zero.includes("  2026 so far: 0.00 hours (0 shifts)"));
   assert.ok(zero.includes("  All time: 0.00 hours (0 shifts)"));
-  assert.ok(
-    zero.indexOf("All time: 0.00") < zero.indexOf("2 shifts are waiting for staff review"),
-  );
+  assert.ok(zero.indexOf("All time: 0.00") < zero.indexOf("2 shifts are waiting for staff review"));
   assert.equal(zero.includes("attached"), false);
   assert.equal(zero.includes("No shifts yet in"), false);
 
@@ -533,7 +535,10 @@ test("the week limit: 7 days to the millisecond, automatic counted rows only", (
       result,
     );
   }
-  for (const result of ["failed: Service invoked too many times", "not sent: the run ran out of time"]) {
+  for (const result of [
+    "failed: Service invoked too many times",
+    "not sent: the run ran out of time",
+  ]) {
     assert.equal(L.hoursRequestLimit([{ ...inside, result }], PAT.id, now, "2026-11-25"), null);
   }
   // Only "auto" counts: an admin's send, or initials AUTO, doesn't use up the week.
@@ -555,10 +560,13 @@ test("the day limit: 50 counted on the Central date, the claim's own included", 
       send({ id: "v" + i, ms: now - 10 * DAY, date, result: i % 2 ? "sending" : "sent" }),
     );
   assert.equal(L.hoursRequestLimit(others(49, "2026-11-20"), PAT.id, now, "2026-11-20"), null);
-  assert.deepEqual(plain(L.hoursRequestLimit(others(50, "2026-11-20"), PAT.id, now, "2026-11-20")), {
-    code: "day",
-    reason: "Auto already sent 50 today.",
-  });
+  assert.deepEqual(
+    plain(L.hoursRequestLimit(others(50, "2026-11-20"), PAT.id, now, "2026-11-20")),
+    {
+      code: "day",
+      reason: "Auto already sent 50 today.",
+    },
+  );
   // Rows dated by the UTC day don't count against the Central day.
   assert.equal(L.hoursRequestLimit(others(50, "2026-11-21"), PAT.id, now, "2026-11-20"), null);
   // The claim's own rows count: 49 read plus one this claim added.
@@ -613,7 +621,10 @@ test("answered already: a sent row after Requested at answers; before it, or fai
   assert.equal(L.hoursRequestAnswer(rows.slice(0, 2), PAT.id, asked), null);
   assert.equal(L.hoursRequestAnswer([send({ ms: asked, sendId: "same" })], PAT.id, asked), null);
   assert.equal(L.hoursRequestAnswer(rows.slice(2, 3), PAT.id, asked).by, "JP");
-  assert.equal(L.hoursRequestAnswer([send({ ms: asked + 1, result: "Sent" })], PAT.id, asked), null);
+  assert.equal(
+    L.hoursRequestAnswer([send({ ms: asked + 1, result: "Sent" })], PAT.id, asked),
+    null,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -657,7 +668,11 @@ test("each hold reason, from profileEmailsFrom's codes", () => {
   );
   assert.equal(reason(GONE, emails[GONE.id]), "Not on the volunteer list any more.");
   assert.equal(reason(null, null), "Not on the volunteer list any more.");
-  const noColumn = L.profileEmailsFrom(["Volunteer First Name", "User Token"], [["Pat", "tok-pat"]], [PAT]);
+  const noColumn = L.profileEmailsFrom(
+    ["Volunteer First Name", "User Token"],
+    [["Pat", "tok-pat"]],
+    [PAT],
+  );
   assert.equal(reason(PAT, noColumn[PAT.id]), "Volunteer Profiles has no Email column.");
   assert.deepEqual(plain(decide({ contact: "  " })), {
     action: "hold",
@@ -676,7 +691,10 @@ test("each hold reason, from profileEmailsFrom's codes", () => {
     L.hoursRequestHoldReason("send-failed", { message: "Invalid email: pat@example.org" }),
     "The send failed: Invalid email: [address]",
   );
-  assert.match(L.hoursRequestHoldReason("stopped"), /^An automatic send stopped part way and may have gone\. Check this volunteer's Hours emails row \(Result stopped\)/);
+  assert.match(
+    L.hoursRequestHoldReason("stopped"),
+    /^An automatic send stopped part way and may have gone\. Check this volunteer's Hours emails row \(Result stopped\)/,
+  );
 });
 
 test("checked in: wait before the deadline, hold at it; the quota stops; else send", () => {
@@ -717,7 +735,11 @@ test("the flags email's hours lines: at 3 each, none at 0, missing reads as 0", 
   assert.equal(flagsMsg({}), null);
   assert.equal(flagsMsg({ autoSent: 0, requestsWaiting: 0 }), null);
   const both = flagsMsg({ autoSent: 3, requestsWaiting: 3 });
-  assert.ok(both.body.includes("Hours emails sent automatically in the last 7 days: 3 (see the Hours emails tab)."));
+  assert.ok(
+    both.body.includes(
+      "Hours emails sent automatically in the last 7 days: 3 (see the Hours emails tab).",
+    ),
+  );
   assert.ok(both.body.includes("Hours requests waiting for staff: 3 (Kiosk admin > Email hours…)"));
   assert.ok(
     both.body.indexOf("Flags still unreviewed: 0") <
@@ -726,7 +748,10 @@ test("the flags email's hours lines: at 3 each, none at 0, missing reads as 0", 
   assert.ok(both.htmlBody.includes("Hours requests waiting for staff: 3"));
   // Either alone is news, with the hours subject.
   assert.equal(flagsMsg({ autoSent: 1 }).subject, "Volunteer kiosk: hours requests this week");
-  assert.equal(flagsMsg({ requestsWaiting: 2 }).subject, "Volunteer kiosk: hours requests this week");
+  assert.equal(
+    flagsMsg({ requestsWaiting: 2 }).subject,
+    "Volunteer kiosk: hours requests this week",
+  );
   assert.equal(flagsMsg({ autoSent: 1 }).body.includes("waiting for staff"), false);
   // With flag news too, the subject doesn't change.
   const withFlags = L.flagsEmailMessage({
@@ -737,8 +762,11 @@ test("the flags email's hours lines: at 3 each, none at 0, missing reads as 0", 
   });
   assert.equal(withFlags.subject, "Volunteer kiosk: 0 new flags this week, 2 unreviewed");
   assert.equal(
-    L.flagsEmailMessage({ summary: { recent: [], unreviewed: 2 }, autoClockOut: fresh, flagsUrl: "u" })
-      .body.includes("Hours"),
+    L.flagsEmailMessage({
+      summary: { recent: [], unreviewed: 2 },
+      autoClockOut: fresh,
+      flagsUrl: "u",
+    }).body.includes("Hours"),
     false,
   );
 });
@@ -772,4 +800,95 @@ test("the waiting count by mode feeds the line", () => {
   );
   assert.equal(L.hoursRequestShortDate("2026-11-20"), "Nov 20");
   assert.equal(L.hoursRequestShortDate("2026-01-02"), "Jan 2");
+});
+
+// ---------------------------------------------------------------------------
+// The job's run: its queue, its record step and its last-run text
+
+test("a run's queue: waiting requests oldest first, unreadable last, and sends that stopped part way", () => {
+  const now = 1_800_000_000_000;
+  const r = (row, status, requestedMs, doneAtMs = NaN) => ({
+    row,
+    status,
+    requestedMs,
+    doneAtMs,
+    id: "v" + row,
+  });
+  const q = L.hoursRequestQueue(
+    [
+      r(2, "waiting", now - 1000),
+      r(3, "waiting", NaN),
+      r(4, "waiting", now - 5000),
+      r(5, "sending", now - 2 * HOUR, now - 31 * MINUTE),
+      r(6, "sending", now - 2 * HOUR, now - 29 * MINUTE),
+      r(7, "held", now - 9000),
+      r(8, "waiting", now - 5000),
+    ],
+    now,
+  );
+  assert.deepEqual(
+    q.waiting.map((x) => x.row),
+    [4, 8, 2, 3],
+  );
+  assert.deepEqual(
+    q.stale.map((x) => x.row),
+    [5],
+  );
+});
+
+test("the record step's changes for each outcome of a send", () => {
+  const at = 1_800_000_000_000;
+  assert.deepEqual(plain(L.hoursRequestRecordChanges("sent", "", 3, at)), {
+    request: { Status: "sent", Reason: "3 shifts left out for review", "Done at": at },
+    result: "sent",
+  });
+  assert.deepEqual(plain(L.hoursRequestRecordChanges("sent", "", 0, at)).request.Reason, "");
+  assert.deepEqual(plain(L.hoursRequestRecordChanges("failed", "Bad to: a@b.org", 0, at)), {
+    request: { Status: "held", Reason: "The send failed: Bad to: [address]", "Done at": at },
+    result: "failed: Bad to: a@b.org",
+  });
+  const back = { Status: "waiting", Reason: "", "Done at": "", "Done by": "", "Send ID": "" };
+  assert.deepEqual(plain(L.hoursRequestRecordChanges("late", "", 0, at)), {
+    request: back,
+    result: "not sent: the run ran out of time",
+  });
+  assert.equal(
+    L.hoursRequestRecordChanges("quota", "", 0, at).result,
+    "not sent: Google's daily email limit is down to the reserve kept for staff",
+  );
+  assert.equal(
+    L.hoursRequestRecordChanges("not-sent", "Quota read failed", 0, at).result,
+    "not sent: Quota read failed",
+  );
+  // Only failed and not sent rows stop counting toward the limits.
+  for (const outcome of ["late", "quota", "not-sent", "failed"]) {
+    const row = { by: "auto", result: L.hoursRequestRecordChanges(outcome, "x", 0, at).result };
+    assert.equal(L.isCountedAutoSend(row), false, outcome);
+  }
+  for (const result of ["sent", "sending", L.hoursRequestResults().stopped]) {
+    assert.equal(L.isCountedAutoSend({ by: "auto", result }), true, result);
+  }
+});
+
+test("the last-run text and log line hold counts and Volunteer IDs, never names or addresses", () => {
+  const counts = {
+    sent: 2,
+    held: 1,
+    waiting: 3,
+    checkedIn: 1,
+    quota: 0,
+    answered: 1,
+    recovered: 0,
+    holds: [{ id: "abc123", code: "no-email" }],
+    notRecorded: false,
+  };
+  assert.equal(L.hoursRequestRunText(counts), "sent 2, held 1, still waiting 3");
+  assert.equal(
+    L.hoursRequestRunLog(counts),
+    "Hours requests: sent 2, held 1, still waiting 3 (checked in 1, quota 0); answered by an earlier send 1; held abc123 no-email.",
+  );
+  assert.equal(L.hoursRequestJobHandler(), "runHoursRequests");
+  assert.equal(L.hoursRequestJobMinutes(), 15);
+  assert.equal(L.hoursRequestSendBudgetMs(), 4 * MINUTE);
+  assert.equal(L.hoursRequestRecordByMs(), 5 * MINUTE);
 });

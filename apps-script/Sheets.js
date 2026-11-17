@@ -1643,9 +1643,9 @@ function kindValue_(kind, value) {
 }
 
 /**
- * The Hours emails tab's rows as [{id, result, ms, date, by, sendId}] for the Last emailed
- * line, the hours request job's limits and its answered-already check,
- * or null when there is no tab. Sent at is read as a time (ms NaN when it can't be) and
+ * The Hours emails tab's rows as [{row, id, result, ms, date, by, sendId}] for the Last
+ * emailed line, the hours request job's limits, its answered-already check and its record
+ * step (row is the sheet row), or null when there is no tab. Sent at is read as a time (ms NaN when it can't be) and
  * date is its Central yyyy-MM-dd, or the cell's text when it isn't a time. Throws when
  * row 1 lacks a header.
  */
@@ -1660,9 +1660,10 @@ function readHoursEmailSends_() {
   return sheet
     .getRange(2, 1, last - 1, header.length)
     .getValues()
-    .map((cells) => {
+    .map((cells, i) => {
       const t = cellTime_(cells[cols["Sent at"]]);
       return {
+        row: i + 2,
         id: cellText_(cells[cols["Volunteer ID"]]),
         result: cellText_(cells[cols.Result]),
         ms: t.ms,

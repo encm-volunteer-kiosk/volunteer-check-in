@@ -538,7 +538,7 @@ function server(opts = {}) {
           if (faults.insertRace && faults.insertRace(name)) {
             sheets[name] = new FakeSheet([]);
             register(name, sheets[name]);
-            throw new Error("A sheet with the name \"" + name + "\" already exists.");
+            throw new Error('A sheet with the name "' + name + '" already exists.');
           }
           assert.ok(!sheets[name], "a second tab named " + name);
           journal.push("write " + name + " insertSheet");
@@ -661,9 +661,21 @@ const declared = GUARDED_FILES.flatMap(([, source]) =>
 const PUBLIC = declared.filter((name) => !name.endsWith("_"));
 const isOpener = (name) => /^open\w*Dialog$/.test(name);
 // Run by hand from the editor, guarded like setupSheets: no dialog, so no key.
-const EDITOR_ONLY = ["setupReports", "setupDailyJobs", "removeDailyJobs"];
+const EDITOR_ONLY = [
+  "setupReports",
+  "setupDailyJobs",
+  "removeDailyJobs",
+  "setupHoursRequestJob",
+  "removeHoursRequestJob",
+];
 // Run by a trigger: the trigger's id stands in for the key.
-const TRIGGER_ONLY = ["runFlagsEmail", "runAutoClockOut", "runHoursRefresh", "runHoursSort"];
+const TRIGGER_ONLY = [
+  "runFlagsEmail",
+  "runAutoClockOut",
+  "runHoursRefresh",
+  "runHoursSort",
+  "runHoursRequests",
+];
 // An edit trigger runs as its installer for every editor's edit, so the active user
 // is the editor, not the installer: its trigger id is its only check.
 const EDIT_TRIGGER = ["runHoursSort"];
@@ -870,15 +882,21 @@ test("Jobs.js's public functions are the editor-run setup, the trigger handlers 
   assert.deepEqual(jobsPublic.sort(), [
     "checkLogNow",
     "removeDailyJobs",
+    "removeHoursRequestJob",
     "runAutoClockOut",
     "runFlagsEmail",
     "runHoursRefresh",
+    "runHoursRequests",
     "setupDailyJobs",
+    "setupHoursRequestJob",
   ]);
-  // Every daily job's handler is a trigger-only public function.
+  // Every daily job's handler is a trigger-only public function, and so is the hours
+  // request job's, which isn't a daily job.
   const { ctx } = server();
   for (const job of plain(ctx.dailyJobs()))
     assert.ok(TRIGGER_ONLY.includes(job.handler), job.handler);
+  assert.ok(TRIGGER_ONLY.includes(ctx.hoursRequestJobHandler()));
+  assert.ok(!plain(ctx.dailyJobs()).some((job) => job.handler === ctx.hoursRequestJobHandler()));
   // The one other is a menu item that opens no dialog.
   assert.ok(MENU_RUN.includes("checkLogNow"));
 });
@@ -2049,9 +2067,18 @@ test("apiRequestHours makes the tab before the lock and touches no other tab", (
   const touched = new Set(
     s.journal
       .filter((j) => /^(read|write) /.test(j))
-      .map((j) => j.replace(/^(read|write) /, "").split(" getSheetByName")[0].split(" ")[0]),
+      .map(
+        (j) =>
+          j
+            .replace(/^(read|write) /, "")
+            .split(" getSheetByName")[0]
+            .split(" ")[0],
+      ),
   );
-  assert.deepEqual([...touched].filter((t) => t !== "Hours" && t !== "Settings"), []);
+  assert.deepEqual(
+    [...touched].filter((t) => t !== "Hours" && t !== "Settings"),
+    [],
+  );
 });
 
 test("apiRequestHours refuses who the check-in rule refuses, with no Flags row and no tab", () => {
@@ -5169,6 +5196,7 @@ const LOG_WRITE_CLASSES = {
   hoursRequestSheet_: { class: "tab", tab: "hoursRequestTab()" },
   // The two writers below are handed a sheet: only the Hours emails tab (from
   // hoursEmailSheet_) or the Hours requests tab (from hoursRequestSheet_), never the Log.
+  // The hours request job (Jobs.js) writes cells of both through writeRowCells_.
   appendKindRows_: { class: "tab", tab: "hoursRequestTab()", in: "hoursRequestSheet_" },
   writeRowCells_: { class: "tab", tab: "hoursRequestTab()", in: "hoursRequestSheet_" },
   setupHowTo_: { class: "tab", tab: "howToTabName()" },
@@ -5216,6 +5244,7 @@ const LOG_WRITE_CLASSES = {
   flagsSummary: { class: "array", why: SORTS_AN_ARRAY },
   importSummary: { class: "array", why: SORTS_AN_ARRAY },
   autoClockOutRows: { class: "array", why: SORTS_AN_ARRAY },
+  hoursRequestQueue: { class: "array", why: SORTS_AN_ARRAY },
   usualLength: { class: "array", why: SORTS_AN_ARRAY },
 };
 
