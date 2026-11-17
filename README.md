@@ -2138,7 +2138,10 @@ Prevent Cross-Site Tracking on or off doesn't change this (seen on an iPad with 
 code" row on the Settings tab of the Check-In Log.
 
 1. In Safari, use a normal tab, not a Private Browsing tab. Keep one tab open.
-2. Open the kiosk link and type the access code once.
+2. Open the kiosk link and type the access code once. The names load from the server
+   then, which can take several seconds; until they arrive a search shows "Loading
+   volunteers…". If no answer has come after 15 seconds the kiosk asks again, and uses
+   whichever answer arrives first.
 3. Turn on Guided Access, which keeps Safari on screen so nobody closes it by accident.
    These steps are taken from Apple's Guided Access page and have not yet been tried on
    the kiosk iPad; menu names can differ on older iPadOS.

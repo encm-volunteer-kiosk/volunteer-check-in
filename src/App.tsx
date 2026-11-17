@@ -26,7 +26,7 @@ import {
   listStateAfterFailure,
   noListExtras,
   readStoredList,
-  retriesList,
+  listRetryMs,
   storeList,
   wakeRefreshDue,
   type ListExtras,
@@ -125,7 +125,6 @@ type Result = SaveOwner & {
 type PhoneStep = "entry" | "missing" | null;
 const TZ = "America/Chicago";
 const ACCESS_CODE_KEY = "encm-kiosk-access-code";
-const LIST_RETRY_MS = 30_000;
 // The header clock reads the time this often, so it is never more than this behind the iPad's.
 const CLOCK_TICK_MS = 5_000;
 
@@ -506,6 +505,7 @@ function Welcome({
                 (listState === "loading" ? (
                   <div className="no-name">
                     <strong>Loading volunteers…</strong>
+                    <span>This can take a few seconds.</span>
                   </div>
                 ) : (
                   <div className="no-name">
@@ -1932,8 +1932,9 @@ export default function App() {
   }, [code]);
 
   useEffect(() => {
-    if (!code || !retriesList(listState)) return;
-    const timer = window.setInterval(refreshList, LIST_RETRY_MS);
+    const every = listRetryMs(listState);
+    if (!code || every === null) return;
+    const timer = window.setInterval(refreshList, every);
     return () => clearInterval(timer);
   }, [code, listState]);
 

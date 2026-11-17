@@ -11,7 +11,7 @@ import {
   LIST_STORE_VERSION,
   listStateAfterFailure,
   readStoredList,
-  retriesList,
+  listRetryMs,
   storeList,
   WAKE_REFRESH_MIN_MS,
   wakeRefreshDue,
@@ -267,15 +267,15 @@ test("a stored entry holds names, hashed id, the checked-in flag and arrival, an
   assert.doesNotMatch(storage.items.get(LIST_STORE_KEY), /6155550142|0142|example\.org/);
 });
 
-test("a kept list stays on a failed refresh and is retried every 30 s until a refresh lands", () => {
+test("a kept list stays on a failed refresh and is retried every 30 s until a refresh lands; a list still loading is asked for again every 15 s", () => {
   assert.equal(listStateAfterFailure("stored"), "stored");
   assert.equal(listStateAfterFailure("ready"), "ready");
   assert.equal(listStateAfterFailure("loading"), "failed");
   assert.equal(listStateAfterFailure("failed"), "failed");
-  assert.equal(retriesList("stored"), true);
-  assert.equal(retriesList("failed"), true);
-  assert.equal(retriesList("ready"), false);
-  assert.equal(retriesList("loading"), false);
+  assert.equal(listRetryMs("stored"), 30_000);
+  assert.equal(listRetryMs("failed"), 30_000);
+  assert.equal(listRetryMs("ready"), null);
+  assert.equal(listRetryMs("loading"), 15_000);
 });
 
 test("coming back into view refreshes the list the first time", () => {
