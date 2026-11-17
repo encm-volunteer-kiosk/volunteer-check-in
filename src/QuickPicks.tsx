@@ -21,14 +21,16 @@ const HOLD_REPEAT_MS = 170;
 const CLOCK_TICK_MS = 15_000;
 
 /**
- * The time picker behind the change-time link: quick answers ("Now", "15 min ago", ...) and
- * 15-minute nudges, docked at the bottom of the screen. Every value it sends through
- * onChange is a quarter hour from minMinutes (rounded up) to now (rounded down), Central,
- * as "HH:mm"; see src/quickPicks.ts.
+ * The time picker behind the change-time links and the check-out screen's Change: quick
+ * answers ("Now", "15 min ago", ...) and 15-minute nudges, docked at the bottom of the
+ * screen. Every value it sends through onChange is a quarter hour from minMinutes (rounded
+ * up) to now, or to maxMinutes when that is earlier (rounded down), Central, as "HH:mm"; quick
+ * answers count back from now. See src/quickPicks.ts.
  */
 export function QuickPicks({
   value,
   minMinutes = 0,
+  maxMinutes,
   label,
   confirmText,
   saving,
@@ -40,6 +42,9 @@ export function QuickPicks({
   // The earliest time that can be chosen, in Central minutes since midnight (fractions
   // allowed): 0 for arrival, the stated arrival for check-out.
   minMinutes?: number;
+  // The latest time that can be chosen, when it is before now: Check-In Recorded for a
+  // Change of arrival. Undefined for none.
+  maxMinutes?: number;
   label: string;
   confirmText: string;
   saving: boolean;
@@ -53,7 +58,7 @@ export function QuickPicks({
     return () => window.clearInterval(timer);
   }, []);
 
-  const range = quickRange(minMinutes, centralMinutes());
+  const range = quickRange(minMinutes, centralMinutes(), maxMinutes);
   const minutes = fromTimeValue(value);
   const answers = quickAnswers(range);
 
@@ -63,8 +68,10 @@ export function QuickPicks({
   valueRef.current = minutes;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
-  const minRef = useRef(minMinutes);
-  minRef.current = minMinutes;
+  const boundsRef = useRef({ minMinutes, maxMinutes });
+  boundsRef.current = { minMinutes, maxMinutes };
+  const rangeNow = () =>
+    quickRange(boundsRef.current.minMinutes, centralMinutes(), boundsRef.current.maxMinutes);
 
   // The range is read from the clock at the moment of each tap.
   const send = (next: number) => {
@@ -72,11 +79,11 @@ export function QuickPicks({
     onChangeRef.current(toTimeValue(next));
   };
   const pick = (shown: number, ago: number) => {
-    const next = pickMinutes(shown, ago, quickRange(minRef.current, centralMinutes()));
+    const next = pickMinutes(shown, ago, rangeNow());
     if (next !== null) send(next);
   };
   const step = (delta: number) => {
-    const next = nudge(valueRef.current, delta, quickRange(minRef.current, centralMinutes()));
+    const next = nudge(valueRef.current, delta, rangeNow());
     if (next === null) return false;
     send(next);
     return true;
@@ -94,7 +101,7 @@ export function QuickPicks({
               className={`quick-pick${chosen ? " is-selected" : ""}`}
               aria-pressed={chosen}
               disabled={saving}
-              onClick={() => pick(answer.minutes, range.latest - answer.minutes)}
+              onClick={() => pick(answer.minutes, range.clock - answer.minutes)}
             >
               <strong>{answer.label}</strong>
               <small>{clockText(answer.minutes)}</small>
