@@ -16,7 +16,11 @@ export type Screen =
   | "success-in"
   | "success-out"
   | "status"
-  | "unconfirmed";
+  | "unconfirmed"
+  // The Request my hours path from the welcome screen's link: its name search, then the
+  // phone step or the confirm screen. Neither checks anyone in or out.
+  | "hours"
+  | "hours-confirm";
 
 export type SaveKind = "in" | "out";
 // The screen a refusal or failure returns to.
@@ -99,11 +103,15 @@ export const watchdogDue = (elapsedMs: number) => elapsedMs >= WATCHDOG_MS;
 /** Milliseconds from elapsedMs until mark, never negative. */
 export const msUntil = (mark: number, elapsedMs: number) => Math.max(0, mark - elapsedMs);
 
-/** What a screen renders from: the tapped volunteer, the result state, or the pending save. */
+/**
+ * What a screen renders from: the tapped volunteer, the result state, or the pending save.
+ * The hours screens render from nothing of these: the confirm screen keeps its own copy of
+ * the volunteer.
+ */
 export function rendersFrom(screen: Screen): "selected" | "result" | "save" | "nothing" {
   if (screen === "confirm" || screen === "checkout") return "selected";
   if (screen === "saving") return "save";
-  if (screen === "welcome") return "nothing";
+  if (screen === "welcome" || screen === "hours" || screen === "hours-confirm") return "nothing";
   return "result";
 }
 

@@ -1,54 +1,48 @@
-// The "Email me my hours" button on the check-in and check-out screens: when it shows, and
-// what the screen says after a tap. Every place the page decides about the button goes
-// through these functions.
+// Request my hours: the welcome screen's link, and what its confirm screen says after Send.
+// Every place the page decides about a request goes through these functions.
 //
-// The tap only records a request (apiRequestHours, Api.js); an email goes later, sent by
+// The request starts at the welcome screen's Request my hours link, which opens a name
+// search; a tap on a name opens the phone step (a name two volunteers share) or the confirm
+// screen. Send only records a request (apiRequestHours, Api.js); an email goes later, sent by
 // staff from Email hours or by the hours request job. The request is its own call, outside
-// the save queue: it isn't queued or retried offline, and Check In or Check Out doesn't wait
-// for it. The screen never shows an email address or says whether the volunteer has one,
+// the save queue: it isn't queued or retried offline. Nothing on that path checks anyone in
+// or out. The screens never show an email address or say whether the volunteer has one,
 // whether they asked before, or whether a person or the job will send it.
 //
 // Plain TypeScript only (no enums, namespaces or parameter properties): the tests import
 // this file in Node, which strips the types without a loader.
 
 import type { Refusal } from "./api";
-import type { Volunteer } from "./data";
-import { digitsMissing } from "./sameName.ts";
 
 /** How long the tablet waits for the server's answer before it says to try again. */
 export const HOURS_REQUEST_TIMEOUT_MS = 30_000;
 
-export type HoursRequestScreen = {
-  // The list's hoursRequests: Settings "Hours requests" is Approve or Auto.
-  hoursRequests: boolean;
-  // The phone step on screen, or null.
-  phoneStep: string | null;
-  // The time picker is open.
-  picker: boolean;
-  // A check-in or check-out is being saved.
-  saving: boolean;
-  volunteer: Volunteer;
-  digitsAsked: boolean;
-  digits: string;
-};
+/**
+ * Whether the welcome screen shows the Request my hours link: only when the list said
+ * requests are on (Settings "Hours requests" is Approve or Auto). The kept list doesn't hold
+ * the flag, so after a reload the link stays hidden until a fresh list arrives.
+ */
+export const showsHoursLink = (hoursRequests: boolean) => hoursRequests === true;
+
+/** The confirm screen's sentence, before Send and while it waits. */
+export const hoursConfirmText = "We'll email your hours to the address we have on file.";
 
 /**
- * Whether the screen offers the button: requests are on, no phone step, picker or save is on
- * screen, and a volunteer who shares a name has typed their four digits. A check-out screen
- * that didn't ask a shared name for digits hides it, so the server always knows who asked by
- * the check-in rule; that volunteer can ask at their next check-in.
+ * Whether an answer brings the phone step back, with its message: the server wants digits
+ * (the name is now shared) or the digits didn't match.
  */
-export function showsHoursRequest(s: HoursRequestScreen): boolean {
-  if (!s.hoursRequests || s.phoneStep !== null || s.picker || s.saving) return false;
-  if (digitsMissing(s.digitsAsked, s.digits)) return false;
-  return !s.volunteer.needsPhoneCheck || s.digits.length === 4;
+export function hoursPhoneStepAfter(reply: true | Refusal | "failed"): boolean {
+  return (
+    typeof reply === "object" &&
+    (reply.refusal === "PHONE_NEEDED" || reply.refusal === "PHONE_WRONG")
+  );
 }
 
-/** The button's state on the open screen. */
+/** The confirm screen's state. */
 export type HoursRequestState =
   | { kind: "ready" }
   | { kind: "sending" }
-  // A line in the button's place; again: the button comes back under it.
+  // A line in the sentence's place; again: Send and Go back come back under it, else Done.
   | { kind: "line"; text: string; again: boolean };
 
 export const hoursRequestReady: HoursRequestState = { kind: "ready" };
@@ -59,7 +53,7 @@ export const hoursRequestsOffText =
   "Emailing hours from the kiosk is turned off right now. Please ask a board member.";
 export const hoursRequestFailedText = "That didn't go through. Please try again.";
 
-// Refusals whose own message the screen shows, with the button back.
+// Refusals whose own message the screen shows, with Send back.
 const shownRefusals = ["PHONE_NEEDED", "PHONE_WRONG", "PHONE_MISSING", "NOT_FOUND"];
 
 /**

@@ -250,9 +250,14 @@ test("the logo and date sit under the card, not in the panel", () => {
   assert.equal(scoped(rowSelector, "width"), "min(720px, 100%)");
   assert.equal(scoped(`${rowSelector} .logo`, "width"), "180px");
 
-  // It sits where the page puts it: no rule places or moves it, except the slide.
+  // It sits where the page puts it: no rule places or moves it, except the slide and the
+  // hours search's fixed place.
   for (const rule of rules) {
-    if (!rule.selector.includes(".welcome-header") || rule.selector.includes("search-open"))
+    if (
+      !rule.selector.includes(".welcome-header") ||
+      rule.selector.includes("search-open") ||
+      rule.selector.includes("hours-search")
+    )
       continue;
     for (const prop of ["position", "top", "transform"])
       assert.equal(rule.decls[prop], undefined, `${rule.selector} sets ${prop}`);
@@ -358,8 +363,32 @@ test("only a click, a typed change and blur on the name box reach the panel", ()
   assert.equal(welcome.match(/onSearchOpen\(/g).length, 1);
   assert.match(welcome, /searchOpenAfter\(searchOpen\.current, event\)/);
   assert.match(welcome, /useEffect\(\(\) => \(\) => reportSearch\("unmount"\), \[\]\)/);
-  // The app renders the class from its state.
-  assert.match(app, /\$\{searchOpen \? " search-open" : ""\}/);
+  // The app renders the class from its state, on the welcome screen only.
+  assert.match(app, /\$\{searchOpen && screen === "welcome" \? " search-open" : ""\}/);
+});
+
+test("the hours search keeps one landscape place: the card where it sits with the panel aside", () => {
+  const card = `${SHELL}.hours-search .name-search-card`;
+  const row = `${SHELL}.hours-search .welcome-header`;
+  const hours = rules.filter((r) => r.selector.includes("hours-search"));
+  assert.equal(hours.length, 1);
+  assert.equal(hours[0].media[0], SCOPE, "in the landscape block");
+  assert.deepEqual(Object.keys(hours[0].decls), ["transform"], "it only places the card and row");
+  assert.equal(
+    scoped(card, "transform"),
+    scoped(`${SHELL}.search-open .name-search-card`, "transform"),
+  );
+  assert.equal(scoped(row, "transform"), scoped(card, "transform"));
+  // The class comes from the screen alone, never from focus or typing; it keeps the welcome
+  // screen's layout, and the panel isn't rendered there.
+  assert.match(app, /const shellScreen = screen === "hours" \? "welcome hours-search" : screen;/);
+  const hoursScreen = app.slice(
+    app.indexOf('{code && screen === "hours" && ('),
+    app.indexOf('{code && screen === "hours-confirm"'),
+  );
+  assert.ok(!hoursScreen.includes("CheckedInSidebar"));
+  assert.match(hoursScreen, /focusOnOpen=\{false\}/);
+  assert.match(hoursScreen, /onSearchOpen=\{\(\) => \{\}\}/);
 });
 
 test("tapping Clear keeps focus in the name box", () => {
@@ -373,14 +402,16 @@ test("a tap that goes home leaves the name box unfocused; load and timers still 
   // Focus given during a tap raises the tablet's keyboard, and focus alone keeps the panel in
   // place, so the box focuses itself only when no tap brought the welcome screen up.
   const input = app.indexOf("<input\n            ref={searchRef}");
-  assert.match(app.slice(input, input + 120), /autoFocus=\{focusOnOpen\}/);
+  // The hours search never focuses its box by itself.
+  assert.match(app.slice(input, input + 120), /autoFocus=\{focusOnOpen && !hours\}/);
   assert.match(app, /focusOnOpen=\{focusNameBox\}/);
   assert.match(app, /useState\(true\);\n  const \[screen, setScreen\]/);
   assert.match(app, /const goHome = \(byTap = false\) => \{\n    setFocusNameBox\(!byTap\);/);
   assert.match(app, /const tapHome = \(\) => goHome\(true\);/);
   // Every button home is a tap; none hands goHome its click event.
   assert.doesNotMatch(app, /=\{goHome\}/);
-  assert.equal(app.match(/onBack=\{tapHome\}/g).length, 2);
+  assert.equal(app.match(/onBack=\{tapHome\}/g).length, 3);
+  assert.equal(app.match(/onBack: tapHome/g).length, 1, "the hours search's Back");
   assert.equal(app.match(/onDone=\{tapHome\}/g).length, 4);
   // The timers go home as no tap, and pass setTimeout no function that takes the flag.
   assert.equal(app.match(/window\.setTimeout\(\(\) => goHome\(\), ms\)/g).length, 2);
@@ -452,8 +483,9 @@ test("the phone card changes only with focus, only in landscape, and only on the
       }
     }
   }
-  assert.match(app, /\$\{phoneStep === "entry" \? " phone-check" : ""\}/);
-  assert.equal(app.match(/phone-check/g).length, 1);
+  // The check-in and check-out screens, and the hours confirm screen.
+  assert.equal(app.match(/\$\{phoneStep === "entry" \? " phone-check" : ""\}/g).length, 2);
+  assert.equal(app.match(/phone-check/g).length, 2);
 });
 
 test("the phone box asks for a code, with the number keyboard", () => {

@@ -1,7 +1,8 @@
-// Tests for the Email me my hours button (src/hoursRequestButton.ts, imported as it is; Node
-// strips its types): when the check-in and check-out screens offer it, the line each answer
-// puts in its place, and the wait for an answer. A source check of src/App.tsx ties the page
-// to these functions, and the screen's lines are checked against the server's texts.
+// Tests for Request my hours (src/hoursRequestButton.ts, imported as it is; Node strips its
+// types): when the welcome screen shows the link, what the confirm screen says before and
+// after Send, and the wait for an answer. A source check of src/App.tsx ties the page to
+// these functions, keeps the path from the link away from every check-in and check-out, and
+// keeps the old button off the check-in and check-out screens.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -13,8 +14,10 @@ import {
   hoursRequestFailedText,
   hoursRequestRecordedText,
   hoursRequestsOffText,
+  hoursConfirmText,
+  hoursPhoneStepAfter,
   settleWithin,
-  showsHoursRequest,
+  showsHoursLink,
 } from "../src/hoursRequestButton.ts";
 
 const root = new URL("../", import.meta.url);
@@ -24,66 +27,29 @@ const L = {};
 vm.runInNewContext(read("apps-script/Logic.js"), L);
 const serverText = L.refusalMessages();
 
-const volunteer = (extra = {}) => ({
-  id: "h-ana",
-  firstName: "Ana",
-  lastName: "Lopez",
-  currentCheckIn: null,
-  checkedIn: false,
-  active: true,
-  expectedToday: false,
-  completedShiftCount: 0,
-  totalVolunteerMinutes: 0,
-  needsPhoneCheck: false,
-  ...extra,
-});
-
-/** A screen with the button showing; extra changes one thing. */
-const screen = (extra = {}) => ({
-  hoursRequests: true,
-  phoneStep: null,
-  picker: false,
-  saving: false,
-  volunteer: volunteer(),
-  digitsAsked: false,
-  digits: "",
-  ...extra,
-});
-
 // ---------------------------------------------------------------------------
-// When the button shows
+// The link and the confirm screen
 
-test("the button shows with requests on, and no phone step, picker or save on screen", () => {
-  assert.equal(showsHoursRequest(screen()), true);
-  assert.equal(showsHoursRequest(screen({ hoursRequests: false })), false, "requests off");
-  assert.equal(showsHoursRequest(screen({ phoneStep: "entry" })), false, "phone step");
-  assert.equal(showsHoursRequest(screen({ phoneStep: "missing" })), false, "no phone on record");
-  assert.equal(showsHoursRequest(screen({ picker: true })), false, "time picker open");
-  assert.equal(showsHoursRequest(screen({ saving: true })), false, "a save running");
+test("the link shows only when the list said requests are on", () => {
+  assert.equal(showsHoursLink(true), true);
+  assert.equal(showsHoursLink(false), false);
+  assert.equal(showsHoursLink(undefined), false);
 });
 
-test("a shared name sees the button only once the screen holds its four digits", () => {
-  const shared = volunteer({ needsPhoneCheck: true });
-  // Check-in: digits asked, then typed and the phone step closed.
-  assert.equal(
-    showsHoursRequest(screen({ volunteer: shared, digitsAsked: true, digits: "0142" })),
-    true,
-  );
-  assert.equal(
-    showsHoursRequest(screen({ volunteer: shared, digitsAsked: true, digits: "014" })),
-    false,
-  );
-  // A check-out screen that didn't ask for digits: hidden.
-  assert.equal(
-    showsHoursRequest(screen({ volunteer: shared, digitsAsked: false, digits: "" })),
-    false,
-  );
+test("the confirm screen's sentence, word for word", () => {
+  assert.equal(hoursConfirmText, "We'll email your hours to the address we have on file.");
+  assert.doesNotMatch(hoursConfirmText, /@/);
 });
 
-test("digits a phone refusal asked for must be typed before the button shows", () => {
-  // The list said the name wasn't shared, but a refusal since asked for digits.
-  assert.equal(showsHoursRequest(screen({ digitsAsked: true, digits: "" })), false);
-  assert.equal(showsHoursRequest(screen({ digitsAsked: true, digits: "0142" })), true);
+test("PHONE_NEEDED and PHONE_WRONG bring the phone step back; nothing else does", () => {
+  for (const code of ["PHONE_NEEDED", "PHONE_WRONG"]) {
+    assert.equal(hoursPhoneStepAfter({ refusal: code, message: serverText[code] }), true, code);
+  }
+  for (const code of ["PHONE_MISSING", "NOT_FOUND", "BUSY", "ACCESS", "HOURS_REQUESTS_OFF"]) {
+    assert.equal(hoursPhoneStepAfter({ refusal: code, message: serverText[code] }), false, code);
+  }
+  assert.equal(hoursPhoneStepAfter(true), false);
+  assert.equal(hoursPhoneStepAfter("failed"), false);
 });
 
 // ---------------------------------------------------------------------------
@@ -98,7 +64,7 @@ test("a recorded request and one already open read the same, with the first name
   assert.equal(hoursRequestRecordedText("Ana"), afterHoursRequest(true, "Ana").text);
 });
 
-test("requests turned off: the server's line, and the button doesn't come back", () => {
+test("requests turned off: the server's line, and Done in place of Send", () => {
   const reply = { refusal: "HOURS_REQUESTS_OFF", message: serverText.HOURS_REQUESTS_OFF };
   assert.deepEqual(afterHoursRequest(reply, "Ana"), {
     kind: "line",
@@ -108,7 +74,7 @@ test("requests turned off: the server's line, and the button doesn't come back",
   assert.equal(hoursRequestsOffText, serverText.HOURS_REQUESTS_OFF);
 });
 
-test("a phone or not-found refusal shows its own message, and the button comes back", () => {
+test("a phone or not-found refusal shows its own message, and Send comes back", () => {
   for (const code of ["PHONE_NEEDED", "PHONE_WRONG", "PHONE_MISSING", "NOT_FOUND"]) {
     const reply = { refusal: code, message: serverText[code] };
     assert.deepEqual(
@@ -123,7 +89,7 @@ test("a phone or not-found refusal shows its own message, and the button comes b
   }
 });
 
-test("busy, a failed call, a timeout or an unknown refusal: try again, the button back", () => {
+test("busy, a failed call, a timeout or an unknown refusal: try again, with Send back", () => {
   const expected = {
     kind: "line",
     text: "That didn't go through. Please try again.",
@@ -177,54 +143,104 @@ function slice(source, start, end) {
 
 const count = (source, text) => source.split(text).length - 1;
 
-test("App.tsx: Confirmation decides the button with showsHoursRequest and its own screen state", () => {
-  const confirmation = slice(app, "function Confirmation(", "\nfunction ");
-  const call = slice(confirmation, "showsHoursRequest({", "});");
-  for (const field of [
-    "hoursRequests",
-    "phoneStep",
-    "picker",
-    "saving",
-    "volunteer",
-    "digitsAsked",
-    "digits: phoneDigits",
-  ]) {
-    assert.ok(call.includes(field), field);
+test("App.tsx: the check-in and check-out screens have no hours button, and no thank-you screen mentions it", () => {
+  const confirmation = slice(app, "function Confirmation(", "\n}\n");
+  const success = slice(app, "function Success(", "\n}\n");
+  for (const [name, body] of Object.entries({ confirmation, success })) {
+    assert.doesNotMatch(body, /hours|requestHours|HoursRequest/i, name);
   }
-  assert.ok(confirmation.includes("{offersHours && <HoursRequestButton"));
-  assert.equal(count(app, "showsHoursRequest("), 1, "one place decides");
+  assert.ok(!app.includes("function HoursRequestButton("));
+  assert.ok(!app.includes("Email me my hours"));
+  assert.ok(!app.includes("showsHoursRequest"));
+  const screens = app.slice(app.indexOf("export default function App()"));
+  const confirm = slice(screens, '{code && screen === "confirm" && selected && (', "\n      )}");
+  const checkout = slice(screens, '{code && screen === "checkout" && selected && (', "\n      )}");
+  for (const body of [confirm, checkout]) assert.doesNotMatch(body, /hours/i);
 });
 
-test("App.tsx: both Confirmation screens get the list's flag and the button's state", () => {
-  const appBody = app.slice(app.indexOf("export default function App()"));
-  assert.equal(count(appBody, "hoursRequests={hoursRequests}"), 2);
-  assert.equal(count(appBody, "hoursRequest={hoursRequest}"), 2);
-  assert.equal(count(appBody, "onRequestHours={requestHours}"), 2);
+test("App.tsx: the welcome screen shows the link by showsHoursLink, and only there", () => {
+  assert.equal(count(app, "showsHoursLink("), 1);
+  assert.ok(app.includes("onRequestHours={showsHoursLink(hoursRequests) ? openHours : undefined}"));
+  const welcomeScreen = slice(app, '{code && screen === "welcome" && (', "\n      )}");
+  assert.ok(welcomeScreen.includes("onRequestHours="));
+  const hoursScreen = slice(app, '{code && screen === "hours" && (', "\n      )}");
+  assert.ok(!hoursScreen.includes("onRequestHours"), "no link inside the hours search");
+});
+
+test("App.tsx: nothing on the hours path reaches a check-in or check-out", () => {
+  const forbidden = [
+    "select(",
+    "onSelect={select}",
+    "handleConfirm",
+    "handleCheckout",
+    "instantTap",
+    "beginSave",
+    "changeSaves",
+    "markBeforeSend",
+    "foregroundMark",
+    "kickRunner",
+    "api.checkIn",
+    "api.checkOut",
+    "CheckedInSidebar",
+  ];
+  const hoursScreen = slice(app, '{code && screen === "hours" && (', "\n      )}");
+  const confirmScreen = slice(
+    app,
+    '{code && screen === "hours-confirm" && hoursFor && (',
+    "\n      )}",
+  );
+  const open = slice(app, "const openHours = () => {", "\n  };");
+  const choose = slice(app, "const chooseForHours = (volunteer: Volunteer) => {", "\n  };");
+  const request = slice(app, "async function requestHours()", "\n  }\n");
+  const component = slice(app, "function HoursConfirm(", "\n}\n");
+  assert.ok(hoursScreen.includes("onSelect={chooseForHours}"));
+  assert.ok(confirmScreen.includes("onSend={requestHours}"));
+  assert.ok(choose.includes('setScreen("hours-confirm")'));
+  // The phone step asks by the check-in rule.
+  assert.ok(choose.includes("digitsAskedAtTap(false, volunteer, shown)"));
+  for (const [name, body] of Object.entries({
+    hoursScreen,
+    confirmScreen,
+    open,
+    choose,
+    request,
+    component,
+  })) {
+    for (const text of forbidden) assert.ok(!body.includes(text), `${name}: ${text}`);
+  }
 });
 
 test("App.tsx: a request is its own call through settleWithin and afterHoursRequest, off the save queue", () => {
   const request = slice(app, "async function requestHours()", "\n  }\n");
   assert.ok(
-    request.includes("api.requestHours(code, selected.id, digitsToSend(digitsAsked, phoneDigits))"),
+    request.includes("api.requestHours(code, hoursFor.id, digitsToSend(digitsAsked, phoneDigits))"),
   );
   assert.ok(request.includes("HOURS_REQUEST_TIMEOUT_MS"));
+  assert.ok(request.includes("hoursPhoneStepAfter(reply)"));
   assert.ok(request.includes("afterHoursRequest(reply, firstName)"));
   assert.ok(request.includes("lockKiosk(next.lock)"));
   // A reply is used only while its request is the current one.
   assert.ok(request.includes("if (seq !== hoursRequestSeq.current) return;"));
-  for (const queued of ["beginSave", "changeSaves", "markBeforeSend", "kickRunner", "setScreen"]) {
-    assert.ok(!request.includes(queued), queued);
-  }
 });
 
-test("App.tsx: leaving the screen, choosing a name, or tapping Check In or Out drops a reply", () => {
+test("App.tsx: going home or choosing a name drops a reply", () => {
   const goHome = slice(app, "const goHome = (byTap = false) => {", "\n  };");
-  const select = slice(app, "const select = (volunteer: Volunteer) => {", "\n  };");
-  const confirm = slice(app, "async function handleConfirm()", "\n  }\n");
-  const checkout = slice(app, "async function handleCheckout()", "\n  }\n");
-  for (const [name, body] of Object.entries({ goHome, select, confirm, checkout })) {
+  const choose = slice(app, "const chooseForHours = (volunteer: Volunteer) => {", "\n  };");
+  for (const [name, body] of Object.entries({ goHome, choose })) {
     assert.ok(body.includes("dropHoursRequest()"), name);
   }
+  // The link starts from home: a fresh search, with the old reply dropped.
+  assert.ok(slice(app, "const openHours = () => {", "\n  };").includes("goHome(true)"));
+});
+
+test("App.tsx: the confirm screen says the sentence, Sending… while it waits, then the answer's line", () => {
+  const component = slice(app, "function HoursConfirm(", "\n}\n");
+  assert.ok(component.includes("Your volunteer hours"));
+  assert.ok(component.includes("Hi, {volunteer.firstName}!"));
+  assert.ok(component.includes("hoursConfirmText"));
+  assert.ok(component.includes("Sending…"));
+  assert.ok(component.includes("Done"));
+  assert.ok(component.includes("disabled={sending}"));
 });
 
 test("App.tsx: the flag comes only from a fresh list, never from the kept one", () => {
@@ -234,9 +250,9 @@ test("App.tsx: the flag comes only from a fresh list, never from the kept one", 
   assert.ok(!/keptList\??\.hoursRequests/.test(app));
 });
 
-test("the button's code never reads an email address", () => {
+test("the hours screens' code never reads an email address", () => {
   const button = read("src/hoursRequestButton.ts");
-  const component = slice(app, "function HoursRequestButton(", "\n}\n");
+  const component = slice(app, "function HoursConfirm(", "\n}\n");
   for (const source of [button, component]) {
     assert.doesNotMatch(source, /\.email\b|\bemail\s*:/i);
   }
