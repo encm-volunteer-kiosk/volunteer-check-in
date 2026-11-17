@@ -14,14 +14,17 @@ import {
   afterEnqueue,
   ATTEMPT_MS,
   BACKOFF_MS,
+  CALL_SLOW_MS,
   changeQueue,
   codeMatches,
   dismissFailed,
   dropMark,
   dueSave,
   enqueue,
+  FLOW_MS,
   freshQueue,
   hasMarkSince,
+  LIST_REFRESH_MS,
   LIST_TRUST_MS,
   LOCK_WAIT_MS,
   listTrusted,
@@ -36,6 +39,8 @@ import {
   overlay,
   qualifies,
   qualifyFailure,
+  queueFlowing,
+  REACH_MS,
   readQueue,
   runOnce,
   runnerGate,
@@ -51,6 +56,7 @@ import {
   storeForegroundMark,
   SLOW_SAVE_MS,
   STUCK_MS,
+  savesGoingThrough,
   savingLineShown,
   nextSlowAt,
   stuckSaves,
@@ -169,8 +175,10 @@ const ben = {
 function baseCtx(queue, extra = {}) {
   return {
     hasCode: true,
-    codeKept: true,
+    codeStored: true,
     foregroundPending: false,
+    online: true,
+    calls: { latestReply: T0 - 5_000, latestEnded: null, waiting: [] },
     listState: "ready",
     now: T0,
     listStamp: { epoch: queue.epoch, seq: queue.seq, requestedAt: T0 - MIN },
@@ -199,8 +207,10 @@ test("each rule failing alone sends the tap the waiting way", () => {
   const q = freshQueue("e1");
   const cases = [
     [1, "in", ana, { hasCode: false }],
-    [1, "in", ana, { codeKept: false }],
-    [1, "out", ben, { codeKept: false }],
+    [1, "in", ana, { codeStored: false }],
+    [1, "out", ben, { codeStored: false }],
+    [1, "in", ana, { online: false }],
+    [1, "out", ben, { calls: { latestReply: null, latestEnded: null, waiting: [] } }],
     [1, "in", ana, { foregroundPending: true }],
     [2, "in", ana, { listState: "failed" }],
     [2, "in", ana, { listState: "loading" }],
@@ -240,15 +250,31 @@ test("each rule failing alone sends the tap the waiting way", () => {
   assert.equal(qualifyFailure("out", edge, baseCtx(q)), null);
 });
 
-test("taps are instant only when the access code was in storage when the page started", () => {
+test("rule 1: taps are instant only with a code that reads back from storage and saves going through", () => {
   const q = freshQueue("e1");
-  // The code was read from storage at start: the storage survived a reload.
-  assert.equal(qualifyFailure("in", ana, baseCtx(q, { codeKept: true })), null);
-  assert.equal(qualifyFailure("out", ben, baseCtx(q, { codeKept: true })), null);
-  // The code was typed on this page: every tap waits for the server, as without the queue.
-  assert.equal(qualifyFailure("in", ana, baseCtx(q, { codeKept: false })), 1);
-  assert.equal(qualifyFailure("out", ben, baseCtx(q, { codeKept: false })), 1);
-  assert.equal(qualifies("in", ana, baseCtx(q, { codeKept: false })), false);
+  assert.equal(qualifyFailure("in", ana, baseCtx(q, { codeStored: true })), null);
+  assert.equal(qualifyFailure("out", ben, baseCtx(q, { codeStored: true })), null);
+  // The code didn't read back (storage blocked): every tap waits, as without the queue.
+  assert.equal(qualifyFailure("in", ana, baseCtx(q, { codeStored: false })), 1);
+  assert.equal(qualifyFailure("out", ben, baseCtx(q, { codeStored: false })), 1);
+  assert.equal(qualifies("in", ana, baseCtx(q, { codeStored: false })), false);
+  // Saves not going through, by this page's calls and by the stored queue alone.
+  const hung = { latestReply: T0 - 20_000, latestEnded: null, waiting: [T0 - CALL_SLOW_MS] };
+  assert.equal(qualifyFailure("in", ana, baseCtx(q, { calls: hung })), 1);
+  const stuck = {
+    ...q,
+    saves: [{ ...saveFor("in", ben, T0 - 12_000), sends: 1, lastSendAt: T0 - 11_000 }],
+  };
+  assert.equal(qualifyFailure("in", ana, baseCtx(stuck)), 1);
+  // The old name of the code check is gone from the page and the queue.
+  for (const file of ["src/saveQueue.ts", "src/App.tsx"]) {
+    assert.doesNotMatch(readFileSync(new URL(`../${file}`, import.meta.url), "utf8"), /codeKept/);
+  }
+  // The page passes the code read-back and its call record into the tap context.
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /codeStored: codeStored\.current,/);
+  assert.match(app, /calls: callRecord\(\),/);
+  assert.match(app, /online: navigator\.onLine,/);
 });
 
 test("rule 3: a mark newer than the list, or a new epoch, waits", () => {
@@ -1300,4 +1326,216 @@ test("with storage full a foreground mark is held in memory: the card flips and 
     qualifyFailure("in", ana, baseCtx(r.queue, { listStamp: stamp, heldMarks: held })),
     3,
   );
+});
+
+// ---------------------------------------------------------------------------------------
+// Saves going through
+
+const healthy = { latestReply: T0 - 5_000, latestEnded: null, waiting: [] };
+const empty = freshQueue("e1");
+const stampE1 = { epoch: "e1", seq: 0, requestedAt: T0 - MIN };
+const headed = (fields) => ({ ...empty, saves: [{ ...saveFor("in", ana, T0), ...fields }] });
+
+test("the numbers, and an idle tablet's list keeps its first tap instant", () => {
+  assert.equal(REACH_MS, 120_000);
+  assert.equal(CALL_SLOW_MS, 10_000);
+  assert.equal(FLOW_MS, 30_000);
+  assert.equal(LIST_REFRESH_MS, 90_000);
+  assert.ok(LIST_REFRESH_MS + CALL_SLOW_MS < REACH_MS);
+  assert.equal(ATTEMPT_MS, 45_000);
+});
+
+test("savesGoingThrough: each condition at its edge", () => {
+  const ok = (calls, queue, online, now = T0) => savesGoingThrough(calls, queue, online, now);
+  assert.equal(ok(healthy, empty, true), true);
+  // 1 online: a false is trusted; undefined proves nothing either way.
+  assert.equal(ok(healthy, empty, false), false);
+  assert.equal(ok(healthy, empty, undefined), true);
+  // 2 a reply within REACH_MS; none, or one from the future (clock set back), fails.
+  assert.equal(ok({ ...healthy, latestReply: T0 - REACH_MS + 1 }, empty, true), true);
+  assert.equal(ok({ ...healthy, latestReply: T0 - REACH_MS }, empty, true), false);
+  assert.equal(ok({ ...healthy, latestReply: T0 - REACH_MS - 1 }, empty, true), false);
+  assert.equal(ok({ ...healthy, latestReply: T0 + 1 }, empty, true), false);
+  assert.equal(ok({ ...healthy, latestReply: null }, empty, true), false);
+  // 3 a call ended without a reply after the latest reply fails; one before it doesn't.
+  assert.equal(ok({ ...healthy, latestEnded: T0 - 4_000 }, empty, true), false);
+  assert.equal(ok({ ...healthy, latestEnded: T0 - 6_000 }, empty, true), true);
+  // 4 a call waiting CALL_SLOW_MS less 1 ms passes; exactly CALL_SLOW_MS, or a start in the
+  // future, fails.
+  assert.equal(ok({ ...healthy, waiting: [T0 - CALL_SLOW_MS + 1] }, empty, true), true);
+  assert.equal(ok({ ...healthy, waiting: [T0 - CALL_SLOW_MS] }, empty, true), false);
+  assert.equal(ok({ ...healthy, waiting: [T0 - 1_000, T0 - 11_000] }, empty, true), false);
+  assert.equal(ok({ ...healthy, waiting: [T0 + 1] }, empty, true), false);
+  // 5 the head tapped FLOW_MS less 1 ms ago (sent just now) passes; FLOW_MS ago fails.
+  const sentNow = { sends: 1, lastSendAt: T0 - 1_000 };
+  assert.equal(ok(healthy, headed({ tapAt: T0 - FLOW_MS + 1, ...sentNow }), true), true);
+  assert.equal(ok(healthy, headed({ tapAt: T0 - FLOW_MS, ...sentNow }), true), false);
+  assert.equal(ok(healthy, headed({ tapAt: T0 + 1, ...sentNow }), true), false);
+  // 5 a head with a failed attempt fails, however fresh.
+  assert.equal(ok(healthy, headed({ tapAt: T0 - 1_000, retries: 1, ...sentNow }), true), false);
+  // 6 the head sent CALL_SLOW_MS less 1 ms ago with no answer passes; exactly that fails.
+  const sentAt = (ms) => headed({ tapAt: T0 - 15_000, sends: 1, lastSendAt: ms });
+  assert.equal(ok(healthy, sentAt(T0 - CALL_SLOW_MS + 1), true), true);
+  assert.equal(ok(healthy, sentAt(T0 - CALL_SLOW_MS), true), false);
+  // 6 a head never sent and tapped CALL_SLOW_MS ago fails; tapped just under passes.
+  assert.equal(ok(healthy, headed({ tapAt: T0 - CALL_SLOW_MS }), true), false);
+  assert.equal(ok(healthy, headed({ tapAt: T0 - CALL_SLOW_MS + 1 }), true), true);
+  // An empty queue holds nothing up.
+  assert.equal(queueFlowing(empty, T0), true);
+});
+
+test("a silent drop: the first tap's save starts the clock, and taps wait 10 s after its send, on both pages", async () => {
+  const { callLog } = await import("../src/callRecord.ts");
+  let now = T0;
+  const page = callLog(() => now);
+  const storage = fakeStorage();
+  // The list answered at T0. Then the network goes silent: from here no call settles. No call
+  // is waiting before the tap, so the first call into the silence is the tap's own send.
+  page.replied(page.start());
+  now = T0 + 30_000;
+  let queue = freshQueue("e1");
+  assert.equal(savesGoingThrough(page.read(), queue, true, now), true, "the first tap qualifies");
+  const first = saveFor("in", ana, now);
+  queue = enqueue(first, stampE1, now)(queue);
+  // The page sends it at once: the send is counted before it goes, and never answers.
+  queue = markSent(first.key, now)(queue);
+  page.start();
+  writeQueue(storage, queue);
+  const sendAt = now;
+  // 9.999 s after the send: still instant, on this page.
+  now = sendAt + CALL_SLOW_MS - 1;
+  assert.equal(savesGoingThrough(page.read(), queue, true, now), true);
+  // 10 s after the send: this page waits.
+  now = sendAt + CALL_SLOW_MS;
+  assert.equal(savesGoingThrough(page.read(), queue, true, now), false);
+  // A second page whose own calls all answered (its list came back 2 s before the drop's
+  // send) waits too, from the stored queue alone.
+  const other = { latestReply: sendAt - 2_000, latestEnded: null, waiting: [] };
+  const shared = readQueue(storage, () => "x");
+  assert.equal(savesGoingThrough(other, shared, true, sendAt + CALL_SLOW_MS - 1), true);
+  assert.equal(savesGoingThrough(other, shared, true, sendAt + CALL_SLOW_MS), false);
+  // And its enqueue, reading the stored queue under the lock, refuses too.
+  const late = enqueue(saveFor("in", ben, sendAt + CALL_SLOW_MS), stampE1, sendAt + CALL_SLOW_MS);
+  assert.deepEqual(late(shared), { refused: "stalled" });
+  // Two minutes after the last reply nothing is instant, whatever else holds.
+  assert.equal(savesGoingThrough(page.read(), empty, true, T0 + REACH_MS), false);
+});
+
+test("a silent drop with a list call hung 5 s before the tap: the window closes 10 s after that call", async () => {
+  const { callLog } = await import("../src/callRecord.ts");
+  let now = T0;
+  const page = callLog(() => now);
+  page.replied(page.start());
+  // The list refresh goes out into the silence at T0 + 25 s and never answers.
+  now = T0 + 25_000;
+  page.start();
+  // The tap 5 s later qualifies, and its save is sent at once.
+  now = T0 + 30_000;
+  let queue = freshQueue("e1");
+  assert.equal(savesGoingThrough(page.read(), queue, true, now), true);
+  const first = saveFor("in", ana, now);
+  queue = markSent(first.key, now)(enqueue(first, stampE1, now)(queue));
+  page.start();
+  // Taps stay instant until 10 s after the list call, not 10 s after the save's send.
+  assert.equal(savesGoingThrough(page.read(), queue, true, T0 + 35_000 - 1), true);
+  now = T0 + 35_000 - 1;
+  assert.equal(savesGoingThrough(page.read(), queue, true, now), true);
+  now = T0 + 35_000;
+  assert.equal(savesGoingThrough(page.read(), queue, true, now), false);
+});
+
+test("after the outage a reply brings instant taps back without waiting for a hung call", async () => {
+  const { callLog } = await import("../src/callRecord.ts");
+  let now = T0;
+  const page = callLog(() => now);
+  page.replied(page.start());
+  now = T0 + 10_000;
+  page.start(); // a list call whose connection died
+  now = T0 + 20_000;
+  assert.equal(savesGoingThrough(page.read(), empty, true, now), false);
+  // At its start + ATTEMPT_MS it counts as ended; the next reply after that clears it.
+  now = T0 + 10_000 + ATTEMPT_MS;
+  assert.equal(savesGoingThrough(page.read(), empty, true, now), false);
+  const next = page.start();
+  now += 2_000;
+  page.replied(next);
+  assert.equal(savesGoingThrough(page.read(), empty, true, now), true);
+});
+
+test("enqueue given the tap's time refuses a stored head that isn't flowing, and the tap waits", () => {
+  const stuck = headed({ tapAt: T0 - 12_000, sends: 1, lastSendAt: T0 - 11_000 });
+  const change = enqueue(saveFor("in", ben, T0), stampE1, T0);
+  assert.deepEqual(change(stuck), { refused: "stalled" });
+  assert.equal(afterEnqueue({ queue: stuck, stored: false, refused: "stalled" }), "wait");
+  // Without the time, as before.
+  assert.equal(enqueue(saveFor("in", ben, T0), stampE1)(stuck).saves.length, 2);
+  // A flowing head doesn't refuse.
+  const flowing = headed({ tapAt: T0 - 3_000, sends: 1, lastSendAt: T0 - 3_000 });
+  assert.equal(change(flowing).saves.length, 2);
+});
+
+test("enqueue given a clock reads it under the lock, so a send stamped after the tap's clock doesn't refuse", () => {
+  // The runner stamped the head's send 50 ms after the tap read its clock.
+  const justSent = headed({ tapAt: T0 - 500, sends: 1, lastSendAt: T0 + 50 });
+  assert.deepEqual(enqueue(saveFor("in", ben, T0), stampE1, T0)(justSent), { refused: "stalled" });
+  const read = enqueue(saveFor("in", ben, T0), stampE1, () => T0 + 60)(justSent);
+  assert.equal(read.saves.length, 2);
+  // A clock still refuses a head that isn't flowing.
+  const stuck = headed({ tapAt: T0 - 12_000, sends: 1, lastSendAt: T0 - 11_000 });
+  assert.deepEqual(enqueue(saveFor("in", ben, T0), stampE1, () => T0)(stuck), {
+    refused: "stalled",
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// The arrival change's mark
+
+test("a Change's mark is a plain in mark the queue format already holds", () => {
+  assert.equal(SAVE_QUEUE_VERSION, 1);
+  const storage = fakeStorage();
+  const newArrival = new Date(T0 - 180 * MIN).toISOString();
+  // Before the call: an unknown mark open until the server can't write; on an ok reply it
+  // becomes an in mark with the new arrival and listAfter 0, as a check-in's mark is.
+  let q = { ...freshQueue("e1"), saves: [saveFor("in", ana, T0)] };
+  q = {
+    ...addMark({
+      key: "change-1",
+      volunteerId: ben.id,
+      at: T0,
+      listAfter: T0 + SERVER_MAX_MS,
+      state: "unknown",
+      arrival: null,
+    })(q),
+    seq: q.seq + 1,
+  };
+  q = {
+    ...addMark({
+      key: "change-1",
+      volunteerId: ben.id,
+      at: T0 + 4_000,
+      listAfter: 0,
+      state: "in",
+      arrival: newArrival,
+    })(q),
+    seq: q.seq + 1,
+  };
+  assert.equal(q.marks.length, 1, "the same key replaces the unknown mark");
+  assert.ok(writeQueue(storage, q));
+  // The stored queue reads back whole, the queued save beside the mark.
+  const read = readQueue(storage, () => "fresh");
+  assert.equal(read.unreadable, false);
+  assert.equal(read.epoch, "e1");
+  assert.equal(read.saves.length, 1);
+  assert.deepEqual(read.marks, q.marks);
+  // The overlay shows the new arrival, still checked in, with no open Shift ID, so Change
+  // hides and the next check-out waits until a list asked for after it.
+  const stamp = { epoch: "e1", seq: 0, requestedAt: T0 - MIN };
+  const [shownBen] = overlay([ben], read, stamp);
+  assert.equal(shownBen.checkedIn, true);
+  assert.equal(shownBen.currentCheckIn, newArrival);
+  assert.equal(shownBen.openShiftId, null);
+  const ctx = baseCtx(read, { listStamp: stamp, now: T0 + 5_000 });
+  assert.equal(qualifyFailure("out", ben, ctx), 3);
+  const after = { epoch: "e1", seq: read.seq, requestedAt: T0 + 4_500 };
+  assert.equal(qualifyFailure("out", ben, { ...ctx, listStamp: after }), null);
 });

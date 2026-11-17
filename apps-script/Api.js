@@ -13,9 +13,11 @@
  * of their open row (whatever the Log's cell holds: a random ID on kiosk and admin rows,
  * free text on a row staff typed), when that row leaves the window, and the minutes of
  * this shift at which a check-out would show a milestone, only those reachable this
- * shift. Those let the tablet show a check-in or check-out at the tap. The list also
- * carries one boolean, hoursRequests: whether the Email me my hours button shows (Settings
- * "Hours requests" is Approve or Auto). The tablet never receives the mode, and no call
+ * shift. Those let the tablet show a check-in or check-out at the tap. It also carries
+ * that row's Check-In Recorded, the latest arrival a Change on the check-out screen may
+ * choose (apiChangeArrival). The list also carries one boolean, hoursRequests: whether the
+ * welcome screen's Request my hours link shows (Settings "Hours requests" is Approve or
+ * Auto). The tablet never receives the mode, and no call
  * sends it an email address or says whether a volunteer has one.
  *
  * A check-in or check-out the tablet already showed comes with a tap (readTap, Logic.js):
@@ -78,14 +80,15 @@ function apiCheckAccess(code) {
 
 /**
  * {ok: true, volunteers: [{id, firstName, lastName, checkedIn, openShiftArrival,
- * needsPhoneCheck, missedSignOut, openShiftId, openUntil, checkOutMilestones}],
+ * needsPhoneCheck, missedSignOut, openShiftId, openUntil, openShiftTapped,
+ * checkOutMilestones}],
  * longShiftHours, hoursRequests, milestones, serverNow}. checkedIn is true when the volunteer has an open
  * row the tablet can still check out: one checked in less than "Auto clock-out after
  * hours" ago, past midnight too, or one dated today whose check-in time can't be read.
  * openShiftArrival is the ISO stated arrival of that row, else null; it is also null when
  * the row's check-in time can't be read, and the volunteer is still checked in. id is the
  * hashed Volunteer ID; the raw User Token never leaves the server. missedSignOut,
- * openShiftId, openUntil and checkOutMilestones are as volunteerSummaries (Logic.js) gives
+ * openShiftId, openUntil, openShiftTapped and checkOutMilestones are as volunteerSummaries (Logic.js) gives
  * them. longShiftHours is "Long shift flag hours" (parseLongShiftHours), the time in past
  * which the page marks a card. hoursRequests is true when Settings "Hours requests" is
  * Approve or Auto (parseHoursRequestsMode), false when Off. milestones are [{id, title, message}], the texts the steps
@@ -120,7 +123,8 @@ function apiListVolunteers(code) {
 }
 
 /**
- * Records a volunteer's Email me my hours request. id is the list entry tapped and digits
+ * Records a volunteer's request for their hours, from the welcome screen's Request my
+ * hours link. id is the list entry tapped and digits
  * the phone's last four or null, read by the check-in rule (resolveVolunteer), so in a
  * same-name group the digits pick who is asking. Returns {ok: true} or a refusal: ACCESS
  * for a wrong code; HOURS_REQUESTS_OFF when Settings "Hours requests" is Off;
@@ -437,6 +441,121 @@ function apiCheckOut(code, id, digits, checkOutIso, tap) {
           minutes: decision.minutes,
           milestone: decision.milestone,
         };
+      }),
+    () => fillLogMap_(run),
+  );
+}
+
+/**
+ * Changes the arrival of a volunteer's open shift, from Change on the tablet's check-out
+ * screen. id and digits are as for apiCheckOut, and who it is is found by the check-out's
+ * rule (checkOutTokens). shiftId is the open row's Shift ID the screen showed, fromIso the
+ * start it showed and arrivalIso the new arrival. Returns {ok: true, id, shiftId,
+ * arrivedAt, changed} or a refusal: ACCESS before the lock; then, under it, NOT_FOUND, a
+ * phone refusal, NOT_IN, ARRIVAL_ROW_CHANGED, ARRIVAL_UNCHANGEABLE, ARRIVAL_OTHER_DAY,
+ * ARRIVAL_FUTURE or ARRIVAL_AFTER_CHECK_IN, in decideArrivalChange's order (Logic.js);
+ * BUSY when the lock isn't free within 10 seconds, or when the row read again just before
+ * the write isn't the one decided on. changed is false when the arrival was already the
+ * row's start, and nothing is written then.
+ *
+ * A Change is never decided from the cached log map: the call always reads the whole Log
+ * for the volunteer's rows, which costs about a second at the Log's size and is fine for
+ * a rare call. With the Log cache on it removes the map just before the write and stores
+ * none after it, so the next kiosk call reads the whole Log once. It writes only that
+ * row's Check-In Stated, and Admin Alerts? when the new arrival is flagged, then that
+ * flag's one Flags row (Source kiosk arrival change), with the Flags plan made before the
+ * Log write, as a check-out does. Check-In Recorded is never written. No Email cell and no
+ * other tab is read.
+ */
+function apiChangeArrival(code, id, digits, shiftId, fromIso, arrivalIso) {
+  const { settings, denied } = settingsForCode_(code);
+  if (denied) return denied;
+  const run = logCacheRun_();
+  return withLock_(
+    () =>
+      withLogCacheLine_(run, () => {
+        const now = new Date();
+        const volunteers = getProfiles_(settings);
+        const wanted = checkOutTokens(volunteers, id, digits);
+        if (wanted.refusal) return refusal(wanted.refusal);
+        run.on = logCacheSwitchOn_();
+        let log;
+        if (run.on) {
+          run.line = "full read (arrival change)";
+          log = readLogMiss_(wanted.tokens, volunteers);
+        } else {
+          run.line = "off";
+          log = readLogTable_(wanted.tokens);
+        }
+        const fromMs = arrivalMsFromIso(fromIso);
+        const arrivedMs = arrivalMsFromIso(arrivalIso);
+        const decision = decideArrivalChange({
+          volunteers,
+          id,
+          digits,
+          entries: log.entries,
+          todayDate: centralDate_(now),
+          nowMs: now.getTime(),
+          windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
+          shiftId,
+          fromMs: fromMs === null ? NaN : fromMs,
+          arrivedMs: arrivedMs === null ? NaN : arrivedMs,
+          flagMinutes: parseFlagMinutes(settings["Arrival flag minutes"]),
+          dateOf: (ms) => centralDate_(new Date(ms)),
+          clockOf: (ms) => zoneClock_(new Date(ms), kioskTimeZone()),
+        });
+        if (decision.refusal) {
+          keepLogMap_(run, log);
+          return refusal(decision.refusal);
+        }
+        const reply = {
+          ok: true,
+          id: decision.volunteer.id,
+          shiftId: tapShiftId(decision.open.shiftId),
+          arrivedAt: new Date(decision.arrivedMs).toISOString(),
+          changed: decision.changed,
+        };
+        if (!decision.changed) {
+          keepLogMap_(run, log);
+          return reply;
+        }
+        const reasons = decision.alert ? [decision.alert] : [];
+        const flagPlan = planFlags_(reasons);
+        // Staff may sort, insert or delete Log rows, or edit this one, while the call runs.
+        // Read the row again, last before the write, and write only if it is still the open
+        // row decided on, with the same start; else BUSY, and a retry reads the Log again.
+        const openId = decision.open.shiftId;
+        const current = readLogRowAt_(decision.row, log.width, log.cols, logRead_(), openId);
+        if (!autoClockOutRowUnchanged(decision.open, current)) {
+          console.error(
+            "Arrival change: Log row " +
+              decision.row +
+              " no longer holds open Shift ID " +
+              cellString(openId) +
+              " as read; answered BUSY and wrote nothing.",
+          );
+          return refusal("BUSY");
+        }
+        // The cells come from the row just read, so Admin Alerts? keeps what it holds now.
+        const cells = arrivalChangeCells(current, decision.arrivedMs, decision.alert);
+        if (run.on) {
+          forgetLogMap_();
+          run.why = "an arrival change stores no map";
+        }
+        updateLogRow_(decision.row, cells, log.cols, { kiosk: true });
+        raiseFlags_(
+          {
+            date: rowDate(current.dateText),
+            name: current.name,
+            shiftId: cellString(openId),
+            raisedAtMs: now.getTime(),
+            source: flagSources().arrivalChange,
+            logRow: decision.row,
+          },
+          reasons,
+          flagPlan,
+        );
+        return reply;
       }),
     () => fillLogMap_(run),
   );

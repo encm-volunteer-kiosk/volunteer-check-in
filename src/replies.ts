@@ -2,7 +2,7 @@
 //
 // google.script.run leaves out an object field whose value is null on the way from the
 // server to the page: inside the list reply a checked-out volunteer arrives with no
-// openShiftArrival, openShiftId, openUntil or checkOutMilestones, and the no-milestone step
+// openShiftArrival, openShiftId, openUntil, checkOutMilestones or openShiftTapped, and the no-milestone step
 // {fromMinutes: 0, id: null} arrives as {fromMinutes: 0}. The page reads every reply through
 // the functions below, which give each field the server may send as null its null back when
 // it is missing, so every reader sees the shape the server sent. They change nothing else:
@@ -11,7 +11,7 @@
 // Plain TypeScript only (no enums, namespaces or parameter properties): the tests import
 // this file in Node, which strips the types without a loader.
 
-import type { CheckInResult, CheckOutResult, VolunteerSummary } from "./api";
+import type { ArrivalChangeResult, CheckInResult, CheckOutResult, VolunteerSummary } from "./api";
 import type { MilestoneStep, Volunteer } from "./data";
 
 const orNull = (v: unknown) => (v === undefined ? null : v);
@@ -36,6 +36,7 @@ export function summaryFromServer(raw: unknown): VolunteerSummary {
     openShiftId: orNull(r.openShiftId),
     openUntil: orNull(r.openUntil),
     checkOutMilestones: stepsWithNulls(r.checkOutMilestones),
+    openShiftTapped: orNull(r.openShiftTapped),
   } as VolunteerSummary;
 }
 
@@ -63,9 +64,19 @@ export function checkOutFromServer(reply: Record<string, unknown>): CheckOutResu
   } as CheckOutResult;
 }
 
+/** A Change's reply. changed is true only when the server sent true. */
+export function arrivalChangeFromServer(reply: Record<string, unknown>): ArrivalChangeResult {
+  return {
+    id: reply.id,
+    shiftId: orNull(reply.shiftId),
+    arrivedAt: orNull(reply.arrivedAt),
+    changed: reply.changed === true,
+  } as ArrivalChangeResult;
+}
+
 /**
  * The list reply's hoursRequests: true only when the server sent true. A server older than
- * hours requests sends none, and the button stays hidden.
+ * hours requests sends none, and the Request my hours link stays hidden.
  */
 export const hoursRequestsOf = (reply: Record<string, unknown>): boolean =>
   reply.hoursRequests === true;
@@ -87,5 +98,6 @@ export function toVolunteer(summary: VolunteerSummary): Volunteer {
     openShiftId: summary.openShiftId,
     openUntil: summary.openUntil,
     checkOutMilestones: summary.checkOutMilestones,
+    openShiftTapped: summary.openShiftTapped,
   };
 }

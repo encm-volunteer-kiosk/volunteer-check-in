@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   api,
+  callRecord,
   isRefusal,
   localApi,
   refusalMessage,
@@ -8,6 +9,15 @@ import {
   usingLocalApi,
   type Refusal,
 } from "./api";
+import {
+  afterArrivalChange,
+  arrivalSavedText,
+  arrivalToSend,
+  movePick,
+  openArrivalPick,
+  showsArrivalChange,
+  type ArrivalPick,
+} from "./arrivalChange";
 import logo from "./assets/encm-logo.png";
 import { cardTime, DEFAULT_LONG_SHIFT_HOURS } from "./cardTime";
 import { appreciationMessages, isToday, type Milestone, type Volunteer } from "./data";
@@ -26,9 +36,11 @@ import {
 import {
   afterHoursRequest,
   HOURS_REQUEST_TIMEOUT_MS,
+  hoursConfirmText,
+  hoursPhoneStepAfter,
   hoursRequestReady,
   settleWithin,
-  showsHoursRequest,
+  showsHoursLink,
   type HoursRequestState,
 } from "./hoursRequestButton";
 import { searchNames } from "./nameSearch";
@@ -66,12 +78,14 @@ import {
 } from "./saveFlow";
 import {
   afterEnqueue,
+  ATTEMPT_MS,
   changeQueue,
   codeMatches,
   dismissFailed,
   dropMark,
   enqueue,
   heldMarkCovered,
+  LIST_REFRESH_MS,
   newSave,
   newTapId,
   nextRunDelay,
@@ -111,7 +125,6 @@ type Result = SaveOwner & {
 type PhoneStep = "entry" | "missing" | null;
 const TZ = "America/Chicago";
 const ACCESS_CODE_KEY = "encm-kiosk-access-code";
-const LIST_REFRESH_MS = 5 * 60_000;
 const LIST_RETRY_MS = 30_000;
 // The header clock reads the time this often, so it is never more than this behind the iPad's.
 const CLOCK_TICK_MS = 5_000;
@@ -270,12 +283,15 @@ function VolunteerCard({
   volunteer,
   clock,
   onClick,
+  plain = false,
 }: {
   volunteer: Volunteer;
   clock: CardClock;
   onClick: () => void;
+  // The hours search: the name alone, with no check-in time or check-out label.
+  plain?: boolean;
 }) {
-  const checkedIn = isCheckedIn(volunteer);
+  const checkedIn = !plain && isCheckedIn(volunteer);
   const time = checkedIn
     ? cardTime(volunteer.currentCheckIn, clock.nowMs, clock.longShiftHours)
     : null;
@@ -284,9 +300,11 @@ function VolunteerCard({
       className={`volunteer-card${checkedIn ? " is-checked-in" : ""}${time?.late ? " late" : ""}`}
       onClick={onClick}
       aria-label={
-        time
-          ? `Check out ${volunteer.firstName} ${volunteer.lastName}, ${time.label}`
-          : `Check in ${volunteer.firstName} ${volunteer.lastName}`
+        plain
+          ? `Request hours for ${volunteer.firstName} ${volunteer.lastName}`
+          : time
+            ? `Check out ${volunteer.firstName} ${volunteer.lastName}, ${time.label}`
+            : `Check in ${volunteer.firstName} ${volunteer.lastName}`
       }
     >
       <span className="volunteer-name">
@@ -318,6 +336,8 @@ function Welcome({
   onSearchOpen,
   focusOnOpen,
   banner,
+  onRequestHours,
+  hours,
 }: {
   volunteers: Volunteer[];
   listState: ListState;
@@ -331,6 +351,11 @@ function Welcome({
   focusOnOpen: boolean;
   // Told whether the Checked In panel should be aside, by the rule in src/searchOpen.ts.
   onSearchOpen: (open: boolean) => void;
+  // Opens the hours search from the Request my hours link; absent while the link is hidden.
+  onRequestHours?: () => void;
+  // The hours search: this screen's search with its own words and a Back button home. A tap
+  // on a name goes to onSelect, which there opens the hours steps.
+  hours?: { onBack: () => void };
 }) {
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -357,9 +382,24 @@ function Welcome({
     setQuery(next);
     window.requestAnimationFrame(() => searchRef.current?.focus({ preventScroll: true }));
   };
+  const heading = hours ? (
+    "Request my hours"
+  ) : (
+    <>
+      Hey there, <span>neighbor!</span>
+    </>
+  );
+  // Shown twice, one at a time by layout (index.css): in the logo and date row on a landscape
+  // tablet, under the name card elsewhere.
+  const hoursLink = onRequestHours && (
+    <button type="button" className="text-button hours-link" onClick={onRequestHours}>
+      Request my hours
+    </button>
+  );
 
   return (
-    <main className="welcome name-entry screen-enter">
+    <main className={`welcome name-entry screen-enter${hours ? " hours-search-main" : ""}`}>
+      {hours && <BackButton onClick={hours.onBack} />}
       <section className="hero name-entry-hero">
         <div className="spark spark-hero">
           <i />
@@ -367,10 +407,8 @@ function Welcome({
           <i />
         </div>
         <p className="welcome-note">{welcomeNote}</p>
-        <h1>
-          Hey there, <span>neighbor!</span>
-        </h1>
-        <p>Tap the box below and type your name.</p>
+        <h1>{heading}</h1>
+        <p>{hours ? "Type your name, then tap it." : "Tap the box below and type your name."}</p>
       </section>
 
       <section className="name-search-card" aria-label="Find your volunteer profile">
@@ -380,7 +418,7 @@ function Welcome({
           <span className="sr-only">Type your first and last name</span>
           <input
             ref={searchRef}
-            autoFocus={focusOnOpen}
+            autoFocus={focusOnOpen && !hours}
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
@@ -448,10 +486,10 @@ function Welcome({
                     <i />
                   </div>
                   <p className="welcome-note">{welcomeNote}</p>
-                  <h1>
-                    Hey there, <span>neighbor!</span>
-                  </h1>
-                  <p>Type your name in the box above.</p>
+                  <h1>{heading}</h1>
+                  <p>
+                    {hours ? "Type your name, then tap it." : "Type your name in the box above."}
+                  </p>
                 </div>
               )}
               {results.map((volunteer) => (
@@ -459,6 +497,7 @@ function Welcome({
                   key={volunteer.id}
                   volunteer={volunteer}
                   clock={clock}
+                  plain={Boolean(hours)}
                   onClick={() => onSelect(volunteer)}
                 />
               ))}
@@ -482,9 +521,12 @@ function Welcome({
         </div>
       </section>
 
+      {hoursLink && <div className="hours-link-under">{hoursLink}</div>}
+
       {/* The logo and date, here under the name card instead of above it on a landscape tablet. */}
       <div className="welcome-header">
         <img className="logo" src={logo} alt="East Nashville Care Market" />
+        {hoursLink}
         <DateBlock />
       </div>
 
@@ -615,15 +657,13 @@ function Confirmation({
   minMinutes = 0,
   saving,
   error,
-  hoursRequests,
-  hoursRequest,
   onTimeChange,
   onOpenPicker,
   onPhoneDigitsChange,
   onPhoneContinue,
-  onRequestHours,
   onConfirm,
   onBack,
+  arrivalChange,
 }: {
   volunteer: Volunteer;
   checkout: boolean;
@@ -640,29 +680,20 @@ function Confirmation({
   minMinutes?: number;
   saving: boolean;
   error: string;
-  // The list's hoursRequests, and the Email me my hours button's state on this screen.
-  hoursRequests: boolean;
-  hoursRequest: HoursRequestState;
   onTimeChange?: (time: string) => void;
   // Given only when the picker may be offered; its link shows after the phone step.
   onOpenPicker?: () => void;
   onPhoneDigitsChange: (digits: string) => void;
   onPhoneContinue: () => void;
-  onRequestHours: () => void;
   onConfirm: () => void;
   onBack: () => void;
+  // Change on the check-out screen's line, and its picker. Absent on the check-in screen.
+  arrivalChange?: ArrivalChangeProps;
 }) {
   const showTimeKeyboard = Boolean(!phoneStep && picker && time && onTimeChange);
-  const hasKeyboard = showTimeKeyboard;
-  const offersHours = showsHoursRequest({
-    hoursRequests,
-    phoneStep,
-    picker,
-    saving,
-    volunteer,
-    digitsAsked,
-    digits: phoneDigits,
-  });
+  // Change's own picker: a third picker state, whose Save time calls only the Change.
+  const changePicker = !phoneStep && arrivalChange?.pick ? arrivalChange : null;
+  const hasKeyboard = showTimeKeyboard || changePicker !== null;
 
   return (
     <>
@@ -694,7 +725,21 @@ function Confirmation({
             ) : checkout && volunteer.currentCheckIn ? (
               <>
                 You checked in {isToday(volunteer.currentCheckIn) ? "" : "yesterday "}at{" "}
-                <strong>{formatTime(volunteer.currentCheckIn)}</strong>.
+                <strong>{formatTime(volunteer.currentCheckIn)}</strong>
+                {arrivalChange?.offered && !changePicker ? (
+                  <>
+                    {" · "}
+                    <button
+                      type="button"
+                      className="text-button inline-change"
+                      onClick={arrivalChange.onOpen}
+                    >
+                      Change
+                    </button>
+                  </>
+                ) : (
+                  "."
+                )}
               </>
             ) : checkout ? (
               "You're checked in."
@@ -702,6 +747,11 @@ function Confirmation({
               "Just making sure we have the right neighbor."
             )}
           </p>
+          {arrivalChange?.saved && !phoneStep && !changePicker && (
+            <p className="arrival-saved" role="status">
+              {arrivalSavedText}
+            </p>
+          )}
           {phoneStep === "entry" && (
             <PhoneDigits
               digits={phoneDigits}
@@ -709,7 +759,7 @@ function Confirmation({
               onSubmit={onPhoneContinue}
             />
           )}
-          {!phoneStep && checkout && !showTimeKeyboard && volunteer.currentCheckIn && (
+          {!phoneStep && checkout && !hasKeyboard && volunteer.currentCheckIn && (
             <ShiftThanks checkedInAt={volunteer.currentCheckIn} />
           )}
           {!checkout && !phoneStep && !showTimeKeyboard && (
@@ -717,7 +767,7 @@ function Confirmation({
               <Icon name="user" /> {volunteer.firstName} {volunteer.lastName}
             </div>
           )}
-          {showTimeKeyboard && (
+          {hasKeyboard && (
             <div className="checkin-details">
               <div className="identity">
                 <Icon name="user" /> {volunteer.firstName} {volunteer.lastName}
@@ -725,7 +775,9 @@ function Confirmation({
               <div className="arrival-time">
                 <span>
                   <Icon name="clock" size={21} />
-                  {checkout ? "What time did you leave?" : "What time did you arrive?"}
+                  {checkout && !changePicker
+                    ? "What time did you leave?"
+                    : "What time did you arrive?"}
                 </span>
                 <small>Tap a time below, or use −15 and +15 to adjust it.</small>
               </div>
@@ -760,14 +812,13 @@ function Confirmation({
               </Button>
             </div>
           )}
-          {!phoneStep && !showTimeKeyboard && onOpenPicker && (
+          {!phoneStep && !hasKeyboard && onOpenPicker && (
             <button type="button" className="text-button" onClick={onOpenPicker} disabled={saving}>
               {checkout
                 ? "Forgot to check out earlier? Change your check-out time"
                 : "Forgot to check in earlier? Change your arrival time"}
             </button>
           )}
-          {offersHours && <HoursRequestButton state={hoursRequest} onRequest={onRequestHours} />}
         </section>
       </main>
       {showTimeKeyboard && (
@@ -782,41 +833,130 @@ function Confirmation({
           onBack={onBack}
         />
       )}
+      {changePicker && (
+        <QuickPicks
+          value={changePicker.pick!.time.time}
+          minMinutes={0}
+          maxMinutes={changePicker.pick!.maxMinutes}
+          label="Arrival time picker"
+          confirmText="Save time"
+          saving={changePicker.saving}
+          onChange={changePicker.onTimeChange}
+          onConfirm={changePicker.onSave}
+          onBack={changePicker.onClose}
+        />
+      )}
     </>
   );
 }
 
 /**
- * Email me my hours, under the button stack: the button, "Sending…" while the request is
- * out, then the answer's line in its place, with the button back under a line that asks to
- * try again. No line names an email address.
+ * Change on the check-out screen. offered: the line shows "· Change" (showsArrivalChange).
+ * pick: the open picker, or null. saving: the Change is out. saved: "Arrival time saved."
+ * shows under the line until the volunteer leaves the screen.
  */
-function HoursRequestButton({
+type ArrivalChangeProps = {
+  offered: boolean;
+  pick: ArrivalPick | null;
+  saving: boolean;
+  saved: boolean;
+  onOpen: () => void;
+  onTimeChange: (time: string) => void;
+  onSave: () => void;
+  onClose: () => void;
+};
+
+/**
+ * The Request my hours steps after a name in the hours search: the phone step for a name two
+ * volunteers share, as at check-in, then the confirm screen. Send only records a request;
+ * the answer's line takes the sentence's place. No line names an email address.
+ */
+function HoursConfirm({
+  volunteer,
+  phoneStep,
+  phoneDigits,
+  error,
   state,
-  onRequest,
+  onPhoneDigitsChange,
+  onPhoneContinue,
+  onSend,
+  onBack,
 }: {
+  volunteer: Volunteer;
+  phoneStep: PhoneStep;
+  phoneDigits: string;
+  error: string;
   state: HoursRequestState;
-  onRequest: () => void;
+  onPhoneDigitsChange: (digits: string) => void;
+  onPhoneContinue: () => void;
+  onSend: () => void;
+  onBack: () => void;
 }) {
-  const button = (
-    <button
-      type="button"
-      className="text-button"
-      onClick={onRequest}
-      disabled={state.kind === "sending"}
-    >
-      {state.kind === "sending" ? "Sending…" : "Email me my hours"}
-    </button>
-  );
+  const sending = state.kind === "sending";
+  const done = state.kind === "line" && !state.again;
   return (
-    <div className="hours-request">
-      {state.kind === "line" && (
-        <p className="hours-request-line" role="status">
-          {state.text}
+    <main className="center-screen screen-enter">
+      {!sending && <BackButton onClick={onBack} />}
+      <section
+        className={`panel confirmation-panel hours-confirm${phoneStep === "entry" ? " phone-check" : ""}`}
+      >
+        <div className="spark">
+          <i />
+          <i />
+          <i />
+        </div>
+        <div className="eyebrow">Your volunteer hours</div>
+        <h1>Hi, {volunteer.firstName}!</h1>
+        <p aria-live="polite">
+          {phoneStep ? (
+            <>
+              There&apos;s more than one{" "}
+              <strong>
+                {volunteer.firstName} {volunteer.lastName}
+              </strong>
+              .{phoneStep === "entry" && " Please enter the last four digits of your phone number."}
+            </>
+          ) : state.kind === "line" ? (
+            state.text
+          ) : (
+            hoursConfirmText
+          )}
         </p>
-      )}
-      {(state.kind !== "line" || state.again) && button}
-    </div>
+        {phoneStep === "entry" && (
+          <PhoneDigits
+            digits={phoneDigits}
+            onChange={onPhoneDigitsChange}
+            onSubmit={onPhoneContinue}
+          />
+        )}
+        {error && <ErrorNotice text={error} />}
+        <div className="button-stack">
+          {phoneStep === "entry" && (
+            <Button onClick={onPhoneContinue} disabled={phoneDigits.length < 4}>
+              Continue
+            </Button>
+          )}
+          {!phoneStep && !done && (
+            <Button onClick={onSend} disabled={sending}>
+              {sending ? (
+                <>
+                  <span className="spinner" /> Sending…
+                </>
+              ) : (
+                "Send"
+              )}
+            </Button>
+          )}
+          {done ? (
+            <Button onClick={onBack}>Done</Button>
+          ) : (
+            <Button variant="secondary" onClick={onBack} disabled={sending}>
+              Go back
+            </Button>
+          )}
+        </div>
+      </section>
+    </main>
   );
 }
 
@@ -1448,9 +1588,10 @@ function listStorage(): ListStorage | null {
 export default function App() {
   const [code, setCode] = useState<string | null>(readStoredCode);
   const codeRef = useRef(code);
-  // The code was already in storage when the page started: the tablet's storage survived a
-  // reload, so a queued save will too. Without that, every tap waits for the server.
-  const codeKept = useRef(code !== null);
+  // The code reads back from storage: it came from storage when the page started, or it read
+  // back equal right after Save stored it (applyCode). Where storage is blocked it doesn't,
+  // and every tap waits for the server: the queue couldn't be stored either.
+  const codeStored = useRef(code !== null);
   const [setupError, setSetupError] = useState("");
   // A list kept from before the reload shows at once; the refresh below replaces it.
   const [keptList] = useState(() => readStoredList(listStorage(), code, Date.now()));
@@ -1459,8 +1600,8 @@ export default function App() {
   const [longShiftHours, setLongShiftHours] = useState(
     () => keptList?.longShiftHours ?? DEFAULT_LONG_SHIFT_HOURS,
   );
-  // The list's hoursRequests. The kept list doesn't hold it, so after a reload the button
-  // stays hidden until a fresh list arrives (a request can't go offline anyway).
+  // The list's hoursRequests. The kept list doesn't hold it, so after a reload the Request my
+  // hours link stays hidden until a fresh list arrives (a request can't go offline anyway).
   const [hoursRequests, setHoursRequests] = useState(false);
   const nowMs = useMinuteNow();
   const cardClock = useMemo(() => ({ nowMs, longShiftHours }), [nowMs, longShiftHours]);
@@ -1529,6 +1670,19 @@ export default function App() {
   // Check-out likewise sends no time unless the volunteer opens the check-out picker.
   const [checkOutTime, setCheckOutTime] = useState(() => pickTime(centralTimeValue()));
   const [checkOutPicker, setCheckOutPicker] = useState(false);
+  // Change on the check-out screen: its open picker, whether the Change is out, and whether
+  // "Arrival time saved." shows. changeSeq numbers the Changes: an answer moves the screen
+  // only while its number is the current one, so leaving the screen drops it.
+  const [arrivalPick, setArrivalPick] = useState<ArrivalPick | null>(null);
+  const [changeSaving, setChangeSaving] = useState(false);
+  const [arrivalSaved, setArrivalSaved] = useState(false);
+  const changeSeq = useRef(0);
+  const dropArrivalChange = () => {
+    changeSeq.current += 1;
+    setArrivalPick(null);
+    setChangeSaving(false);
+    setArrivalSaved(false);
+  };
   const [phoneStep, setPhoneStep] = useState<PhoneStep>(null);
   const [phoneDigits, setPhoneDigits] = useState("");
   // Whether the digits are asked for, fixed at the tap (a list refresh on the open screen
@@ -1536,9 +1690,10 @@ export default function App() {
   const [digitsAsked, setDigitsAsked] = useState(false);
   // A check-out sent without digits was refused because another of the name is checked in.
   const [anotherIn, setAnotherIn] = useState(false);
-  // The Email me my hours button on the open screen. hoursRequestSeq numbers the requests: a
-  // reply is shown only while its number is the current one, so leaving the screen, or
-  // tapping Check In or Check Out, drops it.
+  // The Request my hours path: the volunteer tapped in the hours search (the confirm screen
+  // keeps this copy), and the confirm screen's state. hoursRequestSeq numbers the requests: a
+  // reply is shown only while its number is the current one, so leaving the screen drops it.
+  const [hoursFor, setHoursFor] = useState<Volunteer | null>(null);
   const [hoursRequest, setHoursRequest] = useState<HoursRequestState>(hoursRequestReady);
   const hoursRequestSeq = useRef(0);
   const dropHoursRequest = () => {
@@ -1570,10 +1725,12 @@ export default function App() {
     setArrivalPicker(false);
     setCheckOutTime(pickTime(centralTimeValue()));
     setCheckOutPicker(false);
+    dropArrivalChange();
     setPhoneStep(null);
     setPhoneDigits("");
     setDigitsAsked(false);
     setAnotherIn(false);
+    setHoursFor(null);
     dropHoursRequest();
   };
   // Home from a button the volunteer tapped.
@@ -1586,12 +1743,12 @@ export default function App() {
     setArrivalPicker(false);
     setCheckOutTime(pickTime(centralTimeValue()));
     setCheckOutPicker(false);
+    dropArrivalChange();
     const asked = digitsAskedAtTap(isCheckedIn(volunteer), volunteer, shown);
     setDigitsAsked(asked);
     setAnotherIn(false);
     setPhoneStep(asked ? "entry" : null);
     setPhoneDigits("");
-    dropHoursRequest();
     setScreen(isCheckedIn(volunteer) ? "checkout" : "confirm");
     // A list more than a minute old is refreshed while the volunteer reads the screen, so an
     // instant result is decided on a newer one when it lands first. Nothing waits for it.
@@ -1602,6 +1759,7 @@ export default function App() {
   const applyCode = (next: string | null) => {
     codeRef.current = next;
     storeCode(next);
+    codeStored.current = next !== null && readStoredCode() === next;
     clearStoredList(listStorage());
     listSavedAt.current = null;
     listExtras.current = noListExtras;
@@ -1761,11 +1919,16 @@ export default function App() {
     queueStarted.current = changeSaves(touch);
   }, []);
 
+  // Coming back online asks for the list at once: a reply is what lets taps be instant again.
   useEffect(() => {
     if (!code) return;
     refreshList();
     const timer = window.setInterval(refreshList, LIST_REFRESH_MS);
-    return () => clearInterval(timer);
+    window.addEventListener("online", refreshList);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("online", refreshList);
+    };
   }, [code]);
 
   useEffect(() => {
@@ -1992,8 +2155,10 @@ export default function App() {
     const extras = listExtras.current;
     const ctx = {
       hasCode: Boolean(codeRef.current),
-      codeKept: codeKept.current,
+      codeStored: codeStored.current,
       foregroundPending: saveFlow.current.pending !== null,
+      online: navigator.onLine,
+      calls: callRecord(),
       listState,
       now,
       listStamp,
@@ -2010,7 +2175,7 @@ export default function App() {
       milestoneId === null ? null : (extras.milestones.find((m) => m.id === milestoneId) ?? null);
     // A step naming a milestone the list has no text for: the server's answer shows it.
     if (milestoneId !== null && !milestone) return false;
-    const stored = await changeSaves(enqueue(save, listStamp));
+    const stored = await changeSaves(enqueue(save, listStamp, () => Date.now()));
     const path = afterEnqueue(stored);
     if (path === "still-saving") setError(savingLine(stored.queue) ?? "");
     if (path !== "instant") return path === "still-saving";
@@ -2090,7 +2255,6 @@ export default function App() {
       setPhoneStep("entry");
       return;
     }
-    dropHoursRequest();
     setError("");
     if (await instantTap("in", selected)) return;
     const timestamp = arrivalPicker ? pickedTimeToIso(arrivalTime) : null;
@@ -2155,7 +2319,6 @@ export default function App() {
       setPhoneStep("entry");
       return;
     }
-    dropHoursRequest();
     setError("");
     if (await instantTap("out", selected)) return;
     // The page's own checks use the server's messages. The server checks again against its
@@ -2226,18 +2389,140 @@ export default function App() {
     }
   }
 
-  // Email me my hours: records a request, beside the screen's check-in or check-out. It
-  // checks no one in or out, and a save doesn't wait for it.
-  async function requestHours() {
-    if (!selected || !code || hoursRequest.kind === "sending") return;
-    const seq = ++hoursRequestSeq.current;
+  /**
+   * Save time on Change's picker: the Change alone, never a check-out. Untouched, the picker
+   * closes and nothing is sent. The Change waits for the server: before the call its own
+   * unknown mark is stored (refused, with the still-saving line, when the queue holds a save
+   * for the volunteer); the server's answer, however late, makes that mark the new arrival
+   * or drops it, and only a current answer moves the screen. No answer leaves the mark, so
+   * the volunteer's next tap waits for the server.
+   */
+  async function saveArrivalChange() {
+    const pick = arrivalPick;
+    if (!pick || !selected || !code || changeSaving || saveFlow.current.pending) return;
+    const arrivalIso = arrivalToSend(pick);
+    setError("");
+    if (arrivalIso === null) {
+      setArrivalPick(null);
+      return;
+    }
+    const seq = ++changeSeq.current;
+    const current = () => seq === changeSeq.current;
+    const volunteerId = selected.id;
     const firstName = selected.firstName;
+    setChangeSaving(true);
+    const markKey = await markBeforeSend(volunteerId);
+    if (markKey === null) {
+      if (!current()) return;
+      setChangeSaving(false);
+      setError(
+        stillSavingText(queueRef.current, volunteerId, {
+          online: navigator.onLine,
+          now: Date.now(),
+          runnerHeld: runnerActive.current,
+        }) ?? "",
+      );
+      return;
+    }
+    const answered = api
+      .changeArrival(
+        code,
+        volunteerId,
+        digitsToSend(digitsAsked, phoneDigits),
+        pick.shiftId,
+        pick.fromIso,
+        arrivalIso,
+      )
+      .then(async (reply) => {
+        // The server is done with the call, whether or not the answer is still current.
+        if (isRefusal(reply)) await dropForegroundMark(markKey);
+        else {
+          await foregroundMark({
+            key: markKey,
+            volunteerId: reply.id,
+            at: Date.now(),
+            listAfter: 0,
+            state: "in",
+            arrival: reply.arrivedAt,
+          });
+          refreshList();
+        }
+        return reply;
+      });
+    const reply = await settleWithin(answered, ATTEMPT_MS);
+    if (!current()) return;
+    setChangeSaving(false);
+    const next = afterArrivalChange(reply);
+    if (next.kind === "saved") {
+      setArrivalPick(null);
+      setArrivalSaved(true);
+    } else if (next.kind === "lock") {
+      lockKiosk(next.message);
+    } else if (next.kind === "not-in") {
+      setResult({ firstName, kind: "out", status: "NOT_IN" });
+      setScreen("status");
+    } else if (next.kind === "phone") {
+      // As a check-out's phone refusal: the digit step, with the picker closed.
+      const phone = afterPhoneRefusal(refusalOutcome(next.refusal.refusal), digitsAsked, true)!;
+      setArrivalPick(null);
+      setPhoneDigits("");
+      setPhoneStep(next.refusal.refusal === "PHONE_MISSING" ? "missing" : "entry");
+      setDigitsAsked(phone.asked);
+      setAnotherIn(phone.anotherIn);
+      setError(phone.showMessage ? next.refusal.message : "");
+    } else {
+      setError(next.text);
+    }
+  }
+
+  // The Request my hours link opens the hours search: the welcome screen's search with no
+  // Checked In panel, whose names lead only to the hours steps.
+  const openHours = () => {
+    closeTabletKeyboard();
+    goHome(true);
+    setScreen("hours");
+  };
+
+  // A name in the hours search: the phone step when the name is shared (the check-in rule),
+  // then the confirm screen. It checks no one in or out.
+  const chooseForHours = (volunteer: Volunteer) => {
+    closeTabletKeyboard();
+    const asked = digitsAskedAtTap(false, volunteer, shown);
+    setHoursFor(volunteer);
+    setDigitsAsked(asked);
+    setAnotherIn(false);
+    setPhoneStep(asked ? "entry" : null);
+    setPhoneDigits("");
+    setError("");
+    dropHoursRequest();
+    setScreen("hours-confirm");
+  };
+
+  // Send on the confirm screen: records a request, its own call outside the save queue. A
+  // phone refusal brings the phone step back with its message.
+  async function requestHours() {
+    if (!hoursFor || !code || hoursRequest.kind === "sending") return;
+    if (digitsMissing(digitsAsked, phoneDigits)) {
+      setPhoneStep("entry");
+      return;
+    }
+    const seq = ++hoursRequestSeq.current;
+    const firstName = hoursFor.firstName;
+    setError("");
     setHoursRequest({ kind: "sending" });
     const reply = await settleWithin(
-      api.requestHours(code, selected.id, digitsToSend(digitsAsked, phoneDigits)),
+      api.requestHours(code, hoursFor.id, digitsToSend(digitsAsked, phoneDigits)),
       HOURS_REQUEST_TIMEOUT_MS,
     );
     if (seq !== hoursRequestSeq.current) return;
+    if (hoursPhoneStepAfter(reply)) {
+      setHoursRequest(hoursRequestReady);
+      setPhoneDigits("");
+      setDigitsAsked(true);
+      setPhoneStep("entry");
+      setError((reply as Refusal).message);
+      return;
+    }
     const next = afterHoursRequest(reply, firstName);
     if ("lock" in next) lockKiosk(next.lock);
     else setHoursRequest(next);
@@ -2262,9 +2547,12 @@ export default function App() {
     },
   };
 
+  // The hours search keeps the welcome screen's layout, with its own fixed landscape place.
+  const shellScreen = screen === "hours" ? "welcome hours-search" : screen;
+
   return (
     <div
-      className={`app-shell screen-${code ? screen : "welcome"}${code ? "" : " setup"}${searchOpen ? " search-open" : ""}`}
+      className={`app-shell screen-${code ? shellScreen : "welcome"}${code ? "" : " setup"}${searchOpen && screen === "welcome" ? " search-open" : ""}`}
     >
       {!code && (
         <>
@@ -2282,6 +2570,7 @@ export default function App() {
             onSelect={select}
             onSearchOpen={setSearchOpen}
             focusOnOpen={focusNameBox}
+            onRequestHours={showsHoursLink(hoursRequests) ? openHours : undefined}
             banner={
               <SaveBanner
                 failed={queue.failed}
@@ -2299,6 +2588,35 @@ export default function App() {
           />
         </>
       )}
+      {code && screen === "hours" && (
+        <>
+          <Header />
+          <Welcome
+            key="hours"
+            volunteers={shown}
+            listState={listState}
+            clock={cardClock}
+            onSelect={chooseForHours}
+            onSearchOpen={() => {}}
+            focusOnOpen={false}
+            banner={null}
+            hours={{ onBack: tapHome }}
+          />
+        </>
+      )}
+      {code && screen === "hours-confirm" && hoursFor && (
+        <HoursConfirm
+          volunteer={hoursFor}
+          phoneStep={phoneStep}
+          phoneDigits={phoneDigits}
+          error={error}
+          state={hoursRequest}
+          onPhoneDigitsChange={setPhoneDigits}
+          onPhoneContinue={phoneProps.onPhoneContinue}
+          onSend={requestHours}
+          onBack={tapHome}
+        />
+      )}
       {code && screen === "confirm" && selected && (
         <Confirmation
           volunteer={selected}
@@ -2315,9 +2633,6 @@ export default function App() {
           anotherIn={anotherIn}
           saving={save !== null}
           error={error}
-          hoursRequests={hoursRequests}
-          hoursRequest={hoursRequest}
-          onRequestHours={requestHours}
           onTimeChange={(time) => setArrivalTime(pickTime(time))}
           onConfirm={handleConfirm}
           onBack={tapHome}
@@ -2344,12 +2659,36 @@ export default function App() {
           anotherIn={anotherIn}
           saving={save !== null}
           error={error}
-          hoursRequests={hoursRequests}
-          hoursRequest={hoursRequest}
-          onRequestHours={requestHours}
           onTimeChange={(time) => setCheckOutTime(pickTime(time))}
           onConfirm={handleCheckout}
           onBack={tapHome}
+          arrivalChange={{
+            offered: showsArrivalChange({
+              entry: selected,
+              phoneStep,
+              picker: checkOutPicker || arrivalPick !== null,
+              saving: save !== null || changeSaving,
+              digitsAsked,
+              digits: phoneDigits,
+              queue,
+              nowMs: Date.now(),
+            }),
+            pick: arrivalPick,
+            saving: changeSaving,
+            saved: arrivalSaved,
+            onOpen: () => {
+              setError("");
+              setArrivalSaved(false);
+              setArrivalPick(openArrivalPick(selected, Date.now()));
+            },
+            onTimeChange: (time) =>
+              setArrivalPick((pick) => (pick ? movePick(pick, time, Date.now()) : pick)),
+            onSave: saveArrivalChange,
+            onClose: () => {
+              setError("");
+              setArrivalPick(null);
+            },
+          }}
         />
       )}
       {code && screen === "saving" && save && <SavingScreen key={save.seq} save={save} />}

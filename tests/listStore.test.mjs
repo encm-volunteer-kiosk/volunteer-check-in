@@ -307,6 +307,7 @@ test("a kept list keeps what an instant result reads, and the list request's sta
     openShiftId: "shift-ben",
     openUntil: "2026-11-14T03:30:00.000Z",
     checkOutMilestones: steps,
+    openShiftTapped: "2026-11-13T15:40:00.000Z",
     completedShiftCount: 30,
     totalVolunteerMinutes: 2905,
   });
@@ -334,6 +335,7 @@ test("a kept list keeps what an instant result reads, and the list request's sta
     "missedSignOut",
     "needsPhoneCheck",
     "openShiftId",
+    "openShiftTapped",
     "openUntil",
   ]);
   assert.doesNotMatch(storage.items.get(LIST_STORE_KEY), /2905|"30"/);
@@ -346,7 +348,9 @@ test("a kept list keeps what an instant result reads, and the list request's sta
   assert.equal(keptBen.openShiftId, "shift-ben");
   assert.equal(keptBen.openUntil, "2026-11-14T03:30:00.000Z");
   assert.deepEqual(keptBen.checkOutMilestones, steps);
+  assert.equal(keptBen.openShiftTapped, "2026-11-13T15:40:00.000Z");
   assert.equal(kept.volunteers[1].missedSignOut, true);
+  assert.equal(kept.volunteers[1].openShiftTapped, undefined, "never sent stays missing");
   assert.equal(kept.volunteers[1].openShiftId, null);
   assert.equal(kept.volunteers[1].checkOutMilestones, null);
 });
@@ -393,6 +397,11 @@ test("a list kept with the nulls google.script.run dropped is still used, and a 
   );
   const kept = readStoredList(storage, "4417", T0 + MINUTE);
   assert.notEqual(kept, null);
+  // Kept by a page before the open row's tap time was listed: still version 3, and it stays
+  // missing, which the screens read as none, so no Change is offered until a fresh list.
+  assert.equal(LIST_STORE_VERSION, 3);
+  assert.equal(kept.volunteers[1].openShiftTapped ?? null, null);
+  assert.equal("openShiftTapped" in kept.volunteers[1], false);
   assert.deepEqual(kept.volunteers[1].checkOutMilestones, [
     { fromMinutes: 0, id: null },
     { fromMinutes: 95, id: "hours-50" },
@@ -400,6 +409,20 @@ test("a list kept with the nulls google.script.run dropped is still used, and a 
   // A step with an id of another type is still refused.
   const entry = JSON.parse(storage.items.get(LIST_STORE_KEY));
   entry.volunteers[1].checkOutMilestones = [{ fromMinutes: 0, id: 7 }];
+  storage.setItem(LIST_STORE_KEY, JSON.stringify(entry));
+  assert.equal(readStoredList(storage, "4417", T0 + MINUTE), null);
+});
+
+test("a kept tap time that isn't text or null makes the kept list unusable", () => {
+  const storage = fakeStorage();
+  const ben = volunteer("h-ben", "Ben", "Okafor", {
+    checkedIn: true,
+    currentCheckIn: "2026-11-13T15:30:00.000Z",
+    openShiftTapped: "2026-11-13T15:40:00.000Z",
+  });
+  storeList(storage, "4417", T0, [ben], 8);
+  const entry = JSON.parse(storage.items.get(LIST_STORE_KEY));
+  entry.volunteers[0].openShiftTapped = 5;
   storage.setItem(LIST_STORE_KEY, JSON.stringify(entry));
   assert.equal(readStoredList(storage, "4417", T0 + MINUTE), null);
 });

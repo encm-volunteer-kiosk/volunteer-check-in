@@ -31,7 +31,7 @@ const MIN_MINUTES = [0, 0.5, 7, 14.99, 15, 15.01, 59.5, 600, 600.25, 601, 614.9,
 
 test("quick answers floor to the quarter hour", () => {
   const range = quickRange(0, 14 * 60 + 14);
-  assert.deepEqual(range, { earliest: 0, latest: 14 * 60 });
+  assert.deepEqual(range, { earliest: 0, latest: 14 * 60, clock: 14 * 60, capped: false });
   const answers = quickAnswers(range);
   assert.deepEqual(labels(answers), labels(QUICK_ANSWERS));
   assert.deepEqual(times(answers), ["14:00", "13:45", "13:30", "13:15", "13:00", "12:00"]);
@@ -124,7 +124,7 @@ test("minMinutes with fractions rounds the earliest up", () => {
 test("a window that starts at midnight", () => {
   // Arrival: everything from midnight to now. At 1:05 AM the earliest is 00:00.
   const range = quickRange(0, 65);
-  assert.deepEqual(range, { earliest: 0, latest: 60 });
+  assert.deepEqual(range, { earliest: 0, latest: 60, clock: 60, capped: false });
   const answers = quickAnswers(range);
   assert.deepEqual(labels(answers), [
     "Now",
@@ -142,7 +142,7 @@ test("a window that starts at midnight", () => {
 test("now before 00:15", () => {
   for (let now = 0; now < 15; now += 1) {
     const range = quickRange(0, now);
-    assert.deepEqual(range, { earliest: 0, latest: 0 });
+    assert.deepEqual(range, { earliest: 0, latest: 0, clock: 0, capped: false });
     assert.equal(nudge(0, -15, range), null);
     assert.equal(nudge(0, 15, range), null);
   }
@@ -242,4 +242,65 @@ test("a picked time on a clock-change day uses that time's own offset", () => {
   const fall = new Date("2026-11-01T09:00:00Z"); // 3:00 AM CST
   assert.equal(pickedTimeToIso(pickTime("00:30", fall)), "2026-11-01T05:30:00.000Z");
   assert.equal(pickedTimeToIso(pickTime("02:00", fall)), "2026-11-01T08:00:00.000Z");
+});
+
+// ---------------------------------------------------------------------------------------
+// A cap on the latest (the check-out screen's Change of arrival)
+
+test("a cap: a 9:14 tap viewed at 11:00", () => {
+  const range = quickRange(0, 11 * 60, 9 * 60 + 14);
+  assert.deepEqual(range, { earliest: 0, latest: 9 * 60, clock: 11 * 60, capped: true });
+  // Answers count from the clock; those after the latest are dropped, "Now" with them.
+  assert.deepEqual(quickAnswers(range), [{ label: "2 hours ago", minutes: 9 * 60 }]);
+  // 9:00 reads "2 hr ago": measured from the clock, not from the latest.
+  assert.equal(agoText(9 * 60, range), "2 hr ago");
+  assert.equal(agoText(8 * 60 + 15, range), "2 hr 45 min ago");
+  // A quick answer recounted at the tap counts back from the clock too.
+  assert.equal(pickMinutes(9 * 60 + 15, 120, range), 9 * 60);
+  assert.equal(pickMinutes(10 * 60, 60, range), null, "1 hour ago is after the cap");
+  // Nudges stop at the cap.
+  assert.equal(canNudge(9 * 60, 15, range), false);
+  assert.equal(nudge(9 * 60, -15, range), 8 * 60 + 45);
+  // A start value past the cap moves onto it before a nudge.
+  assert.equal(nudge(10 * 60 + 30, -15, range), 8 * 60 + 45);
+});
+
+test("under a cap 'Now' never shows, even when the cap is at the clock's quarter hour", () => {
+  // Tapped at 11:02, viewed at 11:05: the latest and the clock are both 11:00.
+  const range = quickRange(0, 11 * 60 + 5, 11 * 60 + 2);
+  assert.equal(range.latest, range.clock);
+  const answers = quickAnswers(range);
+  assert.ok(!answers.some((a) => a.label === "Now"));
+  assert.deepEqual(
+    answers.map((a) => a.label),
+    ["15 min ago", "30 min ago", "45 min ago", "1 hour ago", "2 hours ago"],
+  );
+  assert.equal(agoText(11 * 60, range), "Just now");
+});
+
+test("a cap after now changes nothing; without a cap every helper is as before", () => {
+  const plain = quickRange(0, 14 * 60 + 14);
+  const later = quickRange(0, 14 * 60 + 14, 16 * 60);
+  assert.equal(later.latest, plain.latest);
+  assert.equal(later.clock, plain.clock);
+  assert.equal(plain.latest, plain.clock);
+  assert.equal(quickAnswers(plain)[0].label, "Now");
+  assert.equal(quickAnswers(plain).length, QUICK_ANSWERS.length);
+  assert.equal(agoText(13 * 60, plain), "1 hr ago");
+  assert.equal(pickMinutes(14 * 60, 0, plain), 14 * 60);
+});
+
+test("a cap and a lower bound: everything stays a quarter hour inside them", () => {
+  for (let now = 6 * 60; now < 24 * 60; now += 7) {
+    for (const cap of [0, 61, 9 * 60 + 14, now - 1, now]) {
+      const range = quickRange(0, now, cap);
+      assert.ok(range.latest <= range.clock && range.latest <= cap);
+      for (const { minutes, label } of quickAnswers(range)) {
+        assert.ok(minutes >= range.earliest && minutes <= range.latest, `${now} ${cap} ${label}`);
+        assert.notEqual(label, "Now");
+      }
+    }
+  }
+  // The tap is today, so midnight is always at or before it: there is a choice.
+  assert.ok(quickRange(0, 11 * 60, 5).earliest <= quickRange(0, 11 * 60, 5).latest);
 });

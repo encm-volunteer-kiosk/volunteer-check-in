@@ -163,8 +163,23 @@ test("each screen but welcome and saving goes home when untouched", () => {
   assert.equal(inactivityMs("welcome"), null);
   assert.equal(inactivityMs("notice"), 60_000);
   assert.equal(inactivityMs("unconfirmed"), 15_000);
-  for (const screen of ["confirm", "checkout", "success-in", "success-out", "status"]) {
+  for (const screen of [
+    "confirm",
+    "checkout",
+    "success-in",
+    "success-out",
+    "status",
+    "hours",
+    "hours-confirm",
+  ]) {
     assert.equal(inactivityMs(screen), 90_000, screen);
+  }
+});
+
+test("the hours screens keep their own copy: a new list never sends them home", () => {
+  for (const screen of ["hours", "hours-confirm"]) {
+    assert.equal(rendersFrom(screen), "nothing", screen);
+    assert.equal(goesHomeWhenListLosesVolunteer(screen, "ready", "vol-1", false), false, screen);
   }
 });
 

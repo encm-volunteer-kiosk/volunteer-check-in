@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import {
+  arrivalChangeFromServer,
   checkInFromServer,
   checkOutFromServer,
   hoursRequestsOf,
@@ -92,8 +93,10 @@ const pageList = () => viaScriptRun(serverList).map(summaryFromServer).map(toVol
 function ctx(queue, extra = {}) {
   return {
     hasCode: true,
-    codeKept: true,
+    codeStored: true,
     foregroundPending: false,
+    online: true,
+    calls: { latestReply: NOW - 5_000, latestEnded: null, waiting: [] },
     listState: "ready",
     now: NOW,
     listStamp: { epoch: queue.epoch, seq: queue.seq, requestedAt: NOW - MIN },
@@ -119,7 +122,13 @@ test("the stand-in drops the list's nulls as google.script.run does", () => {
   const [ana, ben] = viaScriptRun(serverList);
   assert.deepEqual(plain(serverList[1].checkOutMilestones), [{ fromMinutes: 0, id: null }]);
   assert.deepEqual(ben.checkOutMilestones, [{ fromMinutes: 0 }]);
-  for (const key of ["openShiftArrival", "openShiftId", "openUntil", "checkOutMilestones"]) {
+  for (const key of [
+    "openShiftArrival",
+    "openShiftId",
+    "openUntil",
+    "checkOutMilestones",
+    "openShiftTapped",
+  ]) {
     assert.equal(key in ana, false, key);
   }
 });
@@ -130,6 +139,9 @@ test("the page reads the list with every dropped null back", () => {
   assert.equal(read[0].currentCheckIn, null);
   assert.equal(read[0].openShiftId, null);
   assert.deepEqual(read[1].checkOutMilestones, [{ fromMinutes: 0, id: null }]);
+  // The open row's tap time reaches the screens; none for a volunteer not checked in.
+  assert.equal(read[0].openShiftTapped, null);
+  assert.equal(read[1].openShiftTapped, new Date(NOW - 2 * HOUR).toISOString());
   // missedSignOut is never null, so a list without it stays without it (an older server).
   const { missedSignOut, ...older } = plain(serverList[0]);
   assert.equal(missedSignOut, false);
@@ -199,6 +211,26 @@ test("check-in and check-out replies read a dropped null as null", () => {
   ]);
   assert.equal(stepsWithNulls(undefined), null);
   assert.equal(stepsWithNulls("x"), "x");
+});
+
+test("a Change reply reads a dropped null as null, and changed only as true or false", () => {
+  const sent = {
+    ok: true,
+    id: "id-ben",
+    shiftId: "shift-5",
+    arrivedAt: "2026-11-13T14:00:00.000Z",
+    changed: true,
+  };
+  assert.deepEqual(arrivalChangeFromServer(viaScriptRun(sent)), {
+    id: "id-ben",
+    shiftId: "shift-5",
+    arrivedAt: "2026-11-13T14:00:00.000Z",
+    changed: true,
+  });
+  const same = arrivalChangeFromServer(viaScriptRun({ ...sent, shiftId: null, changed: false }));
+  assert.equal(same.shiftId, null);
+  assert.equal(same.changed, false);
+  assert.equal(arrivalChangeFromServer({ ok: true, id: "x" }).changed, false);
 });
 
 test("the list's hoursRequests reads as false unless the server sent true", () => {

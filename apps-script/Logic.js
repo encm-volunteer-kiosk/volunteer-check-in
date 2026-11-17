@@ -201,7 +201,7 @@ function settingsDescriptions() {
     [hoursEmailSignatureSetting()]:
       'Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.',
     [hoursRequestsSetting()]:
-      "Whether volunteers can ask for their hours on the tablet: Off hides the Email me my hours button; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them about every 15 minutes, leaving out unchecked shifts, once a week at most; blank or anything else means Off.",
+      "Whether volunteers can ask for their hours on the tablet: Off hides the Request my hours link on the welcome screen; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them every 15 minutes, skipping unchecked shifts, at most weekly; blank or anything else means Off.",
     [hoursRequestsLastRunSetting()]:
       "Written by the hours request job: when it was installed or removed, or a run last sent, held or failed; a run with nothing to do writes nothing, so an old time is normal. In Auto, a request still waiting a day later shows as overdue in Email hours…, which is how a stopped job shows.",
   };
@@ -273,6 +273,11 @@ function refusalMessages() {
     NOT_IN: "You're not checked in.",
     ARRIVAL_FUTURE: "Your arrival time can't be in the future. Please choose an earlier time.",
     ARRIVAL_OTHER_DAY: "Please choose a time from today.",
+    ARRIVAL_AFTER_CHECK_IN:
+      "Your arrival can't be after you checked in. Please choose an earlier time.",
+    ARRIVAL_ROW_CHANGED:
+      "Your check-in changed since this screen opened. Please go back and tap your name again.",
+    ARRIVAL_UNCHANGEABLE: "Please ask a board member to change your arrival time.",
     PHONE_NEEDED: "Please enter the last four digits of your phone number.",
     PHONE_WRONG: "Those digits don't match our records. Please try again or see a board member.",
     PHONE_MISSING: "We need to confirm who you are. Please see a board member.",
@@ -1320,7 +1325,9 @@ function closedTotals(entries, token) {
  * What lets the tablet show a check-in or check-out at the tap: missedSignOut, what a
  * check-in now would answer (logStateMissedSignOut); openShiftId, the open row's Shift ID
  * as a tap may name it (tapShiftId), else null; openUntil, when that row leaves the
- * window (checkedInMs + windowMs), else null; and checkOutMilestones, the milestone a
+ * window (checkedInMs + windowMs), else null; openShiftTapped, that row's Check-In
+ * Recorded (the tap) as ISO, else null, which bounds a Change of the arrival on the
+ * tablet (decideArrivalChange); and checkOutMilestones, the milestone a
  * check-out would show by the minutes of this shift (checkOutMilestoneSteps, up to the
  * longest shift an in-window check-out can state), or null when there is no open row or
  * its start can't be read.
@@ -1345,6 +1352,8 @@ function volunteerSummaries(volunteers, states, nowMs, windowMs, todayDate, laun
       missedSignOut: logStateMissedSignOut(state, launchDate),
       openShiftId: open ? tapShiftId(open.shiftId) : null,
       openUntil: isFinite(untilMs) ? new Date(untilMs).toISOString() : null,
+      openShiftTapped:
+        open && isFinite(open.recordedInMs) ? new Date(open.recordedInMs).toISOString() : null,
       checkOutMilestones: steps,
     };
   });
@@ -1648,6 +1657,114 @@ function decideCheckOut(input) {
     statedOutMs: out.outMs,
     flags: checkOutFlags(open, flag, longFlag, extra),
     open,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Changing the arrival of an open shift
+//
+// The tablet's check-out screen offers Change beside "You checked in at 9:14 AM". A
+// Change moves Check-In Stated of the open row the screen showed; it never touches
+// Check-In Recorded, which stays the tap that the window and the arrival flag measure from.
+
+/** The Admin Alerts? text and Flags reason of a Change: the arrival flag and the old time. */
+function arrivalChangeAlert(flag, fromClock) {
+  return flag ? flag + " (changed at the kiosk from " + fromClock + ")" : "";
+}
+
+/**
+ * The cells a Change writes on its open row (open, a log entry, read last before the
+ * write): Check-In Stated, and Admin Alerts? with alert added after what the cell holds
+ * (appendText) when there is an alert. Nothing else.
+ */
+function arrivalChangeCells(open, arrivedMs, alert) {
+  const H = logHeaderNames();
+  const cells = { [H.statedIn]: arrivedMs };
+  if (cellString(alert)) cells[H.alerts] = sheetText(appendText(open.alerts, alert));
+  return cells;
+}
+
+/** True when two times fall in the same whole second; false when either is unreadable. */
+function sameSecond(a, b) {
+  return (
+    typeof a === "number" &&
+    typeof b === "number" &&
+    isFinite(a) &&
+    isFinite(b) &&
+    Math.floor(a / 1000) === Math.floor(b / 1000)
+  );
+}
+
+/**
+ * Decides a volunteer's Change of their arrival from the tablet. Input: {volunteers, id
+ * (the tapped entry), digits, entries (the Log, or the rows of the tokens checkOutTokens
+ * names), todayDate, nowMs, windowMs, shiftId (the open row's Shift ID the screen showed),
+ * fromMs (the start the screen showed, NaN when unreadable), arrivedMs (the new arrival,
+ * NaN when unreadable), flagMinutes, dateOf(ms) (a time's Central date) and clockOf(ms)
+ * (its Central "HH:mm")}.
+ *
+ * In this order:
+ * 1. who it is, by the check-out's rule (resolveCheckOut): NOT_FOUND, a phone refusal or
+ *    NOT_IN;
+ * 2. their open row the tablet can check out (findOpenShift): none is NOT_IN;
+ * 3. its Shift ID, read as a tap names it (tapShiftId), isn't shiftId:
+ *    ARRIVAL_ROW_CHANGED, since the screen showed another row;
+ * 4. Check-In Recorded unreadable: ARRIVAL_UNCHANGEABLE;
+ * 5. the new arrival by the rule for every stated time (checkStatedTime), on Check-In
+ *    Recorded's Central date: ARRIVAL_OTHER_DAY or ARRIVAL_FUTURE;
+ * 6. later than Check-In Recorded: ARRIVAL_AFTER_CHECK_IN;
+ * 7. equal to the row's start now (shiftStartMs), to the second: {changed: false, volunteer, open,
+ *    arrivedMs}, and nothing is written. This comes before step 8, so a retry of a pick
+ *    whose first send was written is an ok, not a refusal;
+ * 8. the row's start now isn't fromMs, to the second: ARRIVAL_ROW_CHANGED, since the start
+ *    changed after the screen read it;
+ * 9. else {changed: true, volunteer, row, open, arrivedMs, alert, cells}. alert is the
+ *    arrival flag (arrivalFlag against Check-In Recorded, the check-in's rule) with the
+ *    start it replaced, or "" within the threshold; cells are arrivalChangeCells on open.
+ *
+ * Returns {refusal} for a refusal. Only the rows of the tokens checkOutTokens names are
+ * looked at.
+ */
+function decideArrivalChange(input) {
+  const who = resolveCheckOut(input);
+  if (who.refusal) return { refusal: who.refusal };
+  const volunteer = who.volunteer;
+  const open = findOpenShift(
+    input.entries,
+    volunteer.token,
+    input.nowMs,
+    input.windowMs,
+    input.todayDate,
+  );
+  if (!open) return { refusal: "NOT_IN" };
+  const shown = tapShiftId(input.shiftId);
+  if (!shown || tapShiftId(open.shiftId) !== shown) return { refusal: "ARRIVAL_ROW_CHANGED" };
+  const tappedMs = open.recordedInMs;
+  if (typeof tappedMs !== "number" || !isFinite(tappedMs)) {
+    return { refusal: "ARRIVAL_UNCHANGEABLE" };
+  }
+  const arrived = input.arrivedMs;
+  const arrivedDate = typeof arrived === "number" && isFinite(arrived) ? input.dateOf(arrived) : "";
+  const checked = checkStatedTime(input.nowMs, arrived, arrivedDate, input.dateOf(tappedMs));
+  if (checked.refused) return { refusal: "ARRIVAL_" + checked.refused };
+  if (checked.ms > tappedMs) return { refusal: "ARRIVAL_AFTER_CHECK_IN" };
+  const startMs = shiftStartMs(open);
+  if (sameSecond(checked.ms, startMs)) {
+    return { changed: false, volunteer, open, arrivedMs: checked.ms };
+  }
+  if (!sameSecond(startMs, input.fromMs)) return { refusal: "ARRIVAL_ROW_CHANGED" };
+  const alert = arrivalChangeAlert(
+    arrivalFlag(tappedMs, checked.ms, input.flagMinutes),
+    clockLabel(input.clockOf(startMs)),
+  );
+  return {
+    changed: true,
+    volunteer,
+    row: open.row,
+    open,
+    arrivedMs: checked.ms,
+    alert,
+    cells: arrivalChangeCells(open, checked.ms, alert),
   };
 }
 
@@ -3448,9 +3565,9 @@ function hoursEmailLogLine(id, result, reason) {
 // ---------------------------------------------------------------------------
 // Hours requests
 //
-// The Email me my hours button on the tablet records a request on the Hours requests tab
-// (apiRequestHours, Api.js). Settings "Hours requests" decides what happens next: Off hides
-// the button; Approve leaves the request for staff, who send it from Kiosk admin > Email
+// The Request my hours link on the tablet's welcome screen opens a name search, and the
+// confirm screen after it records a request on the Hours requests tab (apiRequestHours,
+// Api.js). Settings "Hours requests" decides what happens next: Off hides the link; Approve leaves the request for staff, who send it from Kiosk admin > Email
 // hours…, where requesters arrive ticked; Auto lets the hours request job send it by
 // itself. That job (runHoursRequests, Jobs.js) runs every 15 minutes on a trigger of its
 // own, installed with setupHoursRequestJob by an account that can open Volunteer Profiles.
@@ -7565,7 +7682,8 @@ function flagColumnKinds() {
 }
 
 /**
- * Where a flag came from, the Source column. auto-close is the daily auto clock-out
+ * Where a flag came from, the Source column. kiosk arrival change is a volunteer's Change
+ * of their arrival on the tablet's check-out screen (apiChangeArrival). auto-close is the daily auto clock-out
  * (runAutoClockOut), import is Import past hours, log check is the Log check (nightly or
  * Kiosk admin > Check the Log now).
  */
@@ -7573,6 +7691,7 @@ function flagSources() {
   return {
     checkIn: "kiosk check-in",
     checkOut: "kiosk check-out",
+    arrivalChange: "kiosk arrival change",
     autoClose: "auto-close",
     import: "import",
     logCheck: "log check",
@@ -10375,10 +10494,10 @@ function howToSections() {
       title: "Hours requests from the tablet",
       lines: [
         text(
-          "Hours requests on the Settings tab decides whether volunteers can ask for their hours on the tablet. Off, the default, hides the Email me my hours button. Approve shows it and leaves each request for you to send. Auto shows it and the kiosk emails each request by itself, about every 15 minutes.",
+          "Hours requests on the Settings tab decides whether volunteers can ask for their hours on the tablet. Off, the default, hides the Request my hours link on the tablet's welcome screen. Approve shows it and leaves each request for you to send. Auto shows it and the kiosk emails each request by itself, about every 15 minutes.",
         ),
         text(
-          "A tap only records a request on the Hours requests tab, one open request per volunteer. The tablet never shows an email address: the email goes to the Email cell of the volunteer's Volunteer Profiles row, as from Email hours.",
+          "A volunteer taps the link, finds their name, and taps Send on the screen that follows. That only records a request on the Hours requests tab, one open request per volunteer. Nothing on that path checks anyone in or out. The tablet never shows an email address: the email goes to the Email cell of the volunteer's Volunteer Profiles row, as from Email hours.",
         ),
         step(
           "1. Kiosk admin > Email hours… Volunteers who asked are ticked and marked Requested and the date. In Auto only held and overdue requests are ticked, since Auto sends the rest.",

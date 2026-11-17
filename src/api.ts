@@ -10,6 +10,8 @@ import {
   checkOut,
   isCheckedInAt,
   checkInWindowMs,
+  centralDay,
+  changeArrival,
   isToday,
   kioskStore,
   localMilestones,
@@ -22,7 +24,9 @@ import {
 import type { Tap } from "./saveQueue";
 import { DEFAULT_LONG_SHIFT_HOURS, longShiftHoursOf } from "./cardTime";
 import { nameKey } from "./sameName";
+import { callLog, recorded, type CallLog } from "./callRecord";
 import {
+  arrivalChangeFromServer,
   checkInFromServer,
   checkOutFromServer,
   hoursRequestsOf,
@@ -44,9 +48,9 @@ export type VolunteerSummary = {
   // That row's stated arrival. After midnight it can be on yesterday's date.
   openShiftArrival: string | null;
   needsPhoneCheck: boolean;
-  // A server older than instant results sends none of the four below. google.script.run
-  // drops a null field, so the page reads a missing one of the last three as null
-  // (replies.ts).
+  // A server older than instant results sends none of the four below, and one older than
+  // the arrival change none of the fifth. google.script.run drops a null field, so the page
+  // reads a missing one of the last four as null (replies.ts).
   // What a check-in now would answer for the missed check-out notice.
   missedSignOut?: boolean;
   // The open row's Shift ID, and when it leaves the window (ISO); null when not checked in.
@@ -54,6 +58,9 @@ export type VolunteerSummary = {
   openUntil?: string | null;
   // The milestone a check-out shows by the minutes of this shift; null when not checked in.
   checkOutMilestones?: MilestoneStep[] | null;
+  // The open row's Check-In Recorded (ISO), the moment Check In was tapped: the latest
+  // arrival a Change may choose. null when not checked in or when it can't be read.
+  openShiftTapped?: string | null;
 };
 
 // id is the volunteer the server acted on. In a same-name group the phone digits pick the
@@ -82,11 +89,20 @@ export type CheckOutResult = {
   replayed?: boolean;
 };
 
+// A Change of arrival saved, or found already saved (changed false). id is the volunteer the
+// server acted on, shiftId the open row's Shift ID and arrivedAt the row's start now.
+export type ArrivalChangeResult = {
+  id: string;
+  shiftId: string | null;
+  arrivedAt: string | null;
+  changed: boolean;
+};
+
 // The list reply: the volunteers, the sheet's "Long shift flag hours", past which a
 // checked-in card turns amber (8 when the server sends none), the milestone texts a
 // check-out's steps name, the server's clock during the call (null from an older server,
-// whose list then can't decide an instant result), and whether the Email me my hours button
-// shows (false when the server sends none).
+// whose list then can't decide an instant result), and whether the welcome screen's Request
+// my hours link shows (false when the server sends none).
 export type VolunteerList = {
   volunteers: VolunteerSummary[];
   longShiftHours: number;
@@ -118,10 +134,24 @@ export interface KioskApi {
     checkOutIso: string | null,
     tap?: Tap,
   ): Promise<CheckOutResult | Refusal>;
-  // Records an Email me my hours request. digits as for a check-in. The answer is the same
+  // Records a request for the volunteer's hours, from the welcome screen's Request my hours
+  // link. digits as for a check-in. The answer is the same
   // for a new request and one already open, and carries nothing about the volunteer. It is
   // its own call: never queued, retried or sent offline.
   requestHours(code: string, id: string, digits: string | null): Promise<true | Refusal>;
+  // Changes the arrival of the volunteer's open shift, from Change on the check-out screen.
+  // id and digits as for a check-out. shiftId is the open row's Shift ID and fromIso the
+  // start the screen showed when the picker opened; arrivalIso is the new arrival. The server
+  // writes only when the row is still that one with that start. It is its own call: never
+  // queued, retried or sent offline.
+  changeArrival(
+    code: string,
+    id: string,
+    digits: string | null,
+    shiftId: string,
+    fromIso: string,
+    arrivalIso: string,
+  ): Promise<ArrivalChangeResult | Refusal>;
 }
 
 export function isRefusal(value: unknown): value is Refusal {
@@ -207,6 +237,12 @@ export const gasApi: KioskApi = {
     const reply = await run((r) => r.apiRequestHours(code, id, digits));
     return reply.ok ? true : refusalOf(reply);
   },
+  async changeArrival(code, id, digits, shiftId, fromIso, arrivalIso) {
+    const reply = await run((r) =>
+      r.apiChangeArrival(code, id, digits, shiftId, fromIso, arrivalIso),
+    );
+    return reply.ok ? arrivalChangeFromServer(reply) : refusalOf(reply);
+  },
 };
 
 // ---------------------------------------------------------------------------------------
@@ -219,6 +255,11 @@ const refusalMessages: Record<string, string> = {
   NOT_IN: "You're not checked in.",
   ARRIVAL_FUTURE: "Your arrival time can't be in the future. Please choose an earlier time.",
   ARRIVAL_OTHER_DAY: "Please choose a time from today.",
+  ARRIVAL_AFTER_CHECK_IN:
+    "Your arrival can't be after you checked in. Please choose an earlier time.",
+  ARRIVAL_ROW_CHANGED:
+    "Your check-in changed since this screen opened. Please go back and tap your name again.",
+  ARRIVAL_UNCHANGEABLE: "Please ask a board member to change your arrival time.",
   CHECKOUT_FUTURE: "Your check-out time can't be in the future. Please choose an earlier time.",
   CHECKOUT_OTHER_DAY: "Please choose a time from today.",
   CHECKOUT_BEFORE_ARRIVAL:
@@ -255,7 +296,7 @@ const localArrivalGraceMs = 5 * 60_000;
 
 let localData: KioskData | null = null;
 
-// Email me my hours requests, in memory only: the Volunteer IDs with a request open, in the
+// Hours requests, in memory only: the Volunteer IDs with a request open, in the
 // order asked. The local store has no staff or job to send them, so they stay open until a
 // reset.
 let localHoursRequests: string[] = [];
@@ -350,6 +391,16 @@ function localOpenShiftId(data: KioskData, volunteer: Volunteer): string | null 
   return closed ? null : open.shiftId;
 }
 
+/** When the volunteer's open shift's Check In was tapped (ISO), or null when not stored. */
+function localTapped(volunteer: Volunteer): string | null {
+  const ms = Date.parse(volunteer.currentCheckInTappedAt ?? "");
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+/** Equal to the second, both readable, as the server compares starts. */
+const sameSecond = (a: number, b: number) =>
+  Number.isFinite(a) && Number.isFinite(b) && Math.floor(a / 1000) === Math.floor(b / 1000);
+
 // As on the server: a tap happened its age (two readings of the tablet clock) before now.
 function localTapAge(tap: Tap): number {
   const ok = (n: unknown) => typeof n === "number" && Number.isFinite(n);
@@ -397,6 +448,7 @@ export const localApi: KioskApi & { hoursRequestsOpen(): string[]; reset(): void
               : null,
           // The local store has no milestone steps, so a local check-out waits for its reply.
           checkOutMilestones: null,
+          openShiftTapped: checkedIn ? localTapped(v) : null,
         };
       });
     return {
@@ -505,6 +557,45 @@ export const localApi: KioskApi & { hoursRequestsOpen(): string[]; reset(): void
     }
     return true;
   },
+  // As the server decides a Change, in its order: who it is by the check-out's rule, the open
+  // shift, the Shift ID the screen showed, a readable tap time, the stated-time rule on the
+  // tap's date, not after the tap, then the same start (changed false) before the start the
+  // screen showed. The local store has no flags.
+  async changeArrival(code, id, digits, shiftId, fromIso, arrivalIso) {
+    const found = localLookup(code, id, digits, true);
+    if (found.refusal) return found.refusal;
+    const { data, volunteer } = found;
+    const now = Date.now();
+    if (!volunteer.currentCheckIn || !isCheckedInAt(volunteer, now)) return refuse("NOT_IN");
+    const open = localOpenShiftId(data, volunteer);
+    const shown = typeof shiftId === "string" ? shiftId.trim() : "";
+    if (!open || !shown || open !== shown) return refuse("ARRIVAL_ROW_CHANGED");
+    const tapped = localTapped(volunteer);
+    if (tapped === null) return refuse("ARRIVAL_UNCHANGEABLE");
+    const tappedMs = Date.parse(tapped);
+    const asked = typeof arrivalIso === "string" ? Date.parse(arrivalIso) : NaN;
+    if (!Number.isFinite(asked)) return refuse("ARRIVAL_OTHER_DAY");
+    if (asked > now + localArrivalGraceMs) return refuse("ARRIVAL_FUTURE");
+    const arrived = Math.min(asked, now);
+    const dayOf = (ms: number) => centralDay(new Date(ms).toISOString());
+    if (dayOf(arrived) !== dayOf(tappedMs)) return refuse("ARRIVAL_OTHER_DAY");
+    if (arrived > tappedMs) return refuse("ARRIVAL_AFTER_CHECK_IN");
+    const start = Date.parse(volunteer.currentCheckIn);
+    const answer = (arrivedAt: string, changed: boolean): ArrivalChangeResult => ({
+      id: volunteer.id,
+      shiftId: open,
+      arrivedAt,
+      changed,
+    });
+    if (sameSecond(arrived, start)) return answer(volunteer.currentCheckIn, false);
+    const from = typeof fromIso === "string" ? Date.parse(fromIso) : NaN;
+    if (!sameSecond(start, from)) return refuse("ARRIVAL_ROW_CHANGED");
+    const arrivedAt = new Date(arrived).toISOString();
+    const next = changeArrival(data, volunteer.id, open, arrivedAt);
+    await kioskStore.save(next);
+    localData = next;
+    return answer(arrivedAt, true);
+  },
   hoursRequestsOpen() {
     return [...localHoursRequests];
   },
@@ -516,4 +607,27 @@ export const localApi: KioskApi & { hoursRequestsOpen(): string[]; reset(): void
 
 export const usingLocalApi = typeof google === "undefined" || !google.script;
 
-export const api: KioskApi = usingLocalApi ? localApi : gasApi;
+// ---------------------------------------------------------------------------------------
+// The call record
+
+/**
+ * Every call of the API, recorded (callRecord.ts): each method's promise resolving is a
+ * reply, a refusal included; rejecting is a call ended without one.
+ */
+export function withCallRecord<A extends KioskApi>(inner: A, log: CallLog): KioskApi {
+  return {
+    checkAccess: (...a) => recorded(log, () => inner.checkAccess(...a)),
+    listVolunteers: (...a) => recorded(log, () => inner.listVolunteers(...a)),
+    checkIn: (...a) => recorded(log, () => inner.checkIn(...a)),
+    checkOut: (...a) => recorded(log, () => inner.checkOut(...a)),
+    requestHours: (...a) => recorded(log, () => inner.requestHours(...a)),
+    changeArrival: (...a) => recorded(log, () => inner.changeArrival(...a)),
+  };
+}
+
+const calls = callLog(() => Date.now());
+
+/** This page's server calls as of now: the latest reply, the latest failure, those waiting. */
+export const callRecord = () => calls.read();
+
+export const api: KioskApi = withCallRecord(usingLocalApi ? localApi : gasApi, calls);

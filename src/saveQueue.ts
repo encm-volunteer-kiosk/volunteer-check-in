@@ -3,9 +3,12 @@
 // A tap qualifies for an instant result when the tablet already holds every fact the server's
 // answer would carry: a trusted list that carries the missed check-out answer, the open row's
 // Shift ID, when it leaves the window and the milestone steps of this shift. The tablet then
-// shows the result at once and puts the save in a queue kept in localStorage. One page at a
-// time sends the queue's head, with a tap ID the server recognises, so a retry that finds its
-// save already made writes nothing.
+// shows the result at once and puts the save in a queue kept in localStorage. It does so only
+// while saves are going through (savesGoingThrough): the server answered this page lately,
+// no call has failed or hung since, and the queue's head isn't stuck. Otherwise the tap waits
+// for the server and shows an error if the save fails, never a success that could be lost.
+// One page at a time sends the queue's head, with a tap ID the server recognises, so a retry
+// that finds its save already made writes nothing.
 //
 // The stored queue has one writer at a time: every change is read from storage, changed and
 // written back inside the Web Lock SAVE_QUEUE_LOCK (changeQueue below), so a second kiosk tab
@@ -37,6 +40,16 @@ export const OPEN_MARGIN_MS = 120_000;
 export const MILESTONE_MARGIN_MIN = 2;
 // Tapping a name refreshes a list older than this.
 export const SELECT_REFRESH_MS = 60_000;
+// The page asks for the list this often. LIST_REFRESH_MS + CALL_SLOW_MS must stay under
+// REACH_MS, so an idle tablet always has a reply recent enough for its first tap to be instant.
+export const LIST_REFRESH_MS = 90_000;
+// Taps are instant only within this long of the server's latest reply to this page.
+export const REACH_MS = 120_000;
+// A call waiting this long for its reply, or a queued save this long unanswered or unsent,
+// makes taps wait. A list call normally answers in 2-4 s and a save in about 4 s.
+export const CALL_SLOW_MS = 10_000;
+// The queue's head tapped longer ago than this makes taps wait.
+export const FLOW_MS = 30_000;
 export const MAX_SENDS = 12;
 // After the k-th attempt that ended in retry the next waits BACKOFF_MS[min(k - 1, 6)].
 export const BACKOFF_MS = [5_000, 10_000, 20_000, 40_000, 60_000, 120_000, 300_000];
@@ -145,6 +158,15 @@ export type ListEntry = {
   checkOutMilestones?: MilestoneStep[] | null;
 };
 
+// The page's own server calls as of a moment (callRecord.ts), all tablet ms: the latest
+// reply, the latest end without a reply (null for none yet) and the start of each call still
+// waiting for its reply.
+export type CallRecord = {
+  latestReply: number | null;
+  latestEnded: number | null;
+  waiting: number[];
+};
+
 export type Outcome = "landed" | "retry" | "lock" | "refused";
 
 export type QueueStorage = Pick<Storage, "getItem" | "setItem">;
@@ -166,8 +188,9 @@ export type QueueEnv = {
 };
 
 // Why a change wasn't made: the volunteer has a queued save, the volunteer has a mark newer
-// than the list, the save is no longer queued, or no save is due.
-export type Refusal = "queued" | "marked" | "gone" | "none";
+// than the list, the save is no longer queued, no save is due, or the stored queue's head
+// says saves aren't going through.
+export type Refusal = "queued" | "marked" | "gone" | "none" | "stalled";
 export type Change = (queue: SaveQueue) => SaveQueue | { refused: Refusal };
 export type ChangeResult = { queue: SaveQueue; stored: boolean; refused: Refusal | null };
 
@@ -493,14 +516,63 @@ const isStep = (s: unknown) =>
   isNum((s as MilestoneStep).fromMinutes) &&
   isStrOrNull((s as MilestoneStep).id);
 
+/** True when age is from zero up to, not including, limit. A negative age is never fresh. */
+const fresh = (age: number, limit: number) => age >= 0 && age < limit;
+
+/**
+ * The stored queue's head, if any, isn't held up: tapped less than FLOW_MS ago with no failed
+ * attempt, and last sent less than CALL_SLOW_MS ago, or, never sent, tapped less than that
+ * ago. Only the head is ever sent, so this covers the whole queue. A head with a send and no
+ * failed attempt has had no answer to that send (an answer removes it, counts a retry, or
+ * locks the kiosk), so this reads a hung save from the queue every tab shares, whichever tab
+ * sent it.
+ */
+export function queueFlowing(queue: SaveQueue, now: number): boolean {
+  const head = queue.saves[0];
+  if (!head) return true;
+  if (!fresh(now - head.tapAt, FLOW_MS) || head.retries !== 0) return false;
+  return fresh(now - (head.sends > 0 ? head.lastSendAt : head.tapAt), CALL_SLOW_MS);
+}
+
+/**
+ * True when saves are going through, so a tap may be instant. All must hold at now:
+ * 1 online isn't false (navigator.onLine; a false is trusted, a true proves nothing);
+ * 2 the server answered a call from this page less than REACH_MS ago (any reply, a refusal
+ * or BUSY included);
+ * 3 no call from this page has ended without a reply since that reply (the record counts a
+ * call unanswered for ATTEMPT_MS as ended);
+ * 4 no call from this page has been waiting CALL_SLOW_MS or more;
+ * 5 and 6 the stored queue's head is flowing (queueFlowing).
+ * An age counts as fresh only when it is zero or more, so a clock set back makes taps wait.
+ * After a network drop the tablet can't see, the taps that can still be instant all come
+ * less than CALL_SLOW_MS after the first call the page sent into the silence (the first
+ * instant tap's own save is sent at once), and none more than REACH_MS after the last reply.
+ */
+export function savesGoingThrough(
+  calls: CallRecord,
+  queue: SaveQueue,
+  online: boolean | undefined,
+  now: number,
+): boolean {
+  if (online === false) return false;
+  const reply = calls.latestReply;
+  if (reply === null || !fresh(now - reply, REACH_MS)) return false;
+  if (calls.latestEnded !== null && calls.latestEnded >= reply) return false;
+  if (calls.waiting.some((start) => !fresh(now - start, CALL_SLOW_MS))) return false;
+  return queueFlowing(queue, now);
+}
+
 export type QualifyContext = TrustContext & {
   hasCode: boolean;
-  // The page found the access code in storage when it started, so this tablet's storage
-  // survives a reload. A code typed since the page started is no such evidence: where the
-  // browser keeps the frame's storage only for the session, a reload would also wipe the
-  // queue, so every tap waits.
-  codeKept: boolean;
+  // The access code reads back from storage: it came from storage when the page started, or
+  // read back equal right after Save stored it. Where storage is blocked it doesn't, and the
+  // queue couldn't be stored either, so every tap waits.
+  codeStored: boolean;
   foregroundPending: boolean;
+  // navigator.onLine as the page reads it.
+  online: boolean | undefined;
+  // This page's own server calls (callRecord in api.ts).
+  calls: CallRecord;
   // The stored queue as the page last read it; changeQueue checks rules 3 and 6 again.
   queue: SaveQueue;
   // Marks of foreground saves the page couldn't store, held in its memory.
@@ -511,8 +583,8 @@ export type QualifyContext = TrustContext & {
 
 /**
  * The first rule a tap fails, or null when it qualifies for an instant result:
- * 1 an access code, found in storage when the page started, and no foreground save pending;
- * 2 a trusted list; 3 no change by this
+ * 1 an access code that reads back from storage, no foreground save pending, and saves going
+ * through (savesGoingThrough); 2 a trusted list; 3 no change by this
  * tablet to the volunteer since the list was asked for; 4 no phone check; 5 no time picked;
  * 6 no queued save for the volunteer; 7 (check-in) not checked in and the list carries the
  * missed check-out answer; 8 (check-out) checked in, with the open row's Shift ID, its
@@ -525,7 +597,8 @@ export function qualifyFailure(
   entry: ListEntry,
   ctx: QualifyContext,
 ): number | null {
-  if (!ctx.hasCode || !ctx.codeKept || ctx.foregroundPending) return 1;
+  if (!ctx.hasCode || !ctx.codeStored || ctx.foregroundPending) return 1;
+  if (!savesGoingThrough(ctx.calls, ctx.queue, ctx.online, ctx.now)) return 1;
   if (!listTrusted(ctx)) return 2;
   if (
     hasMarkSince(ctx.queue, entry.id, ctx.listStamp) ||
@@ -603,11 +676,23 @@ export function tapOf(save: QueuedSave, sentAt: number): Tap {
 // The changes, each pure: the queue as stored in, the next queue or a refusal out.
 // changeQueue adds 1 to seq, so a mark made in a change carries queue.seq + 1.
 
-/** Adds a save, refused when the volunteer has a queued save or a mark newer than the list. */
-export function enqueue(save: QueuedSave, stamp: ListStamp | null): Change {
+/**
+ * Adds a save, refused when the volunteer has a queued save or a mark newer than the list,
+ * or, given a time or a clock, when the queue as stored has a head that isn't flowing
+ * (another tab's save may have hung since this page last read the queue). A clock is read
+ * inside the change, under the queue lock, so a send stamped after the tap read its own
+ * clock can't look like one from the future.
+ */
+export function enqueue(
+  save: QueuedSave,
+  stamp: ListStamp | null,
+  now?: number | (() => number),
+): Change {
   return (queue) => {
     if (hasQueuedFor(queue, save.volunteerId)) return { refused: "queued" };
     if (hasMarkSince(queue, save.volunteerId, stamp)) return { refused: "marked" };
+    const at = typeof now === "function" ? now() : now;
+    if (at !== undefined && !queueFlowing(queue, at)) return { refused: "stalled" };
     return { ...queue, saves: [...queue.saves, save] };
   };
 }
@@ -921,7 +1006,7 @@ export function runnerGate(ctx: {
  * Where an instant tap goes after its enqueue: "instant" when the save was stored; the
  * still-saving line when the volunteer already had a queued save (another tab queued it
  * after this page last read the queue), since a save sent now would reach the server first;
- * otherwise (a newer mark, or nothing stored) the waiting way.
+ * otherwise (a newer mark, a head not flowing, or nothing stored) the waiting way.
  */
 export function afterEnqueue(result: ChangeResult): "instant" | "still-saving" | "wait" {
   if (result.refused === "queued") return "still-saving";

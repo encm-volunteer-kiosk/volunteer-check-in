@@ -1,10 +1,15 @@
-// The time picker behind the "Change your arrival time" / "Change your check-out time" link:
-// the rules it obeys, kept apart from the component so the tests can run them in Node.
+// The time picker behind the "Change your arrival time" / "Change your check-out time" links
+// and the check-out screen's Change: the rules it obeys, kept apart from the component so the
+// tests can run them in Node.
 //
 // Times are Central minutes since today's midnight. Every value the picker emits is a quarter
 // hour from the earliest allowed (the lower bound rounded up to a quarter hour) to the latest
-// (now, rounded down to a quarter hour), inclusive, as "HH:mm". The server checks every time
-// it is sent as well.
+// (now rounded down to a quarter hour, or an earlier cap rounded down), inclusive, as "HH:mm".
+// The server checks every time it is sent as well.
+//
+// The range keeps two anchors: the latest time that may be chosen, and the clock (now rounded
+// down to a quarter hour), which every quick answer, every "… ago" text and a quick answer's
+// recount at the tap measure from. Without a cap the two are the same.
 //
 // Plain TypeScript only (no enums, namespaces or parameter properties): the tests import
 // this file in Node, which strips the types without a loader.
@@ -14,10 +19,11 @@ import { centralDay } from "./listStore.ts";
 const TZ = "America/Chicago";
 const QUARTER = 15;
 
-export type QuickRange = { earliest: number; latest: number };
+// capped: the latest is a cap given by the caller, not the clock.
+export type QuickRange = { earliest: number; latest: number; clock: number; capped: boolean };
 export type QuickAnswer = { label: string; minutes: number };
 
-// How long ago each quick answer is, counted back from the latest quarter hour.
+// How long ago each quick answer is, counted back from the clock's quarter hour.
 export const QUICK_ANSWERS: ReadonlyArray<{ label: string; ago: number }> = [
   { label: "Now", ago: 0 },
   { label: "15 min ago", ago: 15 },
@@ -47,12 +53,20 @@ export function centralMinutes(date: Date = new Date()) {
 /**
  * The quarter hours that may be chosen. minMinutes may carry a fraction (an arrival at
  * 9:00:30 is 540.5), and a time before it can't be chosen, so the earliest rounds up.
- * earliest > latest means nothing can be chosen.
+ * maxMinutes, when given, caps the latest: the smaller of it and now, rounded down. clock is
+ * now rounded down, cap or not. earliest > latest means nothing can be chosen.
  */
-export function quickRange(minMinutes: number, nowMinutes: number): QuickRange {
+export function quickRange(
+  minMinutes: number,
+  nowMinutes: number,
+  maxMinutes?: number,
+): QuickRange {
+  const clock = floorQuarter(nowMinutes);
   return {
     earliest: Math.ceil(minMinutes / QUARTER) * QUARTER,
-    latest: floorQuarter(nowMinutes),
+    latest: maxMinutes === undefined ? clock : Math.min(floorQuarter(maxMinutes), clock),
+    clock,
+    capped: maxMinutes !== undefined,
   };
 }
 
@@ -60,22 +74,25 @@ export function inRange(minutes: number, range: QuickRange) {
   return minutes >= range.earliest && minutes <= range.latest;
 }
 
-/** The quick answers inside the range; one outside it is left out. */
+/**
+ * The quick answers inside the range, counted back from the clock; one outside it is left
+ * out. Under a cap "Now" is never offered: the cap is a moment already past.
+ */
 export function quickAnswers(range: QuickRange): QuickAnswer[] {
-  return QUICK_ANSWERS.map(({ label, ago }) => ({ label, minutes: range.latest - ago })).filter(
-    (answer) => inRange(answer.minutes, range),
-  );
+  return QUICK_ANSWERS.filter(({ ago }) => !(range.capped && ago === 0))
+    .map(({ label, ago }) => ({ label, minutes: range.clock - ago }))
+    .filter((answer) => inRange(answer.minutes, range));
 }
 
 /**
  * The time a tapped quick answer sends. The chip printed the time it had at the last redraw,
  * and the clock may have passed a quarter hour since, so the printed time is sent while it is
  * still in the range at the tap. Only when it has left the range (past midnight, say) does
- * the answer count back from the tap's own latest quarter hour. Null when neither fits.
+ * the answer count back from the tap's own clock. Null when neither fits.
  */
 export function pickMinutes(shown: number, ago: number, range: QuickRange) {
   if (inRange(shown, range)) return shown;
-  const next = range.latest - ago;
+  const next = range.clock - ago;
   return inRange(next, range) ? next : null;
 }
 
@@ -112,9 +129,9 @@ export function clockText(minutes: number) {
   return `${hour % 12 || 12}:${String(minutes % 60).padStart(2, "0")} ${hour >= 12 ? "PM" : "AM"}`;
 }
 
-/** How far a time is before the latest quarter hour: "Just now", "30 min ago", "1 hr 15 min ago". */
+/** How far a time is before the clock's quarter hour: "Just now", "30 min ago", "1 hr 15 min ago". */
 export function agoText(minutes: number, range: QuickRange) {
-  const ago = range.latest - minutes;
+  const ago = range.clock - minutes;
   if (ago <= 0) return "Just now";
   const hours = Math.floor(ago / 60);
   const rest = ago % 60;

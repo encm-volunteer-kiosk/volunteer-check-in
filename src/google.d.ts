@@ -21,6 +21,14 @@ interface GoogleScriptRunner {
     tap?: object,
   ): void;
   apiRequestHours(code: string, id: string, digits: string | null): void;
+  apiChangeArrival(
+    code: string,
+    id: string,
+    digits: string | null,
+    shiftId: string,
+    fromIso: string,
+    arrivalIso: string,
+  ): void;
 }
 
 declare const google: { script?: { run: GoogleScriptRunner } } | undefined;

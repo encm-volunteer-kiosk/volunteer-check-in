@@ -28,6 +28,8 @@ export type Volunteer = {
   // The open row's Shift ID, and when that row leaves the window (ISO), or null.
   openShiftId?: string | null;
   openUntil?: string | null;
+  // The open row's Check-In Recorded (ISO), the latest arrival a Change may choose, or null.
+  openShiftTapped?: string | null;
   // The milestone a check-out shows, by the minutes of this shift, or null.
   checkOutMilestones?: MilestoneStep[] | null;
 };
@@ -112,7 +114,8 @@ const seededStats = [
   [1, 240],
 ];
 
-function centralDay(iso: string) {
+/** The Central calendar day of an instant, as YYYY-MM-DD. */
+export function centralDay(iso: string) {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: TZ,
     year: "numeric",
@@ -168,6 +171,7 @@ function createSeed(): KioskData {
     active: true,
     expectedToday: index < 9,
     currentCheckIn: index === 7 ? new Date(now - 82 * 60_000).toISOString() : null,
+    currentCheckInTappedAt: index === 7 ? new Date(now - 82 * 60_000).toISOString() : null,
     completedShiftCount: seededStats[index][0],
     totalVolunteerMinutes: seededStats[index][1],
   }));
@@ -301,6 +305,29 @@ export function checkIn(
       ...data.events,
       { id: crypto.randomUUID(), volunteerId, eventType: "check_in", timestamp, shiftId },
     ],
+  };
+}
+
+/**
+ * Moves the arrival of the volunteer's open shift (shiftId) to timestamp: the volunteer's
+ * currentCheckIn and that shift's check-in event. The tap time stays.
+ */
+export function changeArrival(
+  data: KioskData,
+  volunteerId: string,
+  shiftId: string,
+  timestamp: string,
+): KioskData {
+  return {
+    ...data,
+    volunteers: data.volunteers.map((v) =>
+      v.id === volunteerId ? { ...v, currentCheckIn: timestamp } : v,
+    ),
+    events: data.events.map((e) =>
+      e.shiftId === shiftId && e.eventType === "check_in" && e.volunteerId === volunteerId
+        ? { ...e, timestamp }
+        : e,
+    ),
   };
 }
 
