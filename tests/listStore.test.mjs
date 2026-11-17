@@ -429,3 +429,21 @@ test("a list kept by the page before instant results (version 2) is dropped on r
   assert.equal(readStoredList(storage, "4417", T0 + MINUTE), null);
   assert.equal(storage.items.has(LIST_STORE_KEY), false);
 });
+
+test("the kept list never holds the list's hoursRequests, and its version stays 3", () => {
+  assert.equal(LIST_STORE_VERSION, 3);
+  const storage = fakeStorage();
+  // Even handed a volunteer and extras carrying the flag, nothing stores it.
+  const carrying = [{ ...list[0], hoursRequests: true }];
+  storeList(storage, "4417", T0, carrying, 8, {
+    milestones: [],
+    clockOffsetMs: null,
+    listStamp: null,
+    hoursRequests: true,
+  });
+  const text = storage.items.get(LIST_STORE_KEY);
+  assert.doesNotMatch(text, /hoursRequests/);
+  assert.equal(JSON.parse(text).version, 3);
+  const kept = readStoredList(storage, "4417", T0 + MINUTE);
+  assert.equal("hoursRequests" in kept, false);
+});

@@ -13,7 +13,10 @@ so hours can be credited to each volunteer and reported to grantmakers.
   O'Brien. It is built into a single HTML file that the Apps Script web app serves.
   There is no name grid and no sign-up path, because every volunteer is registered
   before they volunteer. The first time, a board member types the kiosk access code
-  from the Settings tab; the tablet remembers it.
+  from the Settings tab; the tablet remembers it. With Settings "Hours requests" on
+  Approve or Auto, the check-in and check-out screens also offer **Email me my hours**,
+  which records a request for staff or the hours request job to answer (see Hours
+  requests).
 - **Check-out reminders**: every check-in ends on a "You're checked in." screen with the
   line "Don't forget to check out before you leave." When the volunteer's last shift ended
   without their own Check Out, a notice comes first: "Welcome back, Sam! Last time you
@@ -75,7 +78,9 @@ so hours can be credited to each volunteer and reported to grantmakers.
   Log, and a warning when someone edits a column the kiosk fills (see Reports).
 - **Daily jobs**: a weekly email of flags to staff, an auto clock-out at about 4 AM that
   closes shifts nobody checked out of, with a guessed time, flagged, and a refresh of the
-  Hours tab at about 5 AM (see Daily jobs).
+  Hours tab at about 5 AM (see Daily jobs). The hours request job, which emails hours
+  requests every 15 minutes when Hours requests is Auto, has its own installer (see Who
+  runs them).
 
 Team design pages (private; ask Ethan for access):
 
@@ -366,7 +371,9 @@ The kiosk only adds rows to this tab. It finds its columns by header, as on the 
 Three things read Flags rows back: the weekly flags email (see Daily jobs) and row 3 of the
 Hours tab, to count and list them, and the Log check, to skip what it has already
 flagged. So sorting, filtering or deleting Flags rows is safe, and so are columns of your
-own; a deleted Log check row is raised again on the next check. Reviewed By and Notes are
+own; a deleted Log check row is raised again on the next check. With Hours requests on
+Auto, a deleted Flags row counts as reviewed: the shift it was about is counted in
+automatic emails. Delete only flags you have looked at. Reviewed By and Notes are
 yours; the kiosk never writes them, except that Remove a shift and Restore a shift add a
 note (below). There is no User Token on this tab; find it on the Log row by Shift ID if you
 need it.
@@ -439,30 +446,32 @@ protection, so typing in it warns first. When the kiosk itself adds a missing ro
 example "Flags email last run" after someone deleted it), the row gets its sentence at
 once.
 
-| Setting                    | Default                         | What it does                                                                                                                                                                                                                                                                           |
-| -------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Kiosk access code          | blank                           | The code a board member types on the tablet to open the kiosk: at least 16 letters (only letters count, and capitals are the same as small letters), and while it's blank or shorter no tablet can open.                                                                               |
-| Volunteer Profiles file ID | blank                           | Which spreadsheet the volunteer list comes from, as the long ID in its link between /d/ and /edit; while it's blank, no volunteer can be found on the tablet or in the menu.                                                                                                           |
-| Volunteer Profiles tab     | Volunteer Profiles              | The tab in that spreadsheet that holds the volunteer list; blank means a tab named Volunteer Profiles.                                                                                                                                                                                 |
-| Kiosk launch date          | the day `setupSheets` first ran | The day the kiosk started, as yyyy-mm-dd: only volunteers who started on or after it get the first-shift welcome, and the nightly auto clock-out closes only shifts on or after it, so never leave it blank.                                                                           |
-| Arrival flag minutes       | 15                              | How many minutes a volunteer's chosen arrival time can be from the moment they tapped in before the shift is flagged, as a number 0 or more; blank means 15.                                                                                                                           |
-| Check-out flag minutes     | 15                              | How many minutes a volunteer's chosen check-out time can be from the moment they tapped out before the shift is flagged, as a number 0 or more; blank means 15.                                                                                                                        |
-| Volunteer hour value       | blank                           | The dollar value of one volunteer hour, such as 34.79, used in the monthly report; while it's blank the report leaves the value out and says to set it here.                                                                                                                           |
-| Profiles problems          | blank                           | Written by the kiosk: rows of Volunteer Profiles it had to leave out, and why (blank means none), so fix them in Volunteer Profiles, not here.                                                                                                                                         |
-| Auto clock-out after hours | 12                              | How many hours after check-in a shift nobody checked out of stays open on the tablet before the nightly auto clock-out closes it, from 10 to 24; blank or anything else means 12.                                                                                                      |
-| Auto clock-out last run    | blank                           | Written by the kiosk: when the nightly auto clock-out last ran and how many shifts it closed, so leave it alone.                                                                                                                                                                       |
-| Long shift flag hours      | 8                               | A tablet check-out that credits more hours than this is flagged as a long shift, as a number above 0; blank or anything else means 8.                                                                                                                                                  |
-| Flags email                | Off                             | Type On to send the weekly flags email; anything else, blank included, keeps it off.                                                                                                                                                                                                   |
-| Flags email to             | blank                           | Who gets the weekly flags email, as one or more email addresses separated by commas, spaces or new lines; blank sends nothing.                                                                                                                                                         |
-| Flags email day            | Monday                          | The weekday the weekly flags email goes out if there is anything to report, such as Monday or Mon; blank or anything else means Monday, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).                                         |
-| Flags email hour           | 8                               | The hour, Central time, the weekly flags email goes out if there is anything to report, as a whole number from 0 to 23 (8 is 8 AM, 14 is 2 PM); blank or anything else means 8, and the first one after a change, or after turning the email On, can come sooner (see the How to tab). |
-| Flags email last run       | blank                           | Written by the kiosk: when the weekly flags email last checked and whether it sent, had nothing to send or had no valid address to send to; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report. |
-| Daily jobs installed by    | blank                           | Written by the kiosk: the Google account that runs the nightly jobs and the weekly email, so leave it alone.                                                                                                                                                                           |
-| Past hours file ID         | blank                           | The old hours spreadsheet that Kiosk admin > Import past hours… offers first; an import fills it in, and blank just means the window starts empty.                                                                                                                                     |
-| Past hours tab             | Historical Hours                | The tab in that old hours spreadsheet that Import past hours… offers first; blank means Historical Hours.                                                                                                                                                                              |
-| Kiosk contact              | blank                           | Who to ask when the kiosk or this sheet isn't working, such as a name and an email or phone: the How to tab shows it, and so does the Kiosk admin menu when something goes wrong; while it's blank, the How to tab says to ask whoever looks after the kiosk.                          |
-| Hours email contact        | blank                           | Who volunteers should contact about their hours, such as a name and an email or phone: Kiosk admin > Email hours… ends every email with it, because nobody can reply to that email; while it's blank, no hours email can be sent.                                                      |
-| Hours email signature      | blank                           | Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.                                                                                                                                                          |
+| Setting                    | Default                         | What it does                                                                                                                                                                                                                                                                                            |
+| -------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kiosk access code          | blank                           | The code a board member types on the tablet to open the kiosk: at least 16 letters (only letters count, and capitals are the same as small letters), and while it's blank or shorter no tablet can open.                                                                                                |
+| Volunteer Profiles file ID | blank                           | Which spreadsheet the volunteer list comes from, as the long ID in its link between /d/ and /edit; while it's blank, no volunteer can be found on the tablet or in the menu.                                                                                                                            |
+| Volunteer Profiles tab     | Volunteer Profiles              | The tab in that spreadsheet that holds the volunteer list; blank means a tab named Volunteer Profiles.                                                                                                                                                                                                  |
+| Kiosk launch date          | the day `setupSheets` first ran | The day the kiosk started, as yyyy-mm-dd: only volunteers who started on or after it get the first-shift welcome, and the nightly auto clock-out closes only shifts on or after it, so never leave it blank.                                                                                            |
+| Arrival flag minutes       | 15                              | How many minutes a volunteer's chosen arrival time can be from the moment they tapped in before the shift is flagged, as a number 0 or more; blank means 15.                                                                                                                                            |
+| Check-out flag minutes     | 15                              | How many minutes a volunteer's chosen check-out time can be from the moment they tapped out before the shift is flagged, as a number 0 or more; blank means 15.                                                                                                                                         |
+| Volunteer hour value       | blank                           | The dollar value of one volunteer hour, such as 34.79, used in the monthly report; while it's blank the report leaves the value out and says to set it here.                                                                                                                                            |
+| Profiles problems          | blank                           | Written by the kiosk: rows of Volunteer Profiles it had to leave out, and why (blank means none), so fix them in Volunteer Profiles, not here.                                                                                                                                                          |
+| Auto clock-out after hours | 12                              | How many hours after check-in a shift nobody checked out of stays open on the tablet before the nightly auto clock-out closes it, from 10 to 24; blank or anything else means 12.                                                                                                                       |
+| Auto clock-out last run    | blank                           | Written by the kiosk: when the nightly auto clock-out last ran and how many shifts it closed, so leave it alone.                                                                                                                                                                                        |
+| Long shift flag hours      | 8                               | A tablet check-out that credits more hours than this is flagged as a long shift, as a number above 0; blank or anything else means 8.                                                                                                                                                                   |
+| Flags email                | Off                             | Type On to send the weekly flags email; anything else, blank included, keeps it off.                                                                                                                                                                                                                    |
+| Flags email to             | blank                           | Who gets the weekly flags email, as one or more email addresses separated by commas, spaces or new lines; blank sends nothing.                                                                                                                                                                          |
+| Flags email day            | Monday                          | The weekday the weekly flags email goes out if there is anything to report, such as Monday or Mon; blank or anything else means Monday, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).                                                          |
+| Flags email hour           | 8                               | The hour, Central time, the weekly flags email goes out if there is anything to report, as a whole number from 0 to 23 (8 is 8 AM, 14 is 2 PM); blank or anything else means 8, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).                  |
+| Flags email last run       | blank                           | Written by the kiosk: when the weekly flags email last checked and whether it sent, had nothing to send or had no valid address to send to; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report.                  |
+| Daily jobs installed by    | blank                           | Written by the kiosk: the Google account that runs the nightly jobs and the weekly email, so leave it alone.                                                                                                                                                                                            |
+| Past hours file ID         | blank                           | The old hours spreadsheet that Kiosk admin > Import past hours… offers first; an import fills it in, and blank just means the window starts empty.                                                                                                                                                      |
+| Past hours tab             | Historical Hours                | The tab in that old hours spreadsheet that Import past hours… offers first; blank means Historical Hours.                                                                                                                                                                                               |
+| Kiosk contact              | blank                           | Who to ask when the kiosk or this sheet isn't working, such as a name and an email or phone: the How to tab shows it, and so does the Kiosk admin menu when something goes wrong; while it's blank, the How to tab says to ask whoever looks after the kiosk.                                           |
+| Hours email contact        | blank                           | Who volunteers should contact about their hours, such as a name and an email or phone: Kiosk admin > Email hours… ends every email with it, because nobody can reply to that email; while it's blank, no hours email can be sent.                                                                       |
+| Hours email signature      | blank                           | Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.                                                                                                                                                                           |
+| Hours requests             | Off                             | Whether volunteers can ask for their hours on the tablet: Off hides the Email me my hours button; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them about every 15 minutes, leaving out unchecked shifts, once a week at most; blank or anything else means Off. |
+| Hours requests last run    | blank                           | Written by the hours request job: when it was installed or removed, or a run last sent, held or failed; a run with nothing to do writes nothing, so an old time is normal. In Auto, a request still waiting a day later shows as overdue in Email hours…, which is how a stopped job shows.             |
 
 "Flags email to" also splits on semicolons; the sentence leaves that out to stay short.
 "Daily jobs installed by" is written by `setupDailyJobs`, and the two Past hours rows by an
@@ -497,6 +506,24 @@ this row goes out to every volunteer who is emailed. Hours email signature adds 
 trimmed and without empty ones, under "Thank you for volunteering."; blank adds nothing.
 `setupSheets` adds both blank, last, on a sheet set up before them, and never changes a
 value typed there.
+
+"Hours requests" picks what the tablet's Email me my hours button does (see Hours
+requests). It reads Off, Approve or Auto, trimmed and in any case; blank, On, a typo or
+anything else reads as Off, the safe reading of a mistake. **Off**, the default, hides the
+button. **Approve** shows it, and staff send each request with Kiosk admin > Email hours…
+when they get to it. **Auto** shows it, and the hours request job emails requests by itself within the limits.
+A change applies as other settings do (below): the tablet shows or hides the button from
+its next list refresh, within 5 minutes, and the job reads the row at the start of each
+run. Open requests stay open across any change.
+
+"Hours requests last run" is written by the hours request job: "<time>, job installed by
+<account>" or "<time>, job removed by <account>" from its installer, then "<time>, sent N,
+held N, still waiting N" after a run that sent, held, claimed, answered or recovered
+anything, or "<time>, failed: <message>". A run with nothing to do writes nothing, so an
+old time is normal and the row can't show whether the job is still running. An overdue
+request does: in Auto, a request still waiting a day after it was made shows as overdue
+in Email hours and in the weekly flags email. `setupSheets` adds both rows, Off and blank,
+after Hours email signature.
 
 "Check-out flag minutes" is new with the check-out time picker, "Volunteer hour value"
 with the reports, and the rows from "Auto clock-out after hours" down with the daily jobs.
@@ -700,7 +727,9 @@ It refuses, and says why, when:
 **Kiosk admin > Email hours…** emails volunteers their hours: one plain-text email each,
 with the hours for the month you choose, the year so far and all time. Tick who gets one,
 press Preview, read exactly what will go out and to which address, type your initials and
-press Send email. Nothing else sends it: not the tablet, and no daily job.
+press Send email. The tablet only records a request (Email me my hours); with Hours
+requests on Auto, the hours request job sends too (see Hours requests). No other job
+sends it.
 
 **Where the address comes from.** Each email goes to the Email cell of the volunteer's own
 Volunteer Profiles row, found by User Token, read fresh at Preview and again at Send. The
@@ -729,6 +758,22 @@ reads or receives anyone's email.
   while hidden, and "N ticked" counts them. **Tick all shown** ticks every name the search
   shows, volunteers with no shifts this month included; **Clear** unticks everyone. To
   tick everyone, empty the search box and press Tick all shown.
+
+  Volunteers with an open hours request from the tablet arrive ticked: in Approve or
+  Off, every waiting or held one; in Auto, the held and overdue ones, since the job sends
+  the rest and a ticked one could go twice. A request the job is sending is never ticked,
+  since its email may already have gone. Each requester's name carries a label after
+  " · ": "Requested Nov 20"; "Requested Nov 20, held"; "Requested Nov 20, Auto will
+  send"; "Requested Nov 20, overdue: Auto hasn't sent it"; "Requested Nov 20, sending
+  now"; or, for an automatic send that started over 30 minutes ago and never recorded,
+  "Requested Nov 20, automatic send stopped part way: check the Hours emails tab". A
+  request whose date can't be read says "Requested" with no date. Unticking or ticking
+  a requester works as for anyone. A requester no longer on the volunteer list can't be
+  ticked, and a line above the list says so: "1 hours request is from a volunteer not on
+  the volunteer list. Close it on the Hours requests tab." If the requests can't be read
+  (a broken Hours requests header, say), the window shows the error and works as before
+  with nobody pre-ticked.
+
 - **Preview** shows what will go out (below).
 - **Your initials**, then **Send email**.
 
@@ -837,13 +882,27 @@ emails tab, or the next Preview's "Last emailed", before sending them again.
 To send again after a send, whether it worked or not, press Preview again. Closing the
 window during a send stops it after the group under way, which is still recorded.
 
+In the preview, a held requester's part has the line "Hours request held:" and the
+reason. When a requester's email is sent, every waiting or held request of theirs made
+before the send becomes `sent` on the Hours requests tab, with the send's time, your
+initials and its Send ID, whichever month you chose. A failed or not-sent volunteer's
+request stays open. A request the job is sending is left to the job: the job claimed it
+while this send was going out, so the volunteer may get two emails, and the message line
+says "Auto was emailing 1 of these volunteers at the same moment, so they may get two
+emails. See the Hours emails tab." If the requests couldn't be marked, the Hours emails
+rows still stand and the message line says "The hours requests couldn't be marked sent.
+Mark them on the Hours requests tab."; the execution log names the Volunteer IDs. The
+rows keep their request labels until the window is opened again; the Hours requests tab
+is right at once.
+
 **Who it comes from.** It is sent the way the weekly flags email is: from the no-reply
 address of the Google account that has the sheet open, named "ENCM Volunteer Kiosk". At
 ENCM that is the shared Workspace account; Google offers a no-reply address to Workspace
 accounts only. Volunteers can't reply, so every email names Hours email contact, and while
 that row is blank nothing can be sent. A bounce (an address that doesn't work) goes to
 that account's inbox and the volunteer's row still says sent, so check that inbox after a
-send.
+send. An automatic email from the hours request job is sent the same way, from the
+account that installed the job (see Who runs them).
 
 **Google's daily limit.** A Workspace account may send to 1,500 email recipients a day
 from scripts (a personal Gmail account, 100), and each hours email is one. The weekly flags
@@ -858,7 +917,14 @@ ID (the same on every row of one send), Volunteer Name, Volunteer ID (the hashed
 kiosk list uses, never the User Token), Email (the address it went to, or would have),
 Month, Month hours, Year, Year hours, All-time hours, Shifts file (yes or no), Sent by
 (initials), Sent from (the Google account) and Result. The hours are blank on a "not sent"
-row. Volunteers left out at Preview get no row. The tab warns before an edit: edit it only
+row. The hours request job writes here too: its rows say Sent by `auto` and Sent from the
+account that installed the job. It writes each row with Result `sending` before the
+email goes, then sets `sent`, `failed: ` and Google's message, `not sent: the run ran out
+of time`, `not sent: Google's daily email limit is down to the reserve kept for staff`
+or `not sent: the run couldn't mark the request as sending`. A row a run left `sending`
+gets `stopped: the automatic run ended before it recorded; the email may have gone`
+from a later run. "Last emailed" in the preview reads only `sent` rows, and shows
+"by auto" for the job's. Volunteers left out at Preview get no row. The tab warns before an edit: edit it only
 to fix a mistake. It holds volunteers' email addresses, one more reason to share the Log as
 narrowly as Profiles (see User Token and who can see the Log). If rows couldn't be written,
 the message line says so, and the script's execution log names each volunteer's ID and
@@ -868,6 +934,141 @@ message whole.
 
 The window stops working after 30 minutes, like the others: close it and open the menu
 again.
+
+### Hours requests
+
+Volunteers can ask for their hours on the tablet, and Settings "Hours requests" decides
+what happens next: Off (the default) hides the button, Approve leaves each request for
+staff to send from Email hours, and Auto lets the hours request job email it by itself.
+
+**The button.** With Approve or Auto, the check-in and check-out screens show **Email me
+my hours** under the time link. It is hidden while the phone digits, the time picker or a
+save is on screen, and for a volunteer who shares a name until they have typed their four
+digits (so a check-out that didn't ask for digits doesn't show it; they can ask at their
+next check-in). A tap checks nobody in or out. The button reads "Sending…", then a line
+takes its place:
+
+- recorded, or a request was already open: "Got it, Sam. Your hours will be emailed to
+  you. If nothing arrives in a few days, please ask a board member.";
+- Hours requests is Off: "Emailing hours from the kiosk is turned off right now. Please
+  ask a board member.";
+- a phone or not-found refusal: its usual message, with the button back;
+- the kiosk busy, a failed call or no answer in 30 seconds: "That didn't go through.
+  Please try again.", with the button back;
+- a refused access code: the kiosk goes back to its setup screen, as for any call.
+
+No line names an email address or says whether there is one, whether the volunteer asked
+before, or whether a person or the job will send. The request is its own call, outside
+the save queue: it isn't queued or retried offline, and tapping Check In or Check Out
+first moves on and drops its answer. The kept volunteer list doesn't hold the setting,
+so after a reload the button shows once a fresh list arrives.
+
+**The Hours requests tab.** The first request makes it in the Check-In Log, with a
+warning-only protection; `setupSheets` doesn't. Columns: Requested at, Volunteer Name,
+Volunteer ID (the hashed ID, as on Hours emails), Mode (the mode when asked), Status,
+Reason, Done at, Done by (initials or `auto`) and Send ID (of the send that answered it).
+Status is `waiting`, `sending`, `held`, `sent` or `closed`; waiting, sending and held are
+open, in any case. A volunteer has at most one open request: a repeat tap writes nothing.
+It holds no email address. **To close a request without sending** (a repeat, or someone
+who has left), type `closed` in Status and your initials in Done by. Staff may delete
+`sent` and `closed` rows to trim the tab; the job finds its rows by Send ID and Volunteer
+ID, never by row number.
+
+**Approve.** Open Kiosk admin > Email hours…: requesters arrive ticked and labelled, and
+sending marks their requests sent (see Email hours). Approve's sends are counted as Email
+hours counts them, with the preview's warnings for the admin to judge.
+
+**Auto: when it runs.** The hours request job runs every 15 minutes whatever the mode;
+in Off and Approve it reads Settings and stops. In Auto it takes the waiting requests,
+oldest first, and up to 10 a run. A volunteer who asks while checked in is emailed after
+they check out. Checked in is the tablet's own rule: an open row under "Auto clock-out
+after hours" since its check-in tap, the same rule that keeps the card in the Checked In
+panel. A request still checked in at the first 6:00 AM Central after it was made (or
+after that shift began, if later) is held: "Still checked in at 6:00 AM. Close the shift
+with Kiosk admin > Fix a sign-out, then send from Email hours."
+
+**What Auto leaves out.** An automatic email counts what Email hours counts (see Which
+rows count), less two kinds of shift, each made counted by one staff action:
+
+- a shift whose Flags row (same Shift ID) isn't ticked Reviewed: tick it once you have
+  checked the shift. This covers flagged arrival and check-out times, long shifts, an
+  auto clock-out's guessed time (every auto clock-out writes its own Flags row), Log
+  check flags and import flags;
+- a shift still open: close it with Kiosk admin > Fix a sign-out….
+
+A deleted Flags row counts as reviewed (see Flags tab). Counted as Email hours counts
+them: text staff type in Admin Alerts?, which is never copied to Flags; rows with no
+Shift ID; the later rows of an unmatched import name; flags raised before the Flags tab
+existed.
+
+**The automatic email** is Email hours' email for this month, with the shifts file
+attached, and two lines more. After the greeting: "You asked for your hours at the
+volunteer kiosk on Friday, November 20, 2026." After the totals, when shifts were left
+out: "3 shifts are waiting for staff review and aren't in these totals." (or "1 shift is
+waiting … isn't …"). With shifts left out and none counted, the totals print as 0.00
+hours instead of "We don't have any volunteer hours recorded for you yet." The file holds
+the same counted shifts as the totals. The email names no shift, flag or reason. A sent
+request's Reason says "3 shifts left out for review" when any were.
+
+**Limits and the quota.** Auto sends one email per volunteer in 7 days and 50 a day
+(Central date) in all. Only the job's own rows (Sent by `auto`) count, and every one
+counts unless its Result starts with `failed` or `not sent`, so `sending` and `stopped`
+rows count too: an email that may have gone uses up the limits. An admin's send uses up
+neither. A request past a limit is held: "Already emailed automatically on Nov 18; Auto
+sends one a week." or "Auto already sent 50 today." The job also sends only while
+Google's remaining daily quota for its account is above 100, so an admin's send from the
+same account keeps room; at or under that, requests stay waiting for a later run.
+
+**Held requests** wait for a person: the job never retries one. Email hours ticks them
+and shows the reason. Reasons: Hours email contact blank; no Email column in Volunteer
+Profiles; a blank Email cell, or one that isn't one plain address (with its row); two
+Profiles rows with the same User Token; not on the volunteer list any more; the Flags tab
+couldn't be read; still checked in at 6:00 AM; past a limit; "The send failed:" and
+Google's message; and "An automatic send stopped part way and may have gone. Check this
+volunteer's Hours emails row (Result stopped) and the Sent mail of the account in its Sent
+from before sending again."
+
+**What staff see.** No request waits in Auto for more than a day without showing as
+needing a person. A working job sends within about 15 minutes, or holds the request; so
+a request still waiting 24 hours after it was made is **overdue**: Email hours ticks it
+and labels it "overdue: Auto hasn't sent it", and the weekly flags email counts it. An
+overdue request is how a stopped job shows (not installed, removed, failing every run, or
+kept waiting at the quota reserve for a day). Settings "Hours requests last run" says when the
+job last did something and what, or why it failed (see Settings); an old time there is
+normal. An automatic send that started over 30 minutes ago and never recorded shows in
+Email hours as stopped part way, unticked, and in the weekly count.
+
+**Two emails and mode changes.** If an admin sends to a volunteer while the job is
+emailing them, both emails may go, to the volunteer's own address; the window's message
+line says so. A send that finished first answers the request, and the job sends nothing.
+Changing the mode keeps open requests: Auto to Approve stops the job at its next run and
+leaves the requests for Email hours; any mode to Off hides the button and leaves open
+requests for staff; Approve to Auto lets the job send the waiting ones within the limits.
+A volunteer whose User Token changes after asking is held as not on the list: close it
+and send to the new entry.
+
+**What Auto catches, and what it doesn't.** Auto narrows the chance of an email showing
+hours that didn't happen; it can't close it. Left out until staff tick the flag or close
+the shift: a check-in or check-out time chosen more than the flag minutes from the tap; a
+check-out crediting more than "Long shift flag hours"; an auto clock-out's guessed time;
+a row hand edits broke, once the 5 AM Log check has flagged it; an imported paper shift on
+a day with a kiosk shift, or the first row of a name it couldn't match; a shift still
+open. Not caught:
+
+- **a believable fake shift**: someone who taps in and out at real times without
+  volunteering makes a normal row, and nothing in the kiosk can tell;
+- a row added with Add a shift, or typed by hand with a Shift ID and matching hours;
+- a hand edit made since the last Log check (up to a day), not yet flagged;
+- a flag ticked Reviewed without anyone really looking, or a Flags row deleted;
+- a row with no Shift ID, a staff-typed Admin Alerts? note, and the later rows of an
+  unmatched import name;
+- an auto clock-out whose Flags row was never written (the Flags tab was broken at 4 AM):
+  its guessed time counts.
+
+The email goes only to the address on the volunteer's own Profiles row; the tablet can't
+choose or see it. Someone tapping another volunteer's name can make ENCM email that
+volunteer their own hours, at most once a week automatically. Approve keeps a person in
+front of every send, and Off keeps the button away.
 
 ### Import past hours
 
@@ -990,7 +1191,8 @@ called from the open spreadsheet, through a window the menu opened.
 Jobs the script runs on its own, on Google's timed triggers: the weekly flags email,
 checked every hour, the auto clock-out, once a day at about 4 AM Central, and the Hours
 refresh, once a day at about 5 AM Central, followed by the Log check. They live in
-`apps-script/Jobs.js`.
+`apps-script/Jobs.js`. The hours request job, every 15 minutes, lives there too but is
+installed on its own (see Who runs them).
 
 On a sheet whose jobs were installed before the Hours refresh was added, the account that
 owns them must run `setupDailyJobs` once more to add it (see Who runs them). Until then
@@ -1019,7 +1221,8 @@ The editor's Triggers page (the clock icon) shows them.
 - **Other accounts are asked too.** Google's permissions belong to the whole script, so
   the account that deploys the web app and the account that uses the Kiosk admin menu are
   also asked to allow sending email and managing triggers the next time they run
-  something. Neither installs a trigger, and the web app never sends email. The menu's
+  something. Neither installs a daily job trigger (the hours request job, below, is the
+  one trigger the deploying account installs), and the web app never sends email. The menu's
   account sends email only through Kiosk admin > Email hours…, which works once that
   account has accepted. Accept so the menu and kiosk keep working.
 - **Moving the jobs to another account.** Google lets an account see and delete only its
@@ -1032,6 +1235,29 @@ The editor's Triggers page (the clock icon) shows them.
 only from their own triggers: run from the editor or the kiosk page they refuse. Two
 accounts' triggers running side by side would not send twice; each job checks its
 last-run row first, under the kiosk's lock.
+
+**The hours request job** is installed on its own, because it reads volunteers' email
+addresses from Volunteer Profiles and the jobs account above doesn't open Profiles. Install
+it as an account that can open Volunteer Profiles and edit the Check-In Log. The account
+that deploys the kiosk page always can, since the page runs as it and reads Profiles; at
+ENCM that is volunteer@encm.org, which also sends Email hours. So nobody new can read
+Profiles, and automatic emails come from the same account as an admin's. Signed in as that
+account, run `setupHoursRequestJob` from the Apps Script editor. It first opens Volunteer
+Profiles and refuses, with the problem named ("This account can't open Volunteer Profiles:
+…"), if it can't. Then it deletes that account's own `runHoursRequests` triggers, makes one
+trigger every 15 minutes, and writes Settings "Hours requests last run" as "<time>, job
+installed by <account>". `removeHoursRequestJob` deletes that account's triggers and
+writes "<time>, job removed by <account>". Both run only from the editor, and the job only
+from its trigger. `setupDailyJobs` and `removeDailyJobs` leave it alone.
+
+- **Its failures** go, as Google's failure summary, to the installing account's mail and
+  nobody else's. Make sure someone reads that account's mail, or forward it. Staff see a
+  stopped job anyway: requests go overdue (see Hours requests).
+- **One account.** Two accounts' jobs wouldn't send a request twice, since each claims
+  under the kiosk's lock, but to move the job, run `removeHoursRequestJob` as the old
+  account first.
+- **Cost.** 96 runs a day; one with nothing to do reads Settings and the Hours requests
+  tab, takes no lock and writes nothing.
 
 `setupDailyJobs` also installs the Log change trigger for the same account: an on-change
 trigger that runs `onSheetChange` after any change made by hand to the spreadsheet, so the
@@ -1067,10 +1293,20 @@ Kiosk". It says:
 - the week's flags, newest first: date, name and reason, up to 25, then "and N more";
 - first, when the auto clock-out hasn't run for more than 2 days (or ever), a warning that
   open shifts aren't being closed, with when it last ran;
+- with Hours requests used, after the unreviewed count: "Hours emails sent automatically
+  in the last 7 days: 3 (see the Hours emails tab)." when the job sent or tried any
+  (every automatic row counts unless its Result starts with `failed` or `not sent`, so the
+  number is of emails sent or tried, not delivered), and "Hours requests waiting for
+  staff: 4 (Kiosk admin > Email hours…)" for open requests that need a person (waiting
+  and held ones in Off and Approve, held and overdue ones in Auto, and any automatic send
+  that stopped part way). Either line alone makes the email send; when they are the only
+  news the subject is "Volunteer kiosk: hours requests this week". A tab whose header
+  can't be read gives "couldn't be read" in its line, and the email still goes;
 - last, any entries in "Flags email to" that aren't email addresses, which were skipped.
 
-When there is no new flag, none unreviewed and no warning, it sends nothing and writes
-`nothing to send`. The email holds volunteers' names and flag reasons, never a User
+When there is no new flag, none unreviewed, no warning and no hours request line, it sends
+nothing and writes `nothing to send`. With Flags email Off, staff learn of automatic sends
+from the Hours emails tab and of waiting requests from Email hours. The email holds volunteers' names and flag reasons, never a User
 Token. A missing or broken Flags tab makes the run fail (and the owner gets Google's
 failure email) rather than send a wrong count. If the run finds the kiosk's lock busy for
 30 seconds, it stops and the next hourly run catches up.
@@ -1841,7 +2077,9 @@ nothing, except that it puts its look and its help back.
   column) is written into the empty cells to the right of the last header. Role/Type and
   Activity are not added; they are staff's.
 - It then sets each kiosk column's format (text, date and time, or hours to 2 decimals)
-  by its header, freezes row 1, and adds any missing Settings row.
+  by its header, freezes row 1, and adds any missing Settings row; the last two are
+  "Hours requests" (Off) and "Hours requests last run" (blank). It doesn't make the Hours
+  emails or Hours requests tab; the first send or request does.
 - Then the Flags tab: it creates the tab if there is none and writes any missing header
   after the last one (Reviewed By and Notes are not added; they are staff's). It sets each
   Flags column's format, puts the tickbox on Reviewed from row 2 to the bottom of the tab
@@ -1886,7 +2124,7 @@ nothing, except that it puts its look and its help back.
     next run.
   - The How to tab, last: who to ask for help, short walkthroughs for staff (review
     flags, fix a sign-out, add, remove and restore a shift, the hours report, email
-    volunteers their hours, the flags email, changing a setting, the Hours tab), a "Please don't" list, and every Log and
+    volunteers their hours, hours requests from the tablet, the flags email, changing a setting, the Hours tab), a "Please don't" list, and every Log and
     Flags header note. Its first section, "Problems with the kiosk", is one cell holding a
     formula (in the General format; every other cell is plain text) that reads the
     Settings row "Kiosk contact" live: it shows "...contact: " and the value, trimmed, or

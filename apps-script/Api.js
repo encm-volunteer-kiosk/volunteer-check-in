@@ -13,7 +13,10 @@
  * of their open row (whatever the Log's cell holds: a random ID on kiosk and admin rows,
  * free text on a row staff typed), when that row leaves the window, and the minutes of
  * this shift at which a check-out would show a milestone, only those reachable this
- * shift. Those let the tablet show a check-in or check-out at the tap.
+ * shift. Those let the tablet show a check-in or check-out at the tap. The list also
+ * carries one boolean, hoursRequests: whether the Email me my hours button shows (Settings
+ * "Hours requests" is Approve or Auto). The tablet never receives the mode, and no call
+ * sends it an email address or says whether a volunteer has one.
  *
  * A check-in or check-out the tablet already showed comes with a tap (readTap, Logic.js):
  * a tap ID, which is a check-in's Shift ID, the Shift ID a check-out closes, the tap's
@@ -76,7 +79,7 @@ function apiCheckAccess(code) {
 /**
  * {ok: true, volunteers: [{id, firstName, lastName, checkedIn, openShiftArrival,
  * needsPhoneCheck, missedSignOut, openShiftId, openUntil, checkOutMilestones}],
- * longShiftHours, milestones, serverNow}. checkedIn is true when the volunteer has an open
+ * longShiftHours, hoursRequests, milestones, serverNow}. checkedIn is true when the volunteer has an open
  * row the tablet can still check out: one checked in less than "Auto clock-out after
  * hours" ago, past midnight too, or one dated today whose check-in time can't be read.
  * openShiftArrival is the ISO stated arrival of that row, else null; it is also null when
@@ -84,7 +87,8 @@ function apiCheckAccess(code) {
  * hashed Volunteer ID; the raw User Token never leaves the server. missedSignOut,
  * openShiftId, openUntil and checkOutMilestones are as volunteerSummaries (Logic.js) gives
  * them. longShiftHours is "Long shift flag hours" (parseLongShiftHours), the time in past
- * which the page marks a card. milestones are [{id, title, message}], the texts the steps
+ * which the page marks a card. hoursRequests is true when Settings "Hours requests" is
+ * Approve or Auto (parseHoursRequestsMode), false when Off. milestones are [{id, title, message}], the texts the steps
  * name. serverNow is the server's clock in ms, taken last, so the page can tell how far
  * its own clock is off.
  *
@@ -109,9 +113,51 @@ function apiListVolunteers(code) {
       settings["Kiosk launch date"],
     ),
     longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
+    hoursRequests: parseHoursRequestsMode(settings[hoursRequestsSetting()]) !== "off",
     milestones: milestones().map((m) => ({ id: m.id, title: m.title, message: m.message })),
     serverNow: Date.now(),
   };
+}
+
+/**
+ * Records a volunteer's Email me my hours request. id is the list entry tapped and digits
+ * the phone's last four or null, read by the check-in rule (resolveVolunteer), so in a
+ * same-name group the digits pick who is asking. Returns {ok: true} or a refusal: ACCESS
+ * for a wrong code; HOURS_REQUESTS_OFF when Settings "Hours requests" is Off;
+ * NOT_FOUND, PHONE_NEEDED, PHONE_WRONG or PHONE_MISSING as for a check-in, with no Flags
+ * row, since this isn't a tap; BUSY when the lock isn't free within 10 seconds.
+ *
+ * Settings come from the same copy a tap uses, so a change of mode applies from the next
+ * request. The Hours requests tab is got or made before the lock. Under the lock the call
+ * reads that tab and, unless the volunteer already has an open request (waiting, sending
+ * or held), appends one row: Requested at now, the name, the hashed Volunteer ID, the mode
+ * and Status waiting. Nothing else is read or written under it: no Email cell, no Log, no
+ * Flags. The reply is the same for a new request and a repeat, and carries nothing about
+ * the volunteer.
+ */
+function apiRequestHours(code, id, digits) {
+  const { settings, denied } = settingsForCode_(code);
+  if (denied) return denied;
+  const mode = parseHoursRequestsMode(settings[hoursRequestsSetting()]);
+  if (mode === "off") return refusal("HOURS_REQUESTS_OFF");
+  const found = resolveVolunteer(getProfiles_(settings), id, digits);
+  if (found.refusal) return refusal(found.refusal);
+  const volunteer = found.volunteer;
+  const tab = hoursRequestSheet_();
+  return withLock_(() => {
+    const requests = readHoursRequests_(tab);
+    if (!hoursRequestOpenFor(requests, volunteer.id)) {
+      appendHoursRequestRows_(tab, [
+        hoursRequestRow({
+          requestedMs: Date.now(),
+          name: volunteerFullName(volunteer),
+          id: volunteer.id,
+          mode,
+        }),
+      ]);
+    }
+    return { ok: true };
+  });
 }
 
 /**

@@ -212,6 +212,8 @@
         "result": "sent"
       }
     ],
-    "recordFailed": false
+    "recordFailed": false,
+    "requestsFailed": false,
+    "twoEmails": 0
   }
 }

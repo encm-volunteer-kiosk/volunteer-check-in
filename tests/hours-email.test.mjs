@@ -744,28 +744,32 @@ test("profileEmailsFrom finds each volunteer's row by token, with the problem te
     { ...ANA, id: "gone", token: "tok-gone" },
   ];
   assert.deepEqual(plain(L.profileEmailsFrom(PROFILE_HEADER, rows, vols)), {
-    "maria-id": { email: "maria.alvarez@example.org", row: 2, problem: "", text: "" },
+    "maria-id": { email: "maria.alvarez@example.org", row: 2, rows: [2], problem: "", text: "" },
     "james-id": {
       email: "",
       row: 3,
+      rows: [3],
       problem: "no-email",
       text: "Volunteer Profiles row 3 has no email. Add it there, then press Preview again.",
     },
     "ana-id": {
       email: "",
       row: 4,
+      rows: [4],
       problem: "bad-email",
       text: 'The email in Volunteer Profiles row 4 isn\'t one email address: "not-an-email". Fix it there, then press Preview again.',
     },
     dup: {
       email: "",
       row: 5,
+      rows: [5, 6],
       problem: "duplicate-token",
       text: "Volunteer Profiles rows 5 and 6 have the same User Token. Fix it there, then press Preview again.",
     },
     gone: {
       email: "",
       row: 0,
+      rows: [],
       problem: "not-found",
       text: "Not on the volunteer list any more; press Preview again.",
     },
@@ -787,9 +791,10 @@ test("profileEmailsFrom finds each volunteer's row by token, with the problem te
       [MARIA, JAMES],
     ),
   );
-  assert.deepEqual(none["maria-id"], {
+  assert.deepEqual(plain(none["maria-id"]), {
     email: "",
     row: 2,
+    rows: [2],
     problem: "no-email-column",
     text: "Volunteer Profiles has no Email column.",
   });

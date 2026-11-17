@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { createHash } from "node:crypto";
 import { cachedLogMap } from "./log-cache-tap.mjs";
 import { formatInZone } from "./zoneFormat.mjs";
 
@@ -88,6 +89,24 @@ class FakeSheet {
     this.rows = rows.map((r) => r.slice());
     this.sheetId = sheetId;
     this.formats = {};
+    this.protections = [];
+    this.frozenRows = 0;
+  }
+  setFrozenRows(n) {
+    this.frozenRows = n;
+  }
+  protect() {
+    const p = { description: "" };
+    const protection = {
+      setDescription: (d) => ((p.description = d), protection),
+      setWarningOnly: () => protection,
+      getDescription: () => p.description,
+    };
+    this.protections.push(protection);
+    return protection;
+  }
+  getProtections() {
+    return this.protections.slice();
   }
   getMaxRows() {
     return 1000;
@@ -196,6 +215,16 @@ function flagRow({
  * document lock's as "docLock.*"; logs what the server logs; alerts what the menu shows.
  * The spreadsheet has no Hours tabs. cache is the script cache, a Map of key to value; its
  * calls are not recorded.
+ *
+ * For the hours request job: profiles (the Volunteer Profiles tab's rows, header first,
+ * served by openById("file-1"); profilesFail makes opening it throw), hoursRequests and
+ * hoursEmails (those tabs' rows, header first; no tab when absent, and insertSheet makes
+ * one), quota (Google's mail quota left, 1500 by default; each send uses one). The script
+ * lock is lock: lock.held says whether it is held now, lock.waits lists each tryLock's
+ * wait in ms, and lockFree may be a function of the try's number (from 0) and its wait.
+ * With anyLockWait the wait isn't checked to be 30 s. mailEvents lists each quota read
+ * and send with whether the lock was held; onSend(message, s) may throw to fail one send.
+ * blobs lists every Utilities.newBlob.
  */
 function server(opts = {}) {
   const calls = [];
@@ -219,6 +248,12 @@ function server(opts = {}) {
   };
   if (opts.log) sheets.Log = new FakeSheet(opts.log);
   if (opts.shifts) sheets.Shifts = new FakeSheet(opts.shifts);
+  if (opts.hoursRequests) sheets["Hours requests"] = new FakeSheet(opts.hoursRequests);
+  if (opts.hoursEmails) sheets["Hours emails"] = new FakeSheet(opts.hoursEmails);
+  const lock = { held: false, waits: [], tries: 0 };
+  const quota = { left: opts.quota ?? 1500 };
+  const mailEvents = [];
+  const blobs = [];
   let uuid = 0;
 
   const service = (name, methods) =>
@@ -297,6 +332,7 @@ function server(opts = {}) {
           },
           timeBased: () => ({
             everyHours: (n) => ((spec.everyHours = n), { create: make }),
+            everyMinutes: (n) => ((spec.everyMinutes = n), { create: make }),
             atHour: (h) => {
               spec.atHour = h;
               return {
@@ -311,20 +347,35 @@ function server(opts = {}) {
       },
     }),
     MailApp: service("MailApp", {
+      getRemainingDailyQuota: () => {
+        mailEvents.push({ what: "quota", held: lock.held });
+        return quota.left;
+      },
       sendEmail: (message) => {
-        if (opts.onSend) opts.onSend(message);
+        mailEvents.push({ what: "send", to: message.to, held: lock.held });
+        if (opts.onSend) opts.onSend(message, result);
         if (opts.sendFails) throw new Error("Service invoked too many times: email");
         mail.push(message);
+        quota.left--;
       },
     }),
     LockService: service("LockService", {
       getScriptLock: () =>
         service("lock", {
           tryLock: (ms) => {
-            assert.equal(ms, 30000);
-            return opts.lockFree !== false;
+            if (!opts.anyLockWait) assert.equal(ms, 30000);
+            const n = lock.tries++;
+            lock.waits.push(ms);
+            const free =
+              typeof opts.lockFree === "function" ? opts.lockFree(n, ms) : opts.lockFree !== false;
+            if (!free) return false;
+            assert.equal(lock.held, false, "the script lock is taken twice at once");
+            lock.held = true;
+            return true;
           },
-          releaseLock: () => undefined,
+          releaseLock: () => {
+            lock.held = false;
+          },
         }),
       getDocumentLock: () =>
         service("docLock", {
@@ -333,8 +384,21 @@ function server(opts = {}) {
         }),
     }),
     SpreadsheetApp: service("SpreadsheetApp", {
+      ProtectionType: { SHEET: "SHEET" },
+      openById: (id) => {
+        if (opts.profilesFail)
+          throw new Error("You do not have permission to access the requested document.");
+        if (id !== "file-1" || !opts.profiles) throw new Error("no file " + id);
+        const profiles = new FakeSheet(opts.profiles);
+        return { getSheetByName: (name) => (name === "Volunteer Profiles" ? profiles : null) };
+      },
       getActiveSpreadsheet: () => ({
         getSheetByName: (name) => sheets[name] || null,
+        insertSheet: (name) => {
+          assert.ok(!sheets[name], "a second tab named " + name);
+          sheets[name] = new FakeSheet([]);
+          return sheets[name];
+        },
         getUrl: () => SHEET_URL,
         getId: () => SHEET_ID,
         // No developer metadata: no Hours tabs.
@@ -352,6 +416,13 @@ function server(opts = {}) {
     }),
     Utilities: service("Utilities", {
       getUuid: () => "uuid-" + ++uuid,
+      newBlob: (text, type, name) => {
+        const blob = { text, type, name };
+        blobs.push(blob);
+        return blob;
+      },
+      computeDigest: (algorithm, text) =>
+        [...createHash("sha256").update(text, "utf8").digest()].map((b) => (b > 127 ? b - 256 : b)),
       parseDate: (text, tz, format) => {
         assert.equal(tz, TZ);
         assert.equal(format, "yyyy-MM-dd HH:mm");
@@ -401,13 +472,19 @@ function server(opts = {}) {
     const uid = own().find((t) => t.handler === "runAutoClockOut");
     return ctx.runAutoClockOut({ triggerUid: uid ? uid.uid : "none", authMode: "FULL" });
   };
+  /** Runs runHoursRequests at a Central time, as its trigger would. */
+  const runRequests = (centralTime) => {
+    if (centralTime) state.now = centralMs(centralTime);
+    const uid = own().find((t) => t.handler === "runHoursRequests");
+    return ctx.runHoursRequests({ triggerUid: uid ? uid.uid : "none", authMode: "FULL" });
+  };
   /** Runs runHoursRefresh at a Central time, as its trigger would. */
   const runHours = (centralTime) => {
     if (centralTime) state.now = centralMs(centralTime);
     const uid = own().find((t) => t.handler === "runHoursRefresh");
     return ctx.runHoursRefresh({ triggerUid: uid ? uid.uid : "none", authMode: "FULL" });
   };
-  return {
+  const result = {
     ctx,
     calls,
     cache,
@@ -423,7 +500,13 @@ function server(opts = {}) {
     run,
     runAuto,
     runHours,
+    runRequests,
+    lock,
+    quota,
+    mailEvents,
+    blobs,
   };
+  return result;
 }
 
 const OWN_TRIGGER = { [OWNER]: [{ uid: "t-email", handler: "runFlagsEmail" }] };
@@ -1834,4 +1917,701 @@ test("flagsEmailMessage: the review path names Data > Change view in the text an
   assert.match(msg.body, /\(Data > Change view > Flags: Unreviewed\)/);
   assert.match(msg.htmlBody, /\(Data &gt; Change view &gt; Flags: Unreviewed\)/);
   assert.doesNotMatch(msg.body + msg.htmlBody, /Filter views/);
+});
+
+// ---------------------------------------------------------------------------
+// The hours request job
+
+const REQUEST_OWN = { [OWNER]: [{ uid: "t-requests", handler: "runHoursRequests" }] };
+const REQUEST_HEADER = plain(L.hoursRequestHeaders());
+const EMAILS_HEADER = plain(L.hoursEmailHeaders());
+const PROFILE_HEADER = [
+  "Volunteer\nFirst Name",
+  "Volunteer\nLast Name",
+  "Volunteer\nPhone",
+  "Start Date\nmm/dd/yyyy",
+  "Email",
+  "Onboarding\nToken",
+];
+const hashId = (token) => createHash("sha256").update(token, "utf8").digest("hex").slice(0, 16);
+const member = (first, last, phone, email, token) => ({
+  first,
+  last,
+  name: first + " " + last,
+  phone,
+  email,
+  token,
+  id: hashId(token),
+});
+const AVERY = member("Avery", "Stone", "615-555-0201", "avery@example.org", "tok-avery");
+const BLAIR = member("Blair", "Moss", "615-555-0202", "blair@example.org", "tok-blair");
+const CASEY = member("Casey", "Fern", "615-555-0203", "casey@example.org", "tok-casey");
+const DANA = member("Dana", "Reed", "615-555-0204", "", "tok-dana");
+const PROFILES = [
+  PROFILE_HEADER,
+  ...[AVERY, BLAIR, CASEY, DANA].map((p) => [
+    p.first,
+    p.last,
+    p.phone,
+    "01/05/2026",
+    p.email,
+    p.token,
+  ]),
+];
+const REQUEST_SETTINGS = {
+  "Hours requests": "Auto",
+  "Volunteer Profiles file ID": "file-1",
+  "Hours email contact": "Pat Example\npat@example.org",
+  "Auto clock-out after hours": "12",
+};
+const MONDAY_10 = "2026-11-16 10:00";
+/** An Hours requests row: asked at a Central time, Status waiting unless given. */
+const requestLine = (p, askedAt, more = {}) =>
+  REQUEST_HEADER.map((h) => {
+    const by = {
+      "Requested at": new Date(centralMs(askedAt)),
+      "Volunteer Name": p.name,
+      "Volunteer ID": p.id,
+      Mode: "Auto",
+      Status: "waiting",
+      ...more,
+    };
+    return by[h] ?? "";
+  });
+/** An Hours emails row by header; Sent at a Central time. */
+const emailLine = (p, sentAt, by, result, sendId = "old00001") =>
+  EMAILS_HEADER.map((h) => {
+    const row = {
+      "Sent at": new Date(centralMs(sentAt)),
+      "Send ID": sendId,
+      "Volunteer Name": p.name,
+      "Volunteer ID": p.id,
+      Email: p.email,
+      Month: "2026-11",
+      "Sent by": by,
+      "Sent from": "volunteer@example.org",
+      Result: result,
+    };
+    return row[h] ?? "";
+  });
+// Avery and Blair have closed shifts; Blair's second has an unticked flag. Casey is
+// checked in since 9:00 today.
+const requestLog = () => [
+  LOG_HEADER,
+  closedLine("s-a1", AVERY.token, AVERY.name, "2026-11-02"),
+  closedLine("s-a2", AVERY.token, AVERY.name, "2026-11-09"),
+  closedLine("s-b1", BLAIR.token, BLAIR.name, "2026-11-03"),
+  closedLine("s-b2", BLAIR.token, BLAIR.name, "2026-11-10"),
+  openLine("s-c1", CASEY.token, CASEY.name, "2026-11-16", "09:00"),
+];
+const requestFlags = () => [
+  flagRow({ shiftId: "s-b2", date: "2026-11-10", name: BLAIR.name, reason: "Long shift" }),
+  flagRow({ shiftId: "s-a1", date: "2026-11-02", name: AVERY.name, reviewed: true }),
+];
+/** A server for the job at MONDAY_10 with the request fixtures; opts go over them. */
+function requestServer(opts = {}) {
+  return server({
+    settings: REQUEST_SETTINGS,
+    triggers: REQUEST_OWN,
+    profiles: PROFILES,
+    log: requestLog(),
+    flags: requestFlags(),
+    now: centralMs(MONDAY_10),
+    anyLockWait: true,
+    ...opts,
+  });
+}
+const requestRows = (s) => {
+  const sheet = s.sheets["Hours requests"];
+  return Array.from({ length: sheet.getLastRow() - 1 }, (_, i) => sheet.rowByHeader(i + 2));
+};
+const emailRows = (s) => {
+  const sheet = s.sheets["Hours emails"];
+  if (!sheet) return [];
+  return Array.from({ length: sheet.getLastRow() - 1 }, (_, i) => sheet.rowByHeader(i + 2));
+};
+const lastRun = (s) => s.setting("Hours requests last run");
+
+test("the hours request job is not a daily job, and setupDailyJobs and removeDailyJobs leave its trigger alone", () => {
+  assert.ok(!plain(L.dailyJobs()).some((j) => j.handler === "runHoursRequests"));
+  const s = server({
+    triggers: {
+      [OWNER]: [
+        { uid: "t-requests", handler: "runHoursRequests" },
+        { uid: "t-email", handler: "runFlagsEmail" },
+      ],
+    },
+  });
+  s.ctx.setupDailyJobs();
+  assert.ok(s.triggers[OWNER].some((t) => t.uid === "t-requests"));
+  s.ctx.removeDailyJobs();
+  assert.deepEqual(
+    s.triggers[OWNER].map((t) => t.handler),
+    ["runHoursRequests"],
+  );
+});
+
+test("setupHoursRequestJob makes one 15-minute trigger and says when it was installed, without claiming a run", () => {
+  const s = requestServer({
+    triggers: {
+      [OWNER]: [
+        { uid: "old-1", handler: "runHoursRequests" },
+        { uid: "old-2", handler: "runHoursRequests" },
+        { uid: "t-email", handler: "runFlagsEmail" },
+      ],
+    },
+  });
+  s.ctx.setupHoursRequestJob();
+  const mine = s.triggers[OWNER];
+  assert.deepEqual(mine.map((t) => t.handler).sort(), ["runFlagsEmail", "runHoursRequests"]);
+  assert.deepEqual(plain(s.created), [{ handler: "runHoursRequests", everyMinutes: 15 }]);
+  assert.equal(lastRun(s), "2026-11-16 10:00, job installed by " + OWNER);
+  assert.doesNotMatch(lastRun(s), /no run yet/);
+  // Run again: still one.
+  s.ctx.setupHoursRequestJob();
+  assert.equal(s.triggers[OWNER].filter((t) => t.handler === "runHoursRequests").length, 1);
+
+  s.ctx.removeHoursRequestJob();
+  assert.deepEqual(
+    s.triggers[OWNER].map((t) => t.handler),
+    ["runFlagsEmail"],
+  );
+  assert.equal(lastRun(s), "2026-11-16 10:00, job removed by " + OWNER);
+});
+
+test("setupHoursRequestJob refuses, naming the problem, when this account can't open Volunteer Profiles", () => {
+  const s = requestServer({
+    profilesFail: true,
+    triggers: { [OWNER]: [{ uid: "old-1", handler: "runHoursRequests" }] },
+  });
+  assert.throws(
+    () => s.ctx.setupHoursRequestJob(),
+    /^Error: This account can't open Volunteer Profiles: You do not have permission/,
+  );
+  assert.deepEqual(plain(s.created), []);
+  assert.equal(s.triggers[OWNER].length, 1);
+  assert.equal(lastRun(s), "");
+});
+
+test("runHoursRequests runs only from its own trigger, and the refusal names its installer", () => {
+  const s = requestServer({ triggers: { [OWNER]: [] } });
+  assert.throws(
+    () => s.runRequests(),
+    /runHoursRequests runs only from its trigger\. To install the triggers, run setupHoursRequestJob\./,
+  );
+  const daily = requestServer({ triggers: { [OWNER]: [] } });
+  assert.throws(() => daily.run(), /run setupDailyJobs\./);
+});
+
+test("in Off or Approve, or with nothing waiting, a run reads Settings and the tab only, takes no lock and writes nothing", () => {
+  for (const mode of ["Off", "Approve", ""]) {
+    const s = requestServer({
+      settings: { ...REQUEST_SETTINGS, "Hours requests": mode },
+      hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+    });
+    s.runRequests();
+    assert.equal(s.lock.tries, 0, mode);
+    assert.ok(!s.calls.includes("SpreadsheetApp.openById"), mode);
+    assert.deepEqual(s.mail, [], mode);
+    assert.equal(requestRows(s)[0].Status, "waiting", mode);
+    assert.equal(lastRun(s), "", mode);
+  }
+  // Auto with no tab, or only done requests: the same.
+  for (const rows of [
+    null,
+    [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30", { Status: "sent" })],
+  ]) {
+    const s = requestServer(rows ? { hoursRequests: rows } : {});
+    s.runRequests();
+    assert.equal(s.lock.tries, 0);
+    assert.ok(!s.calls.includes("SpreadsheetApp.openById"));
+    assert.equal(lastRun(s), "");
+    assert.equal(s.logs.length, 0);
+  }
+});
+
+test("a run in Auto emails each clean request, leaving out unchecked shifts, with an Hours emails row by auto", () => {
+  const s = requestServer({
+    hoursRequests: [
+      REQUEST_HEADER,
+      requestLine(BLAIR, "2026-11-16 09:40"),
+      requestLine(AVERY, "2026-11-16 09:30"),
+    ],
+  });
+  s.runRequests();
+  // Oldest first.
+  assert.deepEqual(
+    s.mail.map((m) => m.to),
+    [AVERY.email, BLAIR.email],
+  );
+  for (const m of s.mail) {
+    assert.equal(m.noReply, true);
+    assert.equal(m.name, "ENCM Volunteer Kiosk");
+    assert.equal(m.subject, "Your volunteer hours for November 2026");
+    assert.match(
+      m.body,
+      /You asked for your hours at the volunteer kiosk on Monday, November 16, 2026\./,
+    );
+    assert.equal(m.attachments.length, 1);
+  }
+  const [avery, blair] = s.mail;
+  assert.match(avery.body, /November 2026 so far: 6\.00 hours \(2 shifts\)/);
+  assert.doesNotMatch(avery.body, /waiting for staff review/);
+  // Blair's flagged shift is out of the totals, the list and the file.
+  assert.match(blair.body, /November 2026 so far: 3\.00 hours \(1 shift\)/);
+  assert.match(blair.body, /1 shift is waiting for staff review and isn't in these totals\./);
+  assert.doesNotMatch(blair.body, /Nov 10/);
+  assert.match(blair.body, /Tue Nov 3: 3\.00 hours/);
+  assert.doesNotMatch(s.blobs[1].text, /2026-11-10/);
+  assert.match(s.blobs[1].text, /2026-11-03/);
+
+  const rows = emailRows(s);
+  assert.equal(rows.length, 2);
+  for (const r of rows) {
+    assert.equal(r["Sent by"], "auto");
+    assert.equal(r["Sent from"], OWNER);
+    assert.equal(r.Result, "sent");
+    assert.equal(r["Send ID"], rows[0]["Send ID"]);
+    assert.equal(r["Shifts file"], "yes");
+  }
+  assert.deepEqual(
+    rows.map((r) => [r["Volunteer ID"], r.Email, r["Month hours"]]),
+    [
+      [AVERY.id, AVERY.email, 6],
+      [BLAIR.id, BLAIR.email, 3],
+    ],
+  );
+  const req = requestRows(s);
+  assert.deepEqual(
+    req.map((r) => [r["Volunteer ID"], r.Status, r.Reason, r["Done by"], r["Send ID"]]),
+    [
+      [BLAIR.id, "sent", "1 shift left out for review", "auto", rows[0]["Send ID"]],
+      [AVERY.id, "sent", "", "auto", rows[0]["Send ID"]],
+    ],
+  );
+  assert.equal(lastRun(s), "2026-11-16 10:00, sent 2, held 0, still waiting 0");
+  assert.match(
+    s.logs.at(-1),
+    /^Hours requests: sent 2, held 0, still waiting 0 \(checked in 0, quota 0\)\.$/,
+  );
+  for (const line of s.logs) assert.doesNotMatch(line, /@|Avery|Blair/);
+});
+
+test("a run holds the lock only to claim and to record, never across a read of Profiles or a send", () => {
+  const s = requestServer({
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+  });
+  const opened = [];
+  const openById = s.ctx.SpreadsheetApp.openById;
+  s.ctx.SpreadsheetApp = new Proxy(s.ctx.SpreadsheetApp, {
+    get: (target, prop) =>
+      prop === "openById" ? (id) => (opened.push(s.lock.held), openById(id)) : target[prop],
+  });
+  s.runRequests();
+  assert.equal(s.mail.length, 1);
+  assert.ok(opened.length > 0);
+  assert.ok(
+    opened.every((held) => held === false),
+    "Profiles read with the lock held",
+  );
+  assert.ok(
+    s.mailEvents.every((e) => e.held === false),
+    "quota or send with the lock held",
+  );
+  // Two holds: 30 s to claim, then up to the run's 5-minute mark to record.
+  assert.equal(s.lock.waits.length, 2);
+  assert.equal(s.lock.waits[0], 30000);
+  assert.equal(s.lock.waits[1], 5 * MIN);
+  assert.equal(s.lock.held, false);
+});
+
+test("the Hours emails row is written as sending, and the request marked sending, before the email goes", () => {
+  const seen = [];
+  const s = requestServer({
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+    onSend: (message, srv) => {
+      seen.push({
+        row: emailRows(srv).map((r) => [r["Volunteer ID"], r.Result, r["Sent by"]]),
+        request: requestRows(srv).map((r) => [r.Status, r["Send ID"]]),
+      });
+    },
+  });
+  s.runRequests();
+  const sendId = emailRows(s)[0]["Send ID"];
+  assert.deepEqual(seen, [
+    { row: [[AVERY.id, "sending", "auto"]], request: [["sending", sendId]] },
+  ]);
+});
+
+test("odd cases are held with a reason, a checked-in volunteer waits, and a low quota leaves the rest waiting", () => {
+  const s = requestServer({
+    hoursRequests: [
+      REQUEST_HEADER,
+      requestLine(DANA, "2026-11-16 09:00"),
+      requestLine(CASEY, "2026-11-16 09:10"),
+      requestLine({ ...AVERY, id: "gone0000gone0000", name: "Left Already" }, "2026-11-16 09:20"),
+    ],
+  });
+  s.runRequests();
+  assert.deepEqual(s.mail, []);
+  const req = requestRows(s);
+  assert.deepEqual(
+    req.map((r) => [r.Status, r.Reason]),
+    [
+      ["held", "No email on their Volunteer Profiles row (row 5)."],
+      ["waiting", ""],
+      ["held", "Not on the volunteer list any more."],
+    ],
+  );
+  assert.equal(lastRun(s), "2026-11-16 10:00, sent 0, held 2, still waiting 1");
+  assert.match(
+    s.logs.at(-1),
+    /\(checked in 1, quota 0\); held [0-9a-f]{16} no-email, gone0000gone0000 not-found\.$/,
+  );
+
+  // At or under the 100 reserve, nothing is decided past the quota: requests stay waiting.
+  const low = requestServer({
+    quota: 100,
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+  });
+  low.runRequests();
+  assert.deepEqual(low.mail, []);
+  assert.equal(requestRows(low)[0].Status, "waiting");
+  assert.equal(lastRun(low), "");
+  assert.match(low.logs.at(-1), /still waiting 1 \(checked in 0, quota 1\)/);
+});
+
+test("a blank Hours email contact holds every request, and an unreadable Flags tab holds them too", () => {
+  const blank = requestServer({
+    settings: { ...REQUEST_SETTINGS, "Hours email contact": "" },
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+  });
+  blank.runRequests();
+  assert.equal(requestRows(blank)[0].Reason, "Hours email contact on the Settings tab is blank.");
+  const noFlags = requestServer({
+    flags: null,
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+  });
+  noFlags.runRequests();
+  assert.equal(
+    requestRows(noFlags)[0].Reason,
+    "The Flags tab couldn't be read, so shifts couldn't be checked.",
+  );
+  assert.deepEqual(blank.mail.concat(noFlags.mail), []);
+});
+
+test("a request an earlier sent row answers becomes sent from it, with no email", () => {
+  const s = requestServer({
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+    hoursEmails: [
+      EMAILS_HEADER,
+      emailLine(AVERY, "2026-11-16 09:20", "JP", "sent", "before01"),
+      emailLine(AVERY, "2026-11-16 09:45", "JP", "sent", "admin001"),
+    ],
+  });
+  s.runRequests();
+  assert.deepEqual(s.mail, []);
+  const r = requestRows(s)[0];
+  assert.deepEqual([r.Status, r["Done by"], r["Send ID"]], ["sent", "JP", "admin001"]);
+  assert.equal(r["Done at"].getTime(), centralMs("2026-11-16 09:45"));
+  assert.equal(emailRows(s).length, 2);
+});
+
+test("the week and day limits hold a request; an admin's send uses up neither", () => {
+  const week = requestServer({
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+    hoursEmails: [EMAILS_HEADER, emailLine(AVERY, "2026-11-10 10:01", "auto", "stopped: x")],
+  });
+  week.runRequests();
+  assert.deepEqual(week.mail, []);
+  assert.deepEqual(
+    [requestRows(week)[0].Status, requestRows(week)[0].Reason],
+    ["held", "Already emailed automatically on Nov 10; Auto sends one a week."],
+  );
+
+  const others = Array.from({ length: 50 }, (_, i) =>
+    emailLine(
+      { ...BLAIR, id: "other" + String(i).padStart(11, "0") },
+      "2026-11-16 08:00",
+      "auto",
+      "sent",
+    ),
+  );
+  const day = requestServer({
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+    hoursEmails: [EMAILS_HEADER, ...others],
+  });
+  day.runRequests();
+  assert.deepEqual(day.mail, []);
+  assert.equal(requestRows(day)[0].Reason, "Auto already sent 50 today.");
+
+  const admin = requestServer({
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+    hoursEmails: [EMAILS_HEADER, emailLine(AVERY, "2026-11-14 10:00", "JP", "sent")],
+  });
+  admin.runRequests();
+  assert.equal(admin.mail.length, 1);
+});
+
+test("a send that throws is held with Google's message, and its row says failed", () => {
+  const s = requestServer({
+    hoursRequests: [
+      REQUEST_HEADER,
+      requestLine(AVERY, "2026-11-16 09:30"),
+      requestLine(BLAIR, "2026-11-16 09:40"),
+    ],
+    onSend: (message) => {
+      if (message.to === AVERY.email) throw new Error("Invalid email: avery@example.org");
+    },
+  });
+  s.runRequests();
+  assert.deepEqual(
+    s.mail.map((m) => m.to),
+    [BLAIR.email],
+  );
+  const [a, b] = requestRows(s);
+  assert.deepEqual([a.Status, a.Reason], ["held", "The send failed: Invalid email: [address]"]);
+  assert.equal(b.Status, "sent");
+  assert.deepEqual(
+    emailRows(s).map((r) => r.Result),
+    ["failed: Invalid email: avery@example.org", "sent"],
+  );
+  assert.equal(lastRun(s), "2026-11-16 10:00, sent 1, held 1, still waiting 0");
+});
+
+test("a run past 4 minutes starts no new send; the request goes back to waiting for the next run", () => {
+  const s = requestServer({
+    hoursRequests: [
+      REQUEST_HEADER,
+      requestLine(AVERY, "2026-11-16 09:30"),
+      requestLine(BLAIR, "2026-11-16 09:40"),
+    ],
+    onSend: (message, srv) => {
+      srv.state.now += 4 * MIN;
+    },
+  });
+  s.runRequests();
+  assert.equal(s.mail.length, 1);
+  const [a, b] = requestRows(s);
+  assert.equal(a.Status, "sent");
+  assert.deepEqual([b.Status, b["Send ID"], b["Done by"], b["Done at"]], ["waiting", "", "", ""]);
+  assert.deepEqual(
+    emailRows(s).map((r) => r.Result),
+    ["sent", "not sent: the run ran out of time"],
+  );
+  assert.equal(lastRun(s), "2026-11-16 10:00, sent 1, held 0, still waiting 1");
+  // The next run sends it; the not-sent row doesn't use up Blair's week.
+  s.runRequests("2026-11-16 10:15");
+  assert.equal(s.mail.length, 2);
+  assert.equal(requestRows(s)[1].Status, "sent");
+});
+
+test("the record finds its rows after staff re-sort both tabs, and leaves a request staff closed", () => {
+  const s = requestServer({
+    hoursRequests: [
+      REQUEST_HEADER,
+      requestLine(AVERY, "2026-11-16 09:30"),
+      requestLine(BLAIR, "2026-11-16 09:40"),
+    ],
+    hoursEmails: [EMAILS_HEADER, emailLine(DANA, "2026-11-01 10:00", "JP", "sent")],
+    onSend: (message, srv) => {
+      if (message.to !== BLAIR.email) return;
+      // Staff sort both tabs newest first and close Avery's request by hand.
+      for (const name of ["Hours requests", "Hours emails"]) {
+        const sheet = srv.sheets[name];
+        sheet.rows = [sheet.rows[0], ...sheet.rows.slice(1).reverse()];
+      }
+      const status = REQUEST_HEADER.indexOf("Status");
+      const req = srv.sheets["Hours requests"];
+      const avery = req.rows.findIndex(
+        (r) => r[REQUEST_HEADER.indexOf("Volunteer ID")] === AVERY.id,
+      );
+      req.rows[avery][status] = "closed";
+    },
+  });
+  s.runRequests();
+  const req = requestRows(s);
+  assert.deepEqual(
+    req.map((r) => [r["Volunteer ID"], r.Status]),
+    [
+      [BLAIR.id, "sent"],
+      [AVERY.id, "closed"],
+    ],
+  );
+  assert.deepEqual(
+    emailRows(s).map((r) => [r["Volunteer ID"], r.Result]),
+    [
+      [BLAIR.id, "sent"],
+      [AVERY.id, "sent"],
+      [DANA.id, "sent"],
+    ],
+  );
+  assert.ok(
+    s.logs.some((l) =>
+      l.includes("the request of volunteer " + AVERY.id + " changed during the run"),
+    ),
+  );
+});
+
+test("a record lock that never comes leaves both rows sending; the limits count them and a later run holds the request", () => {
+  // The claim gets the lock; the record doesn't.
+  const s = requestServer({
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+    lockFree: (n) => n !== 1,
+  });
+  s.runRequests();
+  assert.equal(s.mail.length, 1);
+  assert.equal(requestRows(s)[0].Status, "sending");
+  assert.equal(emailRows(s)[0].Result, "sending");
+  assert.equal(lastRun(s), "2026-11-16 10:00, sent 1, held 0, still waiting 0");
+  assert.match(s.logs.at(-1), /the script lock didn't come to record/);
+
+  // 15 minutes on: not yet stale, so nothing happens.
+  s.runRequests("2026-11-16 10:15");
+  assert.equal(requestRows(s)[0].Status, "sending");
+
+  // Past 30 minutes: held, never sent again, and the row says stopped.
+  s.runRequests("2026-11-16 10:45");
+  assert.equal(s.mail.length, 1);
+  const r = requestRows(s)[0];
+  assert.equal(r.Status, "held");
+  assert.match(r.Reason, /^An automatic send stopped part way and may have gone\./);
+  assert.equal(
+    emailRows(s)[0].Result,
+    "stopped: the automatic run ended before it recorded; the email may have gone",
+  );
+  assert.equal(lastRun(s), "2026-11-16 10:45, sent 0, held 1, still waiting 0");
+
+  // Staff close it; Avery asks again: the stopped row still uses up the week.
+  s.sheets["Hours requests"].rows[1][REQUEST_HEADER.indexOf("Status")] = "closed";
+  s.sheets["Hours requests"].rows.push(requestLine(AVERY, "2026-11-16 11:00"));
+  s.runRequests("2026-11-16 11:15");
+  assert.equal(s.mail.length, 1);
+  assert.equal(
+    requestRows(s)[1].Reason,
+    "Already emailed automatically on Nov 16; Auto sends one a week.",
+  );
+});
+
+test("a claim lock that doesn't come in 30 s claims, holds and sends nothing", () => {
+  const s = requestServer({
+    hoursRequests: [
+      REQUEST_HEADER,
+      requestLine(AVERY, "2026-11-16 09:30"),
+      requestLine(DANA, "2026-11-16 09:40"),
+    ],
+    lockFree: false,
+  });
+  s.runRequests();
+  assert.deepEqual(s.mail, []);
+  assert.deepEqual(
+    requestRows(s).map((r) => r.Status),
+    ["waiting", "waiting"],
+  );
+  assert.equal(s.sheets["Hours emails"], undefined);
+  assert.equal(lastRun(s), "");
+  assert.ok(s.logs.some((l) => /the script lock was busy; nothing was claimed or sent/.test(l)));
+});
+
+test("when marking a claimed request fails, its row says not sent, the request is put back, and nothing is sent", () => {
+  const s = requestServer({
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+  });
+  const write = s.ctx.writeRowCells_;
+  s.ctx.writeRowCells_ = (sheet, cols, kinds, row, changes) => {
+    if (changes.Status === "sending") throw new Error("Service Spreadsheets failed");
+    return write(sheet, cols, kinds, row, changes);
+  };
+  assert.throws(() => s.runRequests(), /Service Spreadsheets failed/);
+  assert.deepEqual(s.mail, []);
+  assert.equal(requestRows(s)[0].Status, "waiting");
+  assert.equal(emailRows(s)[0].Result, "not sent: the run couldn't mark the request as sending");
+  assert.equal(lastRun(s), "2026-11-16 10:00, failed: Service Spreadsheets failed");
+  assert.equal(s.lock.held, false);
+});
+
+test("a run that can't read Profiles writes why in the last run and throws, with requests left waiting", () => {
+  const s = requestServer({
+    profilesFail: true,
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+  });
+  assert.throws(() => s.runRequests(), /You do not have permission/);
+  assert.equal(
+    lastRun(s),
+    "2026-11-16 10:00, failed: You do not have permission to access the requested document.",
+  );
+  assert.equal(requestRows(s)[0].Status, "waiting");
+  assert.equal(s.lock.tries, 0);
+  assert.deepEqual(s.mail, []);
+});
+
+test("a checked-in volunteer's request waits until the first 6:00 AM after it, then is held", () => {
+  const s = requestServer({
+    hoursRequests: [REQUEST_HEADER, requestLine(CASEY, "2026-11-16 09:30")],
+    // A 24-hour window, so the tablet still counts Casey checked in the next morning.
+    settings: { ...REQUEST_SETTINGS, "Auto clock-out after hours": "24" },
+  });
+  s.runRequests("2026-11-17 05:59");
+  assert.equal(requestRows(s)[0].Status, "waiting");
+  s.runRequests("2026-11-17 06:00");
+  assert.deepEqual(
+    [requestRows(s)[0].Status, requestRows(s)[0].Reason],
+    [
+      "held",
+      "Still checked in at 6:00 AM. Close the shift with Kiosk admin > Fix a sign-out, then send from Email hours.",
+    ],
+  );
+  assert.deepEqual(s.mail, []);
+});
+
+// ---------------------------------------------------------------------------
+// The weekly flags email and the hours requests
+
+test("the flags email counts automatic sends and requests waiting, and sends for them alone", () => {
+  const s = server({
+    settings: { ...EMAIL_ON, "Hours requests": "Auto" },
+    triggers: OWN_TRIGGER,
+    hoursEmails: [
+      EMAILS_HEADER,
+      emailLine(AVERY, "2026-11-12 10:00", "auto", "sent"),
+      emailLine(BLAIR, "2026-11-13 10:00", "auto", "stopped: x"),
+      emailLine(CASEY, "2026-11-14 10:00", "auto", "failed: x"),
+      emailLine(DANA, "2026-11-14 10:00", "JP", "sent"),
+    ],
+    hoursRequests: [
+      REQUEST_HEADER,
+      requestLine(AVERY, "2026-11-14 09:00", { Status: "held" }),
+      requestLine(BLAIR, "2026-11-14 09:00"),
+      requestLine(CASEY, "2026-11-16 08:00"),
+    ],
+  });
+  s.run(MONDAY_8);
+  assert.equal(s.mail.length, 1);
+  const m = s.mail[0];
+  assert.equal(m.subject, "Volunteer kiosk: hours requests this week");
+  assert.match(
+    m.body,
+    /Hours emails sent automatically in the last 7 days: 2 \(see the Hours emails tab\)\./,
+  );
+  // Held, and Blair's waiting over 24 hours; Casey's is fresh.
+  assert.match(m.body, /Hours requests waiting for staff: 2 \(Kiosk admin > Email hours…\)/);
+});
+
+test("the flags email still sends when the Hours emails or Hours requests header is broken", () => {
+  const s = server({
+    settings: EMAIL_ON,
+    triggers: OWN_TRIGGER,
+    hoursEmails: [EMAILS_HEADER.slice(1)],
+    hoursRequests: [REQUEST_HEADER.slice(2)],
+  });
+  s.run(MONDAY_8);
+  assert.equal(s.mail.length, 1);
+  assert.match(
+    s.mail[0].body,
+    /Hours emails sent automatically in the last 7 days: couldn't be read \(check the Hours emails tab's header row\)/,
+  );
+  assert.match(
+    s.mail[0].body,
+    /Hours requests waiting for staff: couldn't be read \(check the Hours requests tab's header row\)/,
+  );
 });

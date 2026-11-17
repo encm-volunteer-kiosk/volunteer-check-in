@@ -5,7 +5,7 @@
  * shifts tab, and Restore a shift to put one back. Each item opens a dialog from
  * AdminDialog.html, which calls the admin* functions below through google.script.run. The
  * menu's other items follow the same rule: Hours report (Reports.js), Email hours (below:
- * adminHoursPreview and adminSendHours), Import past hours (Import.js), Refresh Hours
+ * adminHoursRequests, adminHoursPreview and adminSendHours), Import past hours (Import.js), Refresh Hours
  * (refreshHoursNow, Reports.js) and Check the Log now (checkLogNow, Jobs.js). Refresh Hours and Check the Log now open no dialog, so they need
  * no key: they check requireEditorRun_ and SpreadsheetApp.getUi() before they read
  * anything.
@@ -90,6 +90,31 @@ function adminRoster(key) {
     today: centralDate_(new Date()),
     volunteers: adminRosterLabels(getProfiles_(readSettings_())),
   };
+}
+
+/**
+ * The open hours requests for Email hours…, which calls this after adminRoster: {ok: true,
+ * mode, requests: [{id, name, requestedDate, status, reason, overdue, stopped, ticked,
+ * label, heldLine}], notListed}, or a refusal. mode is Settings "Hours requests" read now
+ * ("off", "approve" or "auto"); ticked, label and heldLine are what the window shows
+ * (hoursRequestChoices, Logic.js), and notListed the line for requests from volunteers
+ * not on the list. No tab means no requests. Reads Settings, the volunteer list and the
+ * Hours requests tab, with no lock, and writes nothing.
+ */
+function adminHoursRequests(key) {
+  const denied = adminGuard_(key);
+  if (denied) return denied;
+  const settings = readSettings_();
+  const mode = parseHoursRequestsMode(settings[hoursRequestsSetting()]);
+  const listedIds = getProfiles_(settings).map((v) => v.id);
+  const choices = hoursRequestChoices(
+    readHoursRequests_() || [],
+    mode,
+    Date.now(),
+    listedIds,
+    (ms) => centralDate_(new Date(ms)),
+  );
+  return { ok: true, mode, requests: choices.requests, notListed: choices.notListed };
 }
 
 /** {ok: true, shifts: [{shiftId, label}]}: every open row with a Shift ID, newest first. */
@@ -464,7 +489,8 @@ function adminHoursPreview(key, request) {
 /**
  * Sends the emails of up to hoursEmailChunkSize() volunteers of a preview's ticket.
  * request is {ticket, ids, initials}. Returns {ok: true, results: [{id, result}],
- * recordFailed}, one result per id in the call's order, or a refusal: ADMIN_INITIALS or
+ * recordFailed, requestsFailed, twoEmails}, one result per id in the call's order, or a
+ * refusal: ADMIN_INITIALS or
  * HOURS_EMAIL_TOO_MANY before anything is taken, BUSY when the lock isn't free to take, and
  * HOURS_EMAIL_STALE when the ticket is gone or past its time.
  *
@@ -483,6 +509,13 @@ function adminHoursPreview(key, request) {
  *    read of the Log or a send.
  * 6. Every withLock_ return is read as a refusal or a success, and a throw from it (its
  *    flush or release, after the work) is read against what the work had already done.
+ * 7. A sent email answers the volunteer's hours request. In step 6's lock, once the rows
+ *    are written, each waiting or held request of a volunteer sent to, requested before
+ *    the send, becomes sent, with the initials and the Send ID; any month answers it. A
+ *    request the hours request job is sending is left to the job, and twoEmails counts
+ *    those volunteers, who may get two emails. The Hours requests tab is never made here.
+ *    If marking throws, the Hours emails rows stand, requestsFailed is true and the
+ *    execution log names the Volunteer IDs.
  */
 function adminSendHours(key, request) {
   const denied = adminGuard_(key);
@@ -529,6 +562,8 @@ function adminSendHours(key, request) {
   const ticket = took.ticket;
   const results = {};
   let recordFailed = false;
+  let requestsFailed = false;
+  let twoEmails = 0;
   if (took.taken.length) {
     const takenIds = took.taken.map((t) => t.id);
     const settle = (id, result, totals, reason, file) => {
@@ -603,9 +638,25 @@ function adminSendHours(key, request) {
           totals: results[id].totals,
         }),
       );
+      const sentIds = took.taken.map((t) => t.id).filter((id) => results[id].result === R.sent);
       const done = withLock_(() => {
         appendHoursEmailRows_(rows);
         wrote = true;
+        if (sentIds.length) {
+          try {
+            twoEmails = markHoursRequestsSent_(sentIds, sentAtMs, initials, ticket.sendId);
+          } catch (err) {
+            requestsFailed = true;
+            console.error(
+              "Hours requests: not marked sent for Send ID " +
+                ticket.sendId +
+                " (" +
+                errorMessage_(err) +
+                "). Mark them on the Hours requests tab: volunteer " +
+                sentIds.join(", volunteer "),
+            );
+          }
+        }
         return { ok: true };
       });
       if (!done || done.ok !== true) failure = (done && done.message) || "no reply";
@@ -645,7 +696,35 @@ function adminSendHours(key, request) {
     ok: true,
     results: ids.map((id) => ({ id, result: results[id] ? results[id].result : R.taken })),
     recordFailed,
+    requestsFailed,
+    twoEmails,
   };
+}
+
+/**
+ * Marks sent the hours requests an Email hours send answered (hoursRequestsAnsweredBy),
+ * under the caller's lock, and returns how many of sentIds have a request the job is
+ * sending. Each request is found again by this read, never by a row number read before
+ * the lock. No tab, no requests.
+ */
+function markHoursRequestsSent_(sentIds, sentAtMs, initials, sendId) {
+  const tab = existingHoursRequestSheet_();
+  if (!tab) return 0;
+  const answered = hoursRequestsAnsweredBy(readHoursRequests_(tab), sentIds, sentAtMs);
+  const changes = hoursRequestSentChanges(sentAtMs, initials, sendId);
+  answered.mark.forEach((r) => {
+    writeRowCells_(tab.sheet, tab.cols, hoursRequestColumnKinds(), r.row, changes);
+  });
+  if (answered.sending.length) {
+    console.log(
+      "Hours requests: the job was sending to volunteer " +
+        answered.sending.join(", volunteer ") +
+        " during Send ID " +
+        sendId +
+        "; they may get two emails.",
+    );
+  }
+  return answered.sending.length;
 }
 
 /**

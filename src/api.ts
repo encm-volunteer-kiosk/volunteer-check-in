@@ -22,7 +22,12 @@ import {
 import type { Tap } from "./saveQueue";
 import { DEFAULT_LONG_SHIFT_HOURS, longShiftHoursOf } from "./cardTime";
 import { nameKey } from "./sameName";
-import { checkInFromServer, checkOutFromServer, summaryFromServer } from "./replies";
+import {
+  checkInFromServer,
+  checkOutFromServer,
+  hoursRequestsOf,
+  summaryFromServer,
+} from "./replies";
 
 export { toVolunteer } from "./replies";
 
@@ -79,13 +84,15 @@ export type CheckOutResult = {
 
 // The list reply: the volunteers, the sheet's "Long shift flag hours", past which a
 // checked-in card turns amber (8 when the server sends none), the milestone texts a
-// check-out's steps name, and the server's clock during the call (null from an older server,
-// whose list then can't decide an instant result).
+// check-out's steps name, the server's clock during the call (null from an older server,
+// whose list then can't decide an instant result), and whether the Email me my hours button
+// shows (false when the server sends none).
 export type VolunteerList = {
   volunteers: VolunteerSummary[];
   longShiftHours: number;
   milestones: Milestone[];
   serverNow: number | null;
+  hoursRequests: boolean;
 };
 
 export interface KioskApi {
@@ -111,6 +118,10 @@ export interface KioskApi {
     checkOutIso: string | null,
     tap?: Tap,
   ): Promise<CheckOutResult | Refusal>;
+  // Records an Email me my hours request. digits as for a check-in. The answer is the same
+  // for a new request and one already open, and carries nothing about the volunteer. It is
+  // its own call: never queued, retried or sent offline.
+  requestHours(code: string, id: string, digits: string | null): Promise<true | Refusal>;
 }
 
 export function isRefusal(value: unknown): value is Refusal {
@@ -172,6 +183,7 @@ export const gasApi: KioskApi = {
       volunteers: (reply.volunteers as unknown[]).map(summaryFromServer),
       longShiftHours: longShiftHoursOf(reply),
       ...listExtrasOf(reply),
+      hoursRequests: hoursRequestsOf(reply),
     };
   },
   // Without a tap the call carries today's four arguments.
@@ -190,6 +202,10 @@ export const gasApi: KioskApi = {
         : r.apiCheckOut(code, id, phoneLast4, checkOutIso),
     );
     return reply.ok ? checkOutFromServer(reply) : refusalOf(reply);
+  },
+  async requestHours(code, id, digits) {
+    const reply = await run((r) => r.apiRequestHours(code, id, digits));
+    return reply.ok ? true : refusalOf(reply);
   },
 };
 
@@ -211,6 +227,8 @@ const refusalMessages: Record<string, string> = {
   PHONE_WRONG: "Those digits don't match our records. Please try again or see a board member.",
   PHONE_MISSING: "We need to confirm who you are. Please see a board member.",
   TAP_UNREADABLE: "A kiosk tap can't be read.",
+  HOURS_REQUESTS_OFF:
+    "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
 };
 
 const refuse = (code: string): Refusal => ({ refusal: code, message: refusalMessages[code] });
@@ -236,6 +254,11 @@ const localMinCodeLetters = 16;
 const localArrivalGraceMs = 5 * 60_000;
 
 let localData: KioskData | null = null;
+
+// Email me my hours requests, in memory only: the Volunteer IDs with a request open, in the
+// order asked. The local store has no staff or job to send them, so they stay open until a
+// reset.
+let localHoursRequests: string[] = [];
 
 function withTwin(data: KioskData): KioskData {
   if (data.volunteers.some((v) => v.id === localTwin.id)) return data;
@@ -346,7 +369,7 @@ function localLookup(code: string, id: string, digits: string | null, checkout =
   return { data, volunteer };
 }
 
-export const localApi: KioskApi & { reset(): void } = {
+export const localApi: KioskApi & { hoursRequestsOpen(): string[]; reset(): void } = {
   async checkAccess(code) {
     return localCodeOk(code) ? true : refuse("ACCESS");
   },
@@ -381,6 +404,7 @@ export const localApi: KioskApi & { reset(): void } = {
       longShiftHours: DEFAULT_LONG_SHIFT_HOURS,
       milestones: localMilestones,
       serverNow: Date.now(),
+      hoursRequests: true,
     };
   },
   async checkIn(code, id, arrivalIso, phoneLast4, tap) {
@@ -471,8 +495,22 @@ export const localApi: KioskApi & { reset(): void } = {
       milestone: completed.earned,
     };
   },
+  // As on the server: the check-in rule picks the volunteer, and one already open writes
+  // nothing.
+  async requestHours(code, id, digits) {
+    const found = localLookup(code, id, digits);
+    if (found.refusal) return found.refusal;
+    if (!localHoursRequests.includes(found.volunteer.id)) {
+      localHoursRequests = [...localHoursRequests, found.volunteer.id];
+    }
+    return true;
+  },
+  hoursRequestsOpen() {
+    return [...localHoursRequests];
+  },
   reset() {
     localData = withTwin(kioskStore.reset());
+    localHoursRequests = [];
   },
 };
 

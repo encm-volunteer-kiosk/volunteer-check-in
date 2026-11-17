@@ -63,6 +63,13 @@ export function checkOutFromServer(reply: Record<string, unknown>): CheckOutResu
   } as CheckOutResult;
 }
 
+/**
+ * The list reply's hoursRequests: true only when the server sent true. A server older than
+ * hours requests sends none, and the button stays hidden.
+ */
+export const hoursRequestsOf = (reply: Record<string, unknown>): boolean =>
+  reply.hoursRequests === true;
+
 /** A server volunteer in the shape the screens use. */
 export function toVolunteer(summary: VolunteerSummary): Volunteer {
   return {

@@ -373,6 +373,10 @@ function server(opts = {}) {
     Object.defineProperty(sheet, "journal", { value: journal });
   };
   if (sheets["Hours emails"]) register("Hours emails", sheets["Hours emails"]);
+  if (opts.hoursRequests) {
+    sheets["Hours requests"] = new FakeSheet(opts.hoursRequests);
+    register("Hours requests", sheets["Hours requests"]);
+  }
   const shown = [];
   const menu = [];
   let uuid = 0;
@@ -530,6 +534,12 @@ function server(opts = {}) {
         },
         insertSheet: (name) => {
           if (faults.insertSheet && faults.insertSheet()) throw new Error("insertSheet failed");
+          // Another caller made the tab between this caller's look and its insertSheet.
+          if (faults.insertRace && faults.insertRace(name)) {
+            sheets[name] = new FakeSheet([]);
+            register(name, sheets[name]);
+            throw new Error('A sheet with the name "' + name + '" already exists.');
+          }
           assert.ok(!sheets[name], "a second tab named " + name);
           journal.push("write " + name + " insertSheet");
           sheets[name] = new FakeSheet([]);
@@ -651,9 +661,21 @@ const declared = GUARDED_FILES.flatMap(([, source]) =>
 const PUBLIC = declared.filter((name) => !name.endsWith("_"));
 const isOpener = (name) => /^open\w*Dialog$/.test(name);
 // Run by hand from the editor, guarded like setupSheets: no dialog, so no key.
-const EDITOR_ONLY = ["setupReports", "setupDailyJobs", "removeDailyJobs"];
+const EDITOR_ONLY = [
+  "setupReports",
+  "setupDailyJobs",
+  "removeDailyJobs",
+  "setupHoursRequestJob",
+  "removeHoursRequestJob",
+];
 // Run by a trigger: the trigger's id stands in for the key.
-const TRIGGER_ONLY = ["runFlagsEmail", "runAutoClockOut", "runHoursRefresh", "runHoursSort"];
+const TRIGGER_ONLY = [
+  "runFlagsEmail",
+  "runAutoClockOut",
+  "runHoursRefresh",
+  "runHoursSort",
+  "runHoursRequests",
+];
 // An edit trigger runs as its installer for every editor's edit, so the active user
 // is the editor, not the installer: its trigger id is its only check.
 const EDIT_TRIGGER = ["runHoursSort"];
@@ -860,15 +882,21 @@ test("Jobs.js's public functions are the editor-run setup, the trigger handlers 
   assert.deepEqual(jobsPublic.sort(), [
     "checkLogNow",
     "removeDailyJobs",
+    "removeHoursRequestJob",
     "runAutoClockOut",
     "runFlagsEmail",
     "runHoursRefresh",
+    "runHoursRequests",
     "setupDailyJobs",
+    "setupHoursRequestJob",
   ]);
-  // Every daily job's handler is a trigger-only public function.
+  // Every daily job's handler is a trigger-only public function, and so is the hours
+  // request job's, which isn't a daily job.
   const { ctx } = server();
   for (const job of plain(ctx.dailyJobs()))
     assert.ok(TRIGGER_ONLY.includes(job.handler), job.handler);
+  assert.ok(TRIGGER_ONLY.includes(ctx.hoursRequestJobHandler()));
+  assert.ok(!plain(ctx.dailyJobs()).some((job) => job.handler === ctx.hoursRequestJobHandler()));
   // The one other is a menu item that opens no dialog.
   assert.ok(MENU_RUN.includes("checkLogNow"));
 });
@@ -1906,6 +1934,7 @@ test("a wrong code refuses after one Settings read, before the lock", () => {
     (s) => s.ctx.apiCheckOut(WRONG_CODE, SAM.id, null, null),
     (s) => s.ctx.apiListVolunteers(WRONG_CODE),
     (s) => s.ctx.apiCheckAccess(WRONG_CODE),
+    (s) => s.ctx.apiRequestHours(WRONG_CODE, SAM.id, null),
   ];
   for (const call of calls) {
     const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
@@ -1937,6 +1966,167 @@ test("the Log table read gives no entries on a header-only Log and throws the mi
   assert.deepEqual(valueReads(empty.sheets.Log), ["getValues 1,1,1,1"]);
   assert.throws(() => empty.ctx.apiCheckIn(CODE, SAM.id, null, null), missing);
   assert.throws(() => empty.ctx.apiCheckOut(CODE, SAM.id, null, null), missing);
+});
+
+// ---------------------------------------------------------------------------
+// Hours requests from the tablet
+
+const REQUEST_HEADER = [
+  "Requested at",
+  "Volunteer Name",
+  "Volunteer ID",
+  "Mode",
+  "Status",
+  "Reason",
+  "Done at",
+  "Done by",
+  "Send ID",
+];
+const requestKiosk = (mode, opts = {}) =>
+  kiosk({ settings: KIOSK_SETTINGS.concat([["Hours requests", mode]]), ...opts });
+const requestRows = (s) => {
+  const sheet = s.sheets["Hours requests"];
+  const out = [];
+  for (let r = 2; sheet && r <= sheet.lastRow(); r++) out.push(sheet.rowByHeader(r));
+  return out;
+};
+
+test("apiRequestHours in Off refuses, makes no tab and takes no lock", () => {
+  for (const mode of ["Off", "", "On"]) {
+    const s = requestKiosk(mode);
+    const reply = plain(s.ctx.apiRequestHours(CODE, SAM.id, null));
+    assert.equal(reply.refusal, "HOURS_REQUESTS_OFF", mode);
+    assert.equal(
+      reply.message,
+      "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
+    );
+    assert.equal(s.sheets["Hours requests"], undefined);
+    assert.ok(!s.calls.includes("LockService.getScriptLock"));
+  }
+});
+
+test("apiRequestHours records one waiting row, makes the tab, and a repeat writes nothing", () => {
+  const s = requestKiosk("Approve");
+  assert.deepEqual(plain(s.ctx.apiRequestHours(CODE, SAM.id, null)), { ok: true });
+  const sheet = s.sheets["Hours requests"];
+  assert.deepEqual(sheet.rows[0], REQUEST_HEADER);
+  assert.equal(sheet.frozenRows, 1);
+  assert.deepEqual(
+    sheet.protections.map((p) => p.state),
+    [
+      {
+        description:
+          "Hours requests: written by the kiosk tablet, Kiosk admin > Email hours… and the hours request job. To close a request, type closed in Status; otherwise edit only to fix a mistake.",
+        warningOnly: true,
+      },
+    ],
+  );
+  const rows = requestRows(s);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]["Requested at"].getTime(), NOW);
+  assert.deepEqual(
+    { ...rows[0], "Requested at": "t" },
+    {
+      "Requested at": "t",
+      "Volunteer Name": "Sam Lee",
+      "Volunteer ID": SAM.id,
+      Mode: "Approve",
+      Status: "waiting",
+      Reason: "",
+      "Done at": "",
+      "Done by": "",
+      "Send ID": "",
+    },
+  );
+  // Nothing about Sam reaches the tablet; no Log, Flags or Profiles read; one lock.
+  assert.deepEqual(s.sheets.Log.reads, []);
+  assert.deepEqual(s.sheets.Flags.reads, []);
+  assert.ok(!s.calls.includes("SpreadsheetApp.openById"), "no Email cell read");
+  assert.equal(s.lock.takes, 1);
+
+  // A repeat, while the request is open in any case: the same reply, no row.
+  sheet.put(2, 5, "Held");
+  assert.deepEqual(plain(s.ctx.apiRequestHours(CODE, SAM.id, null)), { ok: true });
+  assert.equal(requestRows(s).length, 1);
+  // Once it is sent or closed, a new request is a new row, with the mode now.
+  sheet.put(2, 5, "sent");
+  const auto = requestKiosk("auto", { hoursRequests: sheet.rows.map((r) => r.slice()) });
+  assert.deepEqual(plain(auto.ctx.apiRequestHours(CODE, SAM.id, null)), { ok: true });
+  const after = requestRows(auto);
+  assert.equal(after.length, 2);
+  assert.equal(after[1].Mode, "Auto");
+  assert.equal(after[1].Status, "waiting");
+});
+
+test("apiRequestHours makes the tab before the lock and touches no other tab", () => {
+  const s = requestKiosk("Approve");
+  const heldAtInsert = [];
+  s.faults.insertSheet = () => (heldAtInsert.push(s.lock.held), false);
+  s.ctx.apiRequestHours(CODE, SAM.id, null);
+  assert.deepEqual(heldAtInsert, [false]);
+  const touched = new Set(
+    s.journal
+      .filter((j) => /^(read|write) /.test(j))
+      .map(
+        (j) =>
+          j
+            .replace(/^(read|write) /, "")
+            .split(" getSheetByName")[0]
+            .split(" ")[0],
+      ),
+  );
+  assert.deepEqual(
+    [...touched].filter((t) => t !== "Hours" && t !== "Settings"),
+    [],
+  );
+});
+
+test("apiRequestHours refuses who the check-in rule refuses, with no Flags row and no tab", () => {
+  const twin = { ...SAM, id: "cccccccccccccccc", needsPhoneCheck: true, phoneLast4: "0202" };
+  const same = { ...SAM, needsPhoneCheck: true, phoneLast4: "0131" };
+  const s = requestKiosk("Auto", { volunteers: [same, twin] });
+  assert.equal(plain(s.ctx.apiRequestHours(CODE, "nobody", null)).refusal, "NOT_FOUND");
+  assert.equal(plain(s.ctx.apiRequestHours(CODE, SAM.id, null)).refusal, "PHONE_NEEDED");
+  assert.equal(plain(s.ctx.apiRequestHours(CODE, SAM.id, "9999")).refusal, "PHONE_WRONG");
+  assert.equal(s.sheets["Hours requests"], undefined);
+  assert.equal(s.sheets.Flags.lastRow(), 1);
+  // The twin's digits on Sam's entry: the request is the twin's.
+  assert.deepEqual(plain(s.ctx.apiRequestHours(CODE, SAM.id, "0202")), { ok: true });
+  assert.equal(requestRows(s)[0]["Volunteer ID"], twin.id);
+});
+
+test("apiRequestHours takes the tab another caller made between its look and its insertSheet", () => {
+  const s = requestKiosk("Approve");
+  s.faults.insertRace = (name) => name === "Hours requests";
+  assert.deepEqual(plain(s.ctx.apiRequestHours(CODE, SAM.id, null)), { ok: true });
+  assert.deepEqual(s.sheets["Hours requests"].rows[0], REQUEST_HEADER);
+  assert.equal(requestRows(s).length, 1);
+  // Any other insertSheet error is thrown.
+  const broken = requestKiosk("Approve");
+  broken.faults.insertSheet = () => true;
+  assert.throws(() => broken.ctx.apiRequestHours(CODE, SAM.id, null), /insertSheet failed/);
+});
+
+test("apiRequestHours throws naming the tab when its header is broken", () => {
+  const s = requestKiosk("Approve", { hoursRequests: [REQUEST_HEADER.slice(1)] });
+  assert.throws(
+    () => s.ctx.apiRequestHours(CODE, SAM.id, null),
+    /The Hours requests tab needs exactly one "Requested at" column/,
+  );
+});
+
+test("the list says whether the button shows, and never the mode", () => {
+  for (const [mode, on] of [
+    ["Approve", true],
+    ["AUTO", true],
+    ["Off", false],
+    ["", false],
+  ]) {
+    const reply = plain(requestKiosk(mode).ctx.apiListVolunteers(CODE));
+    assert.equal(reply.hoursRequests, on, mode);
+    assert.equal(JSON.stringify(reply).includes(mode || "\u0000"), false);
+  }
+  assert.equal(plain(kiosk({}).ctx.apiListVolunteers(CODE)).hoursRequests, false);
 });
 
 // ---------------------------------------------------------------------------
@@ -3023,6 +3213,8 @@ test("Email hours: a Send of the ticket sends each email as the flags email is s
       { id: JAMES.id, result: "sent" },
     ],
     recordFailed: false,
+    requestsFailed: false,
+    twoEmails: 0,
   });
   assert.deepEqual(sentTo(s), [MARIA.email, JAMES.email]);
   s.mail.sent.forEach(({ message }, i) => {
@@ -3116,6 +3308,8 @@ test("Email hours: the ticket in the cache decides, and a repeat gets what it ho
       { id: DEV.id, result: R_TAKEN },
     ],
     recordFailed: false,
+    requestsFailed: false,
+    twoEmails: 0,
   });
   assert.equal(u.mail.sent.length, 2);
   assert.deepEqual(u.sheets.Log.reads, []);
@@ -3335,6 +3529,8 @@ test("Email hours: one volunteer's MailApp failure doesn't stop the rest", () =>
       { id: DEV.id, result: "sent" },
     ],
     recordFailed: false,
+    requestsFailed: false,
+    twoEmails: 0,
   });
   assert.deepEqual(sentTo(s), [MARIA.email, DEV.email]);
   // A failed row carries the hours, as a sent one does.
@@ -3494,6 +3690,8 @@ test("Email hours: a read that throws after the take sends nothing and still wri
           { id: JAMES.id, result },
         ],
         recordFailed: false,
+        requestsFailed: false,
+        twoEmails: 0,
       },
       what,
     );
@@ -3951,6 +4149,217 @@ test("Email hours: the lock is held only to take and to write the rows, never at
 });
 
 // ---------------------------------------------------------------------------
+// Email hours… with hours requests from the tablet
+
+/** An Hours requests row, in REQUEST_HEADER's order. */
+const requestRow = (p, requestedAt, status, more = {}) => [
+  requestedAt,
+  p.name,
+  p.id,
+  more.mode ?? "Approve",
+  status,
+  more.reason ?? "",
+  more.doneAt ?? "",
+  more.doneBy ?? "",
+  more.sendId ?? "",
+];
+const requestServer = (mode, rows, opts = {}) =>
+  emailServer({
+    settings: EMAIL_SETTINGS.concat([["Hours requests", mode]]),
+    hoursRequests: rows ? [REQUEST_HEADER, ...rows] : undefined,
+    ...opts,
+  });
+const ASKED = at("2026-11-13", "15:00");
+
+test("Email hours: adminHoursRequests gives the open requests with their ticks and words, and writes nothing", () => {
+  const gone = { ...person("Lee", "Gone", "", "", "gone-token"), name: "Lee Gone" };
+  const s = requestServer("Auto", [
+    requestRow(MARIA, ASKED, "waiting", { mode: "Auto" }),
+    requestRow(JAMES, ASKED, "held", {
+      reason: "Hours email contact on the Settings tab is blank.",
+    }),
+    requestRow(DEV, at("2026-11-12", "09:00"), "waiting"),
+    requestRow(ANA, ASKED, "sent"),
+    requestRow(gone, ASKED, "waiting"),
+  ]);
+  s.journal.length = 0;
+  const reply = plain(s.ctx.adminHoursRequests("k"));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.mode, "auto");
+  assert.deepEqual(
+    reply.requests.map((r) => [r.name, r.status, r.ticked, r.overdue, r.label]),
+    [
+      ["Maria Alvarez", "waiting", false, false, "Requested Nov 13, Auto will send"],
+      ["James Okafor", "held", true, false, "Requested Nov 13, held"],
+      ["Dev Patel", "waiting", true, true, "Requested Nov 12, overdue: Auto hasn't sent it"],
+      ["Lee Gone", "waiting", false, false, "Requested Nov 13, Auto will send"],
+    ],
+  );
+  assert.equal(reply.requests[0].id, MARIA.id);
+  assert.equal(reply.requests[0].requestedDate, "2026-11-13");
+  assert.equal(
+    reply.notListed,
+    "1 hours request is from a volunteer not on the volunteer list. Close it on the Hours requests tab.",
+  );
+  // No address reaches the window, and nothing is written or locked.
+  assert.ok(!JSON.stringify(reply).includes("@"));
+  assert.ok(!s.journal.some((j) => j.startsWith("write ")), s.journal.join("\n"));
+  assert.equal(s.lock.tries, 0);
+
+  // In Approve the same requests are ticked by Approve's rule.
+  const a = requestServer("approve", [
+    requestRow(MARIA, ASKED, "waiting"),
+    requestRow(JAMES, ASKED, "sending", { doneAt: at("2026-11-14", "09:00") }),
+  ]);
+  const approve = plain(a.ctx.adminHoursRequests("k"));
+  assert.equal(approve.mode, "approve");
+  assert.deepEqual(
+    approve.requests.map((r) => [r.ticked, r.stopped, r.label]),
+    [
+      [true, false, "Requested Nov 13"],
+      [
+        false,
+        true,
+        "Requested Nov 13, automatic send stopped part way: check the Hours emails tab",
+      ],
+    ],
+  );
+
+  // No tab: no requests, and no tab is made.
+  const none = requestServer("Approve", null);
+  assert.deepEqual(plain(none.ctx.adminHoursRequests("k")), {
+    ok: true,
+    mode: "approve",
+    requests: [],
+    notListed: "",
+  });
+  assert.equal(none.sheets["Hours requests"], undefined);
+  // A wrong key is refused before anything is read.
+  assert.deepEqual(
+    plain(none.ctx.adminHoursRequests("nope")),
+    plain(none.ctx.refusal("ADMIN_EXPIRED")),
+  );
+});
+
+test("Email hours: a send marks the sent volunteers' waiting and held requests sent, under the rows' lock", () => {
+  const later = at("2026-11-14", "10:30");
+  const s = requestServer("Approve", [
+    requestRow(MARIA, at("2026-11-01", "10:00"), "sent", { doneBy: "AB", sendId: "old1" }),
+    requestRow(MARIA, ASKED, "waiting"),
+    requestRow(JAMES, ASKED, "Held", {
+      reason: "Hours email contact on the Settings tab is blank.",
+    }),
+    requestRow(DEV, ASKED, "waiting"),
+  ]);
+  const p = previewHours(s, [MARIA.id, JAMES.id, DEV.id]);
+  const sendId = ticketItem(s, p.ticket).sendId;
+  // A request made after the preview, before the send, is left for the next send.
+  s.sheets["Hours requests"].rows.push(requestRow(ANA, later, "waiting"));
+  s.faults.sendEmail = (m) => (m.to === DEV.email ? "Service unavailable: Gmail" : null);
+  s.journal.length = 0;
+  s.clock.now = EMAIL_NOW + 5 * 60000;
+  const reply = sendHours(s, p.ticket, p.sendIds, "jp");
+  assert.deepEqual(
+    reply.results.map((r) => r.result),
+    ["sent", "sent", "failed: Service unavailable: Gmail"],
+  );
+  assert.equal(reply.requestsFailed, false);
+  assert.equal(reply.twoEmails, 0);
+
+  const rows = requestRows(s);
+  const sentAt = hoursEmailRows(s)[0]["Sent at"];
+  const marked = (r) => [
+    r.Status,
+    r["Done at"] && r["Done at"].getTime(),
+    r["Done by"],
+    r["Send ID"],
+  ];
+  // An earlier, done request is left as it was.
+  assert.deepEqual(marked(rows[0]), ["sent", "", "AB", "old1"]);
+  assert.deepEqual(marked(rows[1]), ["sent", sentAt.getTime(), "JP", sendId]);
+  assert.deepEqual(marked(rows[2]), ["sent", sentAt.getTime(), "JP", sendId]);
+  assert.equal(rows[2].Reason, "Hours email contact on the Settings tab is blank.");
+  // The failed volunteer's request stays open; so does the one made after the send.
+  assert.equal(rows[3].Status, "waiting");
+  assert.equal(rows[3]["Done by"], "");
+  assert.equal(rows[4].Status, "waiting");
+
+  // The marks are written after the Hours emails rows, before the rows' lock ends.
+  const emailsWrite = s.journal.findIndex((j) => j.startsWith("write Hours emails setValues"));
+  const requestWrites = s.journal
+    .map((j, i) => (j.startsWith("write Hours requests") ? i : -1))
+    .filter((i) => i >= 0);
+  const lastFlush = s.journal.lastIndexOf("flush");
+  assert.ok(requestWrites.length > 0);
+  assert.ok(
+    requestWrites.every((i) => i > emailsWrite && i < lastFlush),
+    s.journal.join("\n"),
+  );
+  assert.equal(s.lock.held, false);
+});
+
+test("Email hours: a request the job is sending is left to it, and the reply says they may get two emails", () => {
+  const s = requestServer("Auto", [
+    requestRow(MARIA, ASKED, "sending", { mode: "Auto", doneAt: at("2026-11-14", "09:58") }),
+    requestRow(JAMES, ASKED, "waiting", { mode: "Auto" }),
+  ]);
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.deepEqual(
+    reply.results.map((r) => r.result),
+    ["sent", "sent"],
+  );
+  assert.equal(reply.twoEmails, 1);
+  assert.equal(reply.requestsFailed, false);
+  const rows = requestRows(s);
+  assert.equal(rows[0].Status, "sending");
+  assert.equal(rows[0]["Done by"], "");
+  assert.equal(rows[1].Status, "sent");
+  assert.ok(
+    s.logs.some((l) => l.includes(MARIA.id) && l.includes("may get two emails")),
+    s.logs.join("\n"),
+  );
+});
+
+test("Email hours: when the requests can't be marked, the Hours emails rows stand and the log names the volunteers", () => {
+  const broken = REQUEST_HEADER.map((h) => (h === "Status" ? "State" : h));
+  const s = emailServer({
+    settings: EMAIL_SETTINGS.concat([["Hours requests", "Approve"]]),
+    hoursRequests: [broken, requestRow(MARIA, ASKED, "waiting")],
+  });
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  const sendId = ticketItem(s, p.ticket).sendId;
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.recordFailed, false);
+  assert.equal(reply.requestsFailed, true);
+  assert.equal(s.mail.sent.length, 2);
+  assert.equal(hoursEmailRows(s).length, 2);
+  assert.equal(s.sheets["Hours requests"].rows[1][4], "waiting");
+  const said = s.errors.find((e) => e.startsWith("Hours requests: not marked sent"));
+  assert.ok(said, s.errors.join("\n"));
+  assert.ok(said.includes(sendId) && said.includes(MARIA.id) && said.includes(JAMES.id), said);
+  assert.ok(!said.includes("@"), said);
+});
+
+test("Email hours: a send with no Hours requests tab makes none, and one that sent nobody reads none", () => {
+  const s = requestServer("Approve", null);
+  const p = previewHours(s, [MARIA.id]);
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.equal(reply.results[0].result, "sent");
+  assert.equal(reply.requestsFailed, false);
+  assert.equal(s.sheets["Hours requests"], undefined);
+
+  const t = requestServer("Approve", [requestRow(MARIA, ASKED, "waiting")]);
+  const q = previewHours(t, [MARIA.id]);
+  t.faults.sendEmail = () => "Service unavailable: Gmail";
+  t.sheets["Hours requests"].reads.length = 0;
+  sendHours(t, q.ticket, q.sendIds);
+  assert.deepEqual(t.sheets["Hours requests"].reads, []);
+  assert.equal(requestRows(t)[0].Status, "waiting");
+});
+
+// ---------------------------------------------------------------------------
 // The admin dialog's calls
 
 test("AdminDialog.html calls only keyed functions, each through call()", () => {
@@ -3961,6 +4370,7 @@ test("AdminDialog.html calls only keyed functions, each through call()", () => {
     "adminFindShifts",
     "adminFixSignOut",
     "adminHoursPreview",
+    "adminHoursRequests",
     "adminOpenShifts",
     "adminRemoveShift",
     "adminRemovedShifts",
@@ -5003,7 +5413,12 @@ const LOG_WRITE_CLASSES = {
   adminRemoveShift: { class: "tab", tab: "removedTabName()", in: "removedSheet_" },
   adminRestoreShift: { class: "tab", tab: "removedTabName()", in: "removedSheet_" },
   hoursEmailSheet_: { class: "tab", tab: "hoursEmailTab()" },
-  appendHoursEmailRows_: { class: "tab", tab: "hoursEmailTab()", in: "hoursEmailSheet_" },
+  hoursRequestSheet_: { class: "tab", tab: "hoursRequestTab()" },
+  // The two writers below are handed a sheet: only the Hours emails tab (from
+  // hoursEmailSheet_) or the Hours requests tab (from hoursRequestSheet_), never the Log.
+  // The hours request job (Jobs.js) writes cells of both through writeRowCells_.
+  appendKindRows_: { class: "tab", tab: "hoursRequestTab()", in: "hoursRequestSheet_" },
+  writeRowCells_: { class: "tab", tab: "hoursRequestTab()", in: "hoursRequestSheet_" },
   setupHowTo_: { class: "tab", tab: "howToTabName()" },
   setupSampleProfiles: {
     class: "tab",
@@ -5049,6 +5464,7 @@ const LOG_WRITE_CLASSES = {
   flagsSummary: { class: "array", why: SORTS_AN_ARRAY },
   importSummary: { class: "array", why: SORTS_AN_ARRAY },
   autoClockOutRows: { class: "array", why: SORTS_AN_ARRAY },
+  hoursRequestQueue: { class: "array", why: SORTS_AN_ARRAY },
   usualLength: { class: "array", why: SORTS_AN_ARRAY },
 };
 

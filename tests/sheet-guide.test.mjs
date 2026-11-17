@@ -211,6 +211,7 @@ test("every setting the server code writes has a description", () => {
     "Auto clock-out last run",
     "Daily jobs installed by",
     "Flags email last run",
+    "Hours requests last run",
     "Past hours file ID",
     "Past hours tab",
     "Profiles problems",
@@ -534,16 +535,16 @@ const PREFIX = "If the kiosk or this sheet isn't working and this tab doesn't he
 test("Kiosk contact is the last Settings row before the hours email rows, blank by default, with its sentence", () => {
   const rows = plain(L.settingsDefaults("2026-11-13"));
   assert.equal(L.kioskContactSetting(), "Kiosk contact");
-  assert.deepEqual(rows[rows.length - 3], ["Kiosk contact", ""]);
+  assert.deepEqual(rows[rows.length - 5], ["Kiosk contact", ""]);
   assert.equal(rows.filter((r) => r[0] === "Kiosk contact").length, 1);
   assert.equal(plain(L.settingsDescriptions())["Kiosk contact"], CONTACT_SENTENCE);
 });
 
-test("the two hours email rows are the last two Settings rows, blank by default, with their sentences", () => {
+test("the two hours email rows come before the hours request rows, blank by default, with their sentences", () => {
   const rows = plain(L.settingsDefaults("2026-11-13"));
   assert.equal(L.hoursEmailContactSetting(), "Hours email contact");
   assert.equal(L.hoursEmailSignatureSetting(), "Hours email signature");
-  assert.deepEqual(rows.slice(-2), [
+  assert.deepEqual(rows.slice(-4, -2), [
     ["Hours email contact", ""],
     ["Hours email signature", ""],
   ]);
@@ -556,6 +557,29 @@ test("the two hours email rows are the last two Settings rows, blank by default,
     d["Hours email signature"],
     'Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.',
   );
+});
+
+test("the two hours request rows are the last two Settings rows, Off and blank, with their sentences", () => {
+  const rows = plain(L.settingsDefaults("2026-11-13"));
+  assert.equal(L.hoursRequestsSetting(), "Hours requests");
+  assert.equal(L.hoursRequestsLastRunSetting(), "Hours requests last run");
+  assert.deepEqual(rows.slice(-2), [
+    ["Hours requests", "Off"],
+    ["Hours requests last run", ""],
+  ]);
+  const d = plain(L.settingsDescriptions());
+  assert.equal(
+    d["Hours requests"],
+    "Whether volunteers can ask for their hours on the tablet: Off hides the Email me my hours button; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them about every 15 minutes, leaving out unchecked shifts, once a week at most; blank or anything else means Off.",
+  );
+  // The last-run row says only what it can show: idle runs write nothing.
+  assert.match(d["Hours requests last run"], /^Written by the hours request job: /);
+  assert.match(
+    d["Hours requests last run"],
+    /a run with nothing to do writes nothing, so an old time is normal/,
+  );
+  assert.match(d["Hours requests last run"], /overdue/);
+  assert.equal(/no run yet/.test(d["Hours requests last run"]), false);
 });
 
 test("How to has the Email hours steps, after the hours report", () => {
@@ -751,4 +775,42 @@ test("the tablet never gets the contact: the web app and the page don't name it"
       .map((f) => read("src/" + f)),
   ];
   tablet.forEach((src) => assert.ok(!/kioskContact|Kiosk contact/.test(src)));
+});
+
+test("How to has the hours requests section after Email hours, saying what Auto does and misses", () => {
+  const sections = plain(L.howToSections());
+  const at = sections.findIndex((s) => s.title === "Hours requests from the tablet");
+  assert.ok(at > 0);
+  assert.equal(sections[at - 1].title, "Email volunteers their hours");
+  assert.equal(sections[at + 1].title, "The weekly flags email");
+  const all = sections[at].lines.map((l) => l.text).join("\n");
+  [
+    "Off, the default, hides the Email me my hours button",
+    "Approve",
+    "Auto",
+    "1. Kiosk admin > Email hours…",
+    "never shows an email address",
+    "type closed in its Status",
+    "Reviewed",
+    "Kiosk admin > Fix a sign-out…",
+    "A deleted Flags row counts as reviewed",
+    "as the tablet shows it",
+    "Auto clock-out after hours",
+    "6:00 AM",
+    "never retries a held request",
+    "overdue",
+    "how a stopped hours request job shows",
+    "an old time there is normal",
+    "believable fake shift",
+    "two emails",
+    "Sent by auto",
+  ].forEach((part) => assert.ok(all.includes(part), part));
+  // The last-run row can't show whether the job is running, so the text never says it does.
+  assert.doesNotMatch(all, /no run yet|whether the job runs/);
+  // Email hours step 4 says requesters arrive ticked.
+  const email = sections[at - 1].lines.map((l) => l.text).join("\n");
+  assert.ok(email.includes("Volunteers who asked on the tablet arrive ticked"));
+  // The flags email's hours count is of emails sent or tried, not delivered.
+  const flags = sections[at + 1].lines.map((l) => l.text).join("\n");
+  assert.ok(flags.includes("the hours emails Auto sent or tried in the last 7 days"));
 });

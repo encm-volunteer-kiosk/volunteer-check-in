@@ -1598,11 +1598,22 @@ function hoursEmailSheet_() {
  * Appends Hours emails rows (hoursEmailRow maps) below the tab's last row, in one
  * setNumberFormats and one setValues: Sent at as a date-time, the hours as numbers with
  * 0.00, every other column of the tab's own as plain text. Columns staff added keep their
- * format and get a blank.
+ * format and get a blank. Returns the sheet row of the first one.
  */
 function appendHoursEmailRows_(rows) {
-  if (!rows.length) return;
+  if (!rows.length) return 0;
   const { sheet, cols } = hoursEmailSheet_();
+  return appendKindRows_(sheet, cols, hoursEmailColumnKinds(), rows);
+}
+
+/**
+ * Appends rows ({header: value} maps) below sheet's last row, in one setNumberFormats and
+ * one setValues, each of the tab's own columns (cols, header to index) formatted by its
+ * kind: "date" as a date-time from milliseconds (blank stays blank), "hours" as 0.00, else
+ * plain text. Columns staff added keep their format and get a blank. Returns the sheet row
+ * of the first one.
+ */
+function appendKindRows_(sheet, cols, kinds, rows) {
   const width = logHeaderRow_(sheet).length;
   const first = sheet.getLastRow() + 1;
   const last = first + rows.length - 1;
@@ -1611,23 +1622,30 @@ function appendHoursEmailRows_(rows) {
   }
   const range = sheet.getRange(first, 1, rows.length, width);
   const formats = range.getNumberFormats();
-  const kinds = hoursEmailColumnKinds();
   const format = { date: DATE_TIME_FORMAT, hours: "0.00", text: "@" };
   const values = rows.map((row, i) => {
     const line = new Array(width).fill("");
     Object.keys(cols).forEach((h) => {
       formats[i][cols[h]] = format[kinds[h]];
-      line[cols[h]] = kinds[h] === "date" ? new Date(row[h]) : row[h];
+      line[cols[h]] = kindValue_(kinds[h], row[h]);
     });
     return line;
   });
   range.setNumberFormats(formats);
   range.setValues(values);
+  return first;
+}
+
+/** A cell value for a column of kind: a date-time from milliseconds, blank kept blank. */
+function kindValue_(kind, value) {
+  if (kind !== "date") return value === undefined ? "" : value;
+  return value === "" || value === null || value === undefined ? "" : new Date(value);
 }
 
 /**
- * The Hours emails tab's rows as [{id, result, ms, date, by}] for the Last emailed line,
- * or null when there is no tab. Sent at is read as a time (ms NaN when it can't be) and
+ * The Hours emails tab's rows as [{row, id, result, ms, date, by, sendId}] for the Last
+ * emailed line, the hours request job's limits, its answered-already check and its record
+ * step (row is the sheet row), or null when there is no tab. Sent at is read as a time (ms NaN when it can't be) and
  * date is its Central yyyy-MM-dd, or the cell's text when it isn't a time. Throws when
  * row 1 lacks a header.
  */
@@ -1642,16 +1660,125 @@ function readHoursEmailSends_() {
   return sheet
     .getRange(2, 1, last - 1, header.length)
     .getValues()
-    .map((cells) => {
+    .map((cells, i) => {
       const t = cellTime_(cells[cols["Sent at"]]);
       return {
+        row: i + 2,
         id: cellText_(cells[cols["Volunteer ID"]]),
         result: cellText_(cells[cols.Result]),
         ms: t.ms,
         date: t.date || cellText_(cells[cols["Sent at"]]),
         by: cellText_(cells[cols["Sent by"]]),
+        sendId: cellText_(cells[cols["Send ID"]]),
       };
     });
+}
+
+// ---------------------------------------------------------------------------
+// Hours requests
+
+/**
+ * The Hours requests tab as {sheet, cols}, made on the first request the way the Hours
+ * emails tab is: a plain-text header, row 1 frozen and one warning-only protection. Safe
+ * when two callers make it at once: an insertSheet that throws because the tab now exists
+ * means another caller made it, and this one takes that tab. Both may write the same
+ * header, which is harmless. Throws, naming the tab, when its header is broken.
+ */
+function hoursRequestSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const name = hoursRequestTab();
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    try {
+      sheet = ss.insertSheet(name);
+    } catch (err) {
+      sheet = ss.getSheetByName(name);
+      if (!sheet) throw err;
+    }
+  }
+  let header = logHeaderRow_(sheet);
+  if (header.every((h) => h === "")) {
+    const headers = hoursRequestHeaders();
+    sheet.getRange(1, 1, 1, headers.length).setNumberFormat("@").setValues([headers]);
+    sheet.setFrozenRows(1);
+    header = headers;
+  }
+  protectOnce_(
+    sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET),
+    hoursRequestProtectionDescription(),
+    () => sheet.protect(),
+  );
+  return { sheet, cols: hoursRequestColumns(header) };
+}
+
+/**
+ * The Hours requests tab's rows as requests ({row, requestedMs, name, id, mode, status,
+ * reason, doneAtMs, doneBy, sendId}, status lowercased; Logic.js "Hours requests"), or null
+ * when there is no tab. given, {sheet, cols}, reads that tab; otherwise the tab is looked
+ * up and its header checked. Throws, naming the tab, when a header is missing or repeated.
+ */
+function readHoursRequests_(given) {
+  let sheet = given ? given.sheet : null;
+  let cols = given ? given.cols : null;
+  if (!sheet) {
+    sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(hoursRequestTab());
+    if (!sheet) return null;
+    const header = logHeaderRow_(sheet);
+    if (header.every((h) => h === "")) return [];
+    cols = hoursRequestColumns(header);
+  }
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  const width = Math.max(sheet.getLastColumn(), 1);
+  return sheet
+    .getRange(2, 1, last - 1, width)
+    .getValues()
+    .map((cells, i) => ({
+      row: i + 2,
+      requestedMs: cellTime_(cells[cols["Requested at"]]).ms,
+      name: cellText_(cells[cols["Volunteer Name"]]),
+      id: cellText_(cells[cols["Volunteer ID"]]),
+      mode: cellText_(cells[cols.Mode]),
+      status: hoursRequestStatus(cellText_(cells[cols.Status])),
+      reason: cellText_(cells[cols.Reason]),
+      doneAtMs: cellTime_(cells[cols["Done at"]]).ms,
+      doneBy: cellText_(cells[cols["Done by"]]),
+      sendId: cellText_(cells[cols["Send ID"]]),
+    }));
+}
+
+/**
+ * The Hours requests tab as {sheet, cols} when it exists and has a header, else null. It
+ * never makes the tab: a send in Email hours only marks requests already there. Throws,
+ * naming the tab, when a header is missing or repeated.
+ */
+function existingHoursRequestSheet_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(hoursRequestTab());
+  if (!sheet) return null;
+  const header = logHeaderRow_(sheet);
+  if (header.every((h) => h === "")) return null;
+  return { sheet, cols: hoursRequestColumns(header) };
+}
+
+/** Appends Hours requests rows (hoursRequestRow maps) to the tab {sheet, cols}. */
+function appendHoursRequestRows_(tab, rows) {
+  if (!rows.length) return 0;
+  return appendKindRows_(tab.sheet, tab.cols, hoursRequestColumnKinds(), rows);
+}
+
+/**
+ * Writes some cells of one row of a tab: changes is {header: value}, each found by cols and
+ * formatted by its kind (Done at a date-time from milliseconds or blank, the rest plain
+ * text). One setValue per cell, so a column staff moved between cells can't be overwritten
+ * by a stale range.
+ */
+function writeRowCells_(sheet, cols, kinds, row, changes) {
+  const format = { date: DATE_TIME_FORMAT, hours: "0.00", text: "@" };
+  Object.keys(changes).forEach((h) => {
+    const cell = sheet.getRange(row, cols[h] + 1);
+    cell.setNumberFormat(format[kinds[h]] || "@");
+    cell.setValue(kindValue_(kinds[h], changes[h]));
+  });
 }
 
 // ---------------------------------------------------------------------------

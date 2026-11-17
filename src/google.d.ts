@@ -20,6 +20,7 @@ interface GoogleScriptRunner {
     checkOutIso: string | null,
     tap?: object,
   ): void;
+  apiRequestHours(code: string, id: string, digits: string | null): void;
 }
 
 declare const google: { script?: { run: GoogleScriptRunner } } | undefined;

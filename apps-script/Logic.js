@@ -137,6 +137,8 @@ function settingsDefaults(todayDate) {
     [kioskContactSetting(), ""],
     [hoursEmailContactSetting(), ""],
     [hoursEmailSignatureSetting(), ""],
+    [hoursRequestsSetting(), "Off"],
+    [hoursRequestsLastRunSetting(), ""],
   );
   return rows;
 }
@@ -198,6 +200,10 @@ function settingsDescriptions() {
       "Who volunteers should contact about their hours, such as a name and an email or phone: Kiosk admin > Email hours… ends every email with it, because nobody can reply to that email; while it's blank, no hours email can be sent.",
     [hoursEmailSignatureSetting()]:
       'Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.',
+    [hoursRequestsSetting()]:
+      "Whether volunteers can ask for their hours on the tablet: Off hides the Email me my hours button; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them about every 15 minutes, leaving out unchecked shifts, once a week at most; blank or anything else means Off.",
+    [hoursRequestsLastRunSetting()]:
+      "Written by the hours request job: when it was installed or removed, or a run last sent, held or failed; a run with nothing to do writes nothing, so an old time is normal. In Auto, a request still waiting a day later shows as overdue in Email hours…, which is how a stopped job shows.",
   };
 }
 
@@ -318,6 +324,8 @@ function refusalMessages() {
       "This row has a value in a column the Log doesn't have exactly once, or whose header is blank or repeated, so it can't go back without losing that value. Give the Log one column with that header first.",
     HOURS_EMAIL_STALE: "This preview has expired or was already sent. Press Preview again.",
     HOURS_EMAIL_TOO_MANY: "Too many volunteers in one send. Press Preview again.",
+    HOURS_REQUESTS_OFF:
+      "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
   };
 }
 
@@ -2609,7 +2617,9 @@ function decideFixSignOut(input) {
 // Volunteer Profiles row. This section holds its pure parts: the address check, the period,
 // which rows count and what the preview warns about, the email's text, the shifts file,
 // the quota check, the ticket a preview leaves for its send, and the Hours emails tab's
-// rows.
+// rows. The hours request job (runHoursRequests, Jobs.js, installed with
+// setupHoursRequestJob) builds its automatic emails from the same parts, with the shifts
+// it leaves out taken away first (see "Hours requests" below).
 //
 // The rules: all three totals are as of one date, the as-of date; a row counts when it is
 // closed, under the volunteer's own User Token, dated yyyy-mm-dd and on or before that
@@ -2781,9 +2791,9 @@ function hoursEmailProblemText(problem, rows, cell) {
 
 /**
  * Each volunteer's address from the Profiles header row and data rows (cells as text; data
- * row i is sheet row i + 2), as {id: {email, row, problem, text}}. The row is the one data
- * row whose trimmed User Token is the volunteer's token, matched by token and not by row
- * number, because rows move. problem is "" or one of no-email, bad-email (hoursEmailAddress),
+ * row i is sheet row i + 2), as {id: {email, row, rows, problem, text}}. The row is the one
+ * data row whose trimmed User Token is the volunteer's token, matched by token and not by
+ * row number, because rows move; rows lists every sheet row with that token. problem is "" or one of no-email, bad-email (hoursEmailAddress),
  * not-found (no row has the token), duplicate-token (two or more do; row is the first) and
  * no-email-column (the header has none of profileEmailHeaders(), for every volunteer). text
  * is hoursEmailProblemText, "" with no problem. Throws as profileTokenColumn does.
@@ -2819,6 +2829,7 @@ function profileEmailsFrom(headerRow, rows, volunteers) {
     out[v.id] = {
       email,
       row: sheetRows.length ? sheetRows[0] : 0,
+      rows: sheetRows,
       problem,
       text: problem ? hoursEmailProblemText(problem, sheetRows, cell) : "",
     };
@@ -3143,8 +3154,13 @@ function hoursEmailTotalLines(plan) {
 
 /**
  * The email, as {subject, body}, plain text with "\n" line ends. input is {firstName,
- * plan (hoursEmailPlan's), attach, contact, signature}: contact and signature are the two
- * Settings values as typed. Every email names who to contact, since nobody can reply to it;
+ * plan (hoursEmailPlan's), attach, contact, signature, request}: contact and signature are
+ * the two Settings values as typed. request is given only for an email the hours request
+ * job sends, as {date, unchecked}: date is the Central day the volunteer asked, and
+ * unchecked how many of their shifts were left out because staff haven't checked them
+ * (hoursRequestEntries). It adds a line saying they asked at the kiosk, and, when
+ * unchecked is above 0, the line saying how many shifts wait for review, with the totals
+ * printed as zero rather than the no-hours line when nothing else counts. Every email names who to contact, since nobody can reply to it;
  * the contact's lines are joined with ", " as the Kiosk contact line joins them. The
  * signature's lines go one per line under the thanks. The file line shows only when the
  * email carries the file (hoursEmailHasFile).
@@ -3154,15 +3170,26 @@ function hoursEmailMessage(input) {
   const period = plan.period;
   const month = monthName(period.month);
   const last = period.choice === "last";
+  const request = input.request || null;
+  const left = request ? Math.max(0, Number(request.unchecked) || 0) : 0;
   const blocks = [["Hi " + cellString(input.firstName) + ","]];
+  if (request) {
+    blocks.push([
+      "You asked for your hours at the volunteer kiosk on " +
+        hoursEmailLongDate(request.date) +
+        ".",
+    ]);
+  }
   blocks.push([
     "Here are the volunteer hours we have for you " +
       (last ? "through " : "as of ") +
       hoursEmailLongDate(period.asOf) +
       ":",
   ]);
-  if (!plan.all.shifts) {
+  if (!plan.all.shifts && !left) {
     blocks.push(["We don't have any volunteer hours recorded for you yet."]);
+  } else if (!plan.all.shifts) {
+    blocks.push(hoursEmailTotalLines(plan).map((line) => "  " + line));
   } else {
     blocks.push(hoursEmailTotalLines(plan).map((line) => "  " + line));
     if (plan.monthShifts.length) {
@@ -3177,6 +3204,7 @@ function hoursEmailMessage(input) {
       blocks.push([(last ? "No shifts in " : "No shifts yet in ") + month + "."]);
     }
   }
+  if (left) blocks.push([hoursRequestUncheckedLine(left)]);
   if (hoursEmailHasFile(plan, input.attach)) {
     const n = plan.all.shifts;
     const file = hoursEmailFileName(period.asOf);
@@ -3415,6 +3443,695 @@ function hoursEmailLogLine(id, result, reason) {
   }
   const why = reason || hoursEmailLogText(result.replace(/^not sent: /, ""));
   return "Hours email: not sent" + who + ": " + why;
+}
+
+// ---------------------------------------------------------------------------
+// Hours requests
+//
+// The Email me my hours button on the tablet records a request on the Hours requests tab
+// (apiRequestHours, Api.js). Settings "Hours requests" decides what happens next: Off hides
+// the button; Approve leaves the request for staff, who send it from Kiosk admin > Email
+// hours…, where requesters arrive ticked; Auto lets the hours request job send it by
+// itself. That job (runHoursRequests, Jobs.js) runs every 15 minutes on a trigger of its
+// own, installed with setupHoursRequestJob by an account that can open Volunteer Profiles.
+// This section holds the pure parts: the mode, the tab's columns and statuses, which
+// shifts an automatic email leaves out, the check-out wait, the limits, the hold reasons,
+// the answered-already rule, and what staff see (overdue requests, sends that stopped part
+// way, the weekly flags email's counts).
+//
+// The rules: the tablet never receives or shows an email address; every email the job may
+// have sent has an Hours emails row written before the send; an automatic email leaves out
+// only open shifts and shifts with an unticked Flags row, and says how many; a held request
+// waits for a person and the job never retries it; and no request waits in Auto for more
+// than 24 hours without showing to staff as needing a person.
+//
+// A request is read from the tab as {row, requestedMs, name, id, mode, status, reason,
+// doneAtMs, doneBy, sendId}: the times in milliseconds (NaN when they can't be read) and
+// status lowercased and trimmed.
+
+/** The Settings row that picks Off, Approve or Auto. */
+function hoursRequestsSetting() {
+  return "Hours requests";
+}
+
+/** The Settings row the hours request job writes after a run that did something. */
+function hoursRequestsLastRunSetting() {
+  return "Hours requests last run";
+}
+
+/**
+ * "Hours requests": "approve" or "auto" for those words, trimmed, in any case; anything
+ * else, blank and On included, is "off", the safe reading of a mistake.
+ */
+function parseHoursRequestsMode(text) {
+  const s = cellString(text).toLowerCase();
+  return s === "approve" || s === "auto" ? s : "off";
+}
+
+/** The mode as the Mode column and the dialog write it: "Approve", "Auto" or "Off". */
+function hoursRequestModeText(mode) {
+  if (mode === "auto") return "Auto";
+  return mode === "approve" ? "Approve" : "Off";
+}
+
+/** The tab in the Check-In Log that keeps one row per request. */
+function hoursRequestTab() {
+  return "Hours requests";
+}
+
+/** The description of the Hours requests tab's one warning-only protection. */
+function hoursRequestProtectionDescription() {
+  return "Hours requests: written by the kiosk tablet, Kiosk admin > Email hours… and the hours request job. To close a request, type closed in Status; otherwise edit only to fix a mistake.";
+}
+
+/** The Hours requests tab's header, in the order a new tab gets it. */
+function hoursRequestHeaders() {
+  return [
+    "Requested at",
+    "Volunteer Name",
+    "Volunteer ID",
+    "Mode",
+    "Status",
+    "Reason",
+    "Done at",
+    "Done by",
+    "Send ID",
+  ];
+}
+
+/** Each Hours requests header's kind, which sets its number format: "date" or "text". */
+function hoursRequestColumnKinds() {
+  const kinds = {};
+  hoursRequestHeaders().forEach((h) => (kinds[h] = "text"));
+  kinds["Requested at"] = "date";
+  kinds["Done at"] = "date";
+  return kinds;
+}
+
+/**
+ * Maps each Hours requests header to its 0-based index in headerRow, compared after
+ * normalizeHeader. Each must be there exactly once, else this throws with the tab's name,
+ * so a row is never written under the wrong header.
+ */
+function hoursRequestColumns(headerRow) {
+  const cols = {};
+  hoursRequestHeaders().forEach((h) => {
+    const found = logHeaderIndexes(headerRow, h);
+    if (found.length !== 1) {
+      throw new Error(
+        "The " +
+          hoursRequestTab() +
+          ' tab needs exactly one "' +
+          h +
+          '" column in row 1. Fix its header row.',
+      );
+    }
+    cols[h] = found[0];
+  });
+  return cols;
+}
+
+/** A Status cell as the rules compare it: trimmed and lowercased. */
+function hoursRequestStatus(text) {
+  return cellString(text).toLowerCase();
+}
+
+/** True for an open request: Status waiting, sending or held, in any case. Anything else, blank included, is done. */
+function isOpenHoursRequest(status) {
+  const s = hoursRequestStatus(status);
+  return s === "waiting" || s === "sending" || s === "held";
+}
+
+/** The volunteer's open request among requests, or null. One volunteer has at most one. */
+function hoursRequestOpenFor(requests, id) {
+  const wanted = cellString(id);
+  return (
+    (requests || []).find((r) => cellString(r.id) === wanted && isOpenHoursRequest(r.status)) ||
+    null
+  );
+}
+
+/**
+ * A new request's row as {header: value}: Requested at in milliseconds, the name and the
+ * hashed Volunteer ID the kiosk list uses, the mode, Status waiting, the rest blank. Every
+ * text goes through sheetText.
+ */
+function hoursRequestRow(item) {
+  return {
+    "Requested at": item.requestedMs,
+    "Volunteer Name": sheetText(item.name),
+    "Volunteer ID": sheetText(item.id),
+    Mode: hoursRequestModeText(item.mode),
+    Status: "waiting",
+    Reason: "",
+    "Done at": "",
+    "Done by": "",
+    "Send ID": "",
+  };
+}
+
+/** How long a waiting request may wait in Auto before staff see it as overdue. */
+function hoursRequestOverdueMs() {
+  return 24 * 3600000;
+}
+
+/** How old a sending request is before it counts as an automatic send that stopped part way. */
+function hoursRequestStaleMs() {
+  return 30 * 60000;
+}
+
+/**
+ * True when a request is overdue: in Auto, still waiting 24 hours or more after Requested
+ * at, or waiting with a Requested at that can't be read. Nothing writes it; Email hours and
+ * the weekly flags email work it out. Never in Approve or Off, and never held or sending.
+ */
+function hoursRequestOverdue(request, mode, nowMs) {
+  if (mode !== "auto" || hoursRequestStatus(request.status) !== "waiting") return false;
+  if (!isFinite(request.requestedMs)) return true;
+  return nowMs - request.requestedMs >= hoursRequestOverdueMs();
+}
+
+/**
+ * True when a request is sending and its Done at is more than 30 minutes before nowMs, or
+ * can't be read: an automatic send that stopped part way, whose email may have gone.
+ */
+function hoursRequestStopped(request, nowMs) {
+  if (hoursRequestStatus(request.status) !== "sending") return false;
+  if (!isFinite(request.doneAtMs)) return true;
+  return nowMs - request.doneAtMs > hoursRequestStaleMs();
+}
+
+/**
+ * True when an open request needs a person: held ones and sends that stopped part way in
+ * any mode; waiting ones in Off and Approve, and in Auto once overdue.
+ */
+function hoursRequestNeedsStaff(request, mode, nowMs) {
+  const s = hoursRequestStatus(request.status);
+  if (s === "held") return true;
+  if (s === "sending") return hoursRequestStopped(request, nowMs);
+  if (s === "waiting") return mode !== "auto" || hoursRequestOverdue(request, mode, nowMs);
+  return false;
+}
+
+/** How many requests need a person (hoursRequestNeedsStaff), for the weekly flags email. */
+function hoursRequestsWaitingCount(requests, mode, nowMs) {
+  return (requests || []).filter((r) => hoursRequestNeedsStaff(r, mode, nowMs)).length;
+}
+
+/** "Nov 20" for "2026-11-20"; any other text as it is. */
+function hoursRequestShortDate(date) {
+  const d = cellString(date);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+  return monthName(d.slice(0, 7)).slice(0, 3) + " " + Number(d.slice(8, 10));
+}
+
+/**
+ * Which of a volunteer's Log rows an automatic email leaves out, as {entries, unchecked}.
+ * entries are reportEntry rows (the whole Log), flags readFlags_'s rows, and asOf the
+ * email's as-of date. Of the rows Email hours counts for this volunteer (closed, own token,
+ * dated yyyy-mm-dd, on or before asOf), a row is unchecked, and taken out of entries, only
+ * when a Flags row with the same non-blank Shift ID has Reviewed unticked. Every other row
+ * stays, so hoursEmailPlan counts it as Email hours does: typed Admin Alerts? text, rows
+ * with no Shift ID, and rows whose Flags rows are ticked or deleted. unchecked, the email's
+ * N, is those rows plus the volunteer's open rows, any date, which no total counts.
+ * Future-dated rows and rows under another token or an import: stand-in are not in it.
+ */
+function hoursRequestEntries(entries, volunteer, flags, asOf) {
+  const flagged = new Set(
+    (flags || [])
+      .filter((f) => f.reviewed !== true && cellString(f.shiftId))
+      .map((f) => cellString(f.shiftId)),
+  );
+  const mine = (e) => isTokenRow(e, volunteer.token);
+  const unchecked = (e) =>
+    mine(e) &&
+    isCountedRow(e) &&
+    monthKey(e.dateText) !== "" &&
+    cellString(e.dateText) <= asOf &&
+    cellString(e.shiftId) !== "" &&
+    flagged.has(cellString(e.shiftId));
+  let left = 0;
+  const kept = (entries || []).filter((e) => {
+    if (!unchecked(e)) return true;
+    left++;
+    return false;
+  });
+  const open = kept.filter((e) => mine(e) && isStatus(e, "open")).length;
+  return { entries: kept, unchecked: left + open };
+}
+
+/** The automatic email's line for n shifts left out, n above 0. */
+function hoursRequestUncheckedLine(n) {
+  return n === 1
+    ? "1 shift is waiting for staff review and isn't in these totals."
+    : n + " shifts are waiting for staff review and aren't in these totals.";
+}
+
+/** The Reason a sent automatic request gets: "3 shifts left out for review", or "" for none. */
+function hoursRequestLeftOutReason(n) {
+  return n > 0 ? plural(n, "shift", "shifts") + " left out for review" : "";
+}
+
+/**
+ * The check-out deadline for a volunteer checked in at the job's run: the first 6:00 AM
+ * Central strictly after fromText, a Central wall-clock "yyyy-MM-dd HH:mm", as
+ * "yyyy-MM-dd 06:00". "" when fromText can't be read.
+ */
+function hoursRequestDeadline(fromText) {
+  const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/.exec(cellString(fromText));
+  if (!m || !parseStartDate(m[1])) return "";
+  const day = m[2] < "06:00" ? m[1] : addDays(m[1], 1);
+  return day + " 06:00";
+}
+
+/**
+ * True when a checked-in volunteer's request has reached its check-out deadline at nowMs.
+ * The deadline is measured from the later of Requested at and the open shift's check-in
+ * (checkedInMs), so it never falls before the shift began: a request made before a switch
+ * to Auto is held only after a night the shift really lasted through. wallClock(ms) gives
+ * the Central "yyyy-MM-dd HH:mm". The texts compare as text, as the weekly email's due
+ * slot does.
+ */
+function hoursRequestPastDeadline(requestedMs, openShift, nowMs, wallClock) {
+  const began = openShift ? checkedInMs(openShift) : NaN;
+  const from = isFinite(began) && began > requestedMs ? began : requestedMs;
+  if (!isFinite(from)) return false;
+  const deadline = hoursRequestDeadline(wallClock(from));
+  return deadline !== "" && wallClock(nowMs) >= deadline;
+}
+
+/** Sent by on an automatic Hours emails row. Initials are stored in capitals, so an admin can't clash. */
+function hoursRequestAutoBy() {
+  return "auto";
+}
+
+/** How far back an automatic send uses up a volunteer's week. */
+function hoursRequestWeekMs() {
+  return 7 * 24 * 3600000;
+}
+
+/** Automatic emails a Central day allows in all. */
+function hoursRequestDayLimit() {
+  return 50;
+}
+
+/** The job sends only while Google's remaining daily quota is above this, so staff keep room. */
+function hoursRequestQuotaReserve() {
+  return 100;
+}
+
+/** True when the remaining quota leaves room above the reserve. */
+function hoursRequestQuotaOk(remaining) {
+  return Number(remaining) > hoursRequestQuotaReserve();
+}
+
+/**
+ * True when an Hours emails row ({by, result}) is an automatic send that counts: Sent by
+ * exactly "auto" and a Result that doesn't start with "failed" or "not sent". Rows still
+ * sending and rows that stopped part way count, because their email may have gone.
+ */
+function isCountedAutoSend(row) {
+  if (cellString(row.by) !== hoursRequestAutoBy()) return false;
+  const result = cellString(row.result).toLowerCase();
+  return result.indexOf("failed") !== 0 && result.indexOf("not sent") !== 0;
+}
+
+/**
+ * The limit a request of volunteer id would pass at nowMs, as {code, reason}, or null.
+ * sends are Hours emails rows ({id, result, ms, date, by}, date the Central day of Sent
+ * at), the claim's own rows included. "week": a counted automatic send to this volunteer
+ * less than 7 × 24 hours before nowMs. "day": 50 counted automatic sends dated todayDate.
+ * An admin's send uses up neither.
+ */
+function hoursRequestLimit(sends, id, nowMs, todayDate) {
+  const counted = (sends || []).filter(isCountedAutoSend);
+  const from = nowMs - hoursRequestWeekMs();
+  let latest = null;
+  counted.forEach((r) => {
+    if (cellString(r.id) !== id || !isFinite(r.ms) || !(r.ms > from)) return;
+    if (!latest || r.ms > latest.ms) latest = r;
+  });
+  if (latest) {
+    return {
+      code: "week",
+      reason:
+        "Already emailed automatically on " +
+        hoursRequestShortDate(latest.date) +
+        "; Auto sends one a week.",
+    };
+  }
+  const today = counted.filter((r) => cellString(r.date) === todayDate).length;
+  if (today >= hoursRequestDayLimit()) {
+    return { code: "day", reason: "Auto already sent " + hoursRequestDayLimit() + " today." };
+  }
+  return null;
+}
+
+/**
+ * How many automatic sends counted (isCountedAutoSend) have a Sent at in the 7 days before
+ * nowMs, for the weekly flags email.
+ */
+function hoursAutoSentCount(sends, nowMs) {
+  const from = nowMs - hoursRequestWeekMs();
+  return (sends || []).filter(
+    (r) => isCountedAutoSend(r) && isFinite(r.ms) && r.ms > from && r.ms <= nowMs,
+  ).length;
+}
+
+/**
+ * The Hours emails row that already answers a request, or null: of the rows for this
+ * Volunteer ID with Result exactly "sent" and Sent at after requestedMs, the earliest. An
+ * admin's send answers a request as well as the job's.
+ */
+function hoursRequestAnswer(sends, id, requestedMs) {
+  let found = null;
+  (sends || []).forEach((r) => {
+    if (cellString(r.id) !== id || cellString(r.result) !== "sent") return;
+    if (!isFinite(r.ms) || !(r.ms > requestedMs)) return;
+    if (!found || r.ms < found.ms) found = r;
+  });
+  return found;
+}
+
+/**
+ * Why a request is held, for its Reason cell. code is one of contact, no-email-column,
+ * no-email, bad-email, duplicate-token (profileEmailsFrom's codes, detail its entry),
+ * not-found, flags-unreadable, checked-in, send-failed (detail.message, Google's message,
+ * with anything shaped like an address taken out) and stopped. No reason quotes an address.
+ */
+function hoursRequestHoldReason(code, detail) {
+  const d = detail || {};
+  switch (code) {
+    case "contact":
+      return "Hours email contact on the Settings tab is blank.";
+    case "no-email-column":
+      return "Volunteer Profiles has no Email column.";
+    case "no-email":
+      return "No email on their Volunteer Profiles row (row " + d.row + ").";
+    case "bad-email":
+      return "Their Volunteer Profiles Email cell (row " + d.row + ") isn't one email address.";
+    case "duplicate-token":
+      return (
+        "Volunteer Profiles rows " +
+        andList(d.rows && d.rows.length ? d.rows : [d.row]) +
+        " have the same User Token."
+      );
+    case "not-found":
+      return "Not on the volunteer list any more.";
+    case "flags-unreadable":
+      return "The Flags tab couldn't be read, so shifts couldn't be checked.";
+    case "checked-in":
+      return "Still checked in at 6:00 AM. Close the shift with Kiosk admin > Fix a sign-out, then send from Email hours.";
+    case "send-failed":
+      return "The send failed: " + hoursEmailLogText(d.message);
+    case "stopped":
+      return "An automatic send stopped part way and may have gone. Check this volunteer's Hours emails row (Result stopped) and the Sent mail of the account in its Sent from before sending again.";
+    default:
+      return cellString(d.reason);
+  }
+}
+
+/**
+ * What the job does with one waiting request before its claim, as {action, code, reason}.
+ * input is {request, volunteer (or null), address (profileEmailsFrom's entry, or null),
+ * contact (Settings "Hours email contact"), flagsRead, openShift (findOpenShift's row with
+ * the tablet's window, or null), nowMs, wallClock, quota (remaining today)}. In this order:
+ *   - a Requested at that can't be read: "wait" (it shows to staff as overdue);
+ *   - anything odd: "hold" with its reason (hoursRequestHoldReason);
+ *   - checked in by the tablet's rule: "wait" before the check-out deadline, "hold" at or
+ *     after it (hoursRequestPastDeadline);
+ *   - Google's quota at or under the reserve: "quota", and this and the rest wait;
+ *   - else "send".
+ */
+function hoursRequestDecide(input) {
+  const r = input.request;
+  const hold = (code, detail) => ({
+    action: "hold",
+    code,
+    reason: hoursRequestHoldReason(code, detail),
+  });
+  if (!isFinite(r.requestedMs)) return { action: "wait", code: "unreadable", reason: "" };
+  if (cellString(input.contact) === "") return hold("contact");
+  const a = input.address;
+  if (a && a.problem === "no-email-column") return hold("no-email-column");
+  if (!input.volunteer || !a || a.problem === "not-found") return hold("not-found");
+  if (a.problem) return hold(a.problem, a);
+  if (!input.flagsRead) return hold("flags-unreadable");
+  if (input.openShift) {
+    if (hoursRequestPastDeadline(r.requestedMs, input.openShift, input.nowMs, input.wallClock)) {
+      return hold("checked-in");
+    }
+    return { action: "wait", code: "checked-in", reason: "" };
+  }
+  if (!hoursRequestQuotaOk(input.quota)) return { action: "quota", code: "quota", reason: "" };
+  return { action: "send", code: "", reason: "" };
+}
+
+/** The hours request job's trigger handler (Jobs.js). It isn't one of dailyJobs(). */
+function hoursRequestJobHandler() {
+  return "runHoursRequests";
+}
+
+/** How often the hours request job's trigger runs, in minutes. */
+function hoursRequestJobMinutes() {
+  return 15;
+}
+
+/** How long the job waits for the script lock to claim; past it the run claims and sends nothing. */
+function hoursRequestClaimWaitMs() {
+  return 30000;
+}
+
+/** Once a run is this old it starts no new send. Google stops a run at 6 minutes. */
+function hoursRequestSendBudgetMs() {
+  return 4 * 60000;
+}
+
+/** The record step waits for the script lock until the run is this old. */
+function hoursRequestRecordByMs() {
+  return 5 * 60000;
+}
+
+/**
+ * The Results the job writes on its own Hours emails rows, besides "sent" and "failed: "
+ * with Google's message. A row is written as sending before its email goes; the record
+ * step settles it, and a later run marks one left sending as stopped.
+ */
+function hoursRequestResults() {
+  return {
+    sending: "sending",
+    stopped: "stopped: the automatic run ended before it recorded; the email may have gone",
+    late: "not sent: the run ran out of time",
+    quota: "not sent: Google's daily email limit is down to the reserve kept for staff",
+    unclaimed: "not sent: the run couldn't mark the request as sending",
+  };
+}
+
+/**
+ * The requests one run works on, from the tab's rows at nowMs, as {waiting, stale}:
+ * waiting are the waiting requests, oldest Requested at first (one that can't be read
+ * last, then by row); stale are the sending ones that stopped part way
+ * (hoursRequestStopped).
+ */
+function hoursRequestQueue(requests, nowMs) {
+  const at = (r) => (isFinite(r.requestedMs) ? r.requestedMs : Infinity);
+  const waiting = (requests || [])
+    .filter((r) => hoursRequestStatus(r.status) === "waiting")
+    .sort((a, b) => at(a) - at(b) || a.row - b.row);
+  const stale = (requests || []).filter((r) => hoursRequestStopped(r, nowMs));
+  return { waiting, stale };
+}
+
+/**
+ * What the record step writes for one claimed request, by how its send went, as {request,
+ * result}: request the changes to its Hours requests row ({header: value}) and result its
+ * Hours emails row's Result. outcome is "sent" (atMs when the send returned; unchecked the
+ * shifts left out), "failed" (message, Google's: the request is held, and the row keeps the
+ * message whole), or one that sent nothing: "late" (the run's time ran out), "quota"
+ * (Google's quota fell to the reserve) or "not-sent" (message). A request that sent nothing
+ * goes back to waiting with Done at, Done by and Send ID cleared, so the next run tries it.
+ */
+function hoursRequestRecordChanges(outcome, message, unchecked, atMs) {
+  const R = hoursRequestResults();
+  if (outcome === "sent") {
+    return {
+      request: { Status: "sent", Reason: hoursRequestLeftOutReason(unchecked), "Done at": atMs },
+      result: "sent",
+    };
+  }
+  if (outcome === "failed") {
+    return {
+      request: {
+        Status: "held",
+        Reason: hoursRequestHoldReason("send-failed", { message }),
+        "Done at": atMs,
+      },
+      result: "failed: " + cellString(message),
+    };
+  }
+  const result =
+    outcome === "late"
+      ? R.late
+      : outcome === "quota"
+        ? R.quota
+        : "not sent: " + cellString(message);
+  return {
+    request: { Status: "waiting", Reason: "", "Done at": "", "Done by": "", "Send ID": "" },
+    result,
+  };
+}
+
+/**
+ * The job's "Hours requests last run" text after a run that did something: "sent 2, held 1,
+ * still waiting 3". counts is {sent, held, waiting}. No names and no addresses.
+ */
+function hoursRequestRunText(counts) {
+  return "sent " + counts.sent + ", held " + counts.held + ", still waiting " + counts.waiting;
+}
+
+/**
+ * The job's one log line: "Hours requests: sent 1, held 2, still waiting 3 (checked in 1,
+ * quota 0)", then the answered and recovered counts when above 0, each hold as its
+ * Volunteer ID and reason code, and a note when the record step couldn't get the lock.
+ * counts is {sent, held, waiting, checkedIn, quota, answered, recovered, holds: [{id,
+ * code}], notRecorded}.
+ */
+function hoursRequestRunLog(counts) {
+  const parts = [
+    "Hours requests: " +
+      hoursRequestRunText(counts) +
+      " (checked in " +
+      counts.checkedIn +
+      ", quota " +
+      counts.quota +
+      ")",
+  ];
+  if (counts.answered) parts.push("answered by an earlier send " + counts.answered);
+  if (counts.recovered) parts.push("stopped part way and held " + counts.recovered);
+  if (counts.holds && counts.holds.length) {
+    parts.push("held " + counts.holds.map((h) => h.id + " " + h.code).join(", "));
+  }
+  if (counts.notRecorded) {
+    parts.push(
+      "the script lock didn't come to record, so the claimed requests and their Hours emails rows stay sending",
+    );
+  }
+  return parts.join("; ") + ".";
+}
+
+// What Kiosk admin > Email hours… shows of open requests (adminHoursRequests, Admin.js), and
+// which requests a send there answers (adminSendHours). Requesters arrive ticked when a
+// person should send to them: in Off and Approve every waiting or held one; in Auto the
+// held and overdue ones, since the job sends the rest and a ticked one could go twice. A
+// request the job is sending is never ticked: its email may already have gone.
+
+/** True when Email hours ticks this request's volunteer as the window opens. */
+function hoursRequestPreTicked(request, mode, nowMs) {
+  const s = hoursRequestStatus(request.status);
+  if (s === "held") return true;
+  if (s !== "waiting") return false;
+  return mode !== "auto" || hoursRequestOverdue(request, mode, nowMs);
+}
+
+/**
+ * The words beside a requester's name in Email hours: "Requested Nov 20" (date, the Central
+ * yyyy-mm-dd of Requested at, or "" when it can't be read), then what is happening to it:
+ * ", held"; in Auto ", Auto will send" or ", overdue: Auto hasn't sent it"; ", sending now";
+ * or, for a send that stopped part way, ", automatic send stopped part way: check the Hours
+ * emails tab".
+ */
+function hoursRequestLabel(request, mode, nowMs, date) {
+  const short = hoursRequestShortDate(date);
+  const head = short ? "Requested " + short : "Requested";
+  const s = hoursRequestStatus(request.status);
+  if (s === "held") return head + ", held";
+  if (s === "sending") {
+    return hoursRequestStopped(request, nowMs)
+      ? head + ", automatic send stopped part way: check the Hours emails tab"
+      : head + ", sending now";
+  }
+  if (s === "waiting" && mode === "auto") {
+    return hoursRequestOverdue(request, mode, nowMs)
+      ? head + ", overdue: Auto hasn't sent it"
+      : head + ", Auto will send";
+  }
+  return head;
+}
+
+/** The preview's line for a held requester: "Hours request held: <reason>"; "" when not held. */
+function hoursRequestHeldLine(request) {
+  if (hoursRequestStatus(request.status) !== "held") return "";
+  const reason = cellString(request.reason);
+  return reason ? "Hours request held: " + reason : "Hours request held.";
+}
+
+/** The line above the Email hours list for n open requests from volunteers not on the list; "" for 0. */
+function hoursRequestNotListedLine(n) {
+  if (!(n > 0)) return "";
+  if (n === 1) {
+    return "1 hours request is from a volunteer not on the volunteer list. Close it on the Hours requests tab.";
+  }
+  return (
+    n +
+    " hours requests are from volunteers not on the volunteer list. Close them on the Hours requests tab."
+  );
+}
+
+/**
+ * Email hours' view of the open requests: {requests: [{id, name, requestedDate, status,
+ * reason, overdue, stopped, ticked, label, heldLine}], notListed}. requests are read from
+ * the tab (any status; only open ones are kept), listedIds the volunteer list's ids,
+ * dateOf(ms) the Central yyyy-mm-dd of a time. notListed is the line for the open requests
+ * whose Volunteer ID isn't on the list, which can't be ticked.
+ */
+function hoursRequestChoices(requests, mode, nowMs, listedIds, dateOf) {
+  const listed = new Set(listedIds || []);
+  const open = (requests || []).filter((r) => isOpenHoursRequest(r.status));
+  const out = open.map((r) => {
+    const date = isFinite(r.requestedMs) ? dateOf(r.requestedMs) : "";
+    const onList = listed.has(cellString(r.id));
+    return {
+      id: cellString(r.id),
+      name: r.name,
+      requestedDate: date,
+      status: hoursRequestStatus(r.status),
+      reason: r.reason,
+      overdue: hoursRequestOverdue(r, mode, nowMs),
+      stopped: hoursRequestStopped(r, nowMs),
+      ticked: onList && hoursRequestPreTicked(r, mode, nowMs),
+      label: hoursRequestLabel(r, mode, nowMs, date),
+      heldLine: hoursRequestHeldLine(r),
+    };
+  });
+  const notListed = out.filter((r) => !listed.has(r.id)).length;
+  return { requests: out, notListed: hoursRequestNotListedLine(notListed) };
+}
+
+/**
+ * What an Email hours send answers, as {mark, sending}: mark is the requests to mark sent,
+ * every waiting or held request of a Volunteer ID in sentIds whose Requested at is readable
+ * and before sentAtMs; sending is the Volunteer IDs in sentIds with a request the job is
+ * sending, which this send leaves to the job and whose volunteer may get two emails.
+ */
+function hoursRequestsAnsweredBy(requests, sentIds, sentAtMs) {
+  const sent = new Set((sentIds || []).map((id) => cellString(id)));
+  const mark = [];
+  const sending = new Set();
+  (requests || []).forEach((r) => {
+    const id = cellString(r.id);
+    if (!sent.has(id)) return;
+    const s = hoursRequestStatus(r.status);
+    if (s === "sending") sending.add(id);
+    else if ((s === "waiting" || s === "held") && isFinite(r.requestedMs)) {
+      if (r.requestedMs < sentAtMs) mark.push(r);
+    }
+  });
+  return { mark, sending: [...sending] };
+}
+
+/** The cells a request answered by an Email hours send gets. */
+function hoursRequestSentChanges(sentAtMs, initials, sendId) {
+  return { Status: "sent", "Done at": sentAtMs, "Done by": initials, "Send ID": sendId };
 }
 
 // ---------------------------------------------------------------------------
@@ -7715,20 +8432,32 @@ function plural(count, one, many) {
 
 /**
  * The weekly flags email, or null when there is nothing to send: no flag raised in the
- * week, none unreviewed and the auto clock-out not stale. input is {summary
- * (flagsSummary), autoClockOut (autoClockOutCheck), flagsUrl, skipped (addresses in
- * "Flags email to" that couldn't be read)}. Returns {subject, body, htmlBody}. Names
- * and reasons come from the Flags tab, which staff already see; no User Token.
+ * week, none unreviewed, the auto clock-out not stale, and no hours request news. input is
+ * {summary (flagsSummary), autoClockOut (autoClockOutCheck), flagsUrl, skipped (addresses
+ * in "Flags email to" that couldn't be read), autoSent, requestsWaiting}. autoSent is how
+ * many hours emails the hours request job sent or tried in the last 7 days
+ * (hoursAutoSentCount), requestsWaiting how many hours requests need a person
+ * (hoursRequestsWaitingCount); each is null when its tab couldn't be read, and missing
+ * reads as 0. Either above 0, or null, is news on its own: the email then sends, and when
+ * it is the only news the subject says hours requests. Counting never stops the email.
+ * Returns {subject, body, htmlBody}. Names and reasons come from the Flags tab, which
+ * staff already see; no User Token, and the hours lines are counts only.
  */
 function flagsEmailMessage(input) {
   const recent = input.summary.recent;
   const unreviewed = input.summary.unreviewed;
   const auto = input.autoClockOut;
-  if (!recent.length && !unreviewed && !auto.stale) return null;
+  const autoSent = input.autoSent === undefined ? 0 : input.autoSent;
+  const waiting = input.requestsWaiting === undefined ? 0 : input.requestsWaiting;
+  const hoursNews = autoSent === null || autoSent > 0 || waiting === null || waiting > 0;
+  const flagsNews = recent.length > 0 || unreviewed > 0 || auto.stale;
+  if (!flagsNews && !hoursNews) return null;
 
   const counts =
     plural(recent.length, "new flag", "new flags") + " this week, " + unreviewed + " unreviewed";
-  const subject = "Volunteer kiosk: " + (auto.stale ? "auto clock-out not running, " : "") + counts;
+  const subject = flagsNews
+    ? "Volunteer kiosk: " + (auto.stale ? "auto clock-out not running, " : "") + counts
+    : "Volunteer kiosk: hours requests this week";
 
   const text = [];
   const html = [];
@@ -7748,6 +8477,24 @@ function flagsEmailMessage(input) {
   }
   para("Flags raised in the last 7 days: " + recent.length);
   para("Flags still unreviewed: " + unreviewed);
+  if (autoSent === null) {
+    para(
+      "Hours emails sent automatically in the last 7 days: couldn't be read (check the Hours emails tab's header row)",
+    );
+  } else if (autoSent > 0) {
+    para(
+      "Hours emails sent automatically in the last 7 days: " +
+        autoSent +
+        " (see the Hours emails tab).",
+    );
+  }
+  if (waiting === null) {
+    para(
+      "Hours requests waiting for staff: couldn't be read (check the Hours requests tab's header row)",
+    );
+  } else if (waiting > 0) {
+    para("Hours requests waiting for staff: " + waiting + " (Kiosk admin > Email hours…)");
+  }
   para(
     "Review them on the Flags tab (Data > Change view > " +
       flagsViewTitle() +
@@ -9611,7 +10358,7 @@ function howToSections() {
           "3. Tick Attach all shifts if they should also get a spreadsheet file of every shift they have.",
         ),
         step(
-          "4. Tick the volunteers. Type part of a name to search; Tick all shown with the search empty ticks everyone.",
+          "4. Tick the volunteers. Type part of a name to search; Tick all shown with the search empty ticks everyone. Volunteers who asked on the tablet arrive ticked and marked Requested and the date (see Hours requests from the tablet).",
         ),
         step(
           "5. Press Preview. Check each volunteer's address, hours and the warnings under Check before sending. A volunteer with a problem, such as no email on their Profiles row, is left out and the problem says where to fix it.",
@@ -9621,6 +10368,44 @@ function howToSections() {
         ),
         tip(
           "One failure doesn't stop the rest. Every volunteer a send handles gets a row on the Hours emails tab with the result. Bounces go to the inbox of the account you're signed in as. To send again, press Preview again.",
+        ),
+      ],
+    },
+    {
+      title: "Hours requests from the tablet",
+      lines: [
+        text(
+          "Hours requests on the Settings tab decides whether volunteers can ask for their hours on the tablet. Off, the default, hides the Email me my hours button. Approve shows it and leaves each request for you to send. Auto shows it and the kiosk emails each request by itself, about every 15 minutes.",
+        ),
+        text(
+          "A tap only records a request on the Hours requests tab, one open request per volunteer. The tablet never shows an email address: the email goes to the Email cell of the volunteer's Volunteer Profiles row, as from Email hours.",
+        ),
+        step(
+          "1. Kiosk admin > Email hours… Volunteers who asked are ticked and marked Requested and the date. In Auto only held and overdue requests are ticked, since Auto sends the rest.",
+        ),
+        step(
+          "2. A held request says why, such as no email on their Profiles row, and the preview repeats it. Fix that, then Preview and send as usual. A sent email marks the request sent on the Hours requests tab.",
+        ),
+        step(
+          "3. To drop a request without sending, such as a repeat or someone who has left, type closed in its Status on the Hours requests tab and your initials in Done by.",
+        ),
+        text(
+          "In Auto, each email leaves out two kinds of shift and says how many are waiting for staff review: a shift whose Flags row isn't ticked Reviewed (tick it once you have checked the shift), and a shift still open (close it with Kiosk admin > Fix a sign-out…). A deleted Flags row counts as reviewed, so delete only flags you have looked at.",
+        ),
+        text(
+          "A volunteer who asks while checked in is emailed after they check out. Checked in means as the tablet shows it: until they check out, or until Auto clock-out after hours has passed since they checked in. One still checked in at 6:00 AM is held: close the shift with Kiosk admin > Fix a sign-out…, then send from Email hours.",
+        ),
+        text(
+          "Auto sends one email a week at most to each volunteer and 50 a day in all. A request past either limit is held for you. Auto never retries a held request.",
+        ),
+        text(
+          "A request still waiting in Auto a day after it was made is overdue: Email hours ticks it and labels it overdue. That is how a stopped hours request job shows. Hours requests last run on the Settings tab says when the job last sent, held or failed; a run with nothing to do writes nothing, so an old time there is normal.",
+        ),
+        tip(
+          "Auto can't catch a believable fake shift: someone who taps in and out at real times without volunteering makes a normal row. It also counts a shift added with Add a shift or typed by hand, a hand edit the nightly Log check hasn't flagged yet, and a flag ticked Reviewed without anyone looking. Use Approve if a person should check every email.",
+        ),
+        tip(
+          "If you send to a volunteer Auto is emailing at the same moment, they may get two emails, and the message line says so. Automatic emails are on the Hours emails tab with Sent by auto. Auto is installed by whoever looks after the kiosk; ask them if requests go overdue.",
         ),
       ],
     },
@@ -9639,6 +10424,9 @@ function howToSections() {
         ),
         tip(
           "Changing the day or hour takes effect at once: if the new day and hour have come round since the last check, a check runs within the hour. To stop the email, set Flags email to Off. To check this week again, clear the Value of Flags email last run: the next hourly check runs, and sends if there is anything to report.",
+        ),
+        tip(
+          "With Hours requests on, the email also counts the hours emails Auto sent or tried in the last 7 days, and the hours requests waiting for you; either alone makes it send. With Flags email Off, see the Hours emails tab and Email hours instead.",
         ),
       ],
     },
