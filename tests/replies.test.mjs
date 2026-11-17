@@ -93,8 +93,10 @@ const pageList = () => viaScriptRun(serverList).map(summaryFromServer).map(toVol
 function ctx(queue, extra = {}) {
   return {
     hasCode: true,
-    codeKept: true,
+    codeStored: true,
     foregroundPending: false,
+    online: true,
+    calls: { latestReply: NOW - 5_000, latestEnded: null, waiting: [] },
     listState: "ready",
     now: NOW,
     listStamp: { epoch: queue.epoch, seq: queue.seq, requestedAt: NOW - MIN },

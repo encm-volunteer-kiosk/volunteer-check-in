@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   api,
+  callRecord,
   isRefusal,
   localApi,
   refusalMessage,
@@ -72,6 +73,7 @@ import {
   dropMark,
   enqueue,
   heldMarkCovered,
+  LIST_REFRESH_MS,
   newSave,
   newTapId,
   nextRunDelay,
@@ -111,7 +113,6 @@ type Result = SaveOwner & {
 type PhoneStep = "entry" | "missing" | null;
 const TZ = "America/Chicago";
 const ACCESS_CODE_KEY = "encm-kiosk-access-code";
-const LIST_REFRESH_MS = 5 * 60_000;
 const LIST_RETRY_MS = 30_000;
 // The header clock reads the time this often, so it is never more than this behind the iPad's.
 const CLOCK_TICK_MS = 5_000;
@@ -1448,9 +1449,10 @@ function listStorage(): ListStorage | null {
 export default function App() {
   const [code, setCode] = useState<string | null>(readStoredCode);
   const codeRef = useRef(code);
-  // The code was already in storage when the page started: the tablet's storage survived a
-  // reload, so a queued save will too. Without that, every tap waits for the server.
-  const codeKept = useRef(code !== null);
+  // The code reads back from storage: it came from storage when the page started, or it read
+  // back equal right after Save stored it (applyCode). Where storage is blocked it doesn't,
+  // and every tap waits for the server: the queue couldn't be stored either.
+  const codeStored = useRef(code !== null);
   const [setupError, setSetupError] = useState("");
   // A list kept from before the reload shows at once; the refresh below replaces it.
   const [keptList] = useState(() => readStoredList(listStorage(), code, Date.now()));
@@ -1602,6 +1604,7 @@ export default function App() {
   const applyCode = (next: string | null) => {
     codeRef.current = next;
     storeCode(next);
+    codeStored.current = next !== null && readStoredCode() === next;
     clearStoredList(listStorage());
     listSavedAt.current = null;
     listExtras.current = noListExtras;
@@ -1761,11 +1764,16 @@ export default function App() {
     queueStarted.current = changeSaves(touch);
   }, []);
 
+  // Coming back online asks for the list at once: a reply is what lets taps be instant again.
   useEffect(() => {
     if (!code) return;
     refreshList();
     const timer = window.setInterval(refreshList, LIST_REFRESH_MS);
-    return () => clearInterval(timer);
+    window.addEventListener("online", refreshList);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("online", refreshList);
+    };
   }, [code]);
 
   useEffect(() => {
@@ -1992,8 +2000,10 @@ export default function App() {
     const extras = listExtras.current;
     const ctx = {
       hasCode: Boolean(codeRef.current),
-      codeKept: codeKept.current,
+      codeStored: codeStored.current,
       foregroundPending: saveFlow.current.pending !== null,
+      online: navigator.onLine,
+      calls: callRecord(),
       listState,
       now,
       listStamp,
@@ -2010,7 +2020,7 @@ export default function App() {
       milestoneId === null ? null : (extras.milestones.find((m) => m.id === milestoneId) ?? null);
     // A step naming a milestone the list has no text for: the server's answer shows it.
     if (milestoneId !== null && !milestone) return false;
-    const stored = await changeSaves(enqueue(save, listStamp));
+    const stored = await changeSaves(enqueue(save, listStamp, now));
     const path = afterEnqueue(stored);
     if (path === "still-saving") setError(savingLine(stored.queue) ?? "");
     if (path !== "instant") return path === "still-saving";
