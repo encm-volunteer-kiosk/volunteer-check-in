@@ -253,6 +253,7 @@
 
       <label for="email-search">Volunteers <span class="hint">(type to search)</span></label>
       <input id="email-search" type="search" autocomplete="off" />
+      <div class="check" id="email-requests" hidden></div>
       <div id="email-list" class="ticks" role="group" aria-label="Volunteers"></div>
       <div class="tick-buttons">
         <button type="button" id="email-tick-all">Tick all shown</button>
@@ -306,6 +307,9 @@
       // tick boxes drawn now.
       const ticked = new Set();
       let boxes = [];
+      // email: the open hours requests by Volunteer ID, as adminHoursRequests gave them.
+      // The server decides which are ticked and what each one's words say.
+      const requests = new Map();
       // email: "" or {id, key, pending}, the ticket of the last Preview, the selection key
       // it was made for and the ids the Send still has to handle. Only setTicket() writes
       // it, except that a send reply takes the ids it handled out of pending.
@@ -518,7 +522,10 @@
             choices = reply.volunteers;
             nameMonths(reply.today);
             refill();
-            show("", "");
+            call("adminHoursRequests", [], (answer) => {
+              takeRequests(answer);
+              show("", "");
+            });
           });
         } else {
           loadRemoved("");
@@ -680,6 +687,30 @@
           "Last month (" + MONTH_NAMES[last[1] - 1] + " " + last[0] + ")";
       }
 
+      // The open hours requests, once the roster is drawn: each requester the server says
+      // to tick is ticked, and the line about requests from people not on the list shows.
+      // Ticking or unticking them works as for anyone else.
+      function takeRequests(answer) {
+        requests.clear();
+        (answer.requests || []).forEach((r) => {
+          if (!requests.has(r.id)) requests.set(r.id, r);
+        });
+        const listed = new Set(choices.map((v) => v.id));
+        requests.forEach((r) => {
+          if (r.ticked && listed.has(r.id)) ticked.add(r.id);
+        });
+        $("email-requests").textContent = answer.notListed || "";
+        $("email-requests").hidden = !answer.notListed;
+        drawTicks();
+        selectionChanged();
+      }
+
+      // A roster row's text: the label, then the request's words when there is one.
+      function rowText(volunteer) {
+        const r = requests.get(volunteer.id);
+        return r && r.label ? volunteer.label + " · " + r.label : volunteer.label;
+      }
+
       // Redraws the tick boxes from the roster and the ticked set. The search only hides
       // and shows rows: a ticked row stays ticked, and counted, while it is hidden.
       function drawTicks() {
@@ -699,7 +730,7 @@
             selectionChanged();
           });
           const name = document.createElement("span");
-          name.textContent = volunteer.label;
+          name.textContent = rowText(volunteer);
           row.appendChild(box);
           row.appendChild(name);
           list.appendChild(row);
@@ -874,6 +905,7 @@
                 (v.startDate ? " · started " + v.startDate : "")
               : "",
             "Last emailed: " + lastSentText(v.lastSent),
+            requests.has(v.id) ? requests.get(v.id).heldLine : "",
             ...totalsLines(v),
             v.attachment
               ? "Attached: " + v.attachment.name + " (" + plural(v.attachment.shifts, "shift") + ")"
@@ -921,7 +953,15 @@
         if (busy || running || !ticket) return;
         running = true;
         const initials = $("initials").value;
-        run = { initials, total: ticket.pending.length, sent: 0, lines: [], recordFailed: false };
+        run = {
+          initials,
+          total: ticket.pending.length,
+          sent: 0,
+          lines: [],
+          recordFailed: false,
+          requestsFailed: false,
+          twoEmails: 0,
+        };
         buttonState();
         sendNext();
       }
@@ -948,6 +988,8 @@
             run.lines.push(resultLine(r.id, r.result));
           });
           if (reply.recordFailed) run.recordFailed = true;
+          if (reply.requestsFailed) run.requestsFailed = true;
+          run.twoEmails += Number(reply.twoEmails) || 0;
           ticket.pending = ticket.pending.filter((id) => !ids.includes(id));
           if (ticket.pending.length) return sendNext();
           return endRun(false);
@@ -1001,8 +1043,19 @@
           text +=
             " Some couldn't be written on the Hours emails tab; the execution log has the details.";
         }
+        if (run.requestsFailed) {
+          text +=
+            " The hours requests couldn't be marked sent. Mark them on the Hours requests tab.";
+        }
+        if (run.twoEmails) {
+          text +=
+            " Auto was emailing " +
+            run.twoEmails +
+            " of these volunteers at the same moment, so they may get two emails. See the Hours emails tab.";
+        }
         runCount = text;
-        run.kind = notSent || run.recordFailed ? "error" : "ok";
+        if (notSent || run.recordFailed || run.requestsFailed) run.kind = "error";
+        else run.kind = run.twoEmails ? "info" : "ok";
       }
 
       function updateCount() {

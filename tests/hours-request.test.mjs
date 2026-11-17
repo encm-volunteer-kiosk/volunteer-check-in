@@ -407,6 +407,144 @@ test("who needs a person, by mode", () => {
 });
 
 // ---------------------------------------------------------------------------
+// What Email hours shows, and what a send there answers
+
+test("pre-ticked: waiting and held in Approve and Off; held and overdue in Auto; never sending", () => {
+  const now = centralMs("2026-11-22 10:00");
+  const cases = [
+    ["waiting, 1 hour", req({ requestedMs: now - HOUR }), [true, true, false]],
+    ["waiting, 2 days", req({ requestedMs: now - 2 * DAY }), [true, true, true]],
+    ["held", req({ status: "Held" }), [true, true, true]],
+    ["sending", req({ status: "sending", doneAtMs: now - 5 * MINUTE }), [false, false, false]],
+    ["stopped", req({ status: "sending", doneAtMs: now - HOUR }), [false, false, false]],
+    ["sent", req({ status: "sent" }), [false, false, false]],
+    ["closed", req({ status: "closed" }), [false, false, false]],
+  ];
+  for (const [what, r, want] of cases) {
+    const got = ["approve", "off", "auto"].map((m) => L.hoursRequestPreTicked(r, m, now));
+    assert.deepEqual(got, want, what);
+  }
+});
+
+test("the six labels beside a requester's name", () => {
+  const now = centralMs("2026-11-22 10:00");
+  const date = "2026-11-20";
+  const label = (r, mode) => L.hoursRequestLabel(r, mode, now, date);
+  const waiting = req({ requestedMs: now - HOUR });
+  assert.equal(label(waiting, "approve"), "Requested Nov 20");
+  assert.equal(label(waiting, "off"), "Requested Nov 20");
+  assert.equal(label(req({ status: "held" }), "auto"), "Requested Nov 20, held");
+  assert.equal(label(waiting, "auto"), "Requested Nov 20, Auto will send");
+  assert.equal(
+    label(req({ requestedMs: now - DAY }), "auto"),
+    "Requested Nov 20, overdue: Auto hasn't sent it",
+  );
+  assert.equal(
+    label(req({ status: "sending", doneAtMs: now - 30 * MINUTE }), "approve"),
+    "Requested Nov 20, sending now",
+  );
+  assert.equal(
+    label(req({ status: "sending", doneAtMs: now - 31 * MINUTE }), "auto"),
+    "Requested Nov 20, automatic send stopped part way: check the Hours emails tab",
+  );
+  // A Requested at that can't be read has no date to give.
+  assert.equal(
+    L.hoursRequestLabel(req({ requestedMs: NaN }), "auto", now, ""),
+    "Requested, overdue: Auto hasn't sent it",
+  );
+});
+
+test("the held line in the preview, and the not-on-the-list line", () => {
+  assert.equal(
+    L.hoursRequestHeldLine(req({ status: "held", reason: "Not on the volunteer list any more." })),
+    "Hours request held: Not on the volunteer list any more.",
+  );
+  assert.equal(L.hoursRequestHeldLine(req({ status: "held" })), "Hours request held.");
+  assert.equal(L.hoursRequestHeldLine(req({ reason: "old reason" })), "");
+  assert.equal(L.hoursRequestNotListedLine(0), "");
+  assert.equal(
+    L.hoursRequestNotListedLine(1),
+    "1 hours request is from a volunteer not on the volunteer list. Close it on the Hours requests tab.",
+  );
+  assert.equal(
+    L.hoursRequestNotListedLine(3),
+    "3 hours requests are from volunteers not on the volunteer list. Close them on the Hours requests tab.",
+  );
+});
+
+test("Email hours' view: open requests only, ticks only for listed volunteers, the date in Central", () => {
+  const now = centralMs("2026-11-22 10:00");
+  const list = [
+    req({ id: "a", requestedMs: now - HOUR }),
+    req({ id: "b", status: "held", reason: "Hours email contact on the Settings tab is blank." }),
+    req({ id: "c", status: "sent" }),
+    req({ id: "gone", requestedMs: now - HOUR }),
+  ];
+  const dates = [];
+  const dateOf = (ms) => (dates.push(ms), "2026-11-21");
+  const out = plain(L.hoursRequestChoices(list, "approve", now, ["a", "b", "c"], dateOf));
+  assert.deepEqual(
+    out.requests.map((r) => [r.id, r.status, r.ticked, r.label]),
+    [
+      ["a", "waiting", true, "Requested Nov 21"],
+      ["b", "held", true, "Requested Nov 21, held"],
+      ["gone", "waiting", false, "Requested Nov 21"],
+    ],
+  );
+  assert.deepEqual(Object.keys(out.requests[1]).sort(), [
+    "heldLine",
+    "id",
+    "label",
+    "name",
+    "overdue",
+    "reason",
+    "requestedDate",
+    "status",
+    "stopped",
+    "ticked",
+  ]);
+  assert.equal(
+    out.requests[1].heldLine,
+    "Hours request held: Hours email contact on the Settings tab is blank.",
+  );
+  assert.equal(
+    out.notListed,
+    "1 hours request is from a volunteer not on the volunteer list. Close it on the Hours requests tab.",
+  );
+  assert.equal(dates.length, 3);
+  // No address field, whatever the request holds.
+  assert.ok(!JSON.stringify(out).includes("@"));
+  assert.deepEqual(plain(L.hoursRequestChoices([], "auto", now, [], dateOf)), {
+    requests: [],
+    notListed: "",
+  });
+});
+
+test("a send answers waiting and held requests made before it; a sending one is left and counted", () => {
+  const sentAt = centralMs("2026-11-22 10:00");
+  const list = [
+    req({ row: 2, id: "a", requestedMs: sentAt - HOUR }),
+    req({ row: 3, id: "b", status: "HELD", requestedMs: sentAt - DAY }),
+    req({ row: 4, id: "c", status: "sending", doneAtMs: sentAt - MINUTE }),
+    req({ row: 5, id: "d", requestedMs: sentAt - HOUR }),
+    req({ row: 6, id: "a", status: "sent", requestedMs: sentAt - 9 * DAY }),
+    req({ row: 7, id: "e", requestedMs: sentAt }),
+    req({ row: 8, id: "f", requestedMs: NaN }),
+  ];
+  const out = L.hoursRequestsAnsweredBy(list, ["a", "b", "c", "e", "f"], sentAt);
+  // d wasn't sent to; e asked at the send's own time; f's time can't be read.
+  assert.deepEqual(plain(out.mark.map((r) => r.row)), [2, 3]);
+  assert.deepEqual(plain(out.sending), ["c"]);
+  assert.deepEqual(plain(L.hoursRequestsAnsweredBy(list, [], sentAt)), { mark: [], sending: [] });
+  assert.deepEqual(plain(L.hoursRequestSentChanges(sentAt, "JP", "ab12cd34")), {
+    Status: "sent",
+    "Done at": sentAt,
+    "Done by": "JP",
+    "Send ID": "ab12cd34",
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The automatic email
 
 function autoEmail(entries, flags, attach = true) {

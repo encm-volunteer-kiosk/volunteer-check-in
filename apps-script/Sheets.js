@@ -1747,6 +1747,19 @@ function readHoursRequests_(given) {
     }));
 }
 
+/**
+ * The Hours requests tab as {sheet, cols} when it exists and has a header, else null. It
+ * never makes the tab: a send in Email hours only marks requests already there. Throws,
+ * naming the tab, when a header is missing or repeated.
+ */
+function existingHoursRequestSheet_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(hoursRequestTab());
+  if (!sheet) return null;
+  const header = logHeaderRow_(sheet);
+  if (header.every((h) => h === "")) return null;
+  return { sheet, cols: hoursRequestColumns(header) };
+}
+
 /** Appends Hours requests rows (hoursRequestRow maps) to the tab {sheet, cols}. */
 function appendHoursRequestRows_(tab, rows) {
   if (!rows.length) return 0;

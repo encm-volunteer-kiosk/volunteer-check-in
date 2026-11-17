@@ -4017,6 +4017,121 @@ function hoursRequestRunLog(counts) {
   return parts.join("; ") + ".";
 }
 
+// What Kiosk admin > Email hours… shows of open requests (adminHoursRequests, Admin.js), and
+// which requests a send there answers (adminSendHours). Requesters arrive ticked when a
+// person should send to them: in Off and Approve every waiting or held one; in Auto the
+// held and overdue ones, since the job sends the rest and a ticked one could go twice. A
+// request the job is sending is never ticked: its email may already have gone.
+
+/** True when Email hours ticks this request's volunteer as the window opens. */
+function hoursRequestPreTicked(request, mode, nowMs) {
+  const s = hoursRequestStatus(request.status);
+  if (s === "held") return true;
+  if (s !== "waiting") return false;
+  return mode !== "auto" || hoursRequestOverdue(request, mode, nowMs);
+}
+
+/**
+ * The words beside a requester's name in Email hours: "Requested Nov 20" (date, the Central
+ * yyyy-mm-dd of Requested at, or "" when it can't be read), then what is happening to it:
+ * ", held"; in Auto ", Auto will send" or ", overdue: Auto hasn't sent it"; ", sending now";
+ * or, for a send that stopped part way, ", automatic send stopped part way: check the Hours
+ * emails tab".
+ */
+function hoursRequestLabel(request, mode, nowMs, date) {
+  const short = hoursRequestShortDate(date);
+  const head = short ? "Requested " + short : "Requested";
+  const s = hoursRequestStatus(request.status);
+  if (s === "held") return head + ", held";
+  if (s === "sending") {
+    return hoursRequestStopped(request, nowMs)
+      ? head + ", automatic send stopped part way: check the Hours emails tab"
+      : head + ", sending now";
+  }
+  if (s === "waiting" && mode === "auto") {
+    return hoursRequestOverdue(request, mode, nowMs)
+      ? head + ", overdue: Auto hasn't sent it"
+      : head + ", Auto will send";
+  }
+  return head;
+}
+
+/** The preview's line for a held requester: "Hours request held: <reason>"; "" when not held. */
+function hoursRequestHeldLine(request) {
+  if (hoursRequestStatus(request.status) !== "held") return "";
+  const reason = cellString(request.reason);
+  return reason ? "Hours request held: " + reason : "Hours request held.";
+}
+
+/** The line above the Email hours list for n open requests from volunteers not on the list; "" for 0. */
+function hoursRequestNotListedLine(n) {
+  if (!(n > 0)) return "";
+  if (n === 1) {
+    return "1 hours request is from a volunteer not on the volunteer list. Close it on the Hours requests tab.";
+  }
+  return (
+    n +
+    " hours requests are from volunteers not on the volunteer list. Close them on the Hours requests tab."
+  );
+}
+
+/**
+ * Email hours' view of the open requests: {requests: [{id, name, requestedDate, status,
+ * reason, overdue, stopped, ticked, label, heldLine}], notListed}. requests are read from
+ * the tab (any status; only open ones are kept), listedIds the volunteer list's ids,
+ * dateOf(ms) the Central yyyy-mm-dd of a time. notListed is the line for the open requests
+ * whose Volunteer ID isn't on the list, which can't be ticked.
+ */
+function hoursRequestChoices(requests, mode, nowMs, listedIds, dateOf) {
+  const listed = new Set(listedIds || []);
+  const open = (requests || []).filter((r) => isOpenHoursRequest(r.status));
+  const out = open.map((r) => {
+    const date = isFinite(r.requestedMs) ? dateOf(r.requestedMs) : "";
+    const onList = listed.has(cellString(r.id));
+    return {
+      id: cellString(r.id),
+      name: r.name,
+      requestedDate: date,
+      status: hoursRequestStatus(r.status),
+      reason: r.reason,
+      overdue: hoursRequestOverdue(r, mode, nowMs),
+      stopped: hoursRequestStopped(r, nowMs),
+      ticked: onList && hoursRequestPreTicked(r, mode, nowMs),
+      label: hoursRequestLabel(r, mode, nowMs, date),
+      heldLine: hoursRequestHeldLine(r),
+    };
+  });
+  const notListed = out.filter((r) => !listed.has(r.id)).length;
+  return { requests: out, notListed: hoursRequestNotListedLine(notListed) };
+}
+
+/**
+ * What an Email hours send answers, as {mark, sending}: mark is the requests to mark sent,
+ * every waiting or held request of a Volunteer ID in sentIds whose Requested at is readable
+ * and before sentAtMs; sending is the Volunteer IDs in sentIds with a request the job is
+ * sending, which this send leaves to the job and whose volunteer may get two emails.
+ */
+function hoursRequestsAnsweredBy(requests, sentIds, sentAtMs) {
+  const sent = new Set((sentIds || []).map((id) => cellString(id)));
+  const mark = [];
+  const sending = new Set();
+  (requests || []).forEach((r) => {
+    const id = cellString(r.id);
+    if (!sent.has(id)) return;
+    const s = hoursRequestStatus(r.status);
+    if (s === "sending") sending.add(id);
+    else if ((s === "waiting" || s === "held") && isFinite(r.requestedMs)) {
+      if (r.requestedMs < sentAtMs) mark.push(r);
+    }
+  });
+  return { mark, sending: [...sending] };
+}
+
+/** The cells a request answered by an Email hours send gets. */
+function hoursRequestSentChanges(sentAtMs, initials, sendId) {
+  return { Status: "sent", "Done at": sentAtMs, "Done by": initials, "Send ID": sendId };
+}
+
 // ---------------------------------------------------------------------------
 // Removed shifts
 //

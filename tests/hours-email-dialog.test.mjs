@@ -248,11 +248,22 @@ const ticketOf = (d) => d.state("ticket");
 const message = (d) => d.$("message").textContent;
 const detail = (d) => d.$("email-detail").textContent;
 
-// An email window with its roster loaded.
-function loaded(count = 25, today = "2026-11-14") {
-  const d = dialog("email");
+// No open hours requests, as adminHoursRequests replies with none.
+const NO_REQUESTS = { ok: true, mode: "off", requests: [], notListed: "" };
+
+// Answers the window's load: the roster, then the hours requests it asks for next.
+function answerLoad(d, rosterReply, requestsReply = NO_REQUESTS) {
   assert.equal(d.last().name, "adminRoster");
-  d.last().answer({ ok: true, today, volunteers: roster(count) });
+  d.last().answer(rosterReply);
+  assert.equal(d.last().name, "adminHoursRequests");
+  assert.deepEqual(plain(d.last().args), ["key-1"]);
+  d.last().answer(requestsReply);
+}
+
+// An email window with its roster loaded.
+function loaded(count = 25, today = "2026-11-14", requestsReply = NO_REQUESTS) {
+  const d = dialog("email");
+  answerLoad(d, { ok: true, today, volunteers: roster(count) }, requestsReply);
   return d;
 }
 
@@ -282,6 +293,11 @@ test("email window: while the roster loads and once it has, Send is off; this mo
   assert.equal(sendOff(d), true);
   assert.ok(allOff(d));
   d.last().answer({ ok: true, today: "2026-11-14", volunteers: roster(25) });
+  // The hours requests are asked for next; the controls stay off until they come.
+  assert.equal(d.last().name, "adminHoursRequests");
+  assert.ok(allOff(d));
+  d.last().answer(NO_REQUESTS);
+  assert.equal(d.$("email-requests").hidden, true);
   assert.equal(sendOff(d), true);
   assert.equal(ticketOf(d), "");
   assert.equal(d.$("email-this").checked, true);
@@ -689,7 +705,7 @@ for (const code of ["HOURS_EMAIL_STALE", "ADMIN_EXPIRED"]) {
 
 test("email window: a thrown second call ends the run, drops the ticket, and lists its ten as unknown", () => {
   const d = dialog("email", { contact: "If this keeps happening, contact: Pat Example." });
-  d.last().answer({ ok: true, today: "2026-11-14", volunteers: roster(23) });
+  answerLoad(d, { ok: true, today: "2026-11-14", volunteers: roster(23) });
   click(d, d.$("email-tick-all"));
   click(d, d.$("email-preview"));
   d.last().answer(previewReply(ids(1, 23)));
@@ -742,6 +758,8 @@ test("email window: after every reply the message line, as the reply left it, is
     d.$("message").scrolls = [];
   };
   d.last().answer({ ok: true, today: "2026-11-14", volunteers: roster(23) });
+  scrolledNow();
+  d.last().answer(NO_REQUESTS);
   scrolledNow();
   click(d, d.$("email-tick-all"));
   click(d, d.$("email-preview"));
@@ -808,7 +826,7 @@ const blocks = (d) => d.$("email-detail").children;
 test("email window: the server's own preview and send replies show line by line", () => {
   const { preview, send } = REPLIES;
   const d = dialog("email");
-  d.last().answer({
+  answerLoad(d, {
     ok: true,
     today: preview.asOf,
     volunteers: preview.volunteers.map((v) => ({ id: v.id, label: v.label })),
@@ -905,6 +923,181 @@ test("email window: the server's own preview and send replies show line by line"
   ]);
   assert.equal(ticketOf(d), "");
   assert.equal(sendOff(d), true);
+});
+
+// ---------------------------------------------------------------------------
+// Hours requests from the tablet
+//
+// The window asks adminHoursRequests after the roster. The server works out which
+// requesters to tick and the words beside each name (hoursRequestChoices in Logic.js);
+// these tests build that reply with Logic.js itself, so each mode's ticks go through the
+// real rule, and check the window shows it.
+
+const L = {};
+vm.runInNewContext(readFileSync(new URL("../apps-script/Logic.js", import.meta.url), "utf8"), L);
+const HOUR = 3600000;
+const REQ_NOW = Date.UTC(2026, 10, 21, 18, 0);
+const req = (n, status, ageHours, more = {}) => ({
+  id: "v" + n,
+  name: "Pat Example " + n,
+  status,
+  reason: "",
+  requestedMs: REQ_NOW - ageHours * HOUR,
+  doneAtMs: status === "sending" ? REQ_NOW - (more.sendingMinutes ?? 5) * 60000 : NaN,
+  ...more,
+});
+// v1 waiting 2 h; v2 held; v3 waiting 30 h (overdue in Auto); v4 sending 5 min; v5
+// sending 45 min (stopped part way); v6 waiting 1 h; and one requester not on the list.
+const OPEN = [
+  req(1, "waiting", 2),
+  req(2, "held", 26, { reason: "No email on their Volunteer Profiles row (row 14)." }),
+  req(3, "waiting", 30),
+  req(4, "sending", 1),
+  req(5, "sending", 3, { sendingMinutes: 45 }),
+  req(6, "waiting", 1),
+  req(99, "waiting", 4),
+];
+const requestsReply = (mode, list = OPEN) => {
+  const dateOf = () => "2026-11-20";
+  const made = L.hoursRequestChoices(list, mode, REQ_NOW, ids(1, 8), dateOf);
+  return plain({ ok: true, mode, requests: made.requests, notListed: made.notListed });
+};
+const rowLabel = (d, n) => rows(d)[n - 1].children[1].textContent;
+const tickedRows = (d) =>
+  rows(d)
+    .map((r, i) => (r.children[0].checked ? "v" + (i + 1) : null))
+    .filter(Boolean);
+
+for (const [mode, expected] of [
+  ["approve", ["v1", "v2", "v3", "v6"]],
+  ["off", ["v1", "v2", "v3", "v6"]],
+  ["auto", ["v2", "v3"]],
+]) {
+  test(`email window: in ${mode}, the requesters a person should send to arrive ticked; sending ones never`, () => {
+    const d = loaded(8, "2026-11-21", requestsReply(mode));
+    assert.deepEqual(tickedRows(d), expected);
+    assert.equal(d.$("email-count").textContent, expected.length + " ticked");
+    // Ticked is not previewed: Send still needs a Preview.
+    assert.equal(ticketOf(d), "");
+    assert.equal(sendOff(d), true);
+    assert.ok(allOn(d));
+    click(d, d.$("email-preview"));
+    assert.equal(d.last().name, "adminHoursPreview");
+    assert.deepEqual(plain(d.last().args[1].ids), expected);
+  });
+}
+
+test("email window: each requester's name carries the request's words, in each of its six forms", () => {
+  const approve = loaded(8, "2026-11-21", requestsReply("approve"));
+  assert.equal(rowLabel(approve, 1), "Pat Example 1 · Requested Nov 20");
+  assert.equal(rowLabel(approve, 2), "Pat Example 2 · Requested Nov 20, held");
+  assert.equal(rowLabel(approve, 7), "Pat Example 7");
+
+  const auto = loaded(8, "2026-11-21", requestsReply("auto"));
+  assert.deepEqual(
+    [1, 2, 3, 4, 5, 6, 7].map((n) => rowLabel(auto, n)),
+    [
+      "Pat Example 1 · Requested Nov 20, Auto will send",
+      "Pat Example 2 · Requested Nov 20, held",
+      "Pat Example 3 · Requested Nov 20, overdue: Auto hasn't sent it",
+      "Pat Example 4 · Requested Nov 20, sending now",
+      "Pat Example 5 · Requested Nov 20, automatic send stopped part way: check the Hours emails tab",
+      "Pat Example 6 · Requested Nov 20, Auto will send",
+      "Pat Example 7",
+    ],
+  );
+  // The search still finds a requester by name.
+  typeSearch(auto, "example 5");
+  assert.deepEqual(
+    rows(auto).map((r) => r.hidden),
+    [true, true, true, true, false, true, true, true],
+  );
+});
+
+test("email window: a request from someone not on the list shows as a line above it and can't be ticked", () => {
+  const d = loaded(8, "2026-11-21", requestsReply("approve"));
+  assert.equal(d.$("email-requests").hidden, false);
+  assert.equal(
+    d.$("email-requests").textContent,
+    "1 hours request is from a volunteer not on the volunteer list. Close it on the Hours requests tab.",
+  );
+  assert.equal(rows(d).length, 8);
+  assert.ok(!d.state("[...ticked]").includes("v99"));
+
+  const two = loaded(
+    8,
+    "2026-11-21",
+    requestsReply("approve", [req(98, "held", 3), req(99, "waiting", 4)]),
+  );
+  assert.equal(
+    two.$("email-requests").textContent,
+    "2 hours requests are from volunteers not on the volunteer list. Close them on the Hours requests tab.",
+  );
+  assert.deepEqual(tickedRows(two), []);
+  assert.equal(two.$("email-count").textContent, "0 ticked");
+
+  const none = loaded(8, "2026-11-21", requestsReply("approve", [req(1, "waiting", 2)]));
+  assert.equal(none.$("email-requests").hidden, true);
+});
+
+test("email window: unticking a requester and ticking another works as for anyone", () => {
+  const d = loaded(8, "2026-11-21", requestsReply("approve"));
+  click(d, box(d, 1));
+  click(d, box(d, 8));
+  assert.deepEqual(tickedRows(d), ["v2", "v3", "v6", "v8"]);
+  click(d, d.$("email-clear"));
+  assert.deepEqual(tickedRows(d), []);
+});
+
+test("email window: a held requester's preview has the hold's reason", () => {
+  const d = loaded(8, "2026-11-21", requestsReply("approve"));
+  click(d, d.$("email-preview"));
+  const call = d.last();
+  call.answer(previewReply(call.args[1].ids));
+  const held = blocks(d)[2].text.split("\n");
+  assert.equal(held[0], "To: Pat Example 2 <pat.example.2@example.org>");
+  assert.ok(
+    held.includes("Hours request held: No email on their Volunteer Profiles row (row 14)."),
+    held.join("\n"),
+  );
+  assert.ok(!blocks(d)[1].text.includes("Hours request held"));
+});
+
+test("email window: when the hours requests can't be read, the list still works with nothing ticked", () => {
+  const d = dialog("email");
+  d.last().answer({ ok: true, today: "2026-11-21", volunteers: roster(8) });
+  assert.equal(d.last().name, "adminHoursRequests");
+  d.last().throws('The Hours requests tab needs exactly one "Status" column in row 1.');
+  assert.match(message(d), /Hours requests tab needs exactly one "Status" column/);
+  assert.deepEqual(tickedRows(d), []);
+  assert.ok(allOn(d));
+  assert.equal(rowLabel(d, 1), "Pat Example 1");
+  click(d, box(d, 1));
+  click(d, d.$("email-preview"));
+  assert.equal(d.last().name, "adminHoursPreview");
+});
+
+test("email window: the message line says when Auto was emailing a volunteer too, and when requests couldn't be marked", () => {
+  const d = ready23();
+  d.$("initials").value = "JP";
+  pressSend(d).answer({ ...sendResults(ids(1, 10)), twoEmails: 1 });
+  d.last().answer({ ...sendResults(ids(11, 20)), twoEmails: 1, requestsFailed: true });
+  d.last().answer({ ...sendResults(ids(21, 23)), requestsFailed: false, twoEmails: 0 });
+  assert.equal(
+    message(d),
+    "Sent 23 of 23. The hours requests couldn't be marked sent. Mark them on the Hours requests tab. Auto was emailing 2 of these volunteers at the same moment, so they may get two emails. See the Hours emails tab.",
+  );
+  assert.equal(d.$("message").className, "message error");
+
+  const only = ready23();
+  pressSend(only).answer({ ...sendResults(ids(1, 10)), twoEmails: 1 });
+  only.last().answer(sendResults(ids(11, 20)));
+  only.last().answer(sendResults(ids(21, 23)));
+  assert.equal(
+    message(only),
+    "Sent 23 of 23. Auto was emailing 1 of these volunteers at the same moment, so they may get two emails. See the Hours emails tab.",
+  );
+  assert.equal(only.$("message").className, "message info");
 });
 
 // ---------------------------------------------------------------------------

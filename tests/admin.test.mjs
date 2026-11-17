@@ -3213,6 +3213,8 @@ test("Email hours: a Send of the ticket sends each email as the flags email is s
       { id: JAMES.id, result: "sent" },
     ],
     recordFailed: false,
+    requestsFailed: false,
+    twoEmails: 0,
   });
   assert.deepEqual(sentTo(s), [MARIA.email, JAMES.email]);
   s.mail.sent.forEach(({ message }, i) => {
@@ -3306,6 +3308,8 @@ test("Email hours: the ticket in the cache decides, and a repeat gets what it ho
       { id: DEV.id, result: R_TAKEN },
     ],
     recordFailed: false,
+    requestsFailed: false,
+    twoEmails: 0,
   });
   assert.equal(u.mail.sent.length, 2);
   assert.deepEqual(u.sheets.Log.reads, []);
@@ -3525,6 +3529,8 @@ test("Email hours: one volunteer's MailApp failure doesn't stop the rest", () =>
       { id: DEV.id, result: "sent" },
     ],
     recordFailed: false,
+    requestsFailed: false,
+    twoEmails: 0,
   });
   assert.deepEqual(sentTo(s), [MARIA.email, DEV.email]);
   // A failed row carries the hours, as a sent one does.
@@ -3684,6 +3690,8 @@ test("Email hours: a read that throws after the take sends nothing and still wri
           { id: JAMES.id, result },
         ],
         recordFailed: false,
+        requestsFailed: false,
+        twoEmails: 0,
       },
       what,
     );
@@ -4141,6 +4149,217 @@ test("Email hours: the lock is held only to take and to write the rows, never at
 });
 
 // ---------------------------------------------------------------------------
+// Email hours… with hours requests from the tablet
+
+/** An Hours requests row, in REQUEST_HEADER's order. */
+const requestRow = (p, requestedAt, status, more = {}) => [
+  requestedAt,
+  p.name,
+  p.id,
+  more.mode ?? "Approve",
+  status,
+  more.reason ?? "",
+  more.doneAt ?? "",
+  more.doneBy ?? "",
+  more.sendId ?? "",
+];
+const requestServer = (mode, rows, opts = {}) =>
+  emailServer({
+    settings: EMAIL_SETTINGS.concat([["Hours requests", mode]]),
+    hoursRequests: rows ? [REQUEST_HEADER, ...rows] : undefined,
+    ...opts,
+  });
+const ASKED = at("2026-11-13", "15:00");
+
+test("Email hours: adminHoursRequests gives the open requests with their ticks and words, and writes nothing", () => {
+  const gone = { ...person("Lee", "Gone", "", "", "gone-token"), name: "Lee Gone" };
+  const s = requestServer("Auto", [
+    requestRow(MARIA, ASKED, "waiting", { mode: "Auto" }),
+    requestRow(JAMES, ASKED, "held", {
+      reason: "Hours email contact on the Settings tab is blank.",
+    }),
+    requestRow(DEV, at("2026-11-12", "09:00"), "waiting"),
+    requestRow(ANA, ASKED, "sent"),
+    requestRow(gone, ASKED, "waiting"),
+  ]);
+  s.journal.length = 0;
+  const reply = plain(s.ctx.adminHoursRequests("k"));
+  assert.equal(reply.ok, true);
+  assert.equal(reply.mode, "auto");
+  assert.deepEqual(
+    reply.requests.map((r) => [r.name, r.status, r.ticked, r.overdue, r.label]),
+    [
+      ["Maria Alvarez", "waiting", false, false, "Requested Nov 13, Auto will send"],
+      ["James Okafor", "held", true, false, "Requested Nov 13, held"],
+      ["Dev Patel", "waiting", true, true, "Requested Nov 12, overdue: Auto hasn't sent it"],
+      ["Lee Gone", "waiting", false, false, "Requested Nov 13, Auto will send"],
+    ],
+  );
+  assert.equal(reply.requests[0].id, MARIA.id);
+  assert.equal(reply.requests[0].requestedDate, "2026-11-13");
+  assert.equal(
+    reply.notListed,
+    "1 hours request is from a volunteer not on the volunteer list. Close it on the Hours requests tab.",
+  );
+  // No address reaches the window, and nothing is written or locked.
+  assert.ok(!JSON.stringify(reply).includes("@"));
+  assert.ok(!s.journal.some((j) => j.startsWith("write ")), s.journal.join("\n"));
+  assert.equal(s.lock.tries, 0);
+
+  // In Approve the same requests are ticked by Approve's rule.
+  const a = requestServer("approve", [
+    requestRow(MARIA, ASKED, "waiting"),
+    requestRow(JAMES, ASKED, "sending", { doneAt: at("2026-11-14", "09:00") }),
+  ]);
+  const approve = plain(a.ctx.adminHoursRequests("k"));
+  assert.equal(approve.mode, "approve");
+  assert.deepEqual(
+    approve.requests.map((r) => [r.ticked, r.stopped, r.label]),
+    [
+      [true, false, "Requested Nov 13"],
+      [
+        false,
+        true,
+        "Requested Nov 13, automatic send stopped part way: check the Hours emails tab",
+      ],
+    ],
+  );
+
+  // No tab: no requests, and no tab is made.
+  const none = requestServer("Approve", null);
+  assert.deepEqual(plain(none.ctx.adminHoursRequests("k")), {
+    ok: true,
+    mode: "approve",
+    requests: [],
+    notListed: "",
+  });
+  assert.equal(none.sheets["Hours requests"], undefined);
+  // A wrong key is refused before anything is read.
+  assert.deepEqual(
+    plain(none.ctx.adminHoursRequests("nope")),
+    plain(none.ctx.refusal("ADMIN_EXPIRED")),
+  );
+});
+
+test("Email hours: a send marks the sent volunteers' waiting and held requests sent, under the rows' lock", () => {
+  const later = at("2026-11-14", "10:30");
+  const s = requestServer("Approve", [
+    requestRow(MARIA, at("2026-11-01", "10:00"), "sent", { doneBy: "AB", sendId: "old1" }),
+    requestRow(MARIA, ASKED, "waiting"),
+    requestRow(JAMES, ASKED, "Held", {
+      reason: "Hours email contact on the Settings tab is blank.",
+    }),
+    requestRow(DEV, ASKED, "waiting"),
+  ]);
+  const p = previewHours(s, [MARIA.id, JAMES.id, DEV.id]);
+  const sendId = ticketItem(s, p.ticket).sendId;
+  // A request made after the preview, before the send, is left for the next send.
+  s.sheets["Hours requests"].rows.push(requestRow(ANA, later, "waiting"));
+  s.faults.sendEmail = (m) => (m.to === DEV.email ? "Service unavailable: Gmail" : null);
+  s.journal.length = 0;
+  s.clock.now = EMAIL_NOW + 5 * 60000;
+  const reply = sendHours(s, p.ticket, p.sendIds, "jp");
+  assert.deepEqual(
+    reply.results.map((r) => r.result),
+    ["sent", "sent", "failed: Service unavailable: Gmail"],
+  );
+  assert.equal(reply.requestsFailed, false);
+  assert.equal(reply.twoEmails, 0);
+
+  const rows = requestRows(s);
+  const sentAt = hoursEmailRows(s)[0]["Sent at"];
+  const marked = (r) => [
+    r.Status,
+    r["Done at"] && r["Done at"].getTime(),
+    r["Done by"],
+    r["Send ID"],
+  ];
+  // An earlier, done request is left as it was.
+  assert.deepEqual(marked(rows[0]), ["sent", "", "AB", "old1"]);
+  assert.deepEqual(marked(rows[1]), ["sent", sentAt.getTime(), "JP", sendId]);
+  assert.deepEqual(marked(rows[2]), ["sent", sentAt.getTime(), "JP", sendId]);
+  assert.equal(rows[2].Reason, "Hours email contact on the Settings tab is blank.");
+  // The failed volunteer's request stays open; so does the one made after the send.
+  assert.equal(rows[3].Status, "waiting");
+  assert.equal(rows[3]["Done by"], "");
+  assert.equal(rows[4].Status, "waiting");
+
+  // The marks are written after the Hours emails rows, before the rows' lock ends.
+  const emailsWrite = s.journal.findIndex((j) => j.startsWith("write Hours emails setValues"));
+  const requestWrites = s.journal
+    .map((j, i) => (j.startsWith("write Hours requests") ? i : -1))
+    .filter((i) => i >= 0);
+  const lastFlush = s.journal.lastIndexOf("flush");
+  assert.ok(requestWrites.length > 0);
+  assert.ok(
+    requestWrites.every((i) => i > emailsWrite && i < lastFlush),
+    s.journal.join("\n"),
+  );
+  assert.equal(s.lock.held, false);
+});
+
+test("Email hours: a request the job is sending is left to it, and the reply says they may get two emails", () => {
+  const s = requestServer("Auto", [
+    requestRow(MARIA, ASKED, "sending", { mode: "Auto", doneAt: at("2026-11-14", "09:58") }),
+    requestRow(JAMES, ASKED, "waiting", { mode: "Auto" }),
+  ]);
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.deepEqual(
+    reply.results.map((r) => r.result),
+    ["sent", "sent"],
+  );
+  assert.equal(reply.twoEmails, 1);
+  assert.equal(reply.requestsFailed, false);
+  const rows = requestRows(s);
+  assert.equal(rows[0].Status, "sending");
+  assert.equal(rows[0]["Done by"], "");
+  assert.equal(rows[1].Status, "sent");
+  assert.ok(
+    s.logs.some((l) => l.includes(MARIA.id) && l.includes("may get two emails")),
+    s.logs.join("\n"),
+  );
+});
+
+test("Email hours: when the requests can't be marked, the Hours emails rows stand and the log names the volunteers", () => {
+  const broken = REQUEST_HEADER.map((h) => (h === "Status" ? "State" : h));
+  const s = emailServer({
+    settings: EMAIL_SETTINGS.concat([["Hours requests", "Approve"]]),
+    hoursRequests: [broken, requestRow(MARIA, ASKED, "waiting")],
+  });
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  const sendId = ticketItem(s, p.ticket).sendId;
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.recordFailed, false);
+  assert.equal(reply.requestsFailed, true);
+  assert.equal(s.mail.sent.length, 2);
+  assert.equal(hoursEmailRows(s).length, 2);
+  assert.equal(s.sheets["Hours requests"].rows[1][4], "waiting");
+  const said = s.errors.find((e) => e.startsWith("Hours requests: not marked sent"));
+  assert.ok(said, s.errors.join("\n"));
+  assert.ok(said.includes(sendId) && said.includes(MARIA.id) && said.includes(JAMES.id), said);
+  assert.ok(!said.includes("@"), said);
+});
+
+test("Email hours: a send with no Hours requests tab makes none, and one that sent nobody reads none", () => {
+  const s = requestServer("Approve", null);
+  const p = previewHours(s, [MARIA.id]);
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.equal(reply.results[0].result, "sent");
+  assert.equal(reply.requestsFailed, false);
+  assert.equal(s.sheets["Hours requests"], undefined);
+
+  const t = requestServer("Approve", [requestRow(MARIA, ASKED, "waiting")]);
+  const q = previewHours(t, [MARIA.id]);
+  t.faults.sendEmail = () => "Service unavailable: Gmail";
+  t.sheets["Hours requests"].reads.length = 0;
+  sendHours(t, q.ticket, q.sendIds);
+  assert.deepEqual(t.sheets["Hours requests"].reads, []);
+  assert.equal(requestRows(t)[0].Status, "waiting");
+});
+
+// ---------------------------------------------------------------------------
 // The admin dialog's calls
 
 test("AdminDialog.html calls only keyed functions, each through call()", () => {
@@ -4151,6 +4370,7 @@ test("AdminDialog.html calls only keyed functions, each through call()", () => {
     "adminFindShifts",
     "adminFixSignOut",
     "adminHoursPreview",
+    "adminHoursRequests",
     "adminOpenShifts",
     "adminRemoveShift",
     "adminRemovedShifts",
