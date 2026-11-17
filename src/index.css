@@ -880,6 +880,28 @@
 .text-button:disabled {
   opacity: 0.5;
 }
+/* Change inside the check-out screen's "You checked in at 9:14 AM" line: it keeps the
+   line's height, and a larger invisible area takes the tap. */
+.text-button.inline-change {
+  position: relative;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  font-size: inherit;
+  line-height: inherit;
+}
+.text-button.inline-change::after {
+  content: "";
+  position: absolute;
+  inset: -12px -10px;
+}
+/* "Arrival time saved." under the line after a Change. */
+.panel > p.arrival-saved {
+  margin: -14px auto 18px;
+  color: var(--green);
+  font-size: 17px;
+  font-weight: 800;
+}
 /* Email me my hours: its own row under the arrival or check-out time link, and the line
    that takes its place after a tap. */
 .hours-request {

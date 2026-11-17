@@ -180,8 +180,8 @@ test("App.tsx: Confirmation and App each check digitsMissing(digitsAsked, phoneD
   assert.doesNotMatch(app, /const digitsMissing\b/);
 });
 
-test("App.tsx: check-in, check-out and the hours request send digitsToSend(digitsAsked, phoneDigits)", () => {
-  assert.equal(count(app, "digitsToSend(digitsAsked, phoneDigits)"), 3);
+test("App.tsx: check-in, check-out, a Change of arrival and the hours request send digitsToSend(digitsAsked, phoneDigits)", () => {
+  assert.equal(count(app, "digitsToSend(digitsAsked, phoneDigits)"), 4);
 });
 
 test("App.tsx: select() decides the digit step with digitsAskedAtTap", () => {

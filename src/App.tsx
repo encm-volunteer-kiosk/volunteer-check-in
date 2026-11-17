@@ -9,6 +9,15 @@ import {
   usingLocalApi,
   type Refusal,
 } from "./api";
+import {
+  afterArrivalChange,
+  arrivalSavedText,
+  arrivalToSend,
+  movePick,
+  openArrivalPick,
+  showsArrivalChange,
+  type ArrivalPick,
+} from "./arrivalChange";
 import logo from "./assets/encm-logo.png";
 import { cardTime, DEFAULT_LONG_SHIFT_HOURS } from "./cardTime";
 import { appreciationMessages, isToday, type Milestone, type Volunteer } from "./data";
@@ -67,6 +76,7 @@ import {
 } from "./saveFlow";
 import {
   afterEnqueue,
+  ATTEMPT_MS,
   changeQueue,
   codeMatches,
   dismissFailed,
@@ -625,6 +635,7 @@ function Confirmation({
   onRequestHours,
   onConfirm,
   onBack,
+  arrivalChange,
 }: {
   volunteer: Volunteer;
   checkout: boolean;
@@ -652,13 +663,17 @@ function Confirmation({
   onRequestHours: () => void;
   onConfirm: () => void;
   onBack: () => void;
+  // Change on the check-out screen's line, and its picker. Absent on the check-in screen.
+  arrivalChange?: ArrivalChangeProps;
 }) {
   const showTimeKeyboard = Boolean(!phoneStep && picker && time && onTimeChange);
-  const hasKeyboard = showTimeKeyboard;
+  // Change's own picker: a third picker state, whose Save time calls only the Change.
+  const changePicker = !phoneStep && arrivalChange?.pick ? arrivalChange : null;
+  const hasKeyboard = showTimeKeyboard || changePicker !== null;
   const offersHours = showsHoursRequest({
     hoursRequests,
     phoneStep,
-    picker,
+    picker: picker || changePicker !== null,
     saving,
     volunteer,
     digitsAsked,
@@ -695,7 +710,21 @@ function Confirmation({
             ) : checkout && volunteer.currentCheckIn ? (
               <>
                 You checked in {isToday(volunteer.currentCheckIn) ? "" : "yesterday "}at{" "}
-                <strong>{formatTime(volunteer.currentCheckIn)}</strong>.
+                <strong>{formatTime(volunteer.currentCheckIn)}</strong>
+                {arrivalChange?.offered && !changePicker ? (
+                  <>
+                    {" · "}
+                    <button
+                      type="button"
+                      className="text-button inline-change"
+                      onClick={arrivalChange.onOpen}
+                    >
+                      Change
+                    </button>
+                  </>
+                ) : (
+                  "."
+                )}
               </>
             ) : checkout ? (
               "You're checked in."
@@ -703,6 +732,11 @@ function Confirmation({
               "Just making sure we have the right neighbor."
             )}
           </p>
+          {arrivalChange?.saved && !phoneStep && !changePicker && (
+            <p className="arrival-saved" role="status">
+              {arrivalSavedText}
+            </p>
+          )}
           {phoneStep === "entry" && (
             <PhoneDigits
               digits={phoneDigits}
@@ -710,7 +744,7 @@ function Confirmation({
               onSubmit={onPhoneContinue}
             />
           )}
-          {!phoneStep && checkout && !showTimeKeyboard && volunteer.currentCheckIn && (
+          {!phoneStep && checkout && !hasKeyboard && volunteer.currentCheckIn && (
             <ShiftThanks checkedInAt={volunteer.currentCheckIn} />
           )}
           {!checkout && !phoneStep && !showTimeKeyboard && (
@@ -718,7 +752,7 @@ function Confirmation({
               <Icon name="user" /> {volunteer.firstName} {volunteer.lastName}
             </div>
           )}
-          {showTimeKeyboard && (
+          {hasKeyboard && (
             <div className="checkin-details">
               <div className="identity">
                 <Icon name="user" /> {volunteer.firstName} {volunteer.lastName}
@@ -726,7 +760,9 @@ function Confirmation({
               <div className="arrival-time">
                 <span>
                   <Icon name="clock" size={21} />
-                  {checkout ? "What time did you leave?" : "What time did you arrive?"}
+                  {checkout && !changePicker
+                    ? "What time did you leave?"
+                    : "What time did you arrive?"}
                 </span>
                 <small>Tap a time below, or use −15 and +15 to adjust it.</small>
               </div>
@@ -761,7 +797,7 @@ function Confirmation({
               </Button>
             </div>
           )}
-          {!phoneStep && !showTimeKeyboard && onOpenPicker && (
+          {!phoneStep && !hasKeyboard && onOpenPicker && (
             <button type="button" className="text-button" onClick={onOpenPicker} disabled={saving}>
               {checkout
                 ? "Forgot to check out earlier? Change your check-out time"
@@ -783,9 +819,38 @@ function Confirmation({
           onBack={onBack}
         />
       )}
+      {changePicker && (
+        <QuickPicks
+          value={changePicker.pick!.time.time}
+          minMinutes={0}
+          maxMinutes={changePicker.pick!.maxMinutes}
+          label="Arrival time picker"
+          confirmText="Save time"
+          saving={changePicker.saving}
+          onChange={changePicker.onTimeChange}
+          onConfirm={changePicker.onSave}
+          onBack={changePicker.onClose}
+        />
+      )}
     </>
   );
 }
+
+/**
+ * Change on the check-out screen. offered: the line shows "· Change" (showsArrivalChange).
+ * pick: the open picker, or null. saving: the Change is out. saved: "Arrival time saved."
+ * shows under the line until the volunteer leaves the screen.
+ */
+type ArrivalChangeProps = {
+  offered: boolean;
+  pick: ArrivalPick | null;
+  saving: boolean;
+  saved: boolean;
+  onOpen: () => void;
+  onTimeChange: (time: string) => void;
+  onSave: () => void;
+  onClose: () => void;
+};
 
 /**
  * Email me my hours, under the button stack: the button, "Sending…" while the request is
@@ -1531,6 +1596,19 @@ export default function App() {
   // Check-out likewise sends no time unless the volunteer opens the check-out picker.
   const [checkOutTime, setCheckOutTime] = useState(() => pickTime(centralTimeValue()));
   const [checkOutPicker, setCheckOutPicker] = useState(false);
+  // Change on the check-out screen: its open picker, whether the Change is out, and whether
+  // "Arrival time saved." shows. changeSeq numbers the Changes: an answer moves the screen
+  // only while its number is the current one, so leaving the screen drops it.
+  const [arrivalPick, setArrivalPick] = useState<ArrivalPick | null>(null);
+  const [changeSaving, setChangeSaving] = useState(false);
+  const [arrivalSaved, setArrivalSaved] = useState(false);
+  const changeSeq = useRef(0);
+  const dropArrivalChange = () => {
+    changeSeq.current += 1;
+    setArrivalPick(null);
+    setChangeSaving(false);
+    setArrivalSaved(false);
+  };
   const [phoneStep, setPhoneStep] = useState<PhoneStep>(null);
   const [phoneDigits, setPhoneDigits] = useState("");
   // Whether the digits are asked for, fixed at the tap (a list refresh on the open screen
@@ -1572,6 +1650,7 @@ export default function App() {
     setArrivalPicker(false);
     setCheckOutTime(pickTime(centralTimeValue()));
     setCheckOutPicker(false);
+    dropArrivalChange();
     setPhoneStep(null);
     setPhoneDigits("");
     setDigitsAsked(false);
@@ -1588,6 +1667,7 @@ export default function App() {
     setArrivalPicker(false);
     setCheckOutTime(pickTime(centralTimeValue()));
     setCheckOutPicker(false);
+    dropArrivalChange();
     const asked = digitsAskedAtTap(isCheckedIn(volunteer), volunteer, shown);
     setDigitsAsked(asked);
     setAnotherIn(false);
@@ -2236,6 +2316,92 @@ export default function App() {
     }
   }
 
+  /**
+   * Save time on Change's picker: the Change alone, never a check-out. Untouched, the picker
+   * closes and nothing is sent. The Change waits for the server: before the call its own
+   * unknown mark is stored (refused, with the still-saving line, when the queue holds a save
+   * for the volunteer); the server's answer, however late, makes that mark the new arrival
+   * or drops it, and only a current answer moves the screen. No answer leaves the mark, so
+   * the volunteer's next tap waits for the server.
+   */
+  async function saveArrivalChange() {
+    const pick = arrivalPick;
+    if (!pick || !selected || !code || changeSaving || saveFlow.current.pending) return;
+    const arrivalIso = arrivalToSend(pick);
+    setError("");
+    if (arrivalIso === null) {
+      setArrivalPick(null);
+      return;
+    }
+    const seq = ++changeSeq.current;
+    const current = () => seq === changeSeq.current;
+    const volunteerId = selected.id;
+    const firstName = selected.firstName;
+    setChangeSaving(true);
+    const markKey = await markBeforeSend(volunteerId);
+    if (markKey === null) {
+      if (!current()) return;
+      setChangeSaving(false);
+      setError(
+        stillSavingText(queueRef.current, volunteerId, {
+          online: navigator.onLine,
+          now: Date.now(),
+          runnerHeld: runnerActive.current,
+        }) ?? "",
+      );
+      return;
+    }
+    const answered = api
+      .changeArrival(
+        code,
+        volunteerId,
+        digitsToSend(digitsAsked, phoneDigits),
+        pick.shiftId,
+        pick.fromIso,
+        arrivalIso,
+      )
+      .then(async (reply) => {
+        // The server is done with the call, whether or not the answer is still current.
+        if (isRefusal(reply)) await dropForegroundMark(markKey);
+        else {
+          await foregroundMark({
+            key: markKey,
+            volunteerId: reply.id,
+            at: Date.now(),
+            listAfter: 0,
+            state: "in",
+            arrival: reply.arrivedAt,
+          });
+          refreshList();
+        }
+        return reply;
+      });
+    const reply = await settleWithin(answered, ATTEMPT_MS);
+    if (!current()) return;
+    setChangeSaving(false);
+    const next = afterArrivalChange(reply);
+    if (next.kind === "saved") {
+      setArrivalPick(null);
+      setArrivalSaved(true);
+    } else if (next.kind === "lock") {
+      lockKiosk(next.message);
+    } else if (next.kind === "not-in") {
+      setResult({ firstName, kind: "out", status: "NOT_IN" });
+      setScreen("status");
+    } else if (next.kind === "phone") {
+      // As a check-out's phone refusal: the digit step, with the picker closed.
+      const phone = afterPhoneRefusal(refusalOutcome(next.refusal.refusal), digitsAsked, true)!;
+      setArrivalPick(null);
+      setPhoneDigits("");
+      setPhoneStep(next.refusal.refusal === "PHONE_MISSING" ? "missing" : "entry");
+      setDigitsAsked(phone.asked);
+      setAnotherIn(phone.anotherIn);
+      setError(phone.showMessage ? next.refusal.message : "");
+    } else {
+      setError(next.text);
+    }
+  }
+
   // Email me my hours: records a request, beside the screen's check-in or check-out. It
   // checks no one in or out, and a save doesn't wait for it.
   async function requestHours() {
@@ -2360,6 +2526,33 @@ export default function App() {
           onTimeChange={(time) => setCheckOutTime(pickTime(time))}
           onConfirm={handleCheckout}
           onBack={tapHome}
+          arrivalChange={{
+            offered: showsArrivalChange({
+              entry: selected,
+              phoneStep,
+              picker: checkOutPicker || arrivalPick !== null,
+              saving: save !== null || changeSaving,
+              digitsAsked,
+              digits: phoneDigits,
+              queue,
+              nowMs: Date.now(),
+            }),
+            pick: arrivalPick,
+            saving: changeSaving,
+            saved: arrivalSaved,
+            onOpen: () => {
+              setError("");
+              setArrivalSaved(false);
+              setArrivalPick(openArrivalPick(selected, Date.now()));
+            },
+            onTimeChange: (time) =>
+              setArrivalPick((pick) => (pick ? movePick(pick, time, Date.now()) : pick)),
+            onSave: saveArrivalChange,
+            onClose: () => {
+              setError("");
+              setArrivalPick(null);
+            },
+          }}
         />
       )}
       {code && screen === "saving" && save && <SavingScreen key={save.seq} save={save} />}
