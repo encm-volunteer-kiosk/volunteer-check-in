@@ -574,7 +574,10 @@ test("the two hours request rows are the last two Settings rows, Off and blank, 
   );
   // The last-run row says only what it can show: idle runs write nothing.
   assert.match(d["Hours requests last run"], /^Written by the hours request job: /);
-  assert.match(d["Hours requests last run"], /a run with nothing to do writes nothing, so an old time is normal/);
+  assert.match(
+    d["Hours requests last run"],
+    /a run with nothing to do writes nothing, so an old time is normal/,
+  );
   assert.match(d["Hours requests last run"], /overdue/);
   assert.equal(/no run yet/.test(d["Hours requests last run"]), false);
 });
@@ -772,4 +775,42 @@ test("the tablet never gets the contact: the web app and the page don't name it"
       .map((f) => read("src/" + f)),
   ];
   tablet.forEach((src) => assert.ok(!/kioskContact|Kiosk contact/.test(src)));
+});
+
+test("How to has the hours requests section after Email hours, saying what Auto does and misses", () => {
+  const sections = plain(L.howToSections());
+  const at = sections.findIndex((s) => s.title === "Hours requests from the tablet");
+  assert.ok(at > 0);
+  assert.equal(sections[at - 1].title, "Email volunteers their hours");
+  assert.equal(sections[at + 1].title, "The weekly flags email");
+  const all = sections[at].lines.map((l) => l.text).join("\n");
+  [
+    "Off, the default, hides the Email me my hours button",
+    "Approve",
+    "Auto",
+    "1. Kiosk admin > Email hours…",
+    "never shows an email address",
+    "type closed in its Status",
+    "Reviewed",
+    "Kiosk admin > Fix a sign-out…",
+    "A deleted Flags row counts as reviewed",
+    "as the tablet shows it",
+    "Auto clock-out after hours",
+    "6:00 AM",
+    "never retries a held request",
+    "overdue",
+    "how a stopped hours request job shows",
+    "an old time there is normal",
+    "believable fake shift",
+    "two emails",
+    "Sent by auto",
+  ].forEach((part) => assert.ok(all.includes(part), part));
+  // The last-run row can't show whether the job is running, so the text never says it does.
+  assert.doesNotMatch(all, /no run yet|whether the job runs/);
+  // Email hours step 4 says requesters arrive ticked.
+  const email = sections[at - 1].lines.map((l) => l.text).join("\n");
+  assert.ok(email.includes("Volunteers who asked on the tablet arrive ticked"));
+  // The flags email's hours count is of emails sent or tried, not delivered.
+  const flags = sections[at + 1].lines.map((l) => l.text).join("\n");
+  assert.ok(flags.includes("the hours emails Auto sent or tried in the last 7 days"));
 });

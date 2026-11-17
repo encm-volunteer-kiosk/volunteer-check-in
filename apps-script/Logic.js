@@ -2617,7 +2617,9 @@ function decideFixSignOut(input) {
 // Volunteer Profiles row. This section holds its pure parts: the address check, the period,
 // which rows count and what the preview warns about, the email's text, the shifts file,
 // the quota check, the ticket a preview leaves for its send, and the Hours emails tab's
-// rows.
+// rows. The hours request job (runHoursRequests, Jobs.js, installed with
+// setupHoursRequestJob) builds its automatic emails from the same parts, with the shifts
+// it leaves out taken away first (see "Hours requests" below).
 //
 // The rules: all three totals are as of one date, the as-of date; a row counts when it is
 // closed, under the volunteer's own User Token, dated yyyy-mm-dd and on or before that
@@ -10356,7 +10358,7 @@ function howToSections() {
           "3. Tick Attach all shifts if they should also get a spreadsheet file of every shift they have.",
         ),
         step(
-          "4. Tick the volunteers. Type part of a name to search; Tick all shown with the search empty ticks everyone.",
+          "4. Tick the volunteers. Type part of a name to search; Tick all shown with the search empty ticks everyone. Volunteers who asked on the tablet arrive ticked and marked Requested and the date (see Hours requests from the tablet).",
         ),
         step(
           "5. Press Preview. Check each volunteer's address, hours and the warnings under Check before sending. A volunteer with a problem, such as no email on their Profiles row, is left out and the problem says where to fix it.",
@@ -10366,6 +10368,44 @@ function howToSections() {
         ),
         tip(
           "One failure doesn't stop the rest. Every volunteer a send handles gets a row on the Hours emails tab with the result. Bounces go to the inbox of the account you're signed in as. To send again, press Preview again.",
+        ),
+      ],
+    },
+    {
+      title: "Hours requests from the tablet",
+      lines: [
+        text(
+          "Hours requests on the Settings tab decides whether volunteers can ask for their hours on the tablet. Off, the default, hides the Email me my hours button. Approve shows it and leaves each request for you to send. Auto shows it and the kiosk emails each request by itself, about every 15 minutes.",
+        ),
+        text(
+          "A tap only records a request on the Hours requests tab, one open request per volunteer. The tablet never shows an email address: the email goes to the Email cell of the volunteer's Volunteer Profiles row, as from Email hours.",
+        ),
+        step(
+          "1. Kiosk admin > Email hours… Volunteers who asked are ticked and marked Requested and the date. In Auto only held and overdue requests are ticked, since Auto sends the rest.",
+        ),
+        step(
+          "2. A held request says why, such as no email on their Profiles row, and the preview repeats it. Fix that, then Preview and send as usual. A sent email marks the request sent on the Hours requests tab.",
+        ),
+        step(
+          "3. To drop a request without sending, such as a repeat or someone who has left, type closed in its Status on the Hours requests tab and your initials in Done by.",
+        ),
+        text(
+          "In Auto, each email leaves out two kinds of shift and says how many are waiting for staff review: a shift whose Flags row isn't ticked Reviewed (tick it once you have checked the shift), and a shift still open (close it with Kiosk admin > Fix a sign-out…). A deleted Flags row counts as reviewed, so delete only flags you have looked at.",
+        ),
+        text(
+          "A volunteer who asks while checked in is emailed after they check out. Checked in means as the tablet shows it: until they check out, or until Auto clock-out after hours has passed since they checked in. One still checked in at 6:00 AM is held: close the shift with Kiosk admin > Fix a sign-out…, then send from Email hours.",
+        ),
+        text(
+          "Auto sends one email a week at most to each volunteer and 50 a day in all. A request past either limit is held for you. Auto never retries a held request.",
+        ),
+        text(
+          "A request still waiting in Auto a day after it was made is overdue: Email hours ticks it and labels it overdue. That is how a stopped hours request job shows. Hours requests last run on the Settings tab says when the job last sent, held or failed; a run with nothing to do writes nothing, so an old time there is normal.",
+        ),
+        tip(
+          "Auto can't catch a believable fake shift: someone who taps in and out at real times without volunteering makes a normal row. It also counts a shift added with Add a shift or typed by hand, a hand edit the nightly Log check hasn't flagged yet, and a flag ticked Reviewed without anyone looking. Use Approve if a person should check every email.",
+        ),
+        tip(
+          "If you send to a volunteer Auto is emailing at the same moment, they may get two emails, and the message line says so. Automatic emails are on the Hours emails tab with Sent by auto. Auto is installed by whoever looks after the kiosk; ask them if requests go overdue.",
         ),
       ],
     },
@@ -10384,6 +10424,9 @@ function howToSections() {
         ),
         tip(
           "Changing the day or hour takes effect at once: if the new day and hour have come round since the last check, a check runs within the hour. To stop the email, set Flags email to Off. To check this week again, clear the Value of Flags email last run: the next hourly check runs, and sends if there is anything to report.",
+        ),
+        tip(
+          "With Hours requests on, the email also counts the hours emails Auto sent or tried in the last 7 days, and the hours requests waiting for you; either alone makes it send. With Flags email Off, see the Hours emails tab and Email hours instead.",
         ),
       ],
     },
