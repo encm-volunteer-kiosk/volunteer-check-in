@@ -12,11 +12,13 @@ so hours can be credited to each volunteer and reported to grantmakers.
   periods, hyphens, capitals and extra spaces, so `jose` finds José and `obrien` finds
   O'Brien. It is built into a single HTML file that the Apps Script web app serves.
   There is no name grid and no sign-up path, because every volunteer is registered
-  before they volunteer. The first time, a board member types the kiosk access code
-  from the Settings tab; the tablet remembers it. With Settings "Hours requests" on
-  Approve or Auto, the check-in and check-out screens also offer **Email me my hours**,
-  which records a request for staff or the hours request job to answer (see Hours
-  requests).
+  before they volunteer. A board member types the kiosk access code from the Settings
+  tab; the iPad keeps it until Safari closes or the iPad restarts, and then asks for it
+  again (see Setting up the iPad). The check-out screen lets a volunteer change the
+  arrival time they checked in with (see Arrival time after check-in). With Settings
+  "Hours requests" on Approve or Auto, the welcome screen also shows a **Request my
+  hours** link, which records a request for staff or the hours request job to answer
+  (see Hours requests).
 - **Check-out reminders**: every check-in ends on a "You're checked in." screen with the
   line "Don't forget to check out before you leave." When the volunteer's last shift ended
   without their own Check Out, a notice comes first: "Welcome back, Sam! Last time you
@@ -39,19 +41,33 @@ so hours can be credited to each volunteer and reported to grantmakers.
 - **Instant check-ins and check-outs**: a normal tap shows its result at once, the
   missed-check-out notice included, from the volunteer list the tablet already holds, and
   the save runs behind it. The tablet keeps unsent saves in its own storage, so they
-  survive a reload or the iPad sleeping, and sends them one at a time with a tap ID, so a
-  save sent twice writes one row. When one has waited 10 seconds, the Checked In panel
-  shows "Saving…" until the queue is empty; a normal save lands before that. The stated
-  time is the time of the tap, worked out on the server from how long ago the tap was.
-  These taps still wait for the server, as before: a volunteer who shares a name and
-  types phone digits, a changed arrival or check-out time, a list that
-  is too old or doesn't agree with the tap, a tablet clock more than a minute off, a
-  check-out close to a milestone or to the auto clock-out window, a volunteer this tablet
-  saved after its list was fetched, and any tap when the browser can't store the queue or
-  lock it. Taps are instant only once the tablet has kept its access code through a
-  reload: when the code was typed since the page opened, every tap waits. A volunteer
-  whose earlier tap is still in the queue gets a line saying so ("We're still saving your
-  last check-in…") and nothing is saved for the new tap.
+  survive a reload or the iPad sleeping. They are lost if Safari closes or the iPad
+  restarts before they are sent (see Setting up the iPad). The tablet sends them one at
+  a time with a tap ID, so a save sent twice writes one row. When one has waited 10
+  seconds, the Checked In panel shows "Saving…" until the queue is empty; a normal save
+  lands before that. The stated time is the time of the tap, worked out on the server
+  from how long ago the tap was. These taps still wait for the server, as before: a
+  volunteer who shares a name and types phone digits, a changed arrival or check-out
+  time, a list that is too old or doesn't agree with the tap, a tablet clock more than a
+  minute off, a check-out close to a milestone or to the auto clock-out window, a
+  volunteer this tablet saved, or changed the arrival of, after its list was fetched, any
+  tap when the browser can't store the queue or lock it, and any tap when saves aren't
+  going through: the tablet is offline, the server hasn't answered in 2 minutes, a call
+  got no answer or has waited 10 seconds, or the oldest queued save was tapped over 30
+  seconds ago, has failed once, or has gone 10 seconds without being sent or answered.
+  Taps are instant only while saves are going through. Otherwise each tap waits for the
+  sheet as before and shows an error if it doesn't save. A save the server refused (on
+  the banner below) doesn't stop instant taps: the server answered it. A volunteer whose
+  earlier tap is still in the queue gets a line saying so ("We're still saving your last
+  check-in…") and nothing is saved for the new tap.
+- **What an instant tap can still lose**: an instant tap waits on the iPad until the
+  sheet answers, normally a few seconds. If the Wi-Fi stops answering without the iPad
+  noticing, the first tap after that and any tap in the next 10 seconds still show
+  success; their saves wait on the iPad for as long as the outage lasts, with "Saving…"
+  beside the name, and are sent when it ends. A save still waiting is lost if Safari
+  closes or the iPad restarts first. After that the kiosk asks for its access code, which
+  is the sign to check the Log. No tap is instant more than 2 minutes after the sheet
+  last answered.
 - **Unsaved taps banner**: if a save is refused or gives up, the welcome screen shows a
   banner naming the volunteer, the kind of tap and its time ("These didn't save. Please
   tell a board member."). A save still unsent after 10 minutes shows as "Not saved yet"
@@ -163,6 +179,9 @@ The kiosk writes these alerts here and nothing else:
 
 - `arrival differs by N min`, at check-in, when the stated arrival is more than "Arrival
   flag minutes" (Settings) from the tap.
+- `arrival differs by N min (changed at the kiosk from 9:14 AM)`, when a volunteer changes
+  their arrival on the check-out screen to a time more than "Arrival flag minutes" from
+  the check-in tap; 9:14 AM is the arrival it replaced (see Arrival time after check-in).
 - `check-out differs by N min`, at check-out, when the stated check-out is more than
   "Check-out flag minutes" (Settings) from the tap.
 - `long shift: 10.25 h stated, over 8 h`, at check-out, when the shift's stated hours are
@@ -266,7 +285,9 @@ today (for volunteers who share a name, the earliest of their arrivals): the pic
 times of today only, so Check Out uses the server's clock.
 
 The check-out screen says "You checked in at 9:45 PM.", or "You checked in yesterday at
-11:00 PM." after midnight, and shows "Your time so far".
+11:00 PM." after midnight, and shows "Your time so far". On a shift checked in today the
+line usually reads "You checked in at 9:45 PM · Change" (see Arrival time after
+check-in).
 
 The server refuses a check-out time that is:
 
@@ -308,6 +329,71 @@ a sign-out made the next morning that credits the whole night; a short overnight
 such as 11 PM to 2 AM, is not flagged. Fix a sign-out, Add a shift and the auto clock-out
 don't raise it: staff typed those times, and every auto clock-out is flagged anyway.
 
+## Arrival time after check-in
+
+A volunteer who tapped Check In without using "Forgot to check in earlier?" can still move
+their arrival earlier. The check-out screen, reached by tapping their name in the Checked
+In panel or in the search, says "You checked in at **9:14 AM** · **Change**". Change
+opens the arrival picker, labelled "What time did you arrive?", with **Save time** and
+**Go back** (which closes the picker and stays on the check-out screen).
+
+**When Change shows.** Only for a shift checked in today (Central time), whose row has a
+Shift ID and a check-in tap time the kiosk can read, and only while no phone step, picker
+or save is on screen. For a volunteer who shares a name and was asked for phone digits, it
+shows after the digits. It doesn't show for a shift checked in yesterday ("You checked in
+yesterday at 11:00 PM."), for a row typed by hand without a Shift ID or check-in time, or
+while a save of that volunteer is still queued on this tablet. Right after a check-in that
+waited for the server, and right after a Change, it shows again once the tablet's next
+list arrives, a few seconds later.
+
+**The picker's limits.** Times run from midnight to the check-in tap, rounded down to a
+quarter hour: an arrival can move earlier, or back later up to the tap (to undo a wrong
+"Forgot to check in earlier?" pick), never past it. The quick answers count back from now
+("2 hours ago"), and "Now" isn't offered. The picker opens at the current arrival, rounded
+down to a quarter hour. Save time
+with nothing moved closes the picker and changes nothing, so opening Change by mistake
+never rounds 9:14 down to 9:00. The server checks every rule again; the 15-minute steps are
+only the tablet's.
+
+**Saving.** A Change is saved at once and waits for the sheet: Save time shows the spinner
+and Go back is disabled, for up to 45 seconds. It is never queued, retried or sent
+offline. When it is saved the picker closes and the screen reads "You checked in at
+**8:30 AM**", with "Arrival time saved." under it. Keep Volunteering then goes home as
+usual; the new arrival is already on the sheet. A Check Out right after a Change waits for
+the server for a few seconds, until the tablet's next list arrives.
+
+What the tablet says when the server refuses:
+
+- after the check-in tap: "Your arrival can't be after you checked in. Please choose an
+  earlier time.";
+- another day or the future: the arrival picker's usual messages;
+- the shift or its arrival changed since the screen opened (staff edited it, or another tab
+  changed it): "Your check-in changed since this screen opened. Please go back and tap your
+  name again.";
+- the check-in tap time can't be read: "Please ask a board member to change your arrival
+  time.";
+- no longer checked in: "You're not checked in.", as for a check-out;
+- a phone refusal: the picker closes and the screen asks for the digits, as for a
+  check-out; after Continue, tap Change again;
+- the kiosk busy, a failed call or no answer in 45 seconds: "We couldn't save your arrival
+  time. Please try again." A retry is safe: the row ends up with one of the picks, never a
+  mix.
+
+**What it writes.** Check-In Stated becomes the new arrival. Check-In Recorded, the tap,
+never changes: the arrival flag, the auto clock-out window and the tablet's Checked In list
+all still run from it, so a volunteer who moves their arrival to 6:00 AM still leaves the
+list 12 hours after their 9:14 tap. Check-In Entered By stays `kiosk` and Status stays
+`open`. When the new arrival is more than "Arrival flag minutes" from the tap, the row gets
+`arrival differs by 44 min (changed at the kiosk from 9:14 AM)` in Admin Alerts?, added
+after what the cell holds, and one Flags row with Source `kiosk arrival change`. Within
+those minutes nothing is flagged, as a check-in with that arrival wouldn't be, and the old
+time leaves no trace on the sheet. An earlier arrival flag from the check-in stays.
+
+At check-out, Hours Served (stated), the milestone and the long-shift flag run from the new
+arrival, and so do the reports and the auto clock-out's guessed time. Under Hours requests
+on Auto, a flagged row is left out of automatic emails until staff tick its flag, as for
+any flag.
+
 ## Flags tab
 
 A flag is an alert the kiosk writes to Admin Alerts? on the Log: a stated arrival or
@@ -326,9 +412,9 @@ Log cell is written and a Flags row starts "tablet showed …" and says what the
 found. When the tablet showed a different missed-check-out notice or milestone than the
 server worked out, the row is written and the difference is a flag on it.
 
-Only the kiosk adds Flags rows, at check-in and at check-out, the auto clock-out, one per
-row it closes or skips, Import past hours, for names it couldn't match and for paper shifts
-on a day with a kiosk shift, and the Log check.
+Only the kiosk adds Flags rows: the tablet at check-in, at check-out and at an arrival
+Change, the auto clock-out, one per row it closes or skips, Import past hours, for names
+it couldn't match and for paper shifts on a day with a kiosk shift, and the Log check.
 Add a shift and Fix a sign-out add none: shifts added or closed
 with them carry the admin's initials in the Entered By columns and show in the `Kiosk:
 Admin-entered` filter view (see Reports). Editing the Log by hand adds no Flags row.
@@ -349,18 +435,18 @@ Each Flags header carries a hover note for staff, written the same way as the Lo
 where the cell's note is empty or still exactly one of the kiosk's own texts, so a note
 staff wrote or changed stays. The notes are also listed at the end of the How to tab.
 
-| Column | Header         | What it holds                                                               |
-| ------ | -------------- | --------------------------------------------------------------------------- |
-| A      | Date           | The Log row's Date.                                                         |
-| B      | Volunteer Name | The Log row's Volunteer Name.                                               |
-| C      | Shift ID       | The Log row's Shift ID: the sure way to find the row on the Log.            |
-| D      | Reason         | The alert, word for word as in Admin Alerts?.                               |
-| E      | Raised At      | The server's clock when the kiosk raised it.                                |
-| F      | Reviewed       | A tickbox. Tick it once you've looked at the flag.                          |
-| G      | Reviewed By    | Your initials.                                                              |
-| H      | Notes          | What you found or did.                                                      |
-| I      | Source         | `kiosk check-in`, `kiosk check-out`, `auto-close`, `import` or `log check`. |
-| J      | Log Row        | The Log row number then. A hint only: sorting the Log moves rows.           |
+| Column | Header         | What it holds                                                                                       |
+| ------ | -------------- | --------------------------------------------------------------------------------------------------- |
+| A      | Date           | The Log row's Date.                                                                                 |
+| B      | Volunteer Name | The Log row's Volunteer Name.                                                                       |
+| C      | Shift ID       | The Log row's Shift ID: the sure way to find the row on the Log.                                    |
+| D      | Reason         | The alert, word for word as in Admin Alerts?.                                                       |
+| E      | Raised At      | The server's clock when the kiosk raised it.                                                        |
+| F      | Reviewed       | A tickbox. Tick it once you've looked at the flag.                                                  |
+| G      | Reviewed By    | Your initials.                                                                                      |
+| H      | Notes          | What you found or did.                                                                              |
+| I      | Source         | `kiosk check-in`, `kiosk check-out`, `kiosk arrival change`, `auto-close`, `import` or `log check`. |
+| J      | Log Row        | The Log row number then. A hint only: sorting the Log moves rows.                                   |
 
 To review: open Data > Change view > `Flags: Unreviewed`. It shows the flags not yet
 ticked, newest first. Tick Reviewed, type your initials in Reviewed By, and add a note if
@@ -446,32 +532,32 @@ protection, so typing in it warns first. When the kiosk itself adds a missing ro
 example "Flags email last run" after someone deleted it), the row gets its sentence at
 once.
 
-| Setting                    | Default                         | What it does                                                                                                                                                                                                                                                                                            |
-| -------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Kiosk access code          | blank                           | The code a board member types on the tablet to open the kiosk: at least 16 letters (only letters count, and capitals are the same as small letters), and while it's blank or shorter no tablet can open.                                                                                                |
-| Volunteer Profiles file ID | blank                           | Which spreadsheet the volunteer list comes from, as the long ID in its link between /d/ and /edit; while it's blank, no volunteer can be found on the tablet or in the menu.                                                                                                                            |
-| Volunteer Profiles tab     | Volunteer Profiles              | The tab in that spreadsheet that holds the volunteer list; blank means a tab named Volunteer Profiles.                                                                                                                                                                                                  |
-| Kiosk launch date          | the day `setupSheets` first ran | The day the kiosk started, as yyyy-mm-dd: only volunteers who started on or after it get the first-shift welcome, and the nightly auto clock-out closes only shifts on or after it, so never leave it blank.                                                                                            |
-| Arrival flag minutes       | 15                              | How many minutes a volunteer's chosen arrival time can be from the moment they tapped in before the shift is flagged, as a number 0 or more; blank means 15.                                                                                                                                            |
-| Check-out flag minutes     | 15                              | How many minutes a volunteer's chosen check-out time can be from the moment they tapped out before the shift is flagged, as a number 0 or more; blank means 15.                                                                                                                                         |
-| Volunteer hour value       | blank                           | The dollar value of one volunteer hour, such as 34.79, used in the monthly report; while it's blank the report leaves the value out and says to set it here.                                                                                                                                            |
-| Profiles problems          | blank                           | Written by the kiosk: rows of Volunteer Profiles it had to leave out, and why (blank means none), so fix them in Volunteer Profiles, not here.                                                                                                                                                          |
-| Auto clock-out after hours | 12                              | How many hours after check-in a shift nobody checked out of stays open on the tablet before the nightly auto clock-out closes it, from 10 to 24; blank or anything else means 12.                                                                                                                       |
-| Auto clock-out last run    | blank                           | Written by the kiosk: when the nightly auto clock-out last ran and how many shifts it closed, so leave it alone.                                                                                                                                                                                        |
-| Long shift flag hours      | 8                               | A tablet check-out that credits more hours than this is flagged as a long shift, as a number above 0; blank or anything else means 8.                                                                                                                                                                   |
-| Flags email                | Off                             | Type On to send the weekly flags email; anything else, blank included, keeps it off.                                                                                                                                                                                                                    |
-| Flags email to             | blank                           | Who gets the weekly flags email, as one or more email addresses separated by commas, spaces or new lines; blank sends nothing.                                                                                                                                                                          |
-| Flags email day            | Monday                          | The weekday the weekly flags email goes out if there is anything to report, such as Monday or Mon; blank or anything else means Monday, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).                                                          |
-| Flags email hour           | 8                               | The hour, Central time, the weekly flags email goes out if there is anything to report, as a whole number from 0 to 23 (8 is 8 AM, 14 is 2 PM); blank or anything else means 8, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).                  |
-| Flags email last run       | blank                           | Written by the kiosk: when the weekly flags email last checked and whether it sent, had nothing to send or had no valid address to send to; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report.                  |
-| Daily jobs installed by    | blank                           | Written by the kiosk: the Google account that runs the nightly jobs and the weekly email, so leave it alone.                                                                                                                                                                                            |
-| Past hours file ID         | blank                           | The old hours spreadsheet that Kiosk admin > Import past hours… offers first; an import fills it in, and blank just means the window starts empty.                                                                                                                                                      |
-| Past hours tab             | Historical Hours                | The tab in that old hours spreadsheet that Import past hours… offers first; blank means Historical Hours.                                                                                                                                                                                               |
-| Kiosk contact              | blank                           | Who to ask when the kiosk or this sheet isn't working, such as a name and an email or phone: the How to tab shows it, and so does the Kiosk admin menu when something goes wrong; while it's blank, the How to tab says to ask whoever looks after the kiosk.                                           |
-| Hours email contact        | blank                           | Who volunteers should contact about their hours, such as a name and an email or phone: Kiosk admin > Email hours… ends every email with it, because nobody can reply to that email; while it's blank, no hours email can be sent.                                                                       |
-| Hours email signature      | blank                           | Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.                                                                                                                                                                           |
-| Hours requests             | Off                             | Whether volunteers can ask for their hours on the tablet: Off hides the Email me my hours button; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them about every 15 minutes, leaving out unchecked shifts, once a week at most; blank or anything else means Off. |
-| Hours requests last run    | blank                           | Written by the hours request job: when it was installed or removed, or a run last sent, held or failed; a run with nothing to do writes nothing, so an old time is normal. In Auto, a request still waiting a day later shows as overdue in Email hours…, which is how a stopped job shows.             |
+| Setting                    | Default                         | What it does                                                                                                                                                                                                                                                                                                 |
+| -------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Kiosk access code          | blank                           | The code a board member types on the tablet to open the kiosk: at least 16 letters (only letters count, and capitals are the same as small letters), and while it's blank or shorter no tablet can open.                                                                                                     |
+| Volunteer Profiles file ID | blank                           | Which spreadsheet the volunteer list comes from, as the long ID in its link between /d/ and /edit; while it's blank, no volunteer can be found on the tablet or in the menu.                                                                                                                                 |
+| Volunteer Profiles tab     | Volunteer Profiles              | The tab in that spreadsheet that holds the volunteer list; blank means a tab named Volunteer Profiles.                                                                                                                                                                                                       |
+| Kiosk launch date          | the day `setupSheets` first ran | The day the kiosk started, as yyyy-mm-dd: only volunteers who started on or after it get the first-shift welcome, and the nightly auto clock-out closes only shifts on or after it, so never leave it blank.                                                                                                 |
+| Arrival flag minutes       | 15                              | How many minutes a volunteer's chosen arrival time can be from the moment they tapped in before the shift is flagged, as a number 0 or more; blank means 15.                                                                                                                                                 |
+| Check-out flag minutes     | 15                              | How many minutes a volunteer's chosen check-out time can be from the moment they tapped out before the shift is flagged, as a number 0 or more; blank means 15.                                                                                                                                              |
+| Volunteer hour value       | blank                           | The dollar value of one volunteer hour, such as 34.79, used in the monthly report; while it's blank the report leaves the value out and says to set it here.                                                                                                                                                 |
+| Profiles problems          | blank                           | Written by the kiosk: rows of Volunteer Profiles it had to leave out, and why (blank means none), so fix them in Volunteer Profiles, not here.                                                                                                                                                               |
+| Auto clock-out after hours | 12                              | How many hours after check-in a shift nobody checked out of stays open on the tablet before the nightly auto clock-out closes it, from 10 to 24; blank or anything else means 12.                                                                                                                            |
+| Auto clock-out last run    | blank                           | Written by the kiosk: when the nightly auto clock-out last ran and how many shifts it closed, so leave it alone.                                                                                                                                                                                             |
+| Long shift flag hours      | 8                               | A tablet check-out that credits more hours than this is flagged as a long shift, as a number above 0; blank or anything else means 8.                                                                                                                                                                        |
+| Flags email                | Off                             | Type On to send the weekly flags email; anything else, blank included, keeps it off.                                                                                                                                                                                                                         |
+| Flags email to             | blank                           | Who gets the weekly flags email, as one or more email addresses separated by commas, spaces or new lines; blank sends nothing.                                                                                                                                                                               |
+| Flags email day            | Monday                          | The weekday the weekly flags email goes out if there is anything to report, such as Monday or Mon; blank or anything else means Monday, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).                                                               |
+| Flags email hour           | 8                               | The hour, Central time, the weekly flags email goes out if there is anything to report, as a whole number from 0 to 23 (8 is 8 AM, 14 is 2 PM); blank or anything else means 8, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).                       |
+| Flags email last run       | blank                           | Written by the kiosk: when the weekly flags email last checked and whether it sent, had nothing to send or had no valid address to send to; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report.                       |
+| Daily jobs installed by    | blank                           | Written by the kiosk: the Google account that runs the nightly jobs and the weekly email, so leave it alone.                                                                                                                                                                                                 |
+| Past hours file ID         | blank                           | The old hours spreadsheet that Kiosk admin > Import past hours… offers first; an import fills it in, and blank just means the window starts empty.                                                                                                                                                           |
+| Past hours tab             | Historical Hours                | The tab in that old hours spreadsheet that Import past hours… offers first; blank means Historical Hours.                                                                                                                                                                                                    |
+| Kiosk contact              | blank                           | Who to ask when the kiosk or this sheet isn't working, such as a name and an email or phone: the How to tab shows it, and so does the Kiosk admin menu when something goes wrong; while it's blank, the How to tab says to ask whoever looks after the kiosk.                                                |
+| Hours email contact        | blank                           | Who volunteers should contact about their hours, such as a name and an email or phone: Kiosk admin > Email hours… ends every email with it, because nobody can reply to that email; while it's blank, no hours email can be sent.                                                                            |
+| Hours email signature      | blank                           | Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.                                                                                                                                                                                |
+| Hours requests             | Off                             | Whether volunteers can ask for their hours on the tablet: Off hides the Request my hours link on the welcome screen; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them every 15 minutes, skipping unchecked shifts, at most weekly; blank or anything else means Off. |
+| Hours requests last run    | blank                           | Written by the hours request job: when it was installed or removed, or a run last sent, held or failed; a run with nothing to do writes nothing, so an old time is normal. In Auto, a request still waiting a day later shows as overdue in Email hours…, which is how a stopped job shows.                  |
 
 "Flags email to" also splits on semicolons; the sentence leaves that out to stay short.
 "Daily jobs installed by" is written by `setupDailyJobs`, and the two Past hours rows by an
@@ -507,13 +593,13 @@ trimmed and without empty ones, under "Thank you for volunteering."; blank adds 
 `setupSheets` adds both blank, last, on a sheet set up before them, and never changes a
 value typed there.
 
-"Hours requests" picks what the tablet's Email me my hours button does (see Hours
+"Hours requests" picks what the welcome screen's Request my hours link does (see Hours
 requests). It reads Off, Approve or Auto, trimmed and in any case; blank, On, a typo or
 anything else reads as Off, the safe reading of a mistake. **Off**, the default, hides the
-button. **Approve** shows it, and staff send each request with Kiosk admin > Email hours…
+link. **Approve** shows it, and staff send each request with Kiosk admin > Email hours…
 when they get to it. **Auto** shows it, and the hours request job emails requests by itself within the limits.
-A change applies as other settings do (below): the tablet shows or hides the button from
-its next list refresh, within 5 minutes, and the job reads the row at the start of each
+A change applies as other settings do (below): the tablet shows or hides the link from
+its next list refresh, within about 90 seconds, and the job reads the row at the start of each
 run. Open requests stay open across any change.
 
 "Hours requests last run" is written by the hours request job: "<time>, job installed by
@@ -727,7 +813,7 @@ It refuses, and says why, when:
 **Kiosk admin > Email hours…** emails volunteers their hours: one plain-text email each,
 with the hours for the month you choose, the year so far and all time. Tick who gets one,
 press Preview, read exactly what will go out and to which address, type your initials and
-press Send email. The tablet only records a request (Email me my hours); with Hours
+press Send email. The tablet only records a request (Request my hours); with Hours
 requests on Auto, the hours request job sends too (see Hours requests). No other job
 sends it.
 
@@ -938,30 +1024,38 @@ again.
 ### Hours requests
 
 Volunteers can ask for their hours on the tablet, and Settings "Hours requests" decides
-what happens next: Off (the default) hides the button, Approve leaves each request for
-staff to send from Email hours, and Auto lets the hours request job email it by itself.
+what happens next: Off (the default) hides the link, Approve leaves each request for staff
+to send from Email hours, and Auto lets the hours request job email it by itself.
 
-**The button.** With Approve or Auto, the check-in and check-out screens show **Email me
-my hours** under the time link. It is hidden while the phone digits, the time picker or a
-save is on screen, and for a volunteer who shares a name until they have typed their four
-digits (so a check-out that didn't ask for digits doesn't show it; they can ask at their
-next check-in). A tap checks nobody in or out. The button reads "Sending…", then a line
-takes its place:
+**The link.** With Approve or Auto, the welcome screen shows a small **Request my hours**
+link: on the iPad in landscape, in the row with the logo and the date under the name box;
+in portrait and on phones, under the name box. It opens the hours search: the welcome
+screen's name search, headed "Request my hours" and "Type your name, then tap it.", with a
+round Back button that goes home and no Checked In panel. A name two volunteers share asks
+for the last four digits of the phone first, with the check-in's words, Continue and Go
+back. Then the confirm screen reads "Your volunteer hours", "Hi, Sam!" and "We'll email
+your hours to the address we have on file.", with **Send** and **Go back** (home). Nothing
+on this path checks anyone in or out. Send reads "Sending…", Go back is disabled while it
+waits, and then a line takes the sentence's place:
 
 - recorded, or a request was already open: "Got it, Sam. Your hours will be emailed to
-  you. If nothing arrives in a few days, please ask a board member.";
+  you. If nothing arrives in a few days, please ask a board member.", with **Done**, which
+  goes home;
 - Hours requests is Off: "Emailing hours from the kiosk is turned off right now. Please
-  ask a board member.";
-- a phone or not-found refusal: its usual message, with the button back;
+  ask a board member.", with Done;
+- the phone digits missing or wrong: the phone step comes back with the message;
+- no phone number on file, or the volunteer not found: its usual message, with Send and
+  Go back;
 - the kiosk busy, a failed call or no answer in 30 seconds: "That didn't go through.
-  Please try again.", with the button back;
+  Please try again.", with Send and Go back;
 - a refused access code: the kiosk goes back to its setup screen, as for any call.
 
-No line names an email address or says whether there is one, whether the volunteer asked
-before, or whether a person or the job will send. The request is its own call, outside
-the save queue: it isn't queued or retried offline, and tapping Check In or Check Out
-first moves on and drops its answer. The kept volunteer list doesn't hold the setting,
-so after a reload the button shows once a fresh list arrives.
+Left alone for 90 seconds, the hours search and the confirm screen go home, and an answer
+that comes after is dropped. No line names an email address or says whether there is one,
+whether the volunteer asked before, or whether a person or the job will send. The request
+is its own call, outside the save queue: it isn't queued or retried offline. The kept
+volunteer list doesn't hold the setting, so after a reload the link shows once a fresh
+list arrives. The check-in, check-out and thank-you screens say nothing about hours.
 
 **The Hours requests tab.** The first request makes it in the Check-In Log, with a
 warning-only protection; `setupSheets` doesn't. Columns: Requested at, Volunteer Name,
@@ -1042,7 +1136,7 @@ Email hours as stopped part way, unticked, and in the weekly count.
 emailing them, both emails may go, to the volunteer's own address; the window's message
 line says so. A send that finished first answers the request, and the job sends nothing.
 Changing the mode keeps open requests: Auto to Approve stops the job at its next run and
-leaves the requests for Email hours; any mode to Off hides the button and leaves open
+leaves the requests for Email hours; any mode to Off hides the link and leaves open
 requests for staff; Approve to Auto lets the job send the waiting ones within the limits.
 A volunteer whose User Token changes after asking is held as not on the list: close it
 and send to the new entry.
@@ -1068,7 +1162,7 @@ open. Not caught:
 The email goes only to the address on the volunteer's own Profiles row; the tablet can't
 choose or see it. Someone tapping another volunteer's name can make ENCM email that
 volunteer their own hours, at most once a week automatically. Approve keeps a person in
-front of every send, and Off keeps the button away.
+front of every send, and Off keeps the link away.
 
 ### Import past hours
 
@@ -2036,19 +2130,42 @@ sample data, never at ENCM's real file.
 ### Setting up the iPad
 
 The kiosk is built for an iPad in landscape, in Safari. Google shows the kiosk page inside
-a frame from another Google address. With Safari's default privacy setting, Safari keeps
-that frame's stored data only for the session, so the iPad forgets the access code
-whenever the page reloads. To make the iPad remember it:
+a frame from another Google address, and Safari keeps that frame's stored data only while
+Safari is running. So the iPad keeps the access code through reloads, and usually through
+sleep, and asks for it again whenever Safari is closed or the iPad restarts. Turning
+Prevent Cross-Site Tracking on or off doesn't change this (seen on an iPad with Safari
+16.6, 2026-11-17). Keep the code where a board member can find it: it is the "Kiosk access
+code" row on the Settings tab of the Check-In Log.
 
-1. Open **Settings > Apps > Safari** (on iPadOS 17 and earlier, **Settings > Safari**)
-   and turn off **Prevent Cross-Site Tracking**. This switch covers all of Safari on the
-   iPad, so use an iPad kept for the kiosk.
-2. In Safari, use a normal tab, not a Private Browsing tab.
-3. Open the kiosk link and type the access code once.
-4. Reload the page. The kiosk should open without asking for the code again.
+1. In Safari, use a normal tab, not a Private Browsing tab. Keep one tab open.
+2. Open the kiosk link and type the access code once.
+3. Turn on Guided Access, which keeps Safari on screen so nobody closes it by accident.
+   These steps are taken from Apple's Guided Access page and have not yet been tried on
+   the kiosk iPad; menu names can differ on older iPadOS.
+   1. Open **Settings > Accessibility > Guided Access** and turn it on.
+   2. Tap **Passcode Settings > Set Guided Access Passcode** and choose a passcode. Keep it
+      where the board keeps the iPad's own passcode.
+   3. If Guided Access offers **Display Auto-Lock**, set it to **Never**; otherwise set
+      **Settings > Display & Brightness > Auto-Lock** to **Never**. Keep the iPad on its
+      charger, so volunteers find the kiosk awake.
+   4. Go back to Safari and the kiosk. Triple-click the top button (the Home button on an
+      iPad that has one); if a list of shortcuts appears, tap **Guided Access**. Tap
+      **Session Settings** (**Options** on older iPadOS). If **Software Keyboards**
+      (**Keyboards** on older iPadOS) is offered and shows off, turn it on: volunteers type
+      their names, and with it off the name box gets no keyboard. Then tap **Start**.
+4. To leave Guided Access (to update iPadOS, or change a setting), triple-click the same
+   button (Apple's page says to double-click it on iPadOS 18 or earlier), type the Guided
+   Access passcode, then tap **End**.
+5. Check it: tap Safari's reload button (the round arrow in the address bar). The kiosk
+   opens without asking for the code.
 
-If the kiosk ever asks for the code again after a long closure, type it once more. These
-steps have not yet been tried on ENCM's iPad; check step 4 when you set it up.
+If the kiosk asks for the code, Safari was closed or the iPad restarted. Type the code
+again, then start Guided Access again (step 3.4): it is off after a restart. Any tap still
+waiting to save when Safari closed is lost. Normally that is a tap in the few seconds
+before. If the Wi-Fi had stopped answering without the iPad noticing, it can be the first
+tap made after that and any tap in the 10 seconds after it, however long ago the outage
+began; the Checked In panel would have shown "Saving…" beside those names. Check the Log
+for that time and enter any missing shift with Add a shift.
 
 In landscape the welcome screen keeps the name box at the top of the screen, so the box and
 the names under it fit above the on-screen keyboard; while someone types, the Checked In
