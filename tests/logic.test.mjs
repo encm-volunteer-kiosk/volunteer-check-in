@@ -1342,6 +1342,7 @@ test("volunteerSummaries gives the arrival of an open row in the window and no p
       missedSignOut: true,
       openShiftId: "shift-3",
       openUntil: new Date(NOW - HOUR + WINDOW).toISOString(),
+      openShiftTapped: new Date(NOW - HOUR).toISOString(),
       checkOutMilestones: [{ fromMinutes: 0, id: null }],
     },
     {
@@ -1354,6 +1355,7 @@ test("volunteerSummaries gives the arrival of an open row in the window and no p
       missedSignOut: true,
       openShiftId: null,
       openUntil: null,
+      openShiftTapped: null,
       checkOutMilestones: null,
     },
   ]);
@@ -2520,6 +2522,11 @@ test("refusal gives each code its exact message", () => {
     NOT_IN: "You're not checked in.",
     ARRIVAL_FUTURE: "Your arrival time can't be in the future. Please choose an earlier time.",
     ARRIVAL_OTHER_DAY: "Please choose a time from today.",
+    ARRIVAL_AFTER_CHECK_IN:
+      "Your arrival can't be after you checked in. Please choose an earlier time.",
+    ARRIVAL_ROW_CHANGED:
+      "Your check-in changed since this screen opened. Please go back and tap your name again.",
+    ARRIVAL_UNCHANGEABLE: "Please ask a board member to change your arrival time.",
     PHONE_NEEDED: "Please enter the last four digits of your phone number.",
     PHONE_WRONG: "Those digits don't match our records. Please try again or see a board member.",
     PHONE_MISSING: "We need to confirm who you are. Please see a board member.",
@@ -4255,6 +4262,7 @@ test("volunteerSummaries on states carries exactly the listed fields and the not
     "missedSignOut",
     "openShiftId",
     "openUntil",
+    "openShiftTapped",
     "checkOutMilestones",
   ];
   listed.forEach((v, i) => {
@@ -4269,6 +4277,7 @@ test("volunteerSummaries on states carries exactly the listed fields and the not
   assert.equal(c.checkedIn, true);
   assert.equal(c.openShiftId, "s-5");
   assert.equal(c.openUntil, new Date(NOW - 2 * HOUR + WINDOW).toISOString());
+  assert.equal(c.openShiftTapped, new Date(NOW - 2 * HOUR).toISOString());
   // 49.5 hours closed: 50 hours comes 30 minutes into this shift.
   assert.deepEqual(c.checkOutMilestones, [
     { fromMinutes: 0, id: null },
@@ -4290,4 +4299,219 @@ test("volunteerSummaries on states carries exactly the listed fields and the not
 
 test("tapLogFields names the four Log headers a tapped decision reads from rows that aren't open", () => {
   assert.deepEqual(plain(L.tapLogFields()), [H.token, H.status, H.shiftId, H.outBy]);
+});
+
+// ---------------------------------------------------------------------------
+// Changing the arrival of an open shift
+
+const arrivalClockOf = (ms) => centralClock(new Date(ms));
+const arrivalDateOf = (ms) => centralDate(new Date(ms));
+/** decideArrivalChange on Sam's open row 9 (tapped and stated 8:00 AM), moved to 7:00 AM. */
+const change = (fields = {}) =>
+  plain(
+    L.decideArrivalChange({
+      volunteers: [VOL],
+      id: ID,
+      digits: null,
+      entries: [entry(9, {})],
+      todayDate: TODAY,
+      nowMs: NOW,
+      windowMs: WINDOW,
+      shiftId: "shift-9",
+      fromMs: NOW - 2 * HOUR,
+      arrivedMs: NOW - 3 * HOUR,
+      flagMinutes: 15,
+      dateOf: arrivalDateOf,
+      clockOf: arrivalClockOf,
+      ...fields,
+    }),
+  );
+const refusedWith = (fields) => change(fields).refusal;
+
+test("decideArrivalChange writes Check-In Stated and flags past the threshold with the old time", () => {
+  const out = change();
+  assert.equal(out.changed, true);
+  assert.equal(out.row, 9);
+  assert.equal(out.volunteer.id, ID);
+  assert.equal(out.arrivedMs, NOW - 3 * HOUR);
+  assert.equal(out.alert, "arrival differs by 60 min (changed at the kiosk from 8:00 AM)");
+  assert.deepEqual(out.cells, {
+    [H.statedIn]: NOW - 3 * HOUR,
+    [H.alerts]: "arrival differs by 60 min (changed at the kiosk from 8:00 AM)",
+  });
+  assert.ok(!(H.recordedIn in out.cells), "Check-In Recorded is never written");
+  assert.equal(L.flagSources().arrivalChange, "kiosk arrival change");
+});
+
+test("decideArrivalChange flags only past Arrival flag minutes, measured from the tap", () => {
+  // Tapped at 8:00 AM, stated 8:00 AM: 15 minutes earlier is at the threshold, 16 past it.
+  const at15 = change({ arrivedMs: NOW - 2 * HOUR - 15 * MIN });
+  assert.equal(at15.changed, true);
+  assert.equal(at15.alert, "");
+  assert.deepEqual(at15.cells, { [H.statedIn]: NOW - 2 * HOUR - 15 * MIN });
+  const at16 = change({ arrivedMs: NOW - 2 * HOUR - 16 * MIN });
+  assert.equal(at16.alert, "arrival differs by 16 min (changed at the kiosk from 8:00 AM)");
+  // A start stated earlier at check-in, moved back to the tap: no flag, since the tap is 0 off.
+  const back = change({
+    entries: [entry(9, { statedInMs: NOW - 3 * HOUR })],
+    fromMs: NOW - 3 * HOUR,
+    arrivedMs: NOW - 2 * HOUR,
+  });
+  assert.equal(back.changed, true);
+  assert.equal(back.alert, "");
+  assert.deepEqual(back.cells, { [H.statedIn]: NOW - 2 * HOUR });
+  // Moved from a stated 7:15 AM to 7:00 AM: the gap is from the tap (60 min), the old time 7:15.
+  const moved = change({
+    entries: [entry(9, { statedInMs: NOW - 2 * HOUR - 45 * MIN })],
+    fromMs: NOW - 2 * HOUR - 45 * MIN,
+  });
+  assert.equal(moved.alert, "arrival differs by 60 min (changed at the kiosk from 7:15 AM)");
+});
+
+test("decideArrivalChange keeps what Admin Alerts? held", () => {
+  const out = change({
+    entries: [entry(9, { alerts: "arrival differs by 30 min; staff: see note" })],
+  });
+  assert.equal(
+    out.cells[H.alerts],
+    "arrival differs by 30 min; staff: see note; arrival differs by 60 min (changed at the kiosk from 8:00 AM)",
+  );
+  // Nothing flagged: the cell isn't written at all.
+  const quiet = change({
+    entries: [entry(9, { alerts: "staff note" })],
+    arrivedMs: NOW - 2 * HOUR - 10 * MIN,
+  });
+  assert.deepEqual(Object.keys(quiet.cells), [H.statedIn]);
+});
+
+test("decideArrivalChange prints the old time in Central across a daylight-saving change", () => {
+  // 2026-11-01: Central goes from CDT (UTC-5) to CST (UTC-6) at 2:00 AM.
+  const now = Date.parse("2026-11-01T16:00:00Z"); // 10:00 AM CST
+  const tap = Date.parse("2026-11-01T06:30:00Z"); // 1:30 AM CDT
+  const stated = Date.parse("2026-11-01T05:45:00Z"); // 12:45 AM CDT
+  const out = change({
+    todayDate: "2026-11-01",
+    nowMs: now,
+    entries: [entry(9, { dateText: "2026-11-01", recordedInMs: tap, statedInMs: stated })],
+    fromMs: stated,
+    arrivedMs: Date.parse("2026-11-01T05:15:00Z"), // 12:15 AM CDT
+  });
+  assert.equal(out.alert, "arrival differs by 75 min (changed at the kiosk from 12:45 AM)");
+});
+
+test("decideArrivalChange refuses in its order", () => {
+  // 1. who it is, by the check-out's rule.
+  assert.equal(refusedWith({ id: "nobody" }), "NOT_FOUND");
+  assert.equal(refusedWith({ entries: [entry(9, { status: "closed" })] }), "NOT_IN");
+  // 2. no open row the tablet can check out: one out of the window is NOT_IN.
+  assert.equal(refusedWith({ entries: [entry(9, { recordedInMs: NOW - 13 * HOUR })] }), "NOT_IN");
+  // 3. another row than the screen showed, before an unreadable tap.
+  assert.equal(refusedWith({ shiftId: "shift-8" }), "ARRIVAL_ROW_CHANGED");
+  assert.equal(
+    refusedWith({ shiftId: "shift-8", entries: [entry(9, { recordedInMs: NaN })] }),
+    "ARRIVAL_ROW_CHANGED",
+  );
+  assert.equal(refusedWith({ shiftId: "" }), "ARRIVAL_ROW_CHANGED");
+  const long = "s".repeat(201);
+  assert.equal(
+    refusedWith({ shiftId: long, entries: [entry(9, { shiftId: long })] }),
+    "ARRIVAL_ROW_CHANGED",
+  );
+  // A Shift ID with spaces around it is the one the list gave (tapShiftId trims).
+  assert.equal(change({ entries: [entry(9, { shiftId: " shift-9 " })] }).changed, true);
+  // 4. Check-In Recorded unreadable, before the arrival is looked at.
+  assert.equal(
+    refusedWith({ entries: [entry(9, { recordedInMs: NaN })], arrivedMs: NaN }),
+    "ARRIVAL_UNCHANGEABLE",
+  );
+  // 5. the stated-time rule on Check-In Recorded's date, before the start is compared.
+  assert.equal(refusedWith({ arrivedMs: NaN }), "ARRIVAL_OTHER_DAY");
+  assert.equal(refusedWith({ arrivedMs: NOW - 11 * HOUR }), "ARRIVAL_OTHER_DAY");
+  assert.equal(refusedWith({ arrivedMs: NOW + 10 * MIN, fromMs: 0 }), "ARRIVAL_FUTURE");
+  // 6. later than the tap: a time just ahead is read as now, which is after the tap.
+  assert.equal(refusedWith({ arrivedMs: NOW - HOUR, fromMs: 0 }), "ARRIVAL_AFTER_CHECK_IN");
+  assert.equal(refusedWith({ arrivedMs: NOW + 3 * MIN }), "ARRIVAL_AFTER_CHECK_IN");
+  assert.equal(change({ arrivedMs: NOW - 2 * HOUR }).changed, false);
+  // 8. the start changed since the screen read it.
+  assert.equal(refusedWith({ fromMs: NOW - 2 * HOUR - MIN }), "ARRIVAL_ROW_CHANGED");
+  assert.equal(refusedWith({ fromMs: NaN }), "ARRIVAL_ROW_CHANGED");
+  assert.equal(change({ fromMs: NOW - 2 * HOUR + 999 }).changed, true, "the same second");
+});
+
+test("decideArrivalChange on an open row checked in before midnight holds the arrival to that date", () => {
+  const tap = Date.parse("2026-11-12T04:30:00Z"); // 10:30 PM Central on 2026-11-11
+  const entries = [entry(9, { dateText: "2026-11-11", recordedInMs: tap, statedInMs: tap })];
+  assert.equal(
+    refusedWith({ entries, fromMs: tap, arrivedMs: NOW - 3 * HOUR }),
+    "ARRIVAL_OTHER_DAY",
+  );
+  const earlier = change({ entries, fromMs: tap, arrivedMs: tap - HOUR });
+  assert.equal(earlier.changed, true);
+  assert.equal(earlier.alert, "arrival differs by 60 min (changed at the kiosk from 10:30 PM)");
+});
+
+test("decideArrivalChange answers the row's own start with changed false, even from a stale screen", () => {
+  const same = change({ arrivedMs: NOW - 2 * HOUR });
+  assert.deepEqual(Object.keys(same).sort(), ["arrivedMs", "changed", "open", "volunteer"]);
+  assert.equal(same.changed, false);
+  assert.equal(same.arrivedMs, NOW - 2 * HOUR);
+  // A retry of a pick whose first send was written: the start is the pick, fromMs the old one.
+  const retry = change({
+    entries: [entry(9, { statedInMs: NOW - 3 * HOUR })],
+    fromMs: NOW - 2 * HOUR,
+    arrivedMs: NOW - 3 * HOUR,
+  });
+  assert.equal(retry.changed, false);
+  // A different pick after that write: the start isn't the one the screen showed.
+  assert.equal(
+    refusedWith({
+      entries: [entry(9, { statedInMs: NOW - 3 * HOUR })],
+      fromMs: NOW - 2 * HOUR,
+      arrivedMs: NOW - 4 * HOUR,
+    }),
+    "ARRIVAL_ROW_CHANGED",
+  );
+  // An unreadable Check-In Stated: the start is Check-In Recorded.
+  const unread = change({ entries: [entry(9, { statedInMs: NaN })] });
+  assert.equal(unread.changed, true);
+  assert.equal(unread.alert, "arrival differs by 60 min (changed at the kiosk from 8:00 AM)");
+});
+
+test("decideArrivalChange for a shared name acts only on the row the screen showed", () => {
+  const twins = [TWIN, TWIN2];
+  const samIn = entry(9, {});
+  const otherIn = entry(10, { token: TWIN2.token });
+  const base = { volunteers: twins };
+  // No digits: acts when the tapped member is the only one of the name checked in.
+  assert.equal(change({ ...base, entries: [samIn] }).changed, true);
+  assert.equal(refusedWith({ ...base, entries: [otherIn] }), "PHONE_NEEDED");
+  assert.equal(refusedWith({ ...base, entries: [samIn, otherIn] }), "PHONE_NEEDED");
+  assert.equal(refusedWith({ ...base, entries: [] }), "NOT_IN");
+  // Digits: the tapped member's act on their row.
+  assert.equal(
+    change({ ...base, entries: [samIn, otherIn], digits: TWIN.phoneLast4 }).changed,
+    true,
+  );
+  // Digits that pick the other member, who is in too: that member's row isn't the one shown.
+  assert.equal(
+    refusedWith({ ...base, entries: [samIn, otherIn], digits: TWIN2.phoneLast4 }),
+    "ARRIVAL_ROW_CHANGED",
+  );
+  assert.equal(refusedWith({ ...base, entries: [samIn], digits: "9999" }), "PHONE_WRONG");
+});
+
+test("volunteerSummaries gives openShiftTapped for an open row, null for none or an unreadable tap", () => {
+  const vols = [VOL, { ...VOL, id: "id-2", token: "t-2" }, { ...VOL, id: "id-3", token: "t-3" }];
+  const entries = [
+    entry(2, { recordedInMs: NOW - HOUR, statedInMs: NOW - 2 * HOUR }),
+    entry(3, { token: "t-2", recordedInMs: NaN, statedInMs: NOW - HOUR }),
+    entry(4, { token: "t-3", status: "closed", statedHours: 1 }),
+  ];
+  const listed = plain(summaries(vols, entries, NOW, WINDOW, TODAY));
+  assert.equal(listed[0].openShiftTapped, new Date(NOW - HOUR).toISOString());
+  assert.equal(listed[0].openShiftArrival, new Date(NOW - 2 * HOUR).toISOString());
+  assert.equal(listed[1].checkedIn, true);
+  assert.equal(listed[1].openShiftTapped, null);
+  assert.equal(listed[2].checkedIn, false);
+  assert.equal(listed[2].openShiftTapped, null);
 });
