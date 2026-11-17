@@ -373,6 +373,10 @@ function server(opts = {}) {
     Object.defineProperty(sheet, "journal", { value: journal });
   };
   if (sheets["Hours emails"]) register("Hours emails", sheets["Hours emails"]);
+  if (opts.hoursRequests) {
+    sheets["Hours requests"] = new FakeSheet(opts.hoursRequests);
+    register("Hours requests", sheets["Hours requests"]);
+  }
   const shown = [];
   const menu = [];
   let uuid = 0;
@@ -530,6 +534,12 @@ function server(opts = {}) {
         },
         insertSheet: (name) => {
           if (faults.insertSheet && faults.insertSheet()) throw new Error("insertSheet failed");
+          // Another caller made the tab between this caller's look and its insertSheet.
+          if (faults.insertRace && faults.insertRace(name)) {
+            sheets[name] = new FakeSheet([]);
+            register(name, sheets[name]);
+            throw new Error("A sheet with the name \"" + name + "\" already exists.");
+          }
           assert.ok(!sheets[name], "a second tab named " + name);
           journal.push("write " + name + " insertSheet");
           sheets[name] = new FakeSheet([]);
@@ -1906,6 +1916,7 @@ test("a wrong code refuses after one Settings read, before the lock", () => {
     (s) => s.ctx.apiCheckOut(WRONG_CODE, SAM.id, null, null),
     (s) => s.ctx.apiListVolunteers(WRONG_CODE),
     (s) => s.ctx.apiCheckAccess(WRONG_CODE),
+    (s) => s.ctx.apiRequestHours(WRONG_CODE, SAM.id, null),
   ];
   for (const call of calls) {
     const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
@@ -1937,6 +1948,158 @@ test("the Log table read gives no entries on a header-only Log and throws the mi
   assert.deepEqual(valueReads(empty.sheets.Log), ["getValues 1,1,1,1"]);
   assert.throws(() => empty.ctx.apiCheckIn(CODE, SAM.id, null, null), missing);
   assert.throws(() => empty.ctx.apiCheckOut(CODE, SAM.id, null, null), missing);
+});
+
+// ---------------------------------------------------------------------------
+// Hours requests from the tablet
+
+const REQUEST_HEADER = [
+  "Requested at",
+  "Volunteer Name",
+  "Volunteer ID",
+  "Mode",
+  "Status",
+  "Reason",
+  "Done at",
+  "Done by",
+  "Send ID",
+];
+const requestKiosk = (mode, opts = {}) =>
+  kiosk({ settings: KIOSK_SETTINGS.concat([["Hours requests", mode]]), ...opts });
+const requestRows = (s) => {
+  const sheet = s.sheets["Hours requests"];
+  const out = [];
+  for (let r = 2; sheet && r <= sheet.lastRow(); r++) out.push(sheet.rowByHeader(r));
+  return out;
+};
+
+test("apiRequestHours in Off refuses, makes no tab and takes no lock", () => {
+  for (const mode of ["Off", "", "On"]) {
+    const s = requestKiosk(mode);
+    const reply = plain(s.ctx.apiRequestHours(CODE, SAM.id, null));
+    assert.equal(reply.refusal, "HOURS_REQUESTS_OFF", mode);
+    assert.equal(
+      reply.message,
+      "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
+    );
+    assert.equal(s.sheets["Hours requests"], undefined);
+    assert.ok(!s.calls.includes("LockService.getScriptLock"));
+  }
+});
+
+test("apiRequestHours records one waiting row, makes the tab, and a repeat writes nothing", () => {
+  const s = requestKiosk("Approve");
+  assert.deepEqual(plain(s.ctx.apiRequestHours(CODE, SAM.id, null)), { ok: true });
+  const sheet = s.sheets["Hours requests"];
+  assert.deepEqual(sheet.rows[0], REQUEST_HEADER);
+  assert.equal(sheet.frozenRows, 1);
+  assert.deepEqual(
+    sheet.protections.map((p) => p.state),
+    [
+      {
+        description:
+          "Hours requests: written by the kiosk tablet, Kiosk admin > Email hours… and the hours request job. To close a request, type closed in Status; otherwise edit only to fix a mistake.",
+        warningOnly: true,
+      },
+    ],
+  );
+  const rows = requestRows(s);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]["Requested at"].getTime(), NOW);
+  assert.deepEqual(
+    { ...rows[0], "Requested at": "t" },
+    {
+      "Requested at": "t",
+      "Volunteer Name": "Sam Lee",
+      "Volunteer ID": SAM.id,
+      Mode: "Approve",
+      Status: "waiting",
+      Reason: "",
+      "Done at": "",
+      "Done by": "",
+      "Send ID": "",
+    },
+  );
+  // Nothing about Sam reaches the tablet; no Log, Flags or Profiles read; one lock.
+  assert.deepEqual(s.sheets.Log.reads, []);
+  assert.deepEqual(s.sheets.Flags.reads, []);
+  assert.ok(!s.calls.includes("SpreadsheetApp.openById"), "no Email cell read");
+  assert.equal(s.lock.takes, 1);
+
+  // A repeat, while the request is open in any case: the same reply, no row.
+  sheet.put(2, 5, "Held");
+  assert.deepEqual(plain(s.ctx.apiRequestHours(CODE, SAM.id, null)), { ok: true });
+  assert.equal(requestRows(s).length, 1);
+  // Once it is sent or closed, a new request is a new row, with the mode now.
+  sheet.put(2, 5, "sent");
+  const auto = requestKiosk("auto", { hoursRequests: sheet.rows.map((r) => r.slice()) });
+  assert.deepEqual(plain(auto.ctx.apiRequestHours(CODE, SAM.id, null)), { ok: true });
+  const after = requestRows(auto);
+  assert.equal(after.length, 2);
+  assert.equal(after[1].Mode, "Auto");
+  assert.equal(after[1].Status, "waiting");
+});
+
+test("apiRequestHours makes the tab before the lock and touches no other tab", () => {
+  const s = requestKiosk("Approve");
+  const heldAtInsert = [];
+  s.faults.insertSheet = () => (heldAtInsert.push(s.lock.held), false);
+  s.ctx.apiRequestHours(CODE, SAM.id, null);
+  assert.deepEqual(heldAtInsert, [false]);
+  const touched = new Set(
+    s.journal
+      .filter((j) => /^(read|write) /.test(j))
+      .map((j) => j.replace(/^(read|write) /, "").split(" getSheetByName")[0].split(" ")[0]),
+  );
+  assert.deepEqual([...touched].filter((t) => t !== "Hours" && t !== "Settings"), []);
+});
+
+test("apiRequestHours refuses who the check-in rule refuses, with no Flags row and no tab", () => {
+  const twin = { ...SAM, id: "cccccccccccccccc", needsPhoneCheck: true, phoneLast4: "0202" };
+  const same = { ...SAM, needsPhoneCheck: true, phoneLast4: "0131" };
+  const s = requestKiosk("Auto", { volunteers: [same, twin] });
+  assert.equal(plain(s.ctx.apiRequestHours(CODE, "nobody", null)).refusal, "NOT_FOUND");
+  assert.equal(plain(s.ctx.apiRequestHours(CODE, SAM.id, null)).refusal, "PHONE_NEEDED");
+  assert.equal(plain(s.ctx.apiRequestHours(CODE, SAM.id, "9999")).refusal, "PHONE_WRONG");
+  assert.equal(s.sheets["Hours requests"], undefined);
+  assert.equal(s.sheets.Flags.lastRow(), 1);
+  // The twin's digits on Sam's entry: the request is the twin's.
+  assert.deepEqual(plain(s.ctx.apiRequestHours(CODE, SAM.id, "0202")), { ok: true });
+  assert.equal(requestRows(s)[0]["Volunteer ID"], twin.id);
+});
+
+test("apiRequestHours takes the tab another caller made between its look and its insertSheet", () => {
+  const s = requestKiosk("Approve");
+  s.faults.insertRace = (name) => name === "Hours requests";
+  assert.deepEqual(plain(s.ctx.apiRequestHours(CODE, SAM.id, null)), { ok: true });
+  assert.deepEqual(s.sheets["Hours requests"].rows[0], REQUEST_HEADER);
+  assert.equal(requestRows(s).length, 1);
+  // Any other insertSheet error is thrown.
+  const broken = requestKiosk("Approve");
+  broken.faults.insertSheet = () => true;
+  assert.throws(() => broken.ctx.apiRequestHours(CODE, SAM.id, null), /insertSheet failed/);
+});
+
+test("apiRequestHours throws naming the tab when its header is broken", () => {
+  const s = requestKiosk("Approve", { hoursRequests: [REQUEST_HEADER.slice(1)] });
+  assert.throws(
+    () => s.ctx.apiRequestHours(CODE, SAM.id, null),
+    /The Hours requests tab needs exactly one "Requested at" column/,
+  );
+});
+
+test("the list says whether the button shows, and never the mode", () => {
+  for (const [mode, on] of [
+    ["Approve", true],
+    ["AUTO", true],
+    ["Off", false],
+    ["", false],
+  ]) {
+    const reply = plain(requestKiosk(mode).ctx.apiListVolunteers(CODE));
+    assert.equal(reply.hoursRequests, on, mode);
+    assert.equal(JSON.stringify(reply).includes(mode || "\u0000"), false);
+  }
+  assert.equal(plain(kiosk({}).ctx.apiListVolunteers(CODE)).hoursRequests, false);
 });
 
 // ---------------------------------------------------------------------------
@@ -5003,7 +5166,11 @@ const LOG_WRITE_CLASSES = {
   adminRemoveShift: { class: "tab", tab: "removedTabName()", in: "removedSheet_" },
   adminRestoreShift: { class: "tab", tab: "removedTabName()", in: "removedSheet_" },
   hoursEmailSheet_: { class: "tab", tab: "hoursEmailTab()" },
-  appendHoursEmailRows_: { class: "tab", tab: "hoursEmailTab()", in: "hoursEmailSheet_" },
+  hoursRequestSheet_: { class: "tab", tab: "hoursRequestTab()" },
+  // The two writers below are handed a sheet: only the Hours emails tab (from
+  // hoursEmailSheet_) or the Hours requests tab (from hoursRequestSheet_), never the Log.
+  appendKindRows_: { class: "tab", tab: "hoursRequestTab()", in: "hoursRequestSheet_" },
+  writeRowCells_: { class: "tab", tab: "hoursRequestTab()", in: "hoursRequestSheet_" },
   setupHowTo_: { class: "tab", tab: "howToTabName()" },
   setupSampleProfiles: {
     class: "tab",

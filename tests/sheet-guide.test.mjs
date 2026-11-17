@@ -534,16 +534,16 @@ const PREFIX = "If the kiosk or this sheet isn't working and this tab doesn't he
 test("Kiosk contact is the last Settings row before the hours email rows, blank by default, with its sentence", () => {
   const rows = plain(L.settingsDefaults("2026-11-13"));
   assert.equal(L.kioskContactSetting(), "Kiosk contact");
-  assert.deepEqual(rows[rows.length - 3], ["Kiosk contact", ""]);
+  assert.deepEqual(rows[rows.length - 5], ["Kiosk contact", ""]);
   assert.equal(rows.filter((r) => r[0] === "Kiosk contact").length, 1);
   assert.equal(plain(L.settingsDescriptions())["Kiosk contact"], CONTACT_SENTENCE);
 });
 
-test("the two hours email rows are the last two Settings rows, blank by default, with their sentences", () => {
+test("the two hours email rows come before the hours request rows, blank by default, with their sentences", () => {
   const rows = plain(L.settingsDefaults("2026-11-13"));
   assert.equal(L.hoursEmailContactSetting(), "Hours email contact");
   assert.equal(L.hoursEmailSignatureSetting(), "Hours email signature");
-  assert.deepEqual(rows.slice(-2), [
+  assert.deepEqual(rows.slice(-4, -2), [
     ["Hours email contact", ""],
     ["Hours email signature", ""],
   ]);
@@ -556,6 +556,26 @@ test("the two hours email rows are the last two Settings rows, blank by default,
     d["Hours email signature"],
     'Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.',
   );
+});
+
+test("the two hours request rows are the last two Settings rows, Off and blank, with their sentences", () => {
+  const rows = plain(L.settingsDefaults("2026-11-13"));
+  assert.equal(L.hoursRequestsSetting(), "Hours requests");
+  assert.equal(L.hoursRequestsLastRunSetting(), "Hours requests last run");
+  assert.deepEqual(rows.slice(-2), [
+    ["Hours requests", "Off"],
+    ["Hours requests last run", ""],
+  ]);
+  const d = plain(L.settingsDescriptions());
+  assert.equal(
+    d["Hours requests"],
+    "Whether volunteers can ask for their hours on the tablet: Off hides the Email me my hours button; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them about every 15 minutes, leaving out unchecked shifts, once a week at most; blank or anything else means Off.",
+  );
+  // The last-run row says only what it can show: idle runs write nothing.
+  assert.match(d["Hours requests last run"], /^Written by the hours request job: /);
+  assert.match(d["Hours requests last run"], /a run with nothing to do writes nothing, so an old time is normal/);
+  assert.match(d["Hours requests last run"], /overdue/);
+  assert.equal(/no run yet/.test(d["Hours requests last run"]), false);
 });
 
 test("How to has the Email hours steps, after the hours report", () => {

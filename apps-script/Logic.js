@@ -137,6 +137,8 @@ function settingsDefaults(todayDate) {
     [kioskContactSetting(), ""],
     [hoursEmailContactSetting(), ""],
     [hoursEmailSignatureSetting(), ""],
+    [hoursRequestsSetting(), "Off"],
+    [hoursRequestsLastRunSetting(), ""],
   );
   return rows;
 }
@@ -198,6 +200,10 @@ function settingsDescriptions() {
       "Who volunteers should contact about their hours, such as a name and an email or phone: Kiosk admin > Email hours… ends every email with it, because nobody can reply to that email; while it's blank, no hours email can be sent.",
     [hoursEmailSignatureSetting()]:
       'Lines added under "Thank you for volunteering." in Kiosk admin > Email hours…, such as a name and a role; blank adds nothing.',
+    [hoursRequestsSetting()]:
+      "Whether volunteers can ask for their hours on the tablet: Off hides the Email me my hours button; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them about every 15 minutes, leaving out unchecked shifts, once a week at most; blank or anything else means Off.",
+    [hoursRequestsLastRunSetting()]:
+      "Written by the hours request job: when it was installed or removed, or a run last sent, held or failed; a run with nothing to do writes nothing, so an old time is normal. In Auto, a request still waiting a day later shows as overdue in Email hours…, which is how a stopped job shows.",
   };
 }
 
@@ -318,6 +324,8 @@ function refusalMessages() {
       "This row has a value in a column the Log doesn't have exactly once, or whose header is blank or repeated, so it can't go back without losing that value. Give the Log one column with that header first.",
     HOURS_EMAIL_STALE: "This preview has expired or was already sent. Press Preview again.",
     HOURS_EMAIL_TOO_MANY: "Too many volunteers in one send. Press Preview again.",
+    HOURS_REQUESTS_OFF:
+      "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
   };
 }
 
