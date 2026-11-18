@@ -1854,8 +1854,9 @@ export default function App() {
           if (!isCurrent()) return;
           // A refusal applies nothing, so an older call's list still out can land after it.
           if (isRefusal(reply)) {
-            if (reply.refusal === "ACCESS") lockKiosk(reply.message);
-            else failed();
+            if (reply.refusal === "ACCESS" || reply.refusal === "ZONE_NOT_SET") {
+              lockKiosk(reply.message);
+            } else failed();
             return;
           }
           listApplied.current = seq;

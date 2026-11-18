@@ -54,11 +54,14 @@
  * (ensureLogChangeTrigger_) and says in its log line whether it kept, installed or failed
  * to install it. Then it logs how many open rows the auto clock-out would close if it ran
  * now, since a first run may close a backlog. Running it again replaces this account's
- * triggers, so one account never has two copies. Runs only from the Apps Script editor.
+ * triggers, so one account never has two copies. While the Settings Time zone row is blank
+ * or isn't a time zone it changes nothing and throws the staff step (requireKioskZone_).
+ * Runs only from the Apps Script editor.
  */
 function setupDailyJobs() {
   requireEditorRun_();
-  readSettings_(); // The Settings tab must be there before any trigger changes.
+  // The Settings tab and a time zone must be there before any trigger changes.
+  requireKioskZone_();
   const removed = deleteJobTriggers_();
   const jobs = dailyJobs();
   jobs.forEach(createJobTrigger_);
@@ -111,6 +114,10 @@ function removeDailyJobs() {
 
 // ---------------------------------------------------------------------------
 // Trigger handlers
+//
+// Each handler, once its trigger is checked and any lock it takes is held, stops with the
+// staff step while the Settings Time zone row is blank or isn't a time zone
+// (requireKioskZone_), so the owner gets Google's failure email saying what to do.
 
 /**
  * The weekly flags email, run every hour by its trigger. Under the script lock: stops
@@ -130,6 +137,7 @@ function runFlagsEmail(e) {
     return;
   }
   try {
+    requireKioskZone_();
     sendFlagsEmailIfDue_(new Date());
   } finally {
     lock.releaseLock();
@@ -151,6 +159,7 @@ function runAutoClockOut(e) {
     throw new Error("Auto clock-out: the script lock was busy; tomorrow's run will catch up.");
   }
   try {
+    requireKioskZone_();
     autoClockOut_(new Date());
   } finally {
     lock.releaseLock();
@@ -179,6 +188,7 @@ function runAutoClockOut(e) {
 function runHoursRefresh(e) {
   requireEditorRun_();
   requireTriggerRun_(e, "runHoursRefresh");
+  requireKioskZone_();
   const hold = hoursHold_();
   const out = {};
   let hoursError = null;
@@ -214,6 +224,7 @@ function runHoursRefresh(e) {
 function runHoursRequests(e) {
   requireEditorRun_();
   requireTriggerRun_(e, "runHoursRequests");
+  requireKioskZone_();
   hoursRequestRun_(new Date());
 }
 

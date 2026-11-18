@@ -12,10 +12,6 @@
 // ---------------------------------------------------------------------------
 // Constants
 
-function kioskTimeZone() {
-  return "America/Chicago";
-}
-
 /** A Settings access code shorter than this, after normalizeCode, counts as not set. */
 function minCodeLetters() {
   return 16;
@@ -149,6 +145,7 @@ function settingsDefaults(todayDate) {
     [hoursRequestsLastRunSetting(), ""],
   );
   rows.push(...generalSettingsDefaults());
+  rows.push(...timeZoneSettingsDefaults());
   // A row the brand gives its own default (Brand.js) gets that value instead.
   const brand = brandSettingsDefaults();
   return rows.map(([name, value]) => [
@@ -219,6 +216,7 @@ function settingsDescriptions() {
     [hoursRequestsLastRunSetting()]:
       "Written by the hours request job: when it was installed or removed, or a run last sent, held or failed; a run with nothing to do writes nothing, so an old time is normal. In Auto, a request still waiting a day later shows as overdue in Email hours…, which is how a stopped job shows.",
     ...generalSettingsDescriptions(),
+    ...timeZoneSettingsDescriptions(),
   };
 }
 
@@ -383,6 +381,120 @@ function generalSettingsDescriptions() {
     [switches.checkOutChanges]:
       "On lets a volunteer choose an earlier check-out time on the tablet; Off hides it, so staff change it; blank or anything else means On.",
   };
+}
+
+// ---------------------------------------------------------------------------
+// Time zone
+//
+// The Time zone row holds an IANA name such as America/Chicago. The kiosk works on it
+// whenever it is a time zone, whatever the spreadsheet's own zone; it stops only while
+// the row is blank or isn't one. setupSheets sets the spreadsheet's zone and the daily
+// jobs from it. While the two zones differ, the kiosk writes the Time zone problem row
+// and the weekly flags email says so; nothing goes on a shift.
+
+function timeZoneSetting() {
+  return "Time zone";
+}
+
+function timeZoneProblemSetting() {
+  return "Time zone problem";
+}
+
+/** The Time zone row's code default: the zone the kiosk ran on before the row existed. */
+function defaultTimeZone() {
+  return "America/Chicago";
+}
+
+/** The time zone rows setupSheets adds when missing, after the general settings rows. */
+function timeZoneSettingsDefaults() {
+  return [
+    [timeZoneSetting(), defaultTimeZone()],
+    [timeZoneProblemSetting(), ""],
+  ];
+}
+
+/** The What it does sentence of each time zone row. */
+function timeZoneSettingsDescriptions() {
+  return {
+    [timeZoneSetting()]:
+      "The kiosk's time zone, as a name such as America/Chicago or Europe/London: every time it records, shows and emails is in it. While it's blank or not a time zone name the tablet stops; after a change, the kiosk's tabs must be set up again so this spreadsheet and the nightly jobs follow it.",
+    [timeZoneProblemSetting()]:
+      "Written by the kiosk: says when the Time zone row and the spreadsheet's own time zone differ, and how to fix it (blank means they match), so fix the Time zone row or set up the kiosk's tabs again, not this one.",
+  };
+}
+
+/** What staff are told while the Time zone row is blank or isn't a time zone. */
+function timeZoneStepMessage() {
+  return "Type your time zone in Settings, then run setupSheets.";
+}
+
+// Each name parseTimeZone has read in this run, and what it read it as.
+const TIME_ZONE_NAMES = {};
+
+/**
+ * A Time zone cell as the IANA name the kiosk computes in, or "" when it is blank or not a
+ * time zone. The name is the one Intl gives the cell's text, so a name typed in the wrong
+ * capitals reads as its proper spelling, and an alias as the zone it names. Text that
+ * isn't shaped as a zone name (an offset such as +05:30, spaces) is "". Without an Intl
+ * that knows time zones, a name of the right shape is taken as typed.
+ */
+function parseTimeZone(text) {
+  const typed = cellString(text);
+  if (Object.prototype.hasOwnProperty.call(TIME_ZONE_NAMES, typed)) return TIME_ZONE_NAMES[typed];
+  const shaped = /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)*$/.test(typed);
+  const zone = shaped ? intlZoneName(typed) : "";
+  TIME_ZONE_NAMES[typed] = zone;
+  return zone;
+}
+
+/**
+ * The name Intl gives a zone name, or "" when Intl refuses it. When Intl is missing, or
+ * refuses UTC as well, it can't tell a zone, and the name is kept as given; so is a name
+ * Intl takes without saying what it read it as.
+ */
+function intlZoneName(name) {
+  const make = (zone) => new Intl.DateTimeFormat("en-US", { timeZone: zone });
+  if (typeof Intl === "undefined" || !Intl || typeof Intl.DateTimeFormat !== "function") {
+    return name;
+  }
+  let format;
+  try {
+    format = make(name);
+  } catch (e) {
+    try {
+      make("UTC");
+    } catch (e2) {
+      return name;
+    }
+    return "";
+  }
+  let read = "";
+  try {
+    read = format.resolvedOptions().timeZone;
+  } catch (e) {
+    read = "";
+  }
+  return typeof read === "string" && read ? read : name;
+}
+
+/**
+ * The Time zone row's text in settings, trimmed. A missing row reads as the brand's
+ * default for it (brandSettingsDefaults, Brand.js), else the code's: never the
+ * spreadsheet's zone, so a spreadsheet zone that drifted shows as a problem instead of
+ * moving the kiosk.
+ */
+function timeZoneRowText(settings) {
+  const s = settings || {};
+  const name = timeZoneSetting();
+  if (Object.prototype.hasOwnProperty.call(s, name)) return cellString(s[name]);
+  const brand = brandSettingsDefaults();
+  if (Object.prototype.hasOwnProperty.call(brand, name)) return cellString(brand[name]);
+  return defaultTimeZone();
+}
+
+/** The kiosk's zone in settings (timeZoneRowText, parseTimeZone), or "" while it has none. */
+function kioskZoneOf(settings) {
+  return parseTimeZone(timeZoneRowText(settings));
 }
 
 /**
@@ -703,6 +815,16 @@ let settingsInUse = null;
 /** Keeps Settings just read for this run (wordsInUse, flagsEmailSenderName). */
 function useSettings(settings) {
   settingsInUse = settings || null;
+}
+
+/** True once this run has read Settings (useSettings). */
+function settingsAreInUse() {
+  return settingsInUse !== null;
+}
+
+/** The time zone of the Settings this run read last (kioskZoneOf), or "" while it has none. */
+function zoneInUse() {
+  return kioskZoneOf(settingsInUse);
 }
 
 /** The words of the Settings this run read last, or the default words. */
@@ -1046,6 +1168,7 @@ function refusalMessages() {
     CHECKOUT_CHANGES_OFF: "Please ask a board member to change your check-out time.",
     EMAIL_HOURS_OFF:
       "Email hours is turned off in Settings. Set the Email hours row to On to use it.",
+    ZONE_NOT_SET: "This kiosk isn't set up yet. Please see a board member.",
     IMPORT_OFF:
       "Import past hours is turned off in Settings. Set the Import past hours row to On to use it.",
   };
@@ -5361,6 +5484,11 @@ function removeFlagMatches(flag, only) {
 
 // ---------------------------------------------------------------------------
 // Refusals
+
+/** ZONE_NOT_SET while settings have no time zone (kioskZoneOf), else null. */
+function zoneRefusal(settings) {
+  return kioskZoneOf(settings) ? null : refusal("ZONE_NOT_SET");
+}
 
 /** {ok: false, refusal, message} for a refusal code. */
 function refusal(code) {
@@ -11466,6 +11594,21 @@ function howToSections(words) {
         ),
         text(
           "Each volunteer needs a User Token that never changes, because the Log finds their shifts by it. Kiosk admin > Fill in missing IDs gives every row with a name and no token a random one, and never changes a token already there. It shows in the menu only while Volunteer Profiles file ID is blank.",
+        ),
+      ],
+    },
+    {
+      title: "Set the time zone",
+      lines: [
+        text(
+          "The Time zone row on the Settings tab holds the kiosk's time zone, as a name such as America/Chicago or Europe/London. Every date and time the kiosk records, shows and emails is in it. While it's blank or not a time zone name the tablet says the kiosk isn't set up, and the Kiosk admin windows and the nightly jobs stop.",
+        ),
+        step("1. Type the time zone's name in the Value of Time zone."),
+        step(
+          "2. Ask whoever looks after the kiosk to set up the kiosk's tabs again, as after an update. That sets the spreadsheet's own time zone (File > Settings) to match, and the nightly jobs' hours with it.",
+        ),
+        tip(
+          "While the Time zone row and the spreadsheet's own time zone differ, times on this sheet show off by the difference and times you type are read wrong, so the kiosk says so in Time zone problem and in the weekly flags email until the tabs are set up again.",
         ),
       ],
     },

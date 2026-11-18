@@ -415,6 +415,8 @@ test("outcomeOf for each code, kind, a throw and a replay", () => {
   assert.equal(outcomeOf("in", refusal("NOT_IN")), "refused");
   assert.equal(outcomeOf("in", refusal("BUSY")), "retry");
   assert.equal(outcomeOf("in", refusal("ACCESS")), "lock");
+  // A kiosk with no time zone keeps the save, as a refused code does.
+  assert.equal(outcomeOf("out", refusal("ZONE_NOT_SET")), "lock");
   assert.equal(outcomeOf("in", refusal("TAP_UNREADABLE")), "refused");
   assert.equal(outcomeOf("out", refusal("NOT_FOUND")), "refused");
   assert.equal(outcomeOf("in", refusal("ARRIVAL_OTHER_DAY")), "refused");

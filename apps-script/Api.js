@@ -84,7 +84,7 @@ function doGet() {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
 }
 
-/** {ok: true} or ACCESS. */
+/** {ok: true}, ACCESS or ZONE_NOT_SET. */
 function apiCheckAccess(code) {
   return accessRefusal_(code, refreshSettingsCache_()) || { ok: true };
 }
@@ -714,21 +714,23 @@ function fillLogMap_(run) {
 }
 
 /**
- * The ACCESS refusal, or null when the code is right. settings are the Settings the call
- * already read; without them this reads Settings itself. Runs before any lock is taken, so
- * calls without the code never hold the lock or make the tablet's call return BUSY.
- * A refused code waits one second. There is no lockout: a lockout would let anyone with
- * the link lock the real tablet out.
+ * The ACCESS refusal, then ZONE_NOT_SET while the Time zone row is blank or isn't a time
+ * zone (zoneRefusal, Logic.js), or null when the code is right and the kiosk has a zone.
+ * settings are the Settings the call already read; without them this reads Settings
+ * itself. Runs before any lock is taken, so calls without the code never hold the lock or
+ * make the tablet's call return BUSY. A refused code waits one second. There is no
+ * lockout: a lockout would let anyone with the link lock the real tablet out.
  */
 function accessRefusal_(code, settings) {
-  const stored = (settings || readSettings_())["Kiosk access code"];
-  if (!checkAccessCode(code, stored)) return null;
+  const s = settings || readSettings_();
+  if (!checkAccessCode(code, s["Kiosk access code"])) return zoneRefusal(s);
   Utilities.sleep(1000);
   return refusal("ACCESS");
 }
 
 /**
- * {settings} when code is the kiosk access code, else {denied: the ACCESS refusal}, for a
+ * {settings} when code is the kiosk access code and the kiosk has a time zone, else
+ * {denied: the ACCESS or ZONE_NOT_SET refusal (accessRefusal_)}, for a
  * check-in or check-out, before any lock. Settings come from cachedSettings_ (Sheets.js).
  * A code the cached copy doesn't accept is checked again against Settings read from the
  * tab, which also refreshes the copy: a code changed since the copy was read works at
@@ -737,7 +739,8 @@ function accessRefusal_(code, settings) {
 function settingsForCode_(code) {
   const first = cachedSettings_();
   if (!checkAccessCode(code, first.settings["Kiosk access code"])) {
-    return { settings: first.settings };
+    const zone = zoneRefusal(first.settings);
+    return zone ? { denied: zone } : { settings: first.settings };
   }
   const settings = first.cached ? refreshSettingsCache_() : first.settings;
   const denied = accessRefusal_(code, settings);

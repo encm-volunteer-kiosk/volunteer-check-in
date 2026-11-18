@@ -407,6 +407,43 @@ function timeOnDate_(dateText, timeText) {
   return { ms: parsed.getTime(), date: centralDate_(parsed) };
 }
 
+// True once this run has read Settings for its time zone (kioskTimeZone).
+let zoneSettingsRead_ = false;
+
+/**
+ * The kiosk's time zone: the IANA name the Settings this run read last give it
+ * (kioskZoneOf, Logic.js). Every date and time the kiosk records, shows or emails is read
+ * in it. A run that has read no Settings yet reads them first, once; Settings that can't
+ * be read count as a missing row, the brand's default. Throws the staff step
+ * (timeZoneStepMessage) while the Time zone row is blank or isn't a time zone; the
+ * tablet's calls check first and refuse ZONE_NOT_SET instead.
+ */
+function kioskTimeZone() {
+  if (!settingsAreInUse() && !zoneSettingsRead_) {
+    zoneSettingsRead_ = true;
+    try {
+      readSettings_();
+    } catch (e) {
+      // Read as a missing row; the call's own Settings read says what is wrong.
+    }
+  }
+  const zone = zoneInUse();
+  if (!zone) throw new Error(timeZoneStepMessage());
+  return zone;
+}
+
+/**
+ * Settings read from the tab when the kiosk has a time zone; else throws the staff step
+ * (timeZoneStepMessage). For the jobs and the menu items that must stop before they
+ * change anything.
+ */
+function requireKioskZone_() {
+  const settings = readSettings_();
+  if (!kioskZoneOf(settings)) throw new Error(timeZoneStepMessage());
+  return settings;
+}
+
+/** A Date's yyyy-MM-dd in the kiosk's time zone. */
 function centralDate_(date) {
   return zoneDate_(date, kioskTimeZone());
 }
@@ -594,11 +631,24 @@ function sheet_(name) {
  */
 function readSettings_() {
   const values = sheet_(SETTINGS_TAB).getDataRange().getValues();
+  // A date in a Settings cell reads in the zone these Settings name, so the Time zone row
+  // is found first, by its text; with none, in the spreadsheet's zone.
+  let zone = null;
+  const dateZone = () => {
+    if (zone === null) {
+      const row = values.find((r, i) => i > 0 && cellString(r[0]) === timeZoneSetting());
+      zone =
+        kioskZoneOf(row ? { [timeZoneSetting()]: cellString(row[1]) } : {}) ||
+        SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+    }
+    return zone;
+  };
+  const text = (value) => (isDate_(value) ? zoneDate_(value, dateZone()) : cellString(value));
   const settings = {};
   for (let i = 1; i < values.length; i++) {
-    const name = cellText_(values[i][0]);
+    const name = text(values[i][0]);
     if (name && !Object.prototype.hasOwnProperty.call(settings, name)) {
-      settings[name] = cellText_(values[i][1]);
+      settings[name] = text(values[i][1]);
     }
   }
   useSettings(settings);

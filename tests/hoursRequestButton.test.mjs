@@ -104,9 +104,11 @@ test("busy, a failed call, a timeout or an unknown refusal: try again, with Send
   assert.deepEqual(afterHoursRequest({ refusal: "SOMETHING_NEW", message: "?" }, "Ana"), expected);
 });
 
-test("ACCESS locks the kiosk with the server's message", () => {
-  const reply = { refusal: "ACCESS", message: serverText.ACCESS };
-  assert.deepEqual(afterHoursRequest(reply, "Ana"), { lock: serverText.ACCESS });
+test("ACCESS and ZONE_NOT_SET lock the kiosk with the server's message", () => {
+  for (const code of ["ACCESS", "ZONE_NOT_SET"]) {
+    const reply = { refusal: code, message: serverText[code] };
+    assert.deepEqual(afterHoursRequest(reply, "Ana"), { lock: serverText[code] }, code);
+  }
 });
 
 test("no line names an address or says who sends", () => {

@@ -155,7 +155,9 @@ export function afterArrivalChange(
 ): ArrivalChangeOutcome {
   if (reply === "failed") return { kind: "line", text: arrivalChangeFailedText };
   if (!("refusal" in reply)) return { kind: "saved" };
-  if (reply.refusal === "ACCESS") return { kind: "lock", message: reply.message };
+  if (reply.refusal === "ACCESS" || reply.refusal === "ZONE_NOT_SET") {
+    return { kind: "lock", message: reply.message };
+  }
   if (reply.refusal === "NOT_IN") return { kind: "not-in" };
   if (["PHONE_NEEDED", "PHONE_WRONG", "PHONE_MISSING"].includes(reply.refusal)) {
     return { kind: "phone", refusal: reply };

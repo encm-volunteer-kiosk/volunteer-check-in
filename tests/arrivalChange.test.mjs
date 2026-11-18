@@ -254,6 +254,8 @@ test("NOT_IN goes to the status screen, ACCESS locks, phone refusals go as a che
     kind: "lock",
     message: serverText.ACCESS,
   });
+  const zone = { refusal: "ZONE_NOT_SET", message: serverText.ZONE_NOT_SET };
+  assert.deepEqual(afterArrivalChange(zone), { kind: "lock", message: serverText.ZONE_NOT_SET });
   for (const code of ["PHONE_NEEDED", "PHONE_WRONG", "PHONE_MISSING"]) {
     const reply = { refusal: code, message: serverText[code] };
     assert.deepEqual(afterArrivalChange(reply), { kind: "phone", refusal: reply }, code);

@@ -236,7 +236,10 @@ test("settingsDefaults", () => {
   assert.equal(defaults["Hours email signature"], "");
   assert.equal(defaults["Hours requests"], "Off");
   assert.equal(defaults["Hours requests last run"], "");
-  assert.equal(rows.length, 24 + L.generalSettingsDefaults().length);
+  assert.equal(
+    rows.length,
+    24 + L.generalSettingsDefaults().length + L.timeZoneSettingsDefaults().length,
+  );
   const names = rows.map((r) => r[0]);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
@@ -2585,6 +2588,7 @@ test("refusal gives each code its exact message", () => {
     CHECKOUT_CHANGES_OFF: "Please ask a board member to change your check-out time.",
     EMAIL_HOURS_OFF:
       "Email hours is turned off in Settings. Set the Email hours row to On to use it.",
+    ZONE_NOT_SET: "This kiosk isn't set up yet. Please see a board member.",
     IMPORT_OFF:
       "Import past hours is turned off in Settings. Set the Import past hours row to On to use it.",
   };
@@ -2636,7 +2640,7 @@ test("profilesCacheKey carries the version", () => {
 });
 
 test("constants", () => {
-  assert.equal(L.kioskTimeZone(), "America/Chicago");
+  assert.equal(L.defaultTimeZone(), "America/Chicago");
   assert.equal(L.profilesCacheSeconds(), 300);
   assert.equal(L.defaultFlagMinutes(), 15);
 });

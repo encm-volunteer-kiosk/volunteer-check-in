@@ -276,6 +276,7 @@ const refusalMessages: Record<string, string> = {
     "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
   ARRIVAL_CHANGES_OFF: "Please ask a board member to change your arrival time.",
   CHECKOUT_CHANGES_OFF: "Please ask a board member to change your check-out time.",
+  ZONE_NOT_SET: "This kiosk isn't set up yet. Please see a board member.",
 };
 
 const refuse = (code: string): Refusal => ({ refusal: code, message: refusalMessages[code] });

@@ -59,8 +59,8 @@ const shownRefusals = ["PHONE_NEEDED", "PHONE_WRONG", "PHONE_MISSING", "NOT_FOUN
 
 /**
  * What a request's answer does. reply is the call's result, or "failed" for a call that
- * failed or timed out. A recorded request and one already open read the same. ACCESS locks
- * the kiosk to the setup screen, as a list's ACCESS does. The page's own lines are given in
+ * failed or timed out. A recorded request and one already open read the same. ACCESS and
+ * ZONE_NOT_SET lock the kiosk to the setup screen, as a list's do. The page's own lines are given in
  * words (wordText, words.ts); a refusal's message comes in them from the server.
  */
 export function afterHoursRequest(
@@ -75,7 +75,8 @@ export function afterHoursRequest(
       again: false,
     };
   if (reply === "failed") return { kind: "line", text: hoursRequestFailedText, again: true };
-  if (reply.refusal === "ACCESS") return { lock: reply.message };
+  if (reply.refusal === "ACCESS" || reply.refusal === "ZONE_NOT_SET")
+    return { lock: reply.message };
   if (reply.refusal === "HOURS_REQUESTS_OFF") {
     return { kind: "line", text: wordText(hoursRequestsOffText, words), again: false };
   }
