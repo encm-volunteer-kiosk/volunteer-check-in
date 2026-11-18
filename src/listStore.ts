@@ -3,9 +3,10 @@
 // check-in and check-out; a kept list only picks which screen opens and what the sidebar
 // shows, and the page refreshes it as soon as it loads.
 //
-// A kept list is used only for the access code it was saved with, on the same day in Central
-// time, and less than 10 minutes after its server list arrived. Its age is measured from
-// that arrival, not from the last write, and a clock that stepped back can't keep it alive.
+// A kept list is used only for the access code it was saved with, on the same day in the
+// zone its page Settings name (kioskZone.ts), and less than 10 minutes after its server list
+// arrived. Its age is measured from that arrival, not from the last write, and a clock that
+// stepped back can't keep it alive.
 // An entry that fails any check is removed when it is read.
 //
 // The kept list is the server's list as it arrived, never the page's view of it with this
@@ -23,6 +24,7 @@ import type { ListStamp } from "./saveQueue.ts";
 import { stepsWithNulls } from "./replies.ts";
 import { brandKey } from "./brand.ts";
 import { isPageSettings, type PageSettings } from "./words.ts";
+import { kioskDay, zoneOf } from "./kioskZone.ts";
 
 // "stored": the list came from storage and the first refresh hasn't landed yet.
 export type ListState = "loading" | "stored" | "ready" | "failed";
@@ -34,8 +36,6 @@ export const LIST_STORE_KEY = brandKey("kiosk-volunteer-list");
 // Bump when the stored shape changes, so old entries are ignored and removed.
 export const LIST_STORE_VERSION = 3;
 export const STORED_LIST_MAX_AGE_MS = 10 * 60_000;
-
-const TZ = "America/Chicago";
 
 // Only what the kiosk shows or needs to pick a screen and decide an instant result: no phone
 // digits, token or Profiles row. A field the server didn't send is left out.
@@ -74,16 +74,6 @@ type StoredList = {
   // The sheet's "Long shift flag hours" from the same list reply: when a card turns amber.
   longShiftHours: number;
 } & ListExtras;
-
-/** The Central calendar day of an instant, as YYYY-MM-DD. */
-export function centralDay(ms: number): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(ms));
-}
 
 // The fields an instant result reads, each only when the list carried it. A step with no id
 // is a no-milestone step whose null google.script.run dropped, kept so by a page before the
@@ -200,8 +190,9 @@ export function clearStoredList(storage: ListStorage | null): void {
 
 /**
  * The kept list, when its server list arrived, its long-shift number and the rest it keeps,
- * when it was saved for this code, on now's Central day, and 0 <= now - savedAt < 10
- * minutes. Otherwise null, and an entry that is there is removed. A storage error gives null.
+ * when it was saved for this code, on now's day in the zone its page Settings name, and
+ * 0 <= now - savedAt < 10 minutes. Otherwise null, and an entry that is there is removed. A
+ * storage error gives null.
  */
 export function readStoredList(
   storage: ListStorage | null,
@@ -243,7 +234,8 @@ function usableEntry(entry: unknown, code: string | null, now: number): StoredLi
   if (typeof e.savedAt !== "number" || !Number.isFinite(e.savedAt)) return null;
   const age = now - e.savedAt;
   if (age < 0 || age >= STORED_LIST_MAX_AGE_MS) return null;
-  if (centralDay(e.savedAt) !== centralDay(now)) return null;
+  const zone = zoneOf(isPageSettings(e.pageSettings) ? e.pageSettings.timeZone : undefined);
+  if (kioskDay(e.savedAt, zone) !== kioskDay(now, zone)) return null;
   if (!Array.isArray(e.volunteers) || !e.volunteers.every(isStoredVolunteer)) return null;
   const hours = e.longShiftHours;
   if (typeof hours !== "number" || !Number.isFinite(hours) || hours <= 0) return null;

@@ -104,7 +104,8 @@ function apiCheckAccess(code) {
  * which the page marks a card. hoursRequests is true when Settings "Hours requests" is
  * Approve or Auto and the Email hours switch is On (hoursRequestsMode), false otherwise.
  * milestones are [{id, title, message}], the texts the steps
- * name. words, organizationName, logoLink and switches are the page's Settings (pageSettings).
+ * name. words, organizationName, logoLink, switches and timeZone are the page's Settings
+ * (pageSettings).
  * With the Milestones switch Off every checkOutMilestones holds the one step of no milestone.
  * serverNow is the server's clock in ms, taken last, so the page can tell how far its own
  * clock is off.

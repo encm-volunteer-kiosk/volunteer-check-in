@@ -723,8 +723,10 @@ function pageTitle(settings) {
 /**
  * The Settings the page reads from the list reply: words (kioskWords), organizationName
  * (Settings "Organization name", "" while blank, when the page shows the brand's name) and
- * logoLink (parseLogoLink, "" for the brand's logo) and switches (kioskSwitches: the page
- * hides what is Off, and the server refuses it too).
+ * logoLink (parseLogoLink, "" for the brand's logo), switches (kioskSwitches: the page
+ * hides what is Off, and the server refuses it too) and timeZone (kioskZoneOf: the zone the
+ * page shows times and days in, "" while the row is blank or not a zone, when the tablet is
+ * refused before it gets a list).
  */
 function pageSettings(settings) {
   const s = settings || {};
@@ -733,6 +735,7 @@ function pageSettings(settings) {
     organizationName: cellString(s[organizationNameSetting()]),
     logoLink: parseLogoLink(s[logoLinkSetting()]),
     switches: kioskSwitches(s),
+    timeZone: kioskZoneOf(s),
   };
 }
 

@@ -10,7 +10,6 @@ import {
   checkOut,
   isCheckedInAt,
   checkInWindowMs,
-  centralDay,
   changeArrival,
   isToday,
   kioskStore,
@@ -25,6 +24,7 @@ import type { Tap } from "./saveQueue";
 import { DEFAULT_LONG_SHIFT_HOURS, longShiftHoursOf } from "./cardTime";
 import { nameKey } from "./sameName";
 import { pageSettingsOf, type PageSettings } from "./words";
+import { kioskDay } from "./kioskZone";
 import { callLog, recorded, type CallLog } from "./callRecord";
 import {
   arrivalChangeFromServer,
@@ -585,7 +585,7 @@ export const localApi: KioskApi & { hoursRequestsOpen(): string[]; reset(): void
     if (!Number.isFinite(asked)) return refuse("ARRIVAL_OTHER_DAY");
     if (asked > now + localArrivalGraceMs) return refuse("ARRIVAL_FUTURE");
     const arrived = Math.min(asked, now);
-    const dayOf = (ms: number) => centralDay(new Date(ms).toISOString());
+    const dayOf = (ms: number) => kioskDay(ms);
     if (dayOf(arrived) !== dayOf(tappedMs)) return refuse("ARRIVAL_OTHER_DAY");
     if (arrived > tappedMs) return refuse("ARRIVAL_AFTER_CHECK_IN");
     const start = Date.parse(volunteer.currentCheckIn);

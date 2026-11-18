@@ -1,4 +1,5 @@
 import { BRAND_APPRECIATION_MESSAGES, BRAND_LOCAL_MILESTONE_MESSAGES, brandKey } from "./brand.ts";
+import { kioskDay } from "./kioskZone.ts";
 
 export type Volunteer = {
   id: string;
@@ -62,7 +63,6 @@ export type Milestone = { id: string; title: string; message: string };
 const STORAGE_KEY = brandKey("volunteer-kiosk-v1");
 // Set by the prototype tools to make the next local save fail.
 export const FAIL_NEXT_SAVE_KEY = brandKey("fail-next-save");
-const TZ = "America/Chicago";
 
 const names = [
   ["Sarah", "Johnson"],
@@ -118,18 +118,9 @@ const seededStats = [
   [1, 240],
 ];
 
-/** The Central calendar day of an instant, as YYYY-MM-DD. */
-export function centralDay(iso: string) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(iso));
-}
-
+/** True when the instant is on today's date in the kiosk's zone. */
 export function isToday(iso: string) {
-  return centralDay(iso) === centralDay(new Date().toISOString());
+  return kioskDay(Date.parse(iso)) === kioskDay(Date.now());
 }
 
 // "Auto clock-out after hours" at its default. The local store has no Settings tab.

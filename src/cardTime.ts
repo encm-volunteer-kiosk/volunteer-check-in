@@ -10,19 +10,19 @@
 // Plain TypeScript only (no enums, namespaces or parameter properties): the tests import
 // this file in Node, which strips the types without a loader.
 
-import { centralDay } from "./listStore.ts";
+import { kioskDay, kioskZone } from "./kioskZone.ts";
 
 // The sheet's "Long shift flag hours" when the list reply carries none (a server older than
 // this page) or a bad one.
 export const DEFAULT_LONG_SHIFT_HOURS = 8;
 
-const TZ = "America/Chicago";
-
-/** A Central clock time, as the page's other clock times. */
+/** A clock time in the kiosk's zone, as the page's other clock times. */
 const clockTime = (ms: number) =>
-  new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" }).format(
-    new Date(ms),
-  );
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: kioskZone(),
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(ms));
 
 const timeIn = (minutes: number) =>
   minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
@@ -36,8 +36,8 @@ const timeIn = (minutes: number) =>
  * flag counts. The threshold's minutes are rounded to a thousandth, so 8.2 hours is 492
  * minutes and not the 491.99… a float multiplication gives.
  *
- * An arrival on an earlier Central date than nowMs (an evening shift past midnight) shows the
- * time in, since a bare clock time would read as today's.
+ * An arrival on an earlier date than nowMs in the kiosk's zone (an evening shift past
+ * midnight) shows the time in, since a bare clock time would read as today's.
  */
 export function cardTime(
   arrival: string | null,
@@ -51,7 +51,7 @@ export function cardTime(
   const minutes = Math.max(0, Math.floor((nowMs - arrivedMs) / 60_000));
   const thresholdMinutes = Math.round(longShiftHours * 60 * 1000) / 1000;
   const late = minutes > thresholdMinutes;
-  const earlierDay = centralDay(arrivedMs) < centralDay(nowMs);
+  const earlierDay = kioskDay(arrivedMs) < kioskDay(nowMs);
   const clock = clockTime(arrivedMs);
   return {
     text: late || earlierDay ? `${timeIn(minutes)} in` : `in ${clock}`,

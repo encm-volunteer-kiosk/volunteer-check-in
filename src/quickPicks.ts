@@ -2,9 +2,10 @@
 // and the check-out screen's Change: the rules it obeys, kept apart from the component so the
 // tests can run them in Node.
 //
-// Times are Central minutes since today's midnight. Every value the picker emits is a quarter
-// hour from the earliest allowed (the lower bound rounded up to a quarter hour) to the latest
-// (now rounded down to a quarter hour, or an earlier cap rounded down), inclusive, as "HH:mm".
+// Times are minutes since today's midnight in the kiosk's zone (kioskZone.ts). Every value
+// the picker emits is a quarter hour from the earliest allowed (the lower bound rounded up to
+// a quarter hour) to the latest (now rounded down to a quarter hour, or an earlier cap
+// rounded down), inclusive, as "HH:mm".
 // The server checks every time it is sent as well.
 //
 // The range keeps two anchors: the latest time that may be chosen, and the clock (now rounded
@@ -14,9 +15,8 @@
 // Plain TypeScript only (no enums, namespaces or parameter properties): the tests import
 // this file in Node, which strips the types without a loader.
 
-import { centralDay } from "./listStore.ts";
+import { kioskDay, kioskZone } from "./kioskZone.ts";
 
-const TZ = "America/Chicago";
 const QUARTER = 15;
 
 // capped: the latest is a cap given by the caller, not the clock.
@@ -37,10 +37,10 @@ export function floorQuarter(minutes: number) {
   return Math.floor(minutes / QUARTER) * QUARTER;
 }
 
-/** Central minutes since midnight of an instant, whole minutes. */
-export function centralMinutes(date: Date = new Date()) {
+/** Minutes since midnight of an instant in the kiosk's zone, whole minutes. */
+export function kioskMinutes(date: Date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
+    timeZone: kioskZone(),
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
@@ -139,24 +139,28 @@ export function agoText(minutes: number, range: QuickRange) {
 }
 
 /**
- * A time the picker holds ("HH:mm") and the Central day it was picked on ("YYYY-MM-DD").
+ * A time the picker holds ("HH:mm") and the day it was picked on in the kiosk's zone
+ * ("YYYY-MM-DD").
  * The time is sent when Check In or Check Out is tapped, which can be after midnight; it
  * stays on the day it was picked.
  */
 export type PickedTime = { time: string; day: string };
 
-/** time, picked at the instant now: it keeps now's Central day. */
+/** time, picked at the instant now: it keeps now's day in the kiosk's zone. */
 export function pickTime(time: string, now: Date = new Date()): PickedTime {
-  return { time, day: centralDay(now.getTime()) };
+  return { time, day: kioskDay(now.getTime()) };
 }
 
-/** The instant a picked time names: its time on the day it was picked, Central, as ISO. */
+/**
+ * The instant a picked time names: its time on the day it was picked, in the kiosk's zone,
+ * as ISO.
+ */
 export function pickedTimeToIso({ time, day }: PickedTime) {
   const [year, month, date] = day.split("-").map(Number);
   const [hour, minute] = time.split(":").map(Number);
   const desiredUtc = Date.UTC(year, month - 1, date, hour, minute);
   const zonedParts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
+    timeZone: kioskZone(),
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

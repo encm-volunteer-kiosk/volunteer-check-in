@@ -284,6 +284,7 @@ test("the list reply carries the page's Settings, and the page reads them or the
       arrivalChanges: true,
       checkOutChanges: true,
     },
+    timeZone: "America/Chicago",
   });
   const sent = plain(
     L.pageSettings({

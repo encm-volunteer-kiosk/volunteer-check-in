@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   agoText,
   canNudge,
-  centralMinutes,
+  kioskMinutes,
   clockText,
   fromTimeValue,
   nudge,
@@ -24,7 +24,7 @@ const CLOCK_TICK_MS = 15_000;
  * The time picker behind the change-time links and the check-out screen's Change: quick
  * answers ("Now", "15 min ago", ...) and 15-minute nudges, docked at the bottom of the
  * screen. Every value it sends through onChange is a quarter hour from minMinutes (rounded
- * up) to now, or to maxMinutes when that is earlier (rounded down), Central, as "HH:mm"; quick
+ * up) to now, or to maxMinutes when that is earlier (rounded down), in the kiosk's zone, as "HH:mm"; quick
  * answers count back from now. See src/quickPicks.ts.
  */
 export function QuickPicks({
@@ -39,7 +39,7 @@ export function QuickPicks({
   onBack,
 }: {
   value: string;
-  // The earliest time that can be chosen, in Central minutes since midnight (fractions
+  // The earliest time that can be chosen, in minutes since midnight in the kiosk's zone (fractions
   // allowed): 0 for arrival, the stated arrival for check-out.
   minMinutes?: number;
   // The latest time that can be chosen, when it is before now: Check-In Recorded for a
@@ -58,7 +58,7 @@ export function QuickPicks({
     return () => window.clearInterval(timer);
   }, []);
 
-  const range = quickRange(minMinutes, centralMinutes(), maxMinutes);
+  const range = quickRange(minMinutes, kioskMinutes(), maxMinutes);
   const minutes = fromTimeValue(value);
   const answers = quickAnswers(range);
 
@@ -71,7 +71,7 @@ export function QuickPicks({
   const boundsRef = useRef({ minMinutes, maxMinutes });
   boundsRef.current = { minMinutes, maxMinutes };
   const rangeNow = () =>
-    quickRange(boundsRef.current.minMinutes, centralMinutes(), boundsRef.current.maxMinutes);
+    quickRange(boundsRef.current.minMinutes, kioskMinutes(), boundsRef.current.maxMinutes);
 
   // The range is read from the clock at the moment of each tap.
   const send = (next: number) => {

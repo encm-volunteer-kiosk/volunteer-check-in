@@ -11,9 +11,9 @@
 
 import type { Refusal } from "./api";
 import type { Volunteer } from "./data";
-import { centralDay } from "./listStore.ts";
+import { kioskDay } from "./kioskZone.ts";
 import {
-  centralMinutes,
+  kioskMinutes,
   floorQuarter,
   pickedTimeToIso,
   pickTime,
@@ -53,7 +53,7 @@ const readMs = (iso: string | null | undefined) => (iso ? Date.parse(iso) : NaN)
  * Whether the check-out line offers Change: no phone step, picker or save on screen, and the
  * digits typed when the screen asked for them; the entry names its open row (openShiftId) and
  * that row's tap time (openShiftTapped); the stated arrival and the tap are both today,
- * Central; and the queue holds no save for the volunteer, whose row may not exist yet.
+ * in the kiosk's zone; and the queue holds no save for the volunteer, whose row may not exist yet.
  *
  * A Change's own mark clears openShiftId, so Change stays hidden after one lands until a list
  * asked for after it is in use. A kept list from an older page has no openShiftTapped, so
@@ -66,16 +66,16 @@ export function showsArrivalChange(s: ArrivalChangeScreen): boolean {
   const tappedMs = readMs(s.entry.openShiftTapped);
   const arrivedMs = readMs(s.entry.currentCheckIn);
   if (!Number.isFinite(tappedMs) || !Number.isFinite(arrivedMs)) return false;
-  const today = centralDay(s.nowMs);
-  if (centralDay(tappedMs) !== today || centralDay(arrivedMs) !== today) return false;
+  const today = kioskDay(s.nowMs);
+  if (kioskDay(tappedMs) !== today || kioskDay(arrivedMs) !== today) return false;
   return !hasQueuedFor(s.queue, s.entry.id);
 }
 
 /**
  * The open Change picker. shiftId and fromIso are read when it opens, so the server compares
  * with the row and the start the volunteer saw, even when the list refreshes meanwhile.
- * maxMinutes is the tap's Central minutes, the latest that may be chosen. touched turns true
- * at the first quick answer or nudge.
+ * maxMinutes is the tap's minutes in the kiosk's zone, the latest that may be chosen.
+ * touched turns true at the first quick answer or nudge.
  */
 export type ArrivalPick = {
   shiftId: string;
@@ -97,9 +97,9 @@ export function openArrivalPick(entry: ArrivalEntry, nowMs: number): ArrivalPick
   if (!entry.openShiftId || !Number.isFinite(tappedMs) || !Number.isFinite(arrivedMs)) {
     return null;
   }
-  const maxMinutes = centralMinutes(new Date(tappedMs));
-  const latest = Math.min(floorQuarter(maxMinutes), floorQuarter(centralMinutes(new Date(nowMs))));
-  const start = Math.max(0, Math.min(floorQuarter(centralMinutes(new Date(arrivedMs))), latest));
+  const maxMinutes = kioskMinutes(new Date(tappedMs));
+  const latest = Math.min(floorQuarter(maxMinutes), floorQuarter(kioskMinutes(new Date(nowMs))));
+  const start = Math.max(0, Math.min(floorQuarter(kioskMinutes(new Date(arrivedMs))), latest));
   return {
     shiftId: entry.openShiftId,
     fromIso: entry.currentCheckIn!,
