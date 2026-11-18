@@ -277,6 +277,13 @@ test("the list reply carries the page's Settings, and the page reads them or the
     },
     organizationName: "",
     logoLink: "",
+    switches: {
+      milestones: true,
+      emailHours: true,
+      importPastHours: true,
+      arrivalChanges: true,
+      checkOutChanges: true,
+    },
   });
   const sent = plain(
     L.pageSettings({
@@ -298,6 +305,31 @@ test("the list reply carries the page's Settings, and the page reads them or the
   assert.equal(page.logoUrlOf(https), "https://example.org/logo.png");
   assert.equal(L.pageTitle({}), "Volunteer Check-In");
   assert.equal(L.pageTitle(settings("an usher", "", "")), "Usher Check-In");
+});
+
+test("the page reads the switches: only Off is Off, and a reply or kept list without them is all On", () => {
+  const ALL_ON = {
+    milestones: true,
+    emailHours: true,
+    importPastHours: true,
+    arrivalChanges: true,
+    checkOutChanges: true,
+  };
+  const sent = plain(L.pageSettings({ "Tablet arrival changes": "Off", Milestones: "oN" }));
+  assert.deepEqual(sent.switches, { ...ALL_ON, arrivalChanges: false });
+  const read = page.pageSettingsOf(sent);
+  assert.deepEqual(page.pageSwitchesOf(read), { ...ALL_ON, arrivalChanges: false });
+  assert.equal(page.isPageSettings(read), true);
+  // A server before the switches: all On.
+  const { switches, ...older } = sent;
+  assert.deepEqual(page.pageSwitchesOf(page.pageSettingsOf(older)), ALL_ON);
+  assert.equal(page.isPageSettings(older), true);
+  assert.deepEqual(page.pageSwitchesOf(older), ALL_ON);
+  assert.deepEqual(page.pageSwitchesOf(page.brandPageSettings), ALL_ON);
+  // Anything but false reads On; a kept list with a bad switch isn't page Settings.
+  const odd = page.pageSettingsOf({ ...sent, switches: { checkOutChanges: "Off", milestones: 0 } });
+  assert.deepEqual(page.pageSwitchesOf(odd), ALL_ON);
+  assert.equal(page.isPageSettings({ ...sent, switches: { arrivalChanges: false } }), false);
 });
 
 test("a kept list: main's shape reads with no page Settings, and a new one keeps them", () => {

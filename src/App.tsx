@@ -31,6 +31,7 @@ import {
   brandPageSettings,
   logoUrlOf,
   organizationNameOf,
+  pageSwitchesOf,
   wordText,
   type PageSettings,
 } from "./words";
@@ -1659,6 +1660,10 @@ export default function App() {
   const wordsRef = useRef(pageSettings.words);
   wordsRef.current = pageSettings.words;
   const worded = (text: string) => wordText(text, wordsRef.current);
+  // Tablet arrival and check-out changes Off hide the screens' time changes; the server
+  // refuses them too.
+  const { arrivalChanges: arrivalsChangeable, checkOutChanges: checkOutsChangeable } =
+    pageSwitchesOf(pageSettings);
   // The list's hoursRequests. The kept list doesn't hold it, so after a reload the Request my
   // hours link stays hidden until a fresh list arrives (a request can't go offline anyway).
   const [hoursRequests, setHoursRequests] = useState(false);
@@ -2705,11 +2710,15 @@ export default function App() {
           checkout={false}
           time={arrivalTime.time}
           picker={arrivalPicker}
-          onOpenPicker={() => {
-            setError("");
-            setArrivalTime(pickTime(latestQuarterHour()));
-            setArrivalPicker(true);
-          }}
+          onOpenPicker={
+            arrivalsChangeable
+              ? () => {
+                  setError("");
+                  setArrivalTime(pickTime(latestQuarterHour()));
+                  setArrivalPicker(true);
+                }
+              : undefined
+          }
           {...phoneProps}
           digitsAsked={digitsAsked}
           anotherIn={anotherIn}
@@ -2728,7 +2737,7 @@ export default function App() {
           picker={checkOutPicker}
           minMinutes={checkOutMinMinutes ?? 0}
           onOpenPicker={
-            checkOutPickable
+            checkOutPickable && checkOutsChangeable
               ? () => {
                   setError("");
                   setCheckOutTime(pickTime(latestQuarterHour()));
@@ -2745,16 +2754,18 @@ export default function App() {
           onConfirm={handleCheckout}
           onBack={tapHome}
           arrivalChange={{
-            offered: showsArrivalChange({
-              entry: selected,
-              phoneStep,
-              picker: checkOutPicker || arrivalPick !== null,
-              saving: save !== null || changeSaving,
-              digitsAsked,
-              digits: phoneDigits,
-              queue,
-              nowMs: Date.now(),
-            }),
+            offered:
+              arrivalsChangeable &&
+              showsArrivalChange({
+                entry: selected,
+                phoneStep,
+                picker: checkOutPicker || arrivalPick !== null,
+                saving: save !== null || changeSaving,
+                digitsAsked,
+                digits: phoneDigits,
+                queue,
+                nowMs: Date.now(),
+              }),
             pick: arrivalPick,
             saving: changeSaving,
             saved: arrivalSaved,

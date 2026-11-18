@@ -23,9 +23,11 @@
  *      Check 1 alone would let the script owner's own browser through the web app; the
  *      key closes that.
  * onOpen runs as a simple trigger, where requireEditorRun_ can't pass. It calls getUi()
- * first and adds the menu before anything else: getUi() throws outside the spreadsheet's
- * own UI, so a call from the web app stops there, and a failure in what follows never costs
- * the menu. Then, in a try/catch, it notes on the Hours tab that opening didn't refresh it
+ * and creates the menu before it reads anything: getUi() throws outside the spreadsheet's
+ * own UI, so a call from the web app stops there. It reads Settings in a try/catch to leave
+ * out the items whose switch is Off (kioskSwitches, Logic.js); when that read fails the
+ * menu shows every item and the server's refusals cover what is Off, so a failure never
+ * costs the menu. Then, in a try/catch, it notes on the Hours tab that opening didn't refresh it
  * (noteHoursOnOpen_ in Reports.js: one hold of the document lock, N1 and B1 only, no Log
  * read), and releases the lock in its own finally.
  *
@@ -35,19 +37,27 @@
  */
 
 /**
- * Adds the Kiosk admin menu when the spreadsheet opens, then notes on the Hours tab that
- * opening didn't refresh it. From the web app it throws at getUi.
+ * Adds the Kiosk admin menu when the spreadsheet opens, without the items Settings switch
+ * Off, then notes on the Hours tab that opening didn't refresh it. From the web app it throws at getUi.
  */
 function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu("Kiosk admin")
+  const menu = SpreadsheetApp.getUi().createMenu("Kiosk admin");
+  // null when Settings can't be read: then every item shows.
+  let on = null;
+  try {
+    on = kioskSwitches(readSettings_());
+  } catch (err) {
+    console.log("Settings not read for the menu, so it shows every item: " + errorMessage_(err));
+  }
+  menu
     .addItem("Add a shift…", "openAddShiftDialog")
     .addItem("Fix a sign-out…", "openFixSignOutDialog")
     .addItem("Remove a shift…", "openRemoveShiftDialog")
     .addItem("Restore a shift…", "openRestoreShiftDialog")
-    .addItem("Hours report…", "openMonthlyReportDialog")
-    .addItem("Email hours…", "openEmailHoursDialog")
-    .addItem("Import past hours…", "openImportDialog")
+    .addItem("Hours report…", "openMonthlyReportDialog");
+  if (!on || on.emailHours) menu.addItem("Email hours…", "openEmailHoursDialog");
+  if (!on || on.importPastHours) menu.addItem("Import past hours…", "openImportDialog");
+  menu
     .addItem("Refresh Hours", "refreshHoursNow")
     .addItem("Check the Log now", "checkLogNow")
     .addToUi();
@@ -99,13 +109,15 @@ function adminRoster(key) {
  * ("off", "approve" or "auto"); ticked, label and heldLine are what the window shows
  * (hoursRequestChoices, Logic.js), and notListed the line for requests from volunteers
  * not on the list. No tab means no requests. Reads Settings, the volunteer list and the
- * Hours requests tab, with no lock, and writes nothing.
+ * Hours requests tab, with no lock, and writes nothing. EMAIL_HOURS_OFF when Settings
+ * switch Email hours Off.
  */
 function adminHoursRequests(key) {
   const denied = adminGuard_(key);
   if (denied) return denied;
   const settings = readSettings_();
-  const mode = parseHoursRequestsMode(settings[hoursRequestsSetting()]);
+  if (!kioskSwitches(settings).emailHours) return refusal("EMAIL_HOURS_OFF");
+  const mode = hoursRequestsMode(settings);
   const listedIds = getProfiles_(settings).map((v) => v.id);
   const choices = hoursRequestChoices(
     readHoursRequests_() || [],
@@ -375,7 +387,8 @@ function adminRestoreShift(key, form) {
  * addresses (profileEmails_), the Log, Flags, the Hours emails tab's sends and the quota.
  * Returns {ok: true, from, month, asOf, volunteers: [{id, label, profilesRow, startDate,
  * to, subject, body, totals, attachment, warnings, problems, lastSent}], setProblems,
- * sendIds, chunkSize, ticket}, the volunteers in roster order; or a refusal.
+ * sendIds, chunkSize, ticket}, the volunteers in roster order; or a refusal, among them
+ * EMAIL_HOURS_OFF, after the reads, when Settings switch Email hours Off.
  *
  * A volunteer with a problem (hoursEmailAddress, or not on the list) is shown and left out.
  * A problem for the whole set (no Email column, Hours email contact blank, nobody left to
@@ -391,6 +404,7 @@ function adminHoursPreview(key, request) {
   const now = new Date();
   const account = Session.getActiveUser().getEmail();
   const base = readHoursEmailBase_(ids, hoursEmailChoice(r.choice), attach, now);
+  if (base.emailHoursOn === false) return refusal("EMAIL_HOURS_OFF");
   let sends = null;
   let sendsRead = true;
   try {
@@ -505,7 +519,8 @@ function adminHoursPreview(key, request) {
  *    doesn't throw: reads, the rebuild and the send run inside a try, and the rows are
  *    written on every path.
  * 4. One volunteer's failure never stops the rest. A read that throws becomes the result
- *    of every volunteer taken, and nothing is sent.
+ *    of every volunteer taken, and nothing is sent. So does the Email hours switch Off
+ *    when the reads find it (hoursEmailSetProblems_): the take came before them.
  * 5. The lock is held only to take (step 3) and to write the rows (step 6), never across a
  *    read of the Log or a send.
  * 6. Every withLock_ return is read as a refusal or a success, and a throw from it (its
@@ -758,12 +773,17 @@ function readHoursEmailBase_(ids, choice, attach, now) {
     listedTokens: volunteers.map((v) => v.token),
     contact: settings[hoursEmailContactSetting()] || "",
     signature: settings[hoursEmailSignatureSetting()] || "",
+    emailHoursOn: kioskSwitches(settings).emailHours,
   };
 }
 
-/** The problems that stop the whole set: no Email column, Hours email contact blank. */
+/**
+ * The problems that stop the whole set: the Email hours switch Off (a Send after the switch
+ * changed: the Preview refuses), no Email column, Hours email contact blank.
+ */
 function hoursEmailSetProblems_(base) {
   const problems = [];
+  if (base.emailHoursOn === false) problems.push(refusal("EMAIL_HOURS_OFF").message);
   const noColumn = Object.keys(base.emails).some(
     (id) => base.emails[id].problem === "no-email-column",
   );

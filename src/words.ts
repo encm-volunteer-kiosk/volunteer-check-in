@@ -34,7 +34,38 @@ export type PageSettings = {
   organizationName: string;
   // Settings "Logo link" when it starts https://, else "".
   logoLink: string;
+  // The On/Off switches; missing (a server or a kept list older than them) reads all On.
+  switches?: PageSwitches;
 };
+
+/** The Settings switches, true for On (kioskSwitches in apps-script/Logic.js). */
+export type PageSwitches = {
+  milestones: boolean;
+  emailHours: boolean;
+  importPastHours: boolean;
+  arrivalChanges: boolean;
+  checkOutChanges: boolean;
+};
+
+const SWITCH_NAMES: (keyof PageSwitches)[] = [
+  "milestones",
+  "emailHours",
+  "importPastHours",
+  "arrivalChanges",
+  "checkOutChanges",
+];
+
+/**
+ * The switches a reply sent: only false is Off, so a switch the reply doesn't carry reads On,
+ * the kiosk as it was before it.
+ */
+function switchesOf(sent: unknown): PageSwitches {
+  const r = typeof sent === "object" && sent !== null ? (sent as Record<string, unknown>) : {};
+  return Object.fromEntries(SWITCH_NAMES.map((k) => [k, r[k] !== false])) as PageSwitches;
+}
+
+/** The switches the page goes by: the Settings', or all On when they have none. */
+export const pageSwitchesOf = (s: PageSettings): PageSwitches => switchesOf(s.switches);
 
 /** What the page shows while it has no list reply's Settings: the brand's. */
 export const brandPageSettings: PageSettings = {
@@ -121,7 +152,7 @@ export function isWords(w: unknown): w is Words {
 /**
  * The list reply's page Settings, or null when it sends no words: a server older than the
  * words, whose page reads as the brand's. A missing or bad organizationName or logoLink
- * reads as blank, the brand's.
+ * reads as blank, the brand's, and a missing switch as On.
  */
 export function pageSettingsOf(reply: Record<string, unknown>): PageSettings | null {
   if (!isWords(reply.words)) return null;
@@ -137,6 +168,7 @@ export function pageSettingsOf(reply: Record<string, unknown>): PageSettings | n
     },
     organizationName: typeof reply.organizationName === "string" ? reply.organizationName : "",
     logoLink: typeof logo === "string" && logo.startsWith("https://") ? logo : "",
+    switches: switchesOf(reply.switches),
   };
 }
 
@@ -148,7 +180,11 @@ export function isPageSettings(s: unknown): s is PageSettings {
     isWords(r.words) &&
     typeof r.organizationName === "string" &&
     typeof r.logoLink === "string" &&
-    (r.logoLink === "" || r.logoLink.startsWith("https://"))
+    (r.logoLink === "" || r.logoLink.startsWith("https://")) &&
+    (r.switches === undefined ||
+      (typeof r.switches === "object" &&
+        r.switches !== null &&
+        SWITCH_NAMES.every((k) => typeof (r.switches as Record<string, unknown>)[k] === "boolean")))
   );
 }
 

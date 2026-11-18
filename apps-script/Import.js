@@ -146,6 +146,7 @@ function adminImportRun(key, form) {
 function importJob_(form) {
   const f = form || {};
   const settings = readSettings_();
+  if (!kioskSwitches(settings).importPastHours) return { refusal: refusal("IMPORT_OFF") };
   const fileId = importFileId(f.file);
   if (!fileId) return { refusal: importRefusal("IMPORT_FILE_ID") };
   const tab = cellString(f.tab) || importDefaultTab();

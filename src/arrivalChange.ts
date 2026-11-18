@@ -126,6 +126,7 @@ export function arrivalToSend(pick: ArrivalPick): string | null {
 const shownRefusals = [
   "ARRIVAL_ROW_CHANGED",
   "ARRIVAL_UNCHANGEABLE",
+  "ARRIVAL_CHANGES_OFF",
   "ARRIVAL_AFTER_CHECK_IN",
   "ARRIVAL_OTHER_DAY",
   "ARRIVAL_FUTURE",

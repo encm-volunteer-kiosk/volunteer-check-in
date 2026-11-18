@@ -771,6 +771,20 @@ test("a blank, unreadable or missing launch date changes nothing: Preview and Im
   }
 });
 
+test("Import past hours Off refuses Preview and Import, naming the row, before the file is opened", () => {
+  const s = server({ settings: settingsRows([["Import past hours", "Off"]]) });
+  const expected = {
+    ok: false,
+    refusal: "IMPORT_OFF",
+    message:
+      "Import past hours is turned off in Settings. Set the Import past hours row to On to use it.",
+  };
+  assert.deepEqual(plain(s.ctx.adminImportPreview("k", FORM)), expected);
+  assert.deepEqual(plain(s.ctx.adminImportRun("k", { ...FORM, initials: "JP" })), expected);
+  assert.ok(!s.calls.includes("SpreadsheetApp.openById"));
+  assert.deepEqual(s.sheets.Log.rows, [LOG_HEADER]);
+});
+
 test("Preview writes nothing; the refusals name what's wrong", () => {
   const s = server();
   const reply = plain(s.ctx.adminImportPreview("k", FORM));

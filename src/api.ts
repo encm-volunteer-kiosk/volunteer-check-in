@@ -274,6 +274,8 @@ const refusalMessages: Record<string, string> = {
   TAP_UNREADABLE: "A kiosk tap can't be read.",
   HOURS_REQUESTS_OFF:
     "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
+  ARRIVAL_CHANGES_OFF: "Please ask a board member to change your arrival time.",
+  CHECKOUT_CHANGES_OFF: "Please ask a board member to change your check-out time.",
 };
 
 const refuse = (code: string): Refusal => ({ refusal: code, message: refusalMessages[code] });

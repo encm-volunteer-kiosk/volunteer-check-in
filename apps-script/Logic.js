@@ -524,7 +524,8 @@ function pageTitle(settings) {
 /**
  * The Settings the page reads from the list reply: words (kioskWords), organizationName
  * (Settings "Organization name", "" while blank, when the page shows the brand's name) and
- * logoLink (parseLogoLink, "" for the brand's logo).
+ * logoLink (parseLogoLink, "" for the brand's logo) and switches (kioskSwitches: the page
+ * hides what is Off, and the server refuses it too).
  */
 function pageSettings(settings) {
   const s = settings || {};
@@ -532,6 +533,7 @@ function pageSettings(settings) {
     words: kioskWords(s),
     organizationName: cellString(s[organizationNameSetting()]),
     logoLink: parseLogoLink(s[logoLinkSetting()]),
+    switches: kioskSwitches(s),
   };
 }
 
@@ -816,6 +818,12 @@ function refusalMessages() {
     HOURS_EMAIL_TOO_MANY: "Too many volunteers in one send. Press Preview again.",
     HOURS_REQUESTS_OFF:
       "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
+    ARRIVAL_CHANGES_OFF: "Please ask a board member to change your arrival time.",
+    CHECKOUT_CHANGES_OFF: "Please ask a board member to change your check-out time.",
+    EMAIL_HOURS_OFF:
+      "Email hours is turned off in Settings. Set the Email hours row to On to use it.",
+    IMPORT_OFF:
+      "Import past hours is turned off in Settings. Set the Import past hours row to On to use it.",
   };
 }
 
@@ -1822,18 +1830,36 @@ function closedTotals(entries, token) {
  * tablet (decideArrivalChange); and checkOutMilestones, the milestone a
  * check-out would show by the minutes of this shift (checkOutMilestoneSteps, up to the
  * longest shift an in-window check-out can state), or null when there is no open row or
- * its start can't be read.
+ * its start can't be read. With milestonesOn false (the Milestones switch Off) it is the
+ * one step of a shift with no milestone ahead, [{fromMinutes: 0, id: null}], so the field
+ * keeps its shape and a check-out still shows at the tap.
  */
-function volunteerSummaries(volunteers, states, nowMs, windowMs, todayDate, launchDate) {
+function volunteerSummaries(
+  volunteers,
+  states,
+  nowMs,
+  windowMs,
+  todayDate,
+  launchDate,
+  milestonesOn,
+) {
   return volunteers.map((v) => {
     const state = hasLogState(states, v.token) ? logStateOf(states, v.token) : emptyLogState();
     const open = findOpenShift(state.open, v.token, nowMs, windowMs, todayDate);
     const startMs = open ? shiftStartMs(open) : NaN;
     const untilMs = open ? checkedInMs(open) + windowMs : NaN;
-    const steps =
-      isFinite(startMs) && isFinite(untilMs)
-        ? checkOutMilestoneSteps(state, v, launchDate, Math.ceil((untilMs - startMs) / 60000) + 1)
-        : null;
+    let steps = null;
+    if (isFinite(startMs) && isFinite(untilMs)) {
+      steps =
+        milestonesOn === false
+          ? [{ fromMinutes: 0, id: null }]
+          : checkOutMilestoneSteps(
+              state,
+              v,
+              launchDate,
+              Math.ceil((untilMs - startMs) / 60000) + 1,
+            );
+    }
     return {
       id: v.id,
       firstName: v.firstName,
@@ -2059,8 +2085,9 @@ function decideCheckIn(input) {
  * findOpenShift), then the stated check-out time (validateCheckOut). Input: {volunteers,
  * id (the tapped entry), digits, entries (the Log), todayDate, nowMs, windowMs, outMs
  * (null for server time), outDate, flagMinutes, longShiftHours (parseLongShiftHours),
- * launchDate}. Only the rows of the tokens checkOutTokens names are looked at, so entries
- * may be those rows alone. A check-out made with no digits under the same-name rule
+ * launchDate, milestonesOn}. milestonesOn false (the Milestones switch Off) means no
+ * milestone; missing means On. Only the rows of the tokens checkOutTokens names are looked
+ * at, so entries may be those rows alone. A check-out made with no digits under the same-name rule
  * decides and writes exactly what the same check-out with the member's digits would.
  *
  * Returns {refusal} or {volunteer, row, cells, minutes, milestone, statedOutMs, flags,
@@ -2132,13 +2159,16 @@ function decideCheckOut(input) {
     input.entries !== undefined
       ? closedTotals(input.entries, volunteer.token)
       : logStateOf(input.states, volunteer.token);
-  const milestone = milestoneCrossed(
-    before.shifts,
-    before.minutes,
-    minutes,
-    volunteer.startDate,
-    input.launchDate,
-  );
+  const milestone =
+    input.milestonesOn === false
+      ? null
+      : milestoneCrossed(
+          before.shifts,
+          before.minutes,
+          minutes,
+          volunteer.startDate,
+          input.launchDate,
+        );
   const extra = tapId ? [milestoneMismatchReason(input.shownMilestone, milestone)] : [];
   return {
     volunteer,
@@ -4109,6 +4139,17 @@ function parseHoursRequestsMode(text) {
   return s === "approve" || s === "auto" ? s : "off";
 }
 
+/**
+ * The hours request mode Settings give: "Hours requests" (parseHoursRequestsMode), read as
+ * "off" whatever it holds while the Email hours switch is Off, since requests are answered
+ * through Email hours.
+ */
+function hoursRequestsMode(settings) {
+  const s = settings || {};
+  if (!kioskSwitches(s).emailHours) return "off";
+  return parseHoursRequestsMode(s[hoursRequestsSetting()]);
+}
+
 /** The mode as the Mode column and the dialog write it: "Approve", "Auto" or "Off". */
 function hoursRequestModeText(mode) {
   if (mode === "auto") return "Auto";
@@ -5867,7 +5908,8 @@ function periodTables(counted, period, first) {
  * Every calculation of one period's report, from reportEntry rows of the whole Log. period
  * is a report period (reportPeriod). rateCents is parseMoneyCents of the Settings value: a
  * number, null (blank) or NaN (can't be read). cols is the reportColumns map, used only to
- * tell whether Role/Type and Activity are there; without it both are taken as present. No
+ * tell whether Role/Type and Activity are there; without it both are taken as present.
+ * milestonesOn false (the Milestones switch Off) leaves milestones out; missing means On. No
  * clock and no sheet. "In the period" means a row dated in it (inPeriod).
  *
  * Returns {
@@ -5883,7 +5925,8 @@ function periodTables(counted, period, first) {
  *   review: reviewGroups(entries, period), openCount,    rows to review, open count
  *   yearToDate: {hundredths, shifts, headcount} or null, 1 January to the period's last day,
  *                                                        for a month or quarter only
- *   milestones: [{label, title, date, row}],             milestones crossed
+ *   milestones: [{label, title, date, row}] or null,     milestones crossed; null with
+ *                                                        milestonesOn false
  *   value: {rateCents, cents, message},                  volunteer value, cents null with a message
  *   previous: the period compared against, or null       previousPeriod
  *   comparison: monthOverMonth(...) or null              against previous
@@ -5892,7 +5935,7 @@ function periodTables(counted, period, first) {
  *                                                        of any dated Log row, null with none
  * }. Nothing in it is a User Token.
  */
-function periodReport(entries, period, rateCents, cols) {
+function periodReport(entries, period, rateCents, cols, milestonesOn) {
   const H = logHeaderNames();
   const missing = (header) =>
     Boolean(cols) && !(typeof cols[header] === "number" && cols[header] >= 0);
@@ -6009,12 +6052,15 @@ function periodReport(entries, period, rateCents, cols) {
     review,
     openCount: review[0].rows.length,
     yearToDate,
-    milestones: milestonesCrossedIn(entries, period).map((m) => ({
-      label: labels.get(m.token).label,
-      title: m.title,
-      date: m.date,
-      row: m.row,
-    })),
+    milestones:
+      milestonesOn === false
+        ? null
+        : milestonesCrossedIn(entries, period).map((m) => ({
+            label: labels.get(m.token).label,
+            title: m.title,
+            date: m.date,
+            row: m.row,
+          })),
     value,
     previous: before,
     comparison: before ? monthOverMonth(figures, monthFigures(entries, before, first)) : null,
@@ -6262,11 +6308,14 @@ function reportRows(report, month, initials, madeAtText) {
     const title = "Hours by " + name + (t.columnMissing ? " (no " + name + " column)" : "");
     table(title, [name, "Shifts", "Stated hours"], hoursRows(t.groups, "label"));
   });
-  table(
-    isMonth ? "Milestones crossed this month" : "Milestones crossed in this period",
-    [L("Volunteer"), "Milestone", "Date", "Log row"],
-    report.milestones.map((m) => [m.label, m.title, m.date, N(m.row)]),
-  );
+  // The Milestones switch Off leaves the part out (periodReport's milestones null).
+  if (report.milestones) {
+    table(
+      isMonth ? "Milestones crossed this month" : "Milestones crossed in this period",
+      [L("Volunteer"), "Milestone", "Date", "Log row"],
+      report.milestones.map((m) => [m.label, m.title, m.date, N(m.row)]),
+    );
+  }
 
   blank();
   addAs("section", "Rows to review", "Log row numbers are as of when this report was made.");

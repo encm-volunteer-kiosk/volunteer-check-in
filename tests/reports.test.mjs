@@ -763,6 +763,27 @@ test("milestonesCrossedIn walks by date, not by Log row, and never lists the fir
 // ---------------------------------------------------------------------------
 // The report tab
 
+test("the Milestones switch Off leaves the milestones part out of the report, and nothing else", () => {
+  const period = L.monthPeriod("2026-11");
+  const on = plain(L.periodReport(entriesFor(SAMPLE), period, 3479));
+  const off = plain(L.periodReport(entriesFor(SAMPLE), period, 3479, undefined, false));
+  assert.ok(Array.isArray(on.milestones));
+  assert.equal(off.milestones, null);
+  assert.deepEqual({ ...off, milestones: on.milestones }, on);
+  const text = (r) =>
+    plain(L.reportRows(r, period, "JP", "2026-12-01 9:14 AM"))
+      .values.map((row) => row.join("\t"))
+      .filter((line) => line.trim() !== "");
+  const withPart = text(on);
+  const without = text(off);
+  assert.ok(withPart.some((l) => l.startsWith("Milestones crossed this month")));
+  assert.ok(!without.some((l) => l.includes("Milestones crossed")));
+  const at = withPart.findIndex((l) => l.startsWith("Milestones crossed this month"));
+  const rowsInPart = withPart.length - without.length;
+  assert.ok(rowsInPart >= 2, "the title and the column names at least");
+  assert.deepEqual(without, [...withPart.slice(0, at), ...withPart.slice(at + rowsInPart)]);
+});
+
 test("reportRows: rectangular, formats the same shape, no token anywhere", () => {
   const rows = SAMPLE.map((r) => ({ ...r, token: "tok-" + r.token + "-secret" }));
   const report = L.monthReport(entriesFor(rows), "2026-11", 3479);

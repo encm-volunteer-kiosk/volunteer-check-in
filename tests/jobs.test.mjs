@@ -2615,3 +2615,15 @@ test("the flags email still sends when the Hours emails or Hours requests header
     /Hours requests waiting for staff: couldn't be read \(check the Hours requests tab's header row\)/,
   );
 });
+
+test("with Email hours Off, a run in Auto reads Settings only and writes nothing", () => {
+  const s = requestServer({
+    settings: { ...REQUEST_SETTINGS, "Email hours": "Off" },
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+  });
+  s.runRequests();
+  assert.equal(s.lock.tries, 0);
+  assert.deepEqual(s.mail, []);
+  assert.equal(requestRows(s)[0].Status, "waiting");
+  assert.equal(lastRun(s), "");
+});

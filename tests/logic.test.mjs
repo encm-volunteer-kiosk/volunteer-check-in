@@ -2581,6 +2581,12 @@ test("refusal gives each code its exact message", () => {
     HOURS_EMAIL_TOO_MANY: "Too many volunteers in one send. Press Preview again.",
     HOURS_REQUESTS_OFF:
       "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
+    ARRIVAL_CHANGES_OFF: "Please ask a board member to change your arrival time.",
+    CHECKOUT_CHANGES_OFF: "Please ask a board member to change your check-out time.",
+    EMAIL_HOURS_OFF:
+      "Email hours is turned off in Settings. Set the Email hours row to On to use it.",
+    IMPORT_OFF:
+      "Import past hours is turned off in Settings. Set the Import past hours row to On to use it.",
   };
   for (const [code, message] of Object.entries(expected)) {
     assert.deepEqual(plain(L.refusal(code)), { ok: false, refusal: code, message });
