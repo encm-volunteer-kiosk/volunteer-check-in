@@ -42,12 +42,32 @@ function kiosk(rows, opts = {}) {
     ...Object.entries(rows),
   ]);
   const cache = new Map();
-  const ctx = server(ss, { cache, code: opts.code });
+  opts.docProps = opts.docProps || new Map();
+  const ctx = server(ss, { cache, code: opts.code, docProps: opts.docProps, errors: opts.errors });
   const triggers = [];
+  let uid = 0;
   ctx.ScriptApp = {
-    getProjectTriggers: () => triggers,
+    getProjectTriggers: () => [...triggers],
     deleteTrigger: (t) => triggers.splice(triggers.indexOf(t), 1),
+    newTrigger: (handler) => {
+      const t = { handler, uid: "new-" + ++uid };
+      t.getHandlerFunction = () => handler;
+      t.getUniqueId = () => t.uid;
+      const create = { create: () => triggers.push(t) };
+      return {
+        timeBased: () => ({
+          everyHours: (n) => ((t.everyHours = n), create),
+          atHour: (h) => ({
+            everyDays: () => ({ inTimezone: (zone) => ((t.atHour = h), (t.zone = zone), create) }),
+          }),
+        }),
+      };
+    },
   };
+  if (opts.storesAs) {
+    // The name the spreadsheet stores for a zone it is set to, as Sheets may for an alias.
+    ss.setSpreadsheetTimeZone = (zone) => (ss.timeZone = opts.storesAs[zone] || zone);
+  }
   ctx.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
   ctx.Utilities.sleep = () => {};
   ctx.Utilities.parseDate = (text, zone, format) => {
@@ -58,7 +78,7 @@ function kiosk(rows, opts = {}) {
   for (const file of ["Api.js", "Jobs.js", "Admin.js"]) {
     vm.runInContext(read("apps-script/" + file), ctx, { filename: file });
   }
-  return { ss, ctx, cache, triggers };
+  return { ss, ctx, cache, triggers, docProps: opts.docProps };
 }
 
 /** The instant a wall-clock "yyyy-MM-dd HH:mm:ss" names in zone. */
@@ -277,4 +297,132 @@ test("the daily jobs' log line names the kiosk's zone", () => {
     ctx.jobLabel_({ handler: "runAutoClockOut", atHour: 4 }),
     "runAutoClockOut daily at 4:00 Europe/London",
   );
+});
+
+// ---------------------------------------------------------------------------
+// setupSheets' time zone step
+
+/** A trigger as this account had it installed: handler, at an hour or every few hours. */
+function installed(handler, spec = {}) {
+  return { handler, getHandlerFunction: () => handler, getUniqueId: () => "old-" + handler, ...spec };
+}
+
+/** The Settings tab's value for name, or undefined with no such row. */
+function settingOf(ss, name) {
+  const row = ss
+    .getSheetByName("Settings")
+    .getDataRange()
+    .getValues()
+    .find((r) => r[0] === name);
+  return row ? row[1] : undefined;
+}
+
+test("setupSheets sets the spreadsheet's zone from the Time zone row and keeps the name it stored", () => {
+  const { ss, ctx, docProps } = kiosk({ "Time zone": "Europe/London" });
+  assert.equal(ss.timeZone, "America/Chicago");
+  ctx.setupSheets();
+  assert.equal(ss.timeZone, "Europe/London");
+  assert.deepEqual(JSON.parse(docProps.get("zoneSetAs")), {
+    row: "Europe/London",
+    stored: "Europe/London",
+  });
+});
+
+test("setupSheets remakes the installed daily triggers that run at an hour on the row's zone", () => {
+  const { ctx, triggers } = kiosk({ "Time zone": "Asia/Kolkata" });
+  const hourly = installed("runFlagsEmail", { everyHours: 1 });
+  const other = installed("onSheetChange");
+  triggers.push(hourly, installed("runAutoClockOut", { atHour: 4, zone: "America/Chicago" }));
+  triggers.push(other);
+  ctx.setupSheets();
+  // The hourly and other triggers are kept; the auto clock-out's is made again, then deleted.
+  assert.deepEqual(
+    triggers.map((t) => t.getUniqueId()),
+    ["old-runFlagsEmail", "old-onSheetChange", "new-1"],
+  );
+  assert.ok(triggers.includes(hourly) && triggers.includes(other));
+  const made = triggers[2];
+  assert.deepEqual([made.handler, made.atHour, made.zone], [
+    "runAutoClockOut",
+    4,
+    L.parseTimeZone("Asia/Kolkata"),
+  ]);
+});
+
+test("setupSheets installs no daily trigger that wasn't installed", () => {
+  const { ctx, triggers } = kiosk({ "Time zone": "Europe/London" });
+  ctx.setupSheets();
+  assert.deepEqual(triggers, []);
+});
+
+test("an alias the spreadsheet stores by another name: setupSheets keeps the pair and sets it once", () => {
+  const storesAs = { "US/Central": "America/Chicago" };
+  const { ss, ctx, docProps } = kiosk({ "Time zone": "US/Central" }, {
+    spreadsheetZone: "Europe/London",
+    storesAs,
+  });
+  let sets = 0;
+  const set = ss.setSpreadsheetTimeZone;
+  ss.setSpreadsheetTimeZone = (zone) => (sets++, set(zone));
+  ctx.setupSheets();
+  assert.equal(ss.timeZone, "America/Chicago");
+  assert.deepEqual(JSON.parse(docProps.get("zoneSetAs")), {
+    row: "US/Central",
+    stored: "America/Chicago",
+  });
+  ctx.setupSheets();
+  assert.equal(sets, 1);
+});
+
+test("with a blank Time zone row setupSheets leaves the zone, the triggers and the launch date", () => {
+  const { ss, ctx, triggers, docProps } = kiosk(
+    { "Time zone": "", "Kiosk launch date": "" },
+    { spreadsheetZone: "Europe/London" },
+  );
+  const auto = installed("runAutoClockOut", { atHour: 4, zone: "America/Chicago" });
+  triggers.push(auto);
+  ctx.setupSheets();
+  assert.equal(ss.timeZone, "Europe/London");
+  assert.deepEqual(triggers, [auto]);
+  assert.equal(docProps.size, 0);
+  // The rest is set up: every Settings row is there, the launch date still blank.
+  for (const [name] of plain(L.settingsDefaults(""))) {
+    assert.notEqual(settingOf(ss, name), undefined, name);
+  }
+  assert.equal(settingOf(ss, "Kiosk launch date"), "");
+  assert.ok(ss.getSheetByName("Log") && ss.getSheetByName("Flags"));
+
+  // Once a zone is typed, the next run fills the launch date with today there.
+  const settings = ss.getSheetByName("Settings");
+  const row = settings.getDataRange().getValues().findIndex((r) => r[0] === "Time zone") + 1;
+  settings.getRange(row, 2).setValue("Asia/Kolkata");
+  const fresh = server(ss, { docProps });
+  fresh.ScriptApp = { getProjectTriggers: () => [] };
+  fresh.setupSheets();
+  assert.equal(
+    settingOf(ss, "Kiosk launch date"),
+    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()),
+  );
+  assert.equal(ss.timeZone, "Asia/Kolkata");
+});
+
+test("a missing Time zone row: setupSheets sets America/Chicago and adds the row with it", () => {
+  const { ss, ctx } = kiosk({}, { spreadsheetZone: "Europe/London" });
+  ctx.setupSheets();
+  assert.equal(ss.timeZone, "America/Chicago");
+  assert.equal(settingOf(ss, "Time zone"), "America/Chicago");
+  assert.equal(settingOf(ss, "Time zone problem"), "");
+});
+
+test("under a brand whose Time zone default is blank, setupSheets adds the row blank and sets no zone", () => {
+  const brand = 'function brandSettingsDefaults() { return { "Time zone": "" }; }';
+  const code = [
+    read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js") + "\n" + brand,
+    read("apps-script/Sheets.js"),
+  ];
+  const { ss, ctx } = kiosk({ "Kiosk launch date": "" }, { code, spreadsheetZone: "Europe/London" });
+  ctx.setupSheets();
+  assert.equal(ss.timeZone, "Europe/London");
+  assert.equal(settingOf(ss, "Time zone"), "");
+  assert.equal(settingOf(ss, "Kiosk launch date"), "");
 });

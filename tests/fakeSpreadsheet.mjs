@@ -506,7 +506,8 @@ export function sheetsService(ss, opts = {}) {
  * opts.noSheetsService leaves the advanced Sheets service out, as when it is off;
  * opts.failOn is passed to sheetsService. opts.cache is the script cache, a Map of key
  * to value (a new one by default); opts.props the script properties, also a Map (new by
- * default); opts.onFlush runs on each SpreadsheetApp.flush;
+ * default); opts.docProps the document properties, a Map (new by default); opts.onFlush
+ * runs on each SpreadsheetApp.flush; ScriptApp lists no triggers;
  * opts.errors collects what the server logs with console.error. opts.code is a list of
  * server sources to load in order in place of this tree's Brand.js, Logic.js and Sheets.js
  * (another revision's, say).
@@ -514,6 +515,7 @@ export function sheetsService(ss, opts = {}) {
 export function server(ss, opts = {}) {
   const cache = opts.cache || new Map();
   const props = opts.props || new Map();
+  const docProps = opts.docProps || new Map();
   const checkbox = () => {
     const rule = {};
     const b = {
@@ -540,7 +542,13 @@ export function server(ss, opts = {}) {
         setProperty: (k, v) => void props.set(k, String(v)),
         deleteProperty: (k) => void props.delete(k),
       }),
+      getDocumentProperties: () => ({
+        getProperty: (k) => (docProps.has(k) ? docProps.get(k) : null),
+        setProperty: (k, v) => void docProps.set(k, String(v)),
+        deleteProperty: (k) => void docProps.delete(k),
+      }),
     },
+    ScriptApp: { getProjectTriggers: () => [] },
     SpreadsheetApp: {
       getActiveSpreadsheet: () => ss,
       newDataValidation: checkbox,

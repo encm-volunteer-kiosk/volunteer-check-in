@@ -51,6 +51,8 @@ const OLD_LOG_HEADERS = [
   "Staff note",
 ];
 const TIME_FORMAT = "yyyy-mm-dd h:mm am/pm";
+/** Settings rows setupSheets itself writes, which a test leaves blank. */
+const KIOSK_WRITTEN = ["Header word", "Time zone problem"];
 
 function expectKioskFormats(sheet, header) {
   header.forEach((h, i) => {
@@ -1196,8 +1198,9 @@ test("Kiosk contact: a staff value survives every run; a tab without the row get
   const rows = [["Setting", "Value"]].concat(
     plain(S.settingsDefaults("2026-11-13"))
       .filter((r) => r[0] !== "Kiosk contact")
-      // Header word stays blank: setupSheets writes it while the Log holds no rows.
-      .map((r) => [r[0], r[1] || (r[0] === "Header word" ? "" : "kept")]),
+      // Header word stays blank: setupSheets writes it while the Log holds no rows. So does
+      // Time zone problem, which setupSheets clears once the zones match.
+      .map((r) => [r[0], r[1] || (KIOSK_WRITTEN.includes(r[0]) ? "" : "kept")]),
   );
   const tab = sheetWith(old, "Settings", rows);
   const O = server(old);
@@ -1245,8 +1248,9 @@ test("the hours email rows: staff values survive every run; a tab without them g
   const rows = [["Setting", "Value"]].concat(
     plain(S.settingsDefaults("2026-11-13"))
       .filter((r) => !r[0].startsWith("Hours email"))
-      // Header word stays blank: setupSheets writes it while the Log holds no rows.
-      .map((r) => [r[0], r[1] || (r[0] === "Header word" ? "" : "kept")]),
+      // Header word stays blank: setupSheets writes it while the Log holds no rows. So does
+      // Time zone problem, which setupSheets clears once the zones match.
+      .map((r) => [r[0], r[1] || (KIOSK_WRITTEN.includes(r[0]) ? "" : "kept")]),
   );
   const tab = sheetWith(old, "Settings", rows);
   const O = server(old);

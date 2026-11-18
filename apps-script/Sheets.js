@@ -34,7 +34,10 @@ function requireEditorRun_() {
 }
 
 /**
- * Creates or updates the Log, Settings and Flags tabs and the staff help: the Log header,
+ * Creates or updates the Log, Settings and Flags tabs and the staff help. First the time
+ * zone (setupTimeZone_): the spreadsheet's zone and this account's installed daily
+ * triggers follow a valid Time zone row; with a blank or unknown row they are left, and
+ * so is a blank Kiosk launch date. Then the Log header,
  * formats and any missing Settings row (setupLog_ for the Log), Settings' What it does
  * column, then the Flags tab (setupFlags_), so a failure there leaves the Log and Settings
  * set up, then the Log and Flags header notes, the look of all three (applyLooks_), and
@@ -42,16 +45,15 @@ function requireEditorRun_() {
  * the Flags tab's Reviewed checkbox and its "Flags: Unreviewed" view, and the look; never
  * changes a cell with text in it or deletes a row, except for the help it rewrites on
  * every run: Settings column C, the How to tab, and a header note that is empty or still
- * exactly one of the kiosk's own texts; and the person-word headers and Header word while
- * the Log, Flags and Removed shifts hold no rows (setupHeaderWord_). So running it twice
+ * exactly one of the kiosk's own texts; the person-word headers and Header word while
+ * the Log, Flags and Removed shifts hold no rows (setupHeaderWord_); and the Time zone
+ * problem row, which it clears once the zones match (compareTimeZones_). So running it twice
  * changes nothing. Runs only from the Apps Script editor.
  */
 function setupSheets() {
   requireEditorRun_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  if (ss.getSpreadsheetTimeZone() !== kioskTimeZone()) {
-    ss.setSpreadsheetTimeZone(kioskTimeZone());
-  }
+  const zone = setupTimeZone_(ss);
 
   setupLog_(ss);
 
@@ -63,15 +65,19 @@ function setupSheets() {
   }
   settings.setFrozenRows(1);
   const existing = readSettings_();
-  const missing = settingsDefaults(kioskDate_(new Date())).filter(
+  // Today's date waits for a time zone: with none, Kiosk launch date is added or left blank.
+  const today = zone ? kioskDate_(new Date()) : "";
+  const missing = settingsDefaults(today).filter(
     (row) => !Object.prototype.hasOwnProperty.call(existing, row[0]),
   );
   if (missing.length) {
     settings.getRange(settings.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
   }
   // A blank Kiosk launch date gets today's date, so a fresh copy has one; a date is kept.
-  const launch = launchDateToFill(existing, kioskDate_(new Date()));
+  const launch = launchDateToFill(existing, today);
   if (launch) setSetting_(launchDateSetting(), launch);
+  // The zones now match, so this clears a Time zone problem left from before.
+  compareTimeZones_(existing);
   settings.getRange(1, 3).setValue(settingsDescriptionHeader());
   writeSettingsDescriptions_(settings);
   protectOnce_(
@@ -90,6 +96,80 @@ function setupSheets() {
   writeHeaderNotes_(sheet_(FLAGS_TAB), flagHeaderNames(word), flagHeaderNotes(word), word);
   applyLooks_(ss);
   setupHowTo_(ss);
+}
+
+/**
+ * The time zone part of setupSheets, first. With a Time zone row that is a time zone (a
+ * missing row reads as the brand's default, timeZoneRowText), and the spreadsheet's zone
+ * not matching it (zonesMatch), sets the spreadsheet's zone from the row as typed, then
+ * keeps the row and the name the spreadsheet stored for it in the document property
+ * zoneSetAs, so an alias the spreadsheet stores by another name still matches. Then
+ * remakes this account's installed daily triggers on the row's zone
+ * (remakeDailyJobTriggers_). Returns the kiosk's zone, or "" with a blank or unknown row,
+ * when it changes nothing and the rest of setupSheets still runs.
+ */
+function setupTimeZone_(ss) {
+  const settings = ss.getSheetByName(SETTINGS_TAB) ? readSettings_() : {};
+  const zone = kioskZoneOf(settings);
+  if (!zone) return "";
+  const row = timeZoneRowText(settings);
+  if (!zonesMatch(row, ss.getSpreadsheetTimeZone(), zoneSetAs_)) {
+    ss.setSpreadsheetTimeZone(row);
+    PropertiesService.getDocumentProperties().setProperty(
+      zoneSetAsProperty(),
+      zoneSetAsText(row, ss.getSpreadsheetTimeZone()),
+    );
+  }
+  remakeDailyJobTriggers_();
+  return zone;
+}
+
+/**
+ * Remakes this account's installed daily-job triggers that run at an hour (dailyJobs,
+ * Logic.js) on the kiosk's zone: for each, a new trigger (createJobTrigger_, Jobs.js),
+ * then the old one deleted, so a failure leaves the old one. A trigger that runs every few
+ * hours has no zone and is left; so is a job not installed. Google lists only this
+ * account's triggers, so another account's keep their hour until that account runs
+ * setupDailyJobs. Returns how many it remade.
+ */
+function remakeDailyJobTriggers_() {
+  const jobs = dailyJobs().filter((job) => !job.everyHours);
+  let remade = 0;
+  ScriptApp.getProjectTriggers().forEach((t) => {
+    const job = jobs.find((j) => j.handler === t.getHandlerFunction());
+    if (!job) return;
+    createJobTrigger_(job);
+    ScriptApp.deleteTrigger(t);
+    remade++;
+  });
+  return remade;
+}
+
+/** The pair setupSheets kept in the document property zoneSetAs (parseZoneSetAs), or null. */
+function zoneSetAs_() {
+  return parseZoneSetAs(
+    PropertiesService.getDocumentProperties().getProperty(zoneSetAsProperty()),
+  );
+}
+
+/**
+ * Compares the Time zone row in settings, the Settings the caller read, with the
+ * spreadsheet's zone (timeZoneProblemText, Logic.js), and writes the Time zone problem row
+ * with setSetting_ only when the text differs from the row's value in settings: zones that
+ * stay apart cost one write, not one per call. Returns the row's text after it. Never
+ * throws: a failed read or write is logged, and the next compare tries again.
+ */
+function compareTimeZones_(settings) {
+  const was = cellString((settings || {})[timeZoneProblemSetting()]);
+  let text = was;
+  try {
+    const sheetZone = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+    text = timeZoneProblemText(settings, sheetZone, zoneSetAs_);
+    if (text !== was) setSetting_(timeZoneProblemSetting(), text);
+  } catch (e) {
+    console.error("Time zone problem not written: " + (e && e.message ? e.message : String(e)));
+  }
+  return text;
 }
 
 /**

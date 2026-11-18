@@ -217,6 +217,7 @@ test("every setting the server code writes has a description", () => {
     "Past hours file ID",
     "Past hours tab",
     "Profiles problems",
+    "Time zone problem",
   ]);
   const d = plain(L.settingsDescriptions());
   written.forEach((name) => assert.ok(d[name], name));

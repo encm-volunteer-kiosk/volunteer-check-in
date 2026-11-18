@@ -5593,10 +5593,11 @@ const LOG_WRITE_CLASSES = {
     why: "setupReports' warning-only protections",
   },
 
-  setupSheets: {
+  setupSheets: { class: "tab", tab: "SETTINGS_TAB", why: "writes Settings" },
+  setupTimeZone_: {
     class: "tab",
     tab: "SETTINGS_TAB",
-    why: "writes Settings; its time zone change comes just before setupLog_, which stamps first",
+    why: "sets the spreadsheet's zone, in setupSheets just before setupLog_, which stamps first",
   },
   setupFlags_: { class: "tab", tab: "FLAGS_TAB" },
   setSetting_: { class: "tab", tab: "SETTINGS_TAB" },

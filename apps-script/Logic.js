@@ -517,6 +517,66 @@ function kioskZoneOf(settings) {
 }
 
 /**
+ * The document property where setupSheets keeps, after setting the spreadsheet's zone, the
+ * Time zone row it set it from and the name the spreadsheet stored (zoneSetAsText).
+ */
+function zoneSetAsProperty() {
+  return "zoneSetAs";
+}
+
+/** zoneSetAs' value: the row as typed and the name the spreadsheet stored for it. */
+function zoneSetAsText(row, stored) {
+  return JSON.stringify({ row: cellString(row), stored: cellString(stored) });
+}
+
+/** zoneSetAs' value as {row, stored}, or null when it is missing or can't be read. */
+function parseZoneSetAs(text) {
+  if (typeof text !== "string" || !text) return null;
+  let pair;
+  try {
+    pair = JSON.parse(text);
+  } catch (e) {
+    return null;
+  }
+  if (!pair || typeof pair.row !== "string" || typeof pair.stored !== "string") return null;
+  return { row: pair.row, stored: pair.stored };
+}
+
+/**
+ * True when the Time zone row as typed (row) and the spreadsheet's zone (sheetZone) name
+ * the same zone: the two names are equal, or setAs() gives the pair setupSheets kept
+ * (parseZoneSetAs) and it is this row and this spreadsheet name, as when the spreadsheet
+ * stored an alias the row names by another name. setAs is called only when the names
+ * differ.
+ */
+function zonesMatch(row, sheetZone, setAs) {
+  const r = cellString(row);
+  const z = cellString(sheetZone);
+  if (r === z) return true;
+  const pair = setAs ? setAs() : null;
+  return !!pair && pair.row === r && pair.stored === z;
+}
+
+/**
+ * The Time zone problem row's text: blank while the Time zone row in settings
+ * (timeZoneRowText) and the spreadsheet's zone match (zonesMatch), and blank while the row
+ * is blank or not a time zone, when the kiosk's refusal speaks instead; else the sentence
+ * naming both zones and how to fix it.
+ */
+function timeZoneProblemText(settings, sheetZone, setAs) {
+  const row = timeZoneRowText(settings);
+  if (!parseTimeZone(row) || zonesMatch(row, sheetZone, setAs)) return "";
+  return (
+    "Settings says " +
+    row +
+    ", the spreadsheet is on " +
+    cellString(sheetZone) +
+    "; times shown on the sheet and times typed into it are off until they match. Correct" +
+    " the Time zone row if it's wrong, then run setupSheets."
+  );
+}
+
+/**
  * An On/Off row: the cell, trimmed, in any case. "on" is true, "off" is false, and
  * anything else, blank included, is the row's code default, so a typo keeps the kiosk as
  * it was. ("Flags email" keeps its own reading: parseFlagsEmailOn.)
