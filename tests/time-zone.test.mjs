@@ -304,7 +304,12 @@ test("the daily jobs' log line names the kiosk's zone", () => {
 
 /** A trigger as this account had it installed: handler, at an hour or every few hours. */
 function installed(handler, spec = {}) {
-  return { handler, getHandlerFunction: () => handler, getUniqueId: () => "old-" + handler, ...spec };
+  return {
+    handler,
+    getHandlerFunction: () => handler,
+    getUniqueId: () => "old-" + handler,
+    ...spec,
+  };
 }
 
 /** The Settings tab's value for name, or undefined with no such row. */
@@ -342,11 +347,10 @@ test("setupSheets remakes the installed daily triggers that run at an hour on th
   );
   assert.ok(triggers.includes(hourly) && triggers.includes(other));
   const made = triggers[2];
-  assert.deepEqual([made.handler, made.atHour, made.zone], [
-    "runAutoClockOut",
-    4,
-    L.parseTimeZone("Asia/Kolkata"),
-  ]);
+  assert.deepEqual(
+    [made.handler, made.atHour, made.zone],
+    ["runAutoClockOut", 4, L.parseTimeZone("Asia/Kolkata")],
+  );
 });
 
 test("setupSheets installs no daily trigger that wasn't installed", () => {
@@ -357,10 +361,13 @@ test("setupSheets installs no daily trigger that wasn't installed", () => {
 
 test("an alias the spreadsheet stores by another name: setupSheets keeps the pair and sets it once", () => {
   const storesAs = { "US/Central": "America/Chicago" };
-  const { ss, ctx, docProps } = kiosk({ "Time zone": "US/Central" }, {
-    spreadsheetZone: "Europe/London",
-    storesAs,
-  });
+  const { ss, ctx, docProps } = kiosk(
+    { "Time zone": "US/Central" },
+    {
+      spreadsheetZone: "Europe/London",
+      storesAs,
+    },
+  );
   let sets = 0;
   const set = ss.setSpreadsheetTimeZone;
   ss.setSpreadsheetTimeZone = (zone) => (sets++, set(zone));
@@ -394,7 +401,11 @@ test("with a blank Time zone row setupSheets leaves the zone, the triggers and t
 
   // Once a zone is typed, the next run fills the launch date with today there.
   const settings = ss.getSheetByName("Settings");
-  const row = settings.getDataRange().getValues().findIndex((r) => r[0] === "Time zone") + 1;
+  const row =
+    settings
+      .getDataRange()
+      .getValues()
+      .findIndex((r) => r[0] === "Time zone") + 1;
   settings.getRange(row, 2).setValue("Asia/Kolkata");
   const fresh = server(ss, { docProps });
   fresh.ScriptApp = { getProjectTriggers: () => [] };
@@ -420,9 +431,178 @@ test("under a brand whose Time zone default is blank, setupSheets adds the row b
     read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js") + "\n" + brand,
     read("apps-script/Sheets.js"),
   ];
-  const { ss, ctx } = kiosk({ "Kiosk launch date": "" }, { code, spreadsheetZone: "Europe/London" });
+  const { ss, ctx } = kiosk(
+    { "Kiosk launch date": "" },
+    { code, spreadsheetZone: "Europe/London" },
+  );
   ctx.setupSheets();
   assert.equal(ss.timeZone, "Europe/London");
   assert.equal(settingOf(ss, "Time zone"), "");
   assert.equal(settingOf(ss, "Kiosk launch date"), "");
+});
+
+// ---------------------------------------------------------------------------
+// The Time zone problem row
+
+const PROBLEM = (row, sheet) =>
+  "Settings says " +
+  row +
+  ", the spreadsheet is on " +
+  sheet +
+  "; times shown on the sheet and times typed into it are off until they match. Correct the" +
+  " Time zone row if it's wrong, then run setupSheets.";
+
+test("the problem text names both zones while they differ, and is blank while they match", () => {
+  const none = () => null;
+  const chicago = { "Time zone": "America/Chicago" };
+  assert.equal(L.timeZoneProblemText(chicago, "America/Chicago", none), "");
+  assert.equal(
+    L.timeZoneProblemText(chicago, "America/New_York", none),
+    PROBLEM("America/Chicago", "America/New_York"),
+  );
+  // A missing row is the brand's default, never the spreadsheet's zone.
+  assert.equal(
+    L.timeZoneProblemText({}, "Europe/London", none),
+    PROBLEM("America/Chicago", "Europe/London"),
+  );
+  // A blank or unknown row: blank, as the refusal speaks for it.
+  assert.equal(L.timeZoneProblemText({ "Time zone": "" }, "Europe/London", none), "");
+  assert.equal(L.timeZoneProblemText({ "Time zone": "nowhere" }, "Europe/London", none), "");
+  // Two names for one zone match through the pair setupSheets kept.
+  const pair = () => ({ row: "US/Central", stored: "America/Chicago" });
+  assert.equal(L.timeZoneProblemText({ "Time zone": "US/Central" }, "America/Chicago", pair), "");
+  assert.equal(
+    L.timeZoneProblemText({ "Time zone": "US/Central" }, "America/Denver", pair),
+    PROBLEM("US/Central", "America/Denver"),
+  );
+});
+
+test("zonesMatch reads the pair only when the names differ", () => {
+  let reads = 0;
+  const pair = () => (reads++, { row: "US/Central", stored: "America/Chicago" });
+  assert.equal(L.zonesMatch("Europe/London", "Europe/London", pair), true);
+  assert.equal(reads, 0);
+  assert.equal(L.zonesMatch("US/Central", "America/Chicago", pair), true);
+  assert.equal(L.zonesMatch("America/Chicago", "US/Central", pair), false);
+  assert.equal(reads, 2);
+  assert.equal(
+    L.parseZoneSetAs(L.zoneSetAsText(" US/Central ", "America/Chicago")).row,
+    "US/Central",
+  );
+  for (const bad of [null, "", "not json", "{}", '{"row":1,"stored":"x"}']) {
+    assert.equal(L.parseZoneSetAs(bad), null, String(bad));
+  }
+});
+
+test("the flags email: the problem line first, the subject's mismatch before the counts, the counts without it", () => {
+  const input = {
+    summary: { recent: [], unreviewed: 0 },
+    autoClockOut: { stale: false, lastRun: "2026-11-16 04:02" },
+    flagsUrl: "https://example.org/flags",
+    skipped: [],
+  };
+  assert.equal(L.flagsEmailMessage(input), null);
+  assert.equal(L.flagsEmailMessage({ ...input, zoneProblem: "" }), null);
+  const zoned = L.flagsEmailMessage({ ...input, zoneProblem: "  Settings says X  " });
+  assert.equal(
+    zoned.subject,
+    "Volunteer kiosk: time zone mismatch, 0 new flags this week, 0 unreviewed",
+  );
+  assert.deepEqual(zoned.body.split("\n\n").slice(0, 3), [
+    "Time zone problem: Settings says X",
+    "Flags raised in the last 7 days: 0",
+    "Flags still unreviewed: 0",
+  ]);
+  const both = L.flagsEmailMessage({
+    ...input,
+    autoClockOut: { stale: true, lastRun: "" },
+    zoneProblem: "Settings says X",
+  });
+  assert.equal(
+    both.subject,
+    "Volunteer kiosk: time zone mismatch, auto clock-out not running, 0 new flags this week, 0 unreviewed",
+  );
+  const body = both.body.split("\n\n");
+  assert.equal(body[0], "Time zone problem: Settings says X");
+  assert.ok(body[1].startsWith("The auto clock-out has never run."));
+});
+
+/** setSetting_ in ctx, wrapped to record each call as [name, value]. */
+function spySettings(ctx) {
+  const calls = [];
+  const real = ctx.setSetting_;
+  ctx.setSetting_ = (name, value) => (calls.push([name, value]), real(name, value));
+  return calls;
+}
+
+test("setupSheets clears the problem row in its own run, and leaves a blank one alone", () => {
+  const { ss, ctx } = kiosk(
+    {
+      "Time zone": "Europe/London",
+      "Time zone problem": PROBLEM("Europe/London", "America/Chicago"),
+    },
+    { spreadsheetZone: "America/Chicago" },
+  );
+  const calls = spySettings(ctx);
+  ctx.setupSheets();
+  assert.equal(settingOf(ss, "Time zone problem"), "");
+  assert.deepEqual(
+    calls.filter(([name]) => name === "Time zone problem"),
+    [["Time zone problem", ""]],
+  );
+  calls.length = 0;
+  ctx.setupSheets();
+  assert.deepEqual(
+    calls.filter(([name]) => name === "Time zone problem"),
+    [],
+  );
+});
+
+test("an alias: once setupSheets keeps the pair, the compare writes nothing", () => {
+  const { ss, ctx } = kiosk(
+    { "Time zone": "US/Central", "Time zone problem": "" },
+    { spreadsheetZone: "Europe/London", storesAs: { "US/Central": "America/Chicago" } },
+  );
+  ctx.setupSheets();
+  assert.equal(ss.timeZone, "America/Chicago");
+  assert.equal(settingOf(ss, "Time zone problem"), "");
+  const calls = spySettings(ctx);
+  assert.equal(ctx.compareTimeZones_(ctx.readSettings_()), "");
+  assert.deepEqual(calls, []);
+});
+
+test("a blank or unknown Time zone row: the compare blanks a problem row once, then writes nothing", () => {
+  for (const zone of ["", "nowhere"]) {
+    const { ss, ctx } = kiosk(
+      { "Time zone": zone, "Time zone problem": PROBLEM("Europe/London", "America/Chicago") },
+      { spreadsheetZone: "America/Chicago" },
+    );
+    const calls = spySettings(ctx);
+    ctx.setupSheets();
+    assert.equal(settingOf(ss, "Time zone problem"), "", JSON.stringify(zone));
+    assert.deepEqual(
+      calls.filter(([name]) => name === "Time zone problem"),
+      [["Time zone problem", ""]],
+    );
+    calls.length = 0;
+    ctx.setupSheets();
+    assert.equal(ctx.compareTimeZones_(ctx.readSettings_()), "");
+    assert.deepEqual(
+      calls.filter(([name]) => name === "Time zone problem"),
+      [],
+    );
+  }
+});
+
+test("a compare that can't write is logged and returns the text", () => {
+  const errors = [];
+  const { ctx } = kiosk({ "Time zone": "Europe/London" }, { errors });
+  ctx.setSetting_ = () => {
+    throw new Error("Service Spreadsheets timed out");
+  };
+  assert.equal(
+    ctx.compareTimeZones_(ctx.readSettings_()),
+    PROBLEM("Europe/London", "America/Chicago"),
+  );
+  assert.deepEqual(errors, ["Time zone problem not written: Service Spreadsheets timed out"]);
 });

@@ -320,7 +320,7 @@ function apiCheckIn(code, id, arrivalIso, digits, tap) {
           missedSignOut: decision.missedSignOut,
         };
       }),
-    () => fillLogMap_(run),
+    (reply) => afterTap_(run, settings, reply),
   );
 }
 
@@ -469,7 +469,7 @@ function apiCheckOut(code, id, digits, checkOutIso, tap) {
           milestone: decision.milestone,
         };
       }),
-    () => fillLogMap_(run),
+    (reply) => afterTap_(run, settings, reply),
   );
 }
 
@@ -705,6 +705,20 @@ function kioskFullRead_(run, tokens, volunteers, why) {
  */
 function keepLogMap_(run, log) {
   if (run.on) run.put = log.map;
+}
+
+/**
+ * withLock_'s after for a check-in or check-out, once the lock's flush is through: the log
+ * map (fillLogMap_), then, for a reply that wrote a save, the time zone compare
+ * (compareTimeZones_, Sheets.js), which writes the Time zone problem row only when its
+ * text changes. Coming after the flush, it reads nothing between the Log write and it.
+ */
+function afterTap_(run, settings, reply) {
+  try {
+    fillLogMap_(run);
+  } finally {
+    if (reply && reply.ok && !reply.replayed) compareTimeZones_(settings);
+  }
 }
 
 /** After the flush: stores run's map when the switch read on and the call has one to store. */

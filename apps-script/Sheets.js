@@ -147,9 +147,7 @@ function remakeDailyJobTriggers_() {
 
 /** The pair setupSheets kept in the document property zoneSetAs (parseZoneSetAs), or null. */
 function zoneSetAs_() {
-  return parseZoneSetAs(
-    PropertiesService.getDocumentProperties().getProperty(zoneSetAsProperty()),
-  );
+  return parseZoneSetAs(PropertiesService.getDocumentProperties().getProperty(zoneSetAsProperty()));
 }
 
 /**

@@ -470,6 +470,8 @@ function sendFlagsEmailIfDue_(now) {
     ) ||
     (to.valid.length > 0 && flagsEmailNotSent(lastRun));
   if (!due) return;
+  // Before the email is built, so it says what the Time zone problem row now says.
+  const zoneProblem = compareTimeZones_(settings);
   if (!to.valid.length) {
     // Said in the sheet, where staff look, once a slot: the write makes the run not due
     // again until the next slot.
@@ -486,6 +488,7 @@ function sendFlagsEmailIfDue_(now) {
     skipped: to.invalid,
     autoSent: hoursAutoSentCount_(now),
     requestsWaiting: hoursRequestsWaiting_(settings, now),
+    zoneProblem,
   });
   if (!message) {
     setSetting_("Flags email last run", lastRunText(nowText, "nothing to send"));

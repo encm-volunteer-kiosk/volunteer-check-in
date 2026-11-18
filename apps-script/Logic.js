@@ -9565,9 +9565,12 @@ function plural(count, one, many) {
 
 /**
  * The weekly flags email, or null when there is nothing to send: no flag raised in the
- * week, none unreviewed, the auto clock-out not stale, and no hours request news. input is
- * {summary (flagsSummary), autoClockOut (autoClockOutCheck), flagsUrl, skipped (addresses
- * in "Flags email to" that couldn't be read), autoSent, requestsWaiting}. autoSent is how
+ * week, none unreviewed, the auto clock-out not stale, no time zone problem and no hours
+ * request news. input is {summary (flagsSummary), autoClockOut (autoClockOutCheck),
+ * flagsUrl, skipped (addresses in "Flags email to" that couldn't be read), autoSent,
+ * requestsWaiting, zoneProblem}. zoneProblem is the Time zone problem row's text: while it
+ * isn't blank the email says it first and sends on it alone, with "time zone mismatch, "
+ * before the counts in the subject; the counts don't include it. autoSent is how
  * many hours emails the hours request job sent or tried in the last 7 days
  * (hoursAutoSentCount), requestsWaiting how many hours requests need a person
  * (hoursRequestsWaitingCount); each is null when its tab couldn't be read, and missing
@@ -9583,13 +9586,15 @@ function flagsEmailMessage(input) {
   const autoSent = input.autoSent === undefined ? 0 : input.autoSent;
   const waiting = input.requestsWaiting === undefined ? 0 : input.requestsWaiting;
   const hoursNews = autoSent === null || autoSent > 0 || waiting === null || waiting > 0;
-  const flagsNews = recent.length > 0 || unreviewed > 0 || auto.stale;
+  const zoneProblem = cellString(input.zoneProblem);
+  const flagsNews = recent.length > 0 || unreviewed > 0 || auto.stale || zoneProblem !== "";
   if (!flagsNews && !hoursNews) return null;
 
   const counts =
     plural(recent.length, "new flag", "new flags") + " this week, " + unreviewed + " unreviewed";
   const subject = flagsNews
     ? wordText("Volunteer kiosk: ", wordsInUse()) +
+      (zoneProblem ? "time zone mismatch, " : "") +
       (auto.stale ? "auto clock-out not running, " : "") +
       counts
     : wordText("Volunteer kiosk: hours requests this week", wordsInUse());
@@ -9600,6 +9605,7 @@ function flagsEmailMessage(input) {
     text.push(plain);
     html.push("<p>" + (markup === undefined ? htmlText(plain) : markup) + "</p>");
   };
+  if (zoneProblem) para("Time zone problem: " + zoneProblem);
   if (auto.stale) {
     para(
       (auto.lastRun

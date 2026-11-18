@@ -224,7 +224,9 @@ function flagRow({
  * wait in ms, and lockFree may be a function of the try's number (from 0) and its wait.
  * With anyLockWait the wait isn't checked to be 30 s. mailEvents lists each quota read
  * and send with whether the lock was held; onSend(message, s) may throw to fail one send.
- * blobs lists every Utilities.newBlob.
+ * blobs lists every Utilities.newBlob. spreadsheetZone is the spreadsheet's own zone
+ * (America/Chicago by default; state.spreadsheetZone changes it); no document property is
+ * set.
  */
 function server(opts = {}) {
   const calls = [];
@@ -234,7 +236,12 @@ function server(opts = {}) {
   const mail = [];
   const alerts = [];
   const created = [];
-  const state = { now: opts.now, account: opts.account ?? OWNER, uid: 0 };
+  const state = {
+    now: opts.now,
+    account: opts.account ?? OWNER,
+    uid: 0,
+    spreadsheetZone: opts.spreadsheetZone || TZ,
+  };
   const triggers = {};
   for (const [account, list] of Object.entries(opts.triggers || {})) {
     triggers[account] = list.map((t) => ({ ...t }));
@@ -299,6 +306,7 @@ function server(opts = {}) {
         setProperty: (k, v) => void props.set(k, String(v)),
         deleteProperty: (k) => void props.delete(k),
       }),
+      getDocumentProperties: () => ({ getProperty: () => null }),
     },
     Session: service("Session", {
       getActiveUser: () => email(state.account),
@@ -401,6 +409,7 @@ function server(opts = {}) {
         },
         getUrl: () => SHEET_URL,
         getId: () => SHEET_ID,
+        getSpreadsheetTimeZone: () => state.spreadsheetZone,
         // No developer metadata: no Hours tabs.
         createDeveloperMetadataFinder: () => {
           const finder = { withKey: () => finder, find: () => [] };
@@ -924,6 +933,52 @@ test("with nothing to send, runFlagsEmail writes the last run and sends nothing"
   // Not again that week.
   s.run("2026-11-16 09:05");
   assert.equal(s.setting("Flags email last run"), "2026-11-16 08:05, nothing to send");
+});
+
+test("a Time zone problem sends the email on its own, first in the body and the subject", () => {
+  const s = server({ settings: EMAIL_ON, flags: [], triggers: OWN_TRIGGER });
+  s.state.spreadsheetZone = "America/New_York";
+  s.run(MONDAY_8);
+  const problem =
+    "Settings says America/Chicago, the spreadsheet is on America/New_York; times shown on" +
+    " the sheet and times typed into it are off until they match. Correct the Time zone row" +
+    " if it's wrong, then run setupSheets.";
+  // The due run writes the row before it builds the email.
+  assert.equal(s.setting("Time zone problem"), problem);
+  assert.equal(s.mail.length, 1);
+  assert.equal(
+    s.mail[0].subject,
+    "Volunteer kiosk: time zone mismatch, 0 new flags this week, 0 unreviewed",
+  );
+  const lines = s.mail[0].body.split("\n\n");
+  assert.equal(lines[0], "Time zone problem: " + problem);
+  assert.equal(lines[1], "Flags raised in the last 7 days: 0");
+  assert.ok(s.mail[0].htmlBody.startsWith("<p>Time zone problem: Settings says"));
+  assert.equal(s.setting("Flags email last run"), "2026-11-16 08:05, sent to 2");
+});
+
+test("once the zones match, the next due run clears the row and the email says nothing of it", () => {
+  const s = server({
+    settings: { ...EMAIL_ON, "Time zone problem": "Settings says America/Chicago, old text" },
+    flags: [],
+    triggers: OWN_TRIGGER,
+  });
+  s.run(MONDAY_8);
+  assert.equal(s.setting("Time zone problem"), "");
+  assert.equal(s.mail.length, 0);
+  assert.equal(s.setting("Flags email last run"), "2026-11-16 08:05, nothing to send");
+});
+
+test("a run that isn't due compares no zones", () => {
+  const s = server({
+    settings: { ...EMAIL_ON, "Flags email last run": "2026-11-16 08:05, sent to 2" },
+    flags: [],
+    triggers: OWN_TRIGGER,
+  });
+  s.state.spreadsheetZone = "America/New_York";
+  s.run("2026-11-16 09:05");
+  assert.equal(s.setting("Time zone problem"), "");
+  assert.equal(s.mail.length, 0);
 });
 
 test("a blank or stale auto clock-out last run makes the email send with no flags", () => {
