@@ -1130,7 +1130,7 @@ test("setupDailyJobs replaces only this account's daily-job triggers and creates
   assert.equal(s.setting("Daily jobs installed by"), OWNER);
   assert.match(
     s.logs.join("\n"),
-    /removed 2 old trigger\(s\) and installed runFlagsEmail every 1 hour\(s\); runAutoClockOut daily at 4:00 Central; runHoursRefresh daily at 5:00 Central, owned by jobs@example\.org\. Installed the Log change trigger \(onSheetChange\)\./,
+    /removed 2 old trigger\(s\) and installed runFlagsEmail every 1 hour\(s\); runAutoClockOut daily at 4:00 America\/Chicago; runHoursRefresh daily at 5:00 America\/Chicago, owned by jobs@example\.org\. Installed the Log change trigger \(onSheetChange\)\./,
   );
   // Again: still one of each, the Log change trigger kept.
   s.ctx.setupDailyJobs();

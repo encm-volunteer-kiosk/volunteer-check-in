@@ -2,7 +2,7 @@
  * The daily jobs: functions that run on installable triggers rather than from the tablet
  * or the Kiosk admin menu. They are the weekly flags email (runFlagsEmail), which checks
  * every hour whether it is due, the auto clock-out (runAutoClockOut), which runs once a
- * day at about 4 AM Central and closes open rows nobody checked out of, and the nightly
+ * day at about 4 AM kiosk time and closes open rows nobody checked out of, and the nightly
  * Hours refresh (runHoursRefresh) at about 5 AM, which then runs the Log check. The Log
  * check also runs from the Kiosk admin menu (checkLogNow). Apart from them, the hours
  * request job (runHoursRequests) runs every 15 minutes and, with Settings "Hours
@@ -145,7 +145,7 @@ function runFlagsEmail(e) {
 }
 
 /**
- * The auto clock-out, run once a day at about 4 AM Central by its trigger. Under the
+ * The auto clock-out, run once a day at about 4 AM kiosk time by its trigger. Under the
  * script lock, closes every open row the run's time makes old enough (autoClockOutRows),
  * with a guessed time and a flag, and flags once each old row on which no time reads.
  * When the lock isn't free within 30 seconds it throws: the owner gets Google's failure
@@ -167,7 +167,7 @@ function runAutoClockOut(e) {
 }
 
 /**
- * The nightly Hours refresh, run once a day at about 5 AM Central by its trigger, an hour
+ * The nightly Hours refresh, run once a day at about 5 AM kiosk time by its trigger, an hour
  * after the auto clock-out so the rows it closes show, and then the Log check.
  *
  * The refresh always rewrites the tables unless a newer whole table is already in, which
@@ -279,7 +279,7 @@ function logCheck_(entries, now) {
   try {
     const rows = entries || readReportLog_().entries;
     checked = logCheckRowCount(rows);
-    const problems = logCheckProblems(rows, adminClock_);
+    const problems = logCheckProblems(rows, adminClock_, now.getTime(), kioskDate_(now));
     const found = logCheckPlan(problems, [], 0, 0);
     counted = { found: found.found, byLabel: found.byLabel };
     const lock = LockService.getScriptLock();
@@ -419,7 +419,7 @@ function logChangeTriggerLine_(result) {
   return "The Log change trigger (onSheetChange) wasn't installed: " + result.message;
 }
 
-/** Creates the trigger for one dailyJobs entry: every few hours, or daily at an hour Central. */
+/** Creates the trigger for one dailyJobs entry: every few hours, or daily at an hour, kiosk time. */
 function createJobTrigger_(job) {
   const time = ScriptApp.newTrigger(job.handler).timeBased();
   if (job.everyHours) {
@@ -433,13 +433,13 @@ function createJobTrigger_(job) {
 function jobLabel_(job) {
   return job.everyHours
     ? job.handler + " every " + job.everyHours + " hour(s)"
-    : job.handler + " daily at " + job.atHour + ":00 Central";
+    : job.handler + " daily at " + job.atHour + ":00 " + kioskTimeZone();
 }
 
 // ---------------------------------------------------------------------------
 // Weekly flags email
 
-/** The Central wall-clock time of a Date as "yyyy-MM-dd HH:mm". */
+/** The kiosk wall-clock time of a Date as "yyyy-MM-dd HH:mm". */
 function wallClock_(date) {
   return Utilities.formatDate(date, kioskTimeZone(), "yyyy-MM-dd HH:mm");
 }
@@ -595,7 +595,7 @@ function autoClockOut_(now) {
     entries,
     nowMs,
     autoClockOutWindowMs(settings["Auto clock-out after hours"]),
-    centralDate_(now),
+    kioskDate_(now),
     launch,
   );
   const shifts = plan.close.length ? readShifts_() : { windows: [], problem: "" };
@@ -666,7 +666,7 @@ function autoClockOutCountLine_(now) {
       readLog_(readLogColumns_()),
       now.getTime(),
       autoClockOutWindowMs(settings["Auto clock-out after hours"]),
-      centralDate_(now),
+      kioskDate_(now),
       launch,
     );
     return (
@@ -864,7 +864,7 @@ function decideHoursRequests_(settings, waiting, now) {
     console.log("Hours requests: the Flags tab couldn't be read: " + errorMessage_(err));
   }
   const quota = MailApp.getRemainingDailyQuota();
-  const today = centralDate_(now);
+  const today = kioskDate_(now);
   const base = {
     entries,
     flags,
@@ -940,7 +940,7 @@ function hoursRequestEmail_(base, request, volunteer, address) {
     contact: base.contact,
     signature: base.signature,
     request: {
-      date: centralDate_(new Date(request.requestedMs)),
+      date: kioskDate_(new Date(request.requestedMs)),
       unchecked: picked.unchecked,
     },
   });
@@ -1061,7 +1061,7 @@ function claimHoursRequests_(stale, decided, sendId, nowMs, run) {
       if (r) hold(r, h.code, h.reason);
     });
 
-    const today = centralDate_(new Date(nowMs));
+    const today = kioskDate_(new Date(nowMs));
     const own = [];
     const claims = [];
     decided.candidates.forEach((c) => {

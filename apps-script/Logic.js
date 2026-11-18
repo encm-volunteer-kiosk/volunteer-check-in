@@ -196,7 +196,7 @@ function settingsDescriptions() {
     "Flags email day":
       "The weekday the weekly flags email goes out if there is anything to report, such as Monday or Mon; blank or anything else means Monday, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).",
     "Flags email hour":
-      "The hour, Central time, the weekly flags email goes out if there is anything to report, as a whole number from 0 to 23 (8 is 8 AM, 14 is 2 PM); blank or anything else means 8, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).",
+      "The hour, in the Time zone row's zone, the weekly flags email goes out if there is anything to report, as a whole number from 0 to 23 (8 is 8 AM, 14 is 2 PM); blank or anything else means 8, and the first one after a change, or after turning the email On, can come sooner (see the How to tab).",
     "Flags email last run":
       "Written by the kiosk: when the weekly flags email last checked and whether it sent, had nothing to send or had no valid address to send to; while the email is On with an address, clearing it makes the next hourly check run again, which sends only if there is anything to report.",
     "Daily jobs installed by":
@@ -411,6 +411,25 @@ function timeZoneSettingsDefaults() {
     [timeZoneSetting(), defaultTimeZone()],
     [timeZoneProblemSetting(), ""],
   ];
+}
+
+/**
+ * The script's own time zone, appsscript.json's timeZone, which no Settings row changes:
+ * Date.parse reads a time text that names no zone in it. A test holds the two together.
+ */
+function scriptTimeZone() {
+  return "America/Chicago";
+}
+
+/**
+ * True when Date.parse reads a date-time text in the script's own zone: it names no zone
+ * or offset (Z, +05:30, GMT, CST and the like) and isn't a bare yyyy-MM-dd, which
+ * Date.parse reads as UTC.
+ */
+function timeTextInScriptZone(text) {
+  const t = cellString(text);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return false;
+  return !/(?:\dZ|[+-]\d{2}:?\d{2}|\b(?:GMT|UTC?|[ECMP][SD]T)(?:[+-]\d{1,4})?|\(.*\))$/i.test(t);
 }
 
 /** The What it does sentence of each time zone row. */
@@ -1623,7 +1642,7 @@ function arrivalMsFromIso(arrivalIso) {
  * The rule for every stated time, at the kiosk or from the admin menu. Returns {ms} when
  * the time is accepted, else {refused: "FUTURE"} or {refused: "OTHER_DAY"}. A time up to
  * arrivalGraceMinutes() after nowMs is taken as nowMs (a tablet clock a little fast, or a
- * quarter-hour just ahead); one later is in the future. A time whose Central date
+ * quarter-hour just ahead); one later is in the future. A time whose kiosk date
  * (msDate) isn't wantedDate is another day, and so is an unreadable time.
  */
 function checkStatedTime(nowMs, ms, msDate, wantedDate) {
@@ -1637,7 +1656,7 @@ function checkStatedTime(nowMs, ms, msDate, wantedDate) {
 /**
  * {arrivedMs} for an acceptable arrival, else a refusal code. A null arrival is server
  * time. An arrival up to arrivalGraceMinutes() ahead of server time is taken as server
- * time. arrivedDate is the arrival's Central date.
+ * time. arrivedDate is the arrival's kiosk date.
  */
 function validateArrival(nowMs, arrivedMs, arrivedDate, todayDate) {
   if (arrivedMs === null) return { arrivedMs: nowMs };
@@ -1654,7 +1673,7 @@ function validateArrival(nowMs, arrivedMs, arrivedDate, todayDate) {
  * start is accepted. Any time from the start up to now is accepted, past midnight too, so
  * an evening shift can be checked out after midnight. Only when startMs is unreadable is
  * the time held to today instead (CHECKOUT_OTHER_DAY): there is no start to measure from.
- * outDate is the time's Central date.
+ * outDate is the time's kiosk date.
  */
 function validateCheckOut(nowMs, outMs, outDate, todayDate, startMs) {
   if (outMs === null) return { outMs: nowMs };
@@ -1953,7 +1972,7 @@ function clockText(text) {
 
 /**
  * A time cell's milliseconds on the row's Date day (yyyy-MM-dd), NaN when it isn't on that
- * day. t is read.time's {ms, date, clock}. A full date-time counts when its Central date
+ * day. t is read.time's {ms, date, clock}. A full date-time counts when its kiosk date
  * is day. A time with no date (a clock with date 1899-12-30, or a clock from text) is put
  * on day by read.at, and counts when the result is on day: a time skipped when daylight
  * time starts reads as the later time read.at gives, and NaN only if that is another day.
@@ -1985,11 +2004,11 @@ function rowTimeMs(t, day, read, startMs) {
  *
  * cells is the row's raw values, row its sheet row number, cols the logColumns map. read
  * holds the functions the caller supplies: read.text(value) gives a cell as text (a date
- * as its Central yyyy-MM-dd), read.time(value) gives {ms, date, clock}, with date the
- * value's Central yyyy-MM-dd and clock its Central "HH:mm" when it has one, and
- * read.at(dateText, clock) gives {ms, date} for a Central "HH:mm" on a yyyy-MM-dd.
+ * as its kiosk yyyy-MM-dd), read.time(value) gives {ms, date, clock}, with date the
+ * value's kiosk yyyy-MM-dd and clock its kiosk "HH:mm" when it has one, and
+ * read.at(dateText, clock) gives {ms, date} for a kiosk "HH:mm" on a yyyy-MM-dd.
  *
- * Every time on a row is on that row's Date (rowTimeMs). A full date-time whose Central
+ * Every time on a row is on that row's Date (rowTimeMs). A full date-time whose kiosk
  * date is the row's Date is kept. A time with no date, such as "9:00 AM" typed into the
  * cell (Sheets stores it on 1899-12-30) or typed as text, is read as that time on the
  * row's Date, to the minute. The one exception is a check-out: a full date-time on the
@@ -2577,8 +2596,8 @@ function sameSecond(a, b) {
  * (the tapped entry), digits, entries (the Log, or the rows of the tokens checkOutTokens
  * names), todayDate, nowMs, windowMs, shiftId (the open row's Shift ID the screen showed),
  * fromMs (the start the screen showed, NaN when unreadable), arrivedMs (the new arrival,
- * NaN when unreadable), flagMinutes, dateOf(ms) (a time's Central date) and clockOf(ms)
- * (its Central "HH:mm")}.
+ * NaN when unreadable), flagMinutes, dateOf(ms) (a time's kiosk date) and clockOf(ms)
+ * (its kiosk "HH:mm")}.
  *
  * In this order:
  * 1. who it is, by the check-out's rule (resolveCheckOut): NOT_FOUND, a phone refusal or
@@ -2588,7 +2607,7 @@ function sameSecond(a, b) {
  *    ARRIVAL_ROW_CHANGED, since the screen showed another row;
  * 4. Check-In Recorded unreadable: ARRIVAL_UNCHANGEABLE;
  * 5. the new arrival by the rule for every stated time (checkStatedTime), on Check-In
- *    Recorded's Central date: ARRIVAL_OTHER_DAY or ARRIVAL_FUTURE;
+ *    Recorded's kiosk date: ARRIVAL_OTHER_DAY or ARRIVAL_FUTURE;
  * 6. later than Check-In Recorded: ARRIVAL_AFTER_CHECK_IN;
  * 7. equal to the row's start now (shiftStartMs), to the second: {changed: false, volunteer, open,
  *    arrivedMs}, and nothing is written. This comes before step 8, so a retry of a pick
@@ -2769,7 +2788,7 @@ function checkOutMilestoneSteps(state, volunteer, launchDate, maxMinutes) {
 
 /**
  * The Flags reason for a tapped save the server refused, after the tablet showed it saved.
- * kind is "in" or "out", tapClock the tap's Central time as the Flags tab prints it
+ * kind is "in" or "out", tapClock the tap's kiosk time as the Flags tab prints it
  * ("9:02 AM"), code the refusal.
  */
 function tapRefusalReason(kind, tapClock, code) {
@@ -3394,7 +3413,7 @@ function adminRosterLabels(volunteers, fullNameRoster) {
 
 /**
  * Fix a sign-out's list, [{shiftId, label}]: every open row with a Shift ID, any date,
- * newest first. formatTime(ms) gives a Central clock time such as "9:00 AM". A label
+ * newest first. formatTime(ms) gives a kiosk clock time such as "9:00 AM". A label
  * reads "Thu 2026-11-12 · Jordan Rivera · in 9:00 AM".
  */
 function openShiftChoices(entries, formatTime) {
@@ -3527,7 +3546,7 @@ function adminTimeRefusal(checked) {
  *
  * Input: {volunteers, id, entries (the whole Log), todayDate, nowMs, date, inMs, inDate,
  * outMs, outDate, initials, note, shiftId}. inMs and outMs are the dialog's times on
- * date, NaN when unreadable; inDate and outDate their Central dates.
+ * date, NaN when unreadable; inDate and outDate their kiosk dates.
  *
  * Returns {refusal}, {refusal: "ADMIN_OVERLAP", conflict} with the overlapping row, or
  * {volunteer, cells, hours}.
@@ -3845,7 +3864,7 @@ function profileEmailsFrom(headerRow, rows, volunteers, mapping) {
 }
 
 /**
- * The chosen month and the as-of date, from todayDate (the Central calendar day):
+ * The chosen month and the as-of date, from todayDate (the kiosk calendar day):
  * {choice, month, asOf}. "this" is todayDate's month as of todayDate; "last" is the month
  * before, as of its last day, so in early January it is December of the year before.
  */
@@ -3886,7 +3905,7 @@ function hoursEmailSameNameText() {
  * Which Log rows one volunteer's email counts, and what the preview warns about. input is
  * {volunteer, entries, flags, period, todayDate, listedTokens, attach}: entries are
  * reportEntry rows (the whole Log), flags readFlags_'s rows or null when that read threw,
- * period hoursEmailPeriod's, todayDate the Central day, listedTokens every listed
+ * period hoursEmailPeriod's, todayDate the kiosk day, listedTokens every listed
  * volunteer's User Token and attach whether the shifts file was asked for.
  *
  * A row counts when it is closed with a User Token (isCountedRow), under this volunteer's
@@ -4167,7 +4186,7 @@ function hoursEmailTotalLines(plan) {
  * The email, as {subject, body}, plain text with "\n" line ends. input is {firstName,
  * plan (hoursEmailPlan's), attach, contact, signature, request}: contact and signature are
  * the two Settings values as typed. request is given only for an email the hours request
- * job sends, as {date, unchecked}: date is the Central day the volunteer asked, and
+ * job sends, as {date, unchecked}: date is the kiosk day the volunteer asked, and
  * unchecked how many of their shifts were left out because staff haven't checked them
  * (hoursRequestEntries). It adds a line saying they asked at the kiosk, and, when
  * unchecked is above 0, the line saying how many shifts wait for review, with the totals
@@ -4241,7 +4260,7 @@ function hoursEmailMessage(input) {
 /**
  * The shifts file's text: CSV, CRLF line ends, the header Date,Check-in,Check-out,Hours,
  * then one row per shift in allShifts' order. Date is yyyy-mm-dd; the times are
- * formatTime(ms), a Central clock time such as "9:00 AM", left blank when unreadable, on a
+ * formatTime(ms), a kiosk clock time such as "9:00 AM", left blank when unreadable, on a
  * paper row (date and hours only), and for Check-out on an auto clock-out, whose time was
  * guessed; Hours is hoursText. No cell holds text read from a sheet, so none needs quoting.
  */
@@ -4724,7 +4743,7 @@ function hoursRequestLeftOutReason(n) {
 
 /**
  * The check-out deadline for a volunteer checked in at the job's run: the first 6:00 AM
- * Central strictly after fromText, a Central wall-clock "yyyy-MM-dd HH:mm", as
+ * kiosk time strictly after fromText, a kiosk wall-clock "yyyy-MM-dd HH:mm", as
  * "yyyy-MM-dd 06:00". "" when fromText can't be read.
  */
 function hoursRequestDeadline(fromText) {
@@ -4739,7 +4758,7 @@ function hoursRequestDeadline(fromText) {
  * The deadline is measured from the later of Requested at and the open shift's check-in
  * (checkedInMs), so it never falls before the shift began: a request made before a switch
  * to Auto is held only after a night the shift really lasted through. wallClock(ms) gives
- * the Central "yyyy-MM-dd HH:mm". The texts compare as text, as the weekly email's due
+ * the kiosk "yyyy-MM-dd HH:mm". The texts compare as text, as the weekly email's due
  * slot does.
  */
 function hoursRequestPastDeadline(requestedMs, openShift, nowMs, wallClock) {
@@ -4760,7 +4779,7 @@ function hoursRequestWeekMs() {
   return 7 * 24 * 3600000;
 }
 
-/** Automatic emails a Central day allows in all. */
+/** Automatic emails a kiosk day allows in all. */
 function hoursRequestDayLimit() {
   return 50;
 }
@@ -4788,7 +4807,7 @@ function isCountedAutoSend(row) {
 
 /**
  * The limit a request of volunteer id would pass at nowMs, as {code, reason}, or null.
- * sends are Hours emails rows ({id, result, ms, date, by}, date the Central day of Sent
+ * sends are Hours emails rows ({id, result, ms, date, by}, date the kiosk day of Sent
  * at), the claim's own rows included. "week": a counted automatic send to this volunteer
  * less than 7 × 24 hours before nowMs. "day": 50 counted automatic sends dated todayDate.
  * An admin's send uses up neither.
@@ -5068,7 +5087,7 @@ function hoursRequestPreTicked(request, mode, nowMs) {
 }
 
 /**
- * The words beside a requester's name in Email hours: "Requested Nov 20" (date, the Central
+ * The words beside a requester's name in Email hours: "Requested Nov 20" (date, the kiosk
  * yyyy-mm-dd of Requested at, or "" when it can't be read), then what is happening to it:
  * ", held"; in Auto ", Auto will send" or ", overdue: Auto hasn't sent it"; ", sending now";
  * or, for a send that stopped part way, ", automatic send stopped part way: check the Hours
@@ -5121,7 +5140,7 @@ function hoursRequestNotListedLine(n) {
  * Email hours' view of the open requests: {requests: [{id, name, requestedDate, status,
  * reason, overdue, stopped, ticked, label, heldLine}], notListed}. requests are read from
  * the tab (any status; only open ones are kept), listedIds the volunteer list's ids,
- * dateOf(ms) the Central yyyy-mm-dd of a time. notListed is the line for the open requests
+ * dateOf(ms) the kiosk yyyy-mm-dd of a time. notListed is the line for the open requests
  * whose Volunteer ID isn't on the list, which can't be ticked.
  */
 function hoursRequestChoices(requests, mode, nowMs, listedIds, dateOf) {
@@ -5398,8 +5417,8 @@ function decideRestore(input) {
 
 /**
  * A row as Remove and Restore list it: {label, detail}. entry is a log entry plus inBy
- * (Check-In Entered By), and, for a Removed row, removedBy, removedAtDate (Central
- * yyyy-MM-dd), removedAtMs and removedReason. clock(ms) gives a Central "9:00 AM". The
+ * (Check-In Entered By), and, for a Removed row, removedBy, removedAtDate (kiosk
+ * yyyy-MM-dd), removedAtMs and removedReason. clock(ms) gives a kiosk "9:00 AM". The
  * label reads "Thu 2026-11-12 · Jordan Rivera · in 9:00 AM · closed"; the detail has one
  * line each for the row's date, name, status, times, hours, Entered By, alerts and notes,
  * and for a Removed row who removed it, when and why.
@@ -5751,7 +5770,7 @@ function periodName(period) {
 
 /**
  * The period a report window's form asks for, as {period} or {refusal: code}. todayDate is
- * the Central yyyy-MM-dd. form.period is "month" (also when blank or missing, so a window
+ * the kiosk yyyy-MM-dd. form.period is "month" (also when blank or missing, so a window
  * opened before periods existed still makes month reports), "quarter", "year", "range" or
  * "all"; only the fields of that kind are read: month "yyyy-MM", quarter "yyyy-Qn", year
  * "yyyy", from and to "yyyy-MM-dd". Text is trimmed. Refusals, in this order:
@@ -5798,7 +5817,7 @@ function reportPeriod(form, todayDate) {
  * defaultYear, today}. months and defaultMonth are reportMonths'. quarters and years are
  * those of a dated Log row up to the current one, plus the current one, newest first; the
  * default is the one before the current one when it is listed, else the current one, the
- * months' rule. today is todayDate, the Central yyyy-MM-dd. entries need only dateText.
+ * months' rule. today is todayDate, the kiosk yyyy-MM-dd. entries need only dateText.
  */
 function reportPeriodLists(entries, todayDate) {
   const listed = reportMonths(entries, todayDate);
@@ -6753,7 +6772,7 @@ function reportTabName(period, existingNames) {
  * up to the current month, plus the current month, newest first. A month after the current
  * one is left out, since a report for it is refused. defaultMonth is the month before the
  * current one when it is listed, else the current month. entries need only dateText;
- * todayDate is the Central yyyy-MM-dd.
+ * todayDate is the kiosk yyyy-MM-dd.
  */
 function reportMonths(entries, todayDate) {
   const current = monthKey(todayDate);
@@ -7033,7 +7052,7 @@ function ownedProtectionPlan(wanted, existing, prefix) {
 /**
  * What setupReports logs when it finishes. counts is {views: {added, updated}, warnings:
  * {kept, added, removed}, hours: {asOf, monthlyHours}}: asOf is the Hours tables' time
- * (L1) as Central text, and monthlyHours what became of the old Monthly Hours tab:
+ * (L1) as kiosk text, and monthlyHours what became of the old Monthly Hours tab:
  * "deleted", "unmarked" (a tab of that name without the kiosk's protection, left alone) or
  * "none". trigger is ensureHoursSortTrigger_'s answer: {kind: "installed" or "kept",
  * account} or {kind: "failed", message}; the sort boxes run as that account, and a failure
@@ -7321,7 +7340,7 @@ function hoursSpellings(rows, field) {
 /**
  * Everything the refresh writes, from one read of the Log. entries are reportEntry rows
  * (readReportLog_); flags is readFlags_'s rows, or null when the Flags tab is missing or
- * its read threw; clock(ms) gives a Central "HH:mm".
+ * its read threw; clock(ms) gives a kiosk "HH:mm".
  *
  * Returns {
  *   header        hoursDataHeaders();
@@ -7549,7 +7568,7 @@ function hoursSentence(text) {
 
 /**
  * B1's line, a pure function of the state cells: a table part from Q1, M1 and L1, then a
- * note part from N1, joined. formatTime(ms) gives a Central "yyyy-MM-dd h:mm a".
+ * note part from N1, joined. formatTime(ms) gives a kiosk "yyyy-MM-dd h:mm a".
  */
 function hoursLine(state, formatTime) {
   const s = state || hoursState([]);
@@ -9235,13 +9254,13 @@ function reportTabLook(rows) {
 // Jobs.js runs these on installable triggers owned by one account, which installs them
 // with setupDailyJobs. This section holds their pure rules: the list of jobs, the Settings
 // values they read, when the weekly flags email is due and what it says. Times of day are
-// Central wall-clock texts, "yyyy-MM-dd HH:mm", as Jobs.js formats the server's clock and
+// Kiosk wall-clock texts, "yyyy-MM-dd HH:mm", as Jobs.js formats the server's clock and
 // as the last-run Settings values are written.
 
 /**
  * The jobs setupDailyJobs installs, one trigger each, and nothing else. handler is the
  * public Jobs.js function the trigger calls. A job runs either every everyHours hours or
- * once a day at atHour (Central). The Hours refresh runs an hour after the auto clock-out,
+ * once a day at atHour (kiosk time). The Hours refresh runs an hour after the auto clock-out,
  * so the rows it closes show.
  */
 function dailyJobs() {
@@ -9364,7 +9383,7 @@ function parseWeekdaySetting(text) {
   return weekdayFromText(text) || defaultFlagsEmailDay();
 }
 
-/** "Flags email hour": a whole hour from 0 to 23, Central; else 8. */
+/** "Flags email hour": a whole hour from 0 to 23, kiosk; else 8. */
 function parseEmailHour(text) {
   const n = settingNumber(text);
   return Number.isInteger(n) && n >= 0 && n <= 23 ? n : defaultFlagsEmailHour();
@@ -9422,7 +9441,7 @@ function flagsEmailSlot(nowText, weekday, hour) {
 /**
  * True when the weekly email is due at nowText: "Flags email last run" (lastRunValue) is
  * before the due slot. A blank or unreadable last run is before every slot. The texts are
- * Central wall-clock times, compared as text, so the hour repeated when clocks fall back
+ * kiosk wall-clock times, compared as text, so the hour repeated when clocks fall back
  * can't send twice.
  */
 function flagsEmailDue(nowText, lastRunValue, weekday, hour) {
@@ -10273,7 +10292,7 @@ function importFlagRows(written, counts, flagged, nowMs) {
 // ---------------------------------------------------------------------------
 // Auto clock-out
 //
-// The daily job runAutoClockOut (Jobs.js), at about 4 AM Central, closes open rows nobody
+// The daily job runAutoClockOut (Jobs.js), at about 4 AM kiosk time, closes open rows nobody
 // checked out of with a guessed time, and flags each one. An open row's age is measured
 // from when it was checked in (checkedInMs). It is the tablet's while that age is under the
 // "Auto clock-out after hours" window (isTabletOpenRow) and the job's once it is at least
@@ -10581,7 +10600,7 @@ function autoClockOutGuess(entries, row, nowMs, windows, read) {
   return { ms, source };
 }
 
-/** A Central "HH:mm" as "1:30 PM". */
+/** A kiosk "HH:mm" as "1:30 PM". */
 function clockLabel(hhmm) {
   const m = /^(\d{2}):(\d{2})$/.exec(cellString(hhmm));
   if (!m) return cellString(hhmm);
@@ -10791,14 +10810,17 @@ function logCheckDateDetail(entry, lastMonth) {
  * row.
  *
  * nowMs (optional, Date.now() when left out) sets the last month a Date may be in: the
- * month nowMs falls in, read in UTC, which is never behind the kiosk's Central month.
+ * month nowMs falls in, read in UTC, or todayDate's (optional, the kiosk's yyyy-MM-dd at
+ * nowMs) when that is later, as it is past midnight on the first in a zone ahead of UTC.
  */
-function logCheckProblems(entries, clock, nowMs) {
+function logCheckProblems(entries, clock, nowMs, todayDate) {
   const reasons = logCheckReasons();
   const maxHours = logCheckMaxHours();
   const show = typeof clock === "function" ? clock : (ms) => new Date(ms).toISOString();
   const now = typeof nowMs === "number" && isFinite(nowMs) ? nowMs : Date.now();
-  const lastMonth = new Date(now).toISOString().slice(0, 7);
+  const utcMonth = new Date(now).toISOString().slice(0, 7);
+  const today = /^\d{4}-\d{2}-\d{2}$/.test(cellString(todayDate)) ? cellString(todayDate) : "";
+  const lastMonth = today.slice(0, 7) > utcMonth ? today.slice(0, 7) : utcMonth;
   const rows = (entries || []).filter((e) => !isBlankLogRow(e));
 
   const idRows = new Map();
@@ -11519,7 +11541,7 @@ function howToSections(words) {
         ),
         step("1. On the Settings tab, type the addresses in the Value of Flags email to."),
         step(
-          "2. Change Flags email day and Flags email hour (Central time) if Monday at 8 AM doesn't suit.",
+          "2. Change Flags email day and Flags email hour (in the Time zone row's zone) if Monday at 8 AM doesn't suit.",
         ),
         step(
           '3. Set Flags email to On. The kiosk checks once an hour. If Flags email last run is blank, unreadable or older than the last time that day and hour came round, the next hourly check runs, whatever the day. After that a check runs once a week, at the first hourly check on or after that day and hour. A check with nothing to report sends nothing and writes "nothing to send" in Flags email last run.',

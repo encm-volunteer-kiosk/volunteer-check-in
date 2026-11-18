@@ -696,7 +696,7 @@
         "December",
       ];
 
-      // The two month choices, named from the server's today (yyyy-mm-dd, Central). The
+      // The two month choices, named from the server's today (yyyy-mm-dd, kiosk time). The
       // server works the month out again from its own clock at Preview and at Send.
       function nameMonths(today) {
         const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(today || ""));

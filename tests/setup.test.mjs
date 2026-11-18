@@ -1457,7 +1457,7 @@ test("setupSheets fills a blank Kiosk launch date with today, and keeps a date",
   ]);
   const S = server(ss);
   S.setupSheets();
-  const today = S.centralDate_(new Date());
+  const today = S.kioskDate_(new Date());
   assert.equal(settingValue(settings, "Kiosk launch date"), today);
   assert.equal(
     settings

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { FakeSpreadsheet, server, sheetWith } from "./fakeSpreadsheet.mjs";
+import { formatInZone } from "./zoneFormat.mjs";
 
 const read = (path) => readFileSync(new URL("../" + path, import.meta.url), "utf8");
 const plain = (x) => JSON.parse(JSON.stringify(x));
@@ -49,11 +50,38 @@ function kiosk(rows, opts = {}) {
   };
   ctx.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
   ctx.Utilities.sleep = () => {};
+  ctx.Utilities.parseDate = (text, zone, format) => {
+    assert.equal(format, "yyyy-MM-dd HH:mm:ss");
+    return new Date(zoneMs(text, zone));
+  };
   ctx.HtmlService = {};
   for (const file of ["Api.js", "Jobs.js", "Admin.js"]) {
     vm.runInContext(read("apps-script/" + file), ctx, { filename: file });
   }
   return { ss, ctx, cache, triggers };
+}
+
+/** The instant a wall-clock "yyyy-MM-dd HH:mm:ss" names in zone. */
+function zoneMs(text, zone) {
+  const want = Date.parse(text.replace(" ", "T") + "Z");
+  let ms = want;
+  for (let i = 0; i < 3; i++) {
+    const got = Date.parse(formatInZone(new Date(ms), zone, "yyyy-MM-ddTHH:mm:ss") + "Z");
+    ms += want - got;
+  }
+  return ms;
+}
+
+/** Runs fn with the process's local zone, which Date.parse reads text in, set to zone. */
+function inLocalZone(zone, fn) {
+  const was = process.env.TZ;
+  process.env.TZ = zone;
+  try {
+    return fn();
+  } finally {
+    if (was === undefined) delete process.env.TZ;
+    else process.env.TZ = was;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -171,14 +199,14 @@ test("a run reads its times in the Time zone row's zone, reading Settings first 
   };
   for (const [zone, day] of Object.entries(expect)) {
     const { ctx } = kiosk({ "Time zone": zone }, { spreadsheetZone: "America/Chicago" });
-    assert.equal(ctx.centralDate_(at), day, zone);
+    assert.equal(ctx.kioskDate_(at), day, zone);
     assert.equal(ctx.kioskTimeZone(), L.parseTimeZone(zone), zone);
   }
 });
 
 test("with no Time zone, kioskTimeZone throws the staff step", () => {
   const { ctx } = kiosk({ "Time zone": "" });
-  assert.throws(() => ctx.centralDate_(new Date()), { message: STEP });
+  assert.throws(() => ctx.kioskDate_(new Date()), { message: STEP });
 });
 
 test("a Kiosk admin window with no Time zone says the staff step", () => {
@@ -209,4 +237,44 @@ test("each daily job with no Time zone throws the staff step", () => {
     triggers.push({ getHandlerFunction: () => handler, getUniqueId: () => "t1" });
     assert.throws(() => ctx[handler]({ triggerUid: "t1" }), { message: STEP }, handler);
   }
+});
+
+test("the script's own zone is appsscript.json's", () => {
+  const manifest = JSON.parse(read("apps-script/appsscript.json"));
+  assert.equal(L.scriptTimeZone(), manifest.timeZone);
+});
+
+test("a time typed as text is read in the kiosk's zone, as Date.parse reads it in the script's", () => {
+  inLocalZone("America/Chicago", () => {
+    const text = "Nov 5, 2026 9:00 AM";
+    const chicago = kiosk({ "Time zone": "America/Chicago" }).ctx;
+    assert.equal(chicago.cellTime_(text).ms, Date.parse("2026-11-05T09:00:00-06:00"));
+    for (const [zone, iso] of [
+      ["Europe/London", "2026-11-05T09:00:00Z"],
+      ["Asia/Kolkata", "2026-11-05T09:00:00+05:30"],
+    ]) {
+      const { ctx } = kiosk({ "Time zone": zone });
+      const t = ctx.cellTime_(text);
+      assert.equal(t.ms, Date.parse(iso), zone);
+      assert.equal(t.date, "2026-11-05", zone);
+    }
+    // A text that names its offset, or a bare date, is read as Date.parse reads it.
+    const { ctx } = kiosk({ "Time zone": "Europe/London" });
+    for (const named of [
+      "2026-11-05T09:00:00Z",
+      "2026-11-05T09:00:00-06:00",
+      "Nov 5, 2026 9:00 AM GMT",
+      "2026-11-05",
+    ]) {
+      assert.equal(ctx.cellTime_(named).ms, Date.parse(named), named);
+    }
+  });
+});
+
+test("the daily jobs' log line names the kiosk's zone", () => {
+  const { ctx } = kiosk({ "Time zone": "Europe/London" });
+  assert.equal(
+    ctx.jobLabel_({ handler: "runAutoClockOut", atHour: 4 }),
+    "runAutoClockOut daily at 4:00 Europe/London",
+  );
 });

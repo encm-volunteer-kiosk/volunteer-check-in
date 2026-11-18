@@ -3,9 +3,10 @@
 // log check and setup messages, header names and notes, and the page's screen strings.
 // tests/brand-fixtures/default-words.json holds that release's output for each call in
 // tests/brand-fixtures/textCalls.mjs, and the screen strings of its page sources (made by
-// tests/brand-fixtures/make.mjs). Two changes are allowed: the How to sections about the
-// new Settings rows, and the Profiles file ID's sentence, which now says that a blank ID
-// means this spreadsheet.
+// tests/brand-fixtures/make.mjs). These changes are allowed: the How to sections about the
+// new Settings rows; the Profiles file ID's sentence, which now says that a blank ID means
+// this spreadsheet; and the Flags email hour's sentence and How to step, which said
+// Central time and now name the Time zone row's zone.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -23,10 +24,17 @@ vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic
 const GOLDEN = JSON.parse(read("tests/brand-fixtures/default-words.json"));
 
 const FILE_ID = "Volunteer Profiles file ID";
+const FLAGS_HOUR = "Flags email hour";
 const NEW_SECTIONS = [
   "Use your own words, name and logo",
   "Turn parts of the kiosk on or off",
   "Read your own volunteer list",
+  "Set the time zone",
+];
+// The How to step that said Central time, as it was and as it is now.
+const HOUR_STEP = [
+  "2. Change Flags email day and Flags email hour (Central time) if Monday at 8 AM doesn't suit.",
+  "2. Change Flags email day and Flags email hour (in the Time zone row's zone) if Monday at 8 AM doesn't suit.",
 ];
 
 const run = ({ fn, args }) => {
@@ -51,7 +59,7 @@ test("every server text is the release before's, but the two allowed changes", (
   assert.ok(checked > 100, "the golden holds every family");
 });
 
-test("Settings sentences: each row's is the release before's, and the file ID's says blank means this spreadsheet", () => {
+test("Settings sentences: each row's is the release before's, the file ID's says blank means this spreadsheet, and the Flags email hour's names the Time zone row", () => {
   const call = GOLDEN.calls.find((c) => c.fn === "settingsDescriptionColumn");
   const names = call.args[0];
   const got = run(call).out;
@@ -60,6 +68,8 @@ test("Settings sentences: each row's is the release before's, and the file ID's 
     if (names[i] === FILE_ID) {
       assert.notEqual(sentence, call.out[i]);
       assert.equal(sentence, L.settingsDescriptions()[FILE_ID]);
+    } else if (names[i] === FLAGS_HOUR) {
+      assert.equal(sentence, call.out[i].replace("Central time", "in the Time zone row's zone"));
     } else {
       assert.equal(sentence, call.out[i], names[i]);
     }
@@ -68,7 +78,10 @@ test("Settings sentences: each row's is the release before's, and the file ID's 
 
 test("How to: every row of the release before, in order, and one block of new sections about the new rows", () => {
   const call = GOLDEN.calls.find((c) => c.fn === "howToRows");
-  const old = call.out.map((r) => JSON.stringify(r));
+  assert.equal(call.out.filter((r) => r.text === HOUR_STEP[0]).length, 1);
+  const old = call.out.map((r) =>
+    JSON.stringify(r.text === HOUR_STEP[0] ? { ...r, text: HOUR_STEP[1] } : r),
+  );
   const rows = run(call).out.map((r) => JSON.stringify(r));
   const added = [];
   let i = 0;

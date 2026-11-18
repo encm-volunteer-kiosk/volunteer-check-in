@@ -63,14 +63,14 @@ function setupSheets() {
   }
   settings.setFrozenRows(1);
   const existing = readSettings_();
-  const missing = settingsDefaults(centralDate_(new Date())).filter(
+  const missing = settingsDefaults(kioskDate_(new Date())).filter(
     (row) => !Object.prototype.hasOwnProperty.call(existing, row[0]),
   );
   if (missing.length) {
     settings.getRange(settings.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
   }
   // A blank Kiosk launch date gets today's date, so a fresh copy has one; a date is kept.
-  const launch = launchDateToFill(existing, centralDate_(new Date()));
+  const launch = launchDateToFill(existing, kioskDate_(new Date()));
   if (launch) setSetting_(launchDateSetting(), launch);
   settings.getRange(1, 3).setValue(settingsDescriptionHeader());
   writeSettingsDescriptions_(settings);
@@ -363,18 +363,18 @@ function isDate_(value) {
   return Object.prototype.toString.call(value) === "[object Date]";
 }
 
-/** A cell as text: a Date as its Central yyyy-MM-dd, anything else trimmed. */
+/** A cell as text: a Date as its kiosk yyyy-MM-dd, anything else trimmed. */
 function cellText_(value) {
-  if (isDate_(value)) return centralDate_(value);
+  if (isDate_(value)) return kioskDate_(value);
   return cellString(value);
 }
 
 /**
- * A date-time cell as {ms, date, clock}: its milliseconds, its Central yyyy-MM-dd and its
- * Central "HH:mm". A date value has all three; Sheets keeps a time typed with no date as a
+ * A date-time cell as {ms, date, clock}: its milliseconds, its kiosk yyyy-MM-dd and its
+ * kiosk "HH:mm". A date value has all three; Sheets keeps a time typed with no date as a
  * date on 1899-12-30, whose clock is the time as typed. Text that clockText (Logic.js)
  * reads as a time of day gives only the clock, with ms NaN and date empty; other text is
- * read by Date.parse, with clock empty. ms is NaN and date and clock empty when the cell
+ * read by Date.parse, in the kiosk's zone (textTimeMs_), with clock empty. ms is NaN and date and clock empty when the cell
  * isn't a readable time.
  */
 function cellTime_(value) {
@@ -384,19 +384,45 @@ function cellTime_(value) {
     if (!isFinite(ms)) return none;
     return {
       ms,
-      date: centralDate_(value),
+      date: kioskDate_(value),
       clock: zoneClock_(value, kioskTimeZone()),
     };
   }
   const text = cellString(value);
   const clock = clockText(text);
   if (clock) return { ms: NaN, date: "", clock };
-  const ms = text ? Date.parse(text) : NaN;
-  return isFinite(ms) ? { ms, date: centralDate_(new Date(ms)), clock: "" } : none;
+  const ms = textTimeMs_(text);
+  return isFinite(ms) ? { ms, date: kioskDate_(new Date(ms)), clock: "" } : none;
 }
 
 /**
- * A Central time on a date as {ms, date}: dateText yyyy-MM-dd and timeText "HH:mm". ms is
+ * A date-time text's milliseconds by Date.parse, NaN when it can't be read. Date.parse
+ * reads a text that names no zone in the script's own zone (timeTextInScriptZone, Logic.js);
+ * while the kiosk's zone is another, its wall-clock time is read again in the kiosk's.
+ */
+function textTimeMs_(text) {
+  const ms = text ? Date.parse(text) : NaN;
+  if (!isFinite(ms)) return NaN;
+  const zone = kioskTimeZone();
+  if (zone === scriptTimeZone() || !timeTextInScriptZone(text)) return ms;
+  const d = new Date(ms);
+  const wall =
+    padNumber_(d.getFullYear(), 4) +
+    "-" +
+    padNumber_(d.getMonth() + 1, 2) +
+    "-" +
+    padNumber_(d.getDate(), 2) +
+    " " +
+    padNumber_(d.getHours(), 2) +
+    ":" +
+    padNumber_(d.getMinutes(), 2) +
+    ":" +
+    padNumber_(d.getSeconds(), 2);
+  return Utilities.parseDate(wall, zone, "yyyy-MM-dd HH:mm:ss").getTime();
+}
+
+/**
+ * A kiosk time on a date as {ms, date}: dateText yyyy-MM-dd and timeText "HH:mm". ms is
  * NaN and date '' when either can't be read. A time skipped when daylight time starts
  * reads as the later time Utilities.parseDate gives.
  */
@@ -404,7 +430,7 @@ function timeOnDate_(dateText, timeText) {
   const text = adminDateTimeText(dateText, timeText);
   if (!text) return { ms: NaN, date: "" };
   const parsed = Utilities.parseDate(text, kioskTimeZone(), "yyyy-MM-dd HH:mm");
-  return { ms: parsed.getTime(), date: centralDate_(parsed) };
+  return { ms: parsed.getTime(), date: kioskDate_(parsed) };
 }
 
 // True once this run has read Settings for its time zone (kioskTimeZone).
@@ -444,7 +470,7 @@ function requireKioskZone_() {
 }
 
 /** A Date's yyyy-MM-dd in the kiosk's time zone. */
-function centralDate_(date) {
+function kioskDate_(date) {
   return zoneDate_(date, kioskTimeZone());
 }
 
@@ -479,7 +505,7 @@ function zoneClock_(date, zone) {
  *
  * Each UTC hour's offset is read once, at the hour's start (hourOffset_), and kept for the
  * rest of the script run. That offset holds for the whole hour when the zone's clock can
- * only change on a whole UTC hour. America/Chicago, the kiosk's zone, does: from local
+ * only change on a whole UTC hour. America/Chicago does: from local
  * mean time to Central at 18:00 UTC in 1883, and since then whole-hour offsets changed at
  * a whole local hour. Any other zone may change at a half hour (America/St_Johns) or at
  * an odd second (a local mean time), so its hour is used only when the next hour's start
@@ -1567,7 +1593,7 @@ function deleteLogRow_(row, opts) {
  * The Removed shifts tab as {sheet, header, rows}, or null when there is no such tab.
  * Each row is {row, values, formats, entry}: entry is shiftEntry_ through a column map
  * built from the tab's own header (each Log header's leftmost column, -1 when missing),
- * plus removedBy, removedAtMs, removedAtDate (Central yyyy-MM-dd) and removedReason.
+ * plus removedBy, removedAtMs, removedAtDate (kiosk yyyy-MM-dd) and removedReason.
  * One read of the values and one of the formats.
  */
 function readRemoved_() {
@@ -1788,7 +1814,7 @@ function kindValue_(kind, value) {
  * The Hours emails tab's rows as [{row, id, result, ms, date, by, sendId}] for the Last
  * emailed line, the hours request job's limits, its answered-already check and its record
  * step (row is the sheet row), or null when there is no tab. Sent at is read as a time (ms NaN when it can't be) and
- * date is its Central yyyy-MM-dd, or the cell's text when it isn't a time. Throws when
+ * date is its kiosk yyyy-MM-dd, or the cell's text when it isn't a time. Throws when
  * row 1 lacks a header.
  */
 function readHoursEmailSends_() {

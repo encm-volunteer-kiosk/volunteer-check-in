@@ -635,7 +635,7 @@ function readHoursTable_() {
   return { table, digest, readMs: workStart - readStart, workMs: Date.now() - workStart, log };
 }
 
-/** A Central "yyyy-MM-dd h:mm a", B1's time. */
+/** A kiosk "yyyy-MM-dd h:mm a", B1's time. */
 function hoursTime_(ms) {
   return Utilities.formatDate(new Date(ms), kioskTimeZone(), "yyyy-MM-dd h:mm a");
 }
@@ -760,7 +760,7 @@ function openMonthlyReportDialog() {
  * The dialog's lists, from reportPeriodLists: {ok: true, months: [{month, label}],
  * defaultMonth, quarters: [{quarter, label}], defaultQuarter, years: [{year, label}],
  * defaultYear, today}. Each list holds every month, quarter or year with a dated Log row up
- * to the current one, plus the current one, newest first; today is the Central date, which
+ * to the current one, plus the current one, newest first; today is the kiosk date, which
  * the date range starts from. Reads the Date column without the lock: a half-written row
  * can't change which months exist.
  */
@@ -774,7 +774,7 @@ function adminReportMonths(key) {
     last < 2 ? [] : log.getRange(2, cols[logHeaderNames().date] + 1, last - 1, 1).getValues();
   const listed = reportPeriodLists(
     dates.map((cells) => ({ dateText: cellText_(cells[0]) })),
-    centralDate_(new Date()),
+    kioskDate_(new Date()),
   );
   return {
     ok: true,
@@ -804,7 +804,7 @@ function adminMonthlyReport(key, form) {
   const initials = normalizeInitials(f.initials);
   if (!initials) return refusal("ADMIN_INITIALS");
   const now = new Date();
-  const asked = reportPeriod(f, centralDate_(now));
+  const asked = reportPeriod(f, kioskDate_(now));
   if (asked.refusal) return refusal(asked.refusal);
   const period = asked.period;
 

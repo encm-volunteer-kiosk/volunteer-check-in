@@ -126,7 +126,7 @@ function apiListVolunteers(code) {
       states,
       now.getTime(),
       autoClockOutWindowMs(settings["Auto clock-out after hours"]),
-      centralDate_(now),
+      kioskDate_(now),
       settings["Kiosk launch date"],
       kioskSwitches(settings).milestones,
     ),
@@ -231,7 +231,7 @@ function apiCheckIn(code, id, arrivalIso, digits, tap) {
     () =>
       withLogCacheLine_(run, () => {
         const now = new Date();
-        const today = centralDate_(now);
+        const today = kioskDate_(now);
         const volunteers = getProfiles_(settings);
         const who = resolveVolunteer(volunteers, id, digits);
         if (who.refusal) {
@@ -252,7 +252,7 @@ function apiCheckIn(code, id, arrivalIso, digits, tap) {
           nowMs: now.getTime(),
           windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
           arrivedMs,
-          arrivedDate: Number.isFinite(arrivedMs) ? centralDate_(new Date(arrivedMs)) : "",
+          arrivedDate: Number.isFinite(arrivedMs) ? kioskDate_(new Date(arrivedMs)) : "",
           flagMinutes: parseFlagMinutes(settings["Arrival flag minutes"]),
           launchDate: settings["Kiosk launch date"],
           tapShiftId: t ? t.tapId : null,
@@ -379,11 +379,11 @@ function apiCheckOut(code, id, digits, checkOutIso, tap) {
           volunteers,
           id,
           digits,
-          todayDate: centralDate_(now),
+          todayDate: kioskDate_(now),
           nowMs: now.getTime(),
           windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
           outMs,
-          outDate: Number.isFinite(outMs) ? centralDate_(new Date(outMs)) : "",
+          outDate: Number.isFinite(outMs) ? kioskDate_(new Date(outMs)) : "",
           flagMinutes: parseFlagMinutes(settings["Check-out flag minutes"]),
           longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
           launchDate: settings["Kiosk launch date"],
@@ -523,14 +523,14 @@ function apiChangeArrival(code, id, digits, shiftId, fromIso, arrivalIso) {
           id,
           digits,
           entries: log.entries,
-          todayDate: centralDate_(now),
+          todayDate: kioskDate_(now),
           nowMs: now.getTime(),
           windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
           shiftId,
           fromMs: fromMs === null ? NaN : fromMs,
           arrivedMs: arrivedMs === null ? NaN : arrivedMs,
           flagMinutes: parseFlagMinutes(settings["Arrival flag minutes"]),
-          dateOf: (ms) => centralDate_(new Date(ms)),
+          dateOf: (ms) => kioskDate_(new Date(ms)),
           clockOf: (ms) => zoneClock_(new Date(ms), kioskTimeZone()),
         });
         if (decision.refusal) {
@@ -634,7 +634,7 @@ function refuseTap_(t, kind, code, volunteer, nowMs) {
 /**
  * One Flags row for a tapped save the server refused, after the tablet showed it saved,
  * under the call's lock and before the refusal is returned; no Log cell is written. Date
- * is the Central date of the tap, Name the Profiles name when the volunteer was found,
+ * is the kiosk date of the tap, Name the Profiles name when the volunteer was found,
  * else the name the tablet sent; Shift ID the tap's ID for a check-in and the row it named
  * for a check-out; Log Row blank. The reason is tapRefusalReason (Logic.js). BUSY is
  * retried and ACCESS keeps the save on the tablet, so neither is flagged. A broken Flags
@@ -646,7 +646,7 @@ function raiseTapRefusal_(t, kind, code, volunteer, nowMs) {
   const reasons = [tapRefusalReason(kind, clockLabel(zoneClock_(tapAt, kioskTimeZone())), code)];
   raiseFlags_(
     {
-      date: centralDate_(tapAt),
+      date: kioskDate_(tapAt),
       name: volunteer ? volunteerFullName(volunteer) : t.name,
       shiftId: kind === "in" ? t.tapId : t.shiftId,
       raisedAtMs: nowMs,

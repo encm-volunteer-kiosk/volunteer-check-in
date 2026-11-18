@@ -4,8 +4,9 @@
 // tests/brand-fixtures/make.mjs), and the Kiosk admin menu that release showed on it. This
 // release's setupSheets may append Settings rows with their What it does sentences and add
 // the How to lines about them. Every other cell, note, format, look and tab stays as it was.
-// The one sentence that may change on an existing row is the Profiles file ID's, which now
-// says that a blank ID means this spreadsheet.
+// The sentences that may change on an existing row are the Profiles file ID's, which now
+// says that a blank ID means this spreadsheet, and the Flags email hour's, which said
+// Central time and now names the Time zone row's zone, as does its How to step.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -23,6 +24,13 @@ const NEW_SECTIONS = [
   "Use your own words, name and logo",
   "Turn parts of the kiosk on or off",
   "Read your own volunteer list",
+  "Set the time zone",
+];
+const FLAGS_HOUR = "Flags email hour";
+// The How to step that said Central time, as it was and as it is now.
+const HOUR_STEP = [
+  "2. Change Flags email day and Flags email hour (Central time) if Monday at 8 AM doesn't suit.",
+  "2. Change Flags email day and Flags email hour (in the Time zone row's zone) if Monday at 8 AM doesn't suit.",
 ];
 
 function setUpAgain() {
@@ -85,7 +93,7 @@ test(
 );
 
 test(
-  "Settings: the rows stay, the general rows are appended with their sentences, and only the file ID's sentence changes",
+  "Settings: the rows stay, the new rows are appended with their sentences, and only the file ID's and Flags email hour's sentences change",
   { skip },
   () => {
     const { S, before, after } = setUpAgain();
@@ -103,6 +111,12 @@ test(
       if (name === FILE_ID) {
         assert.notEqual(cell(now, r + ",3"), cell(was, r + ",3"));
         assert.equal(cell(now, r + ",3"), S.settingsDescriptions()[FILE_ID]);
+      } else if (name === FLAGS_HOUR) {
+        const was3 = cell(was, r + ",3");
+        assert.equal(
+          cell(now, r + ",3"),
+          was3.replace("Central time", "in the Time zone row's zone"),
+        );
       } else {
         assert.equal(cell(now, r + ",3"), cell(was, r + ",3"), name + " sentence");
       }
@@ -147,7 +161,10 @@ test(
 
     const old = howToRows(
       restoreSpreadsheet(JSON.parse(readFileSync(GOLDEN, "utf8")).sheet).getSheetByName("How to"),
-    );
+    ).map((row) => {
+      const r = JSON.parse(row);
+      return r[0] === HOUR_STEP[0] ? JSON.stringify([HOUR_STEP[1], ...r.slice(1)]) : row;
+    });
     const rows = howToRows(ss.getSheetByName("How to"));
     const added = [];
     let i = 0;
