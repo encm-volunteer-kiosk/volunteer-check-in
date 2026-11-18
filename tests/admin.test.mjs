@@ -6616,6 +6616,20 @@ test("a refused or replayed tap compares no zones", () => {
   assert.equal(s.ctx.apiCheckOut(CODE, SAM.id, null, null).refusal, "NOT_IN");
   assert.deepEqual(calls, []);
   assert.ok(!s.journal.includes(ZONE_READ));
+
+  // A tapped check-in compares once; its replay, with the spreadsheet's zone changed since
+  // so a compare would write, compares nothing.
+  assert.equal(s.ctx.apiCheckIn(CODE, SAM.id, null, null, tapFor()).ok, true);
+  assert.deepEqual(calls, [
+    ["Time zone problem", zoneProblem("America/Chicago", "America/New_York")],
+  ]);
+  calls.length = 0;
+  s.journal.length = 0;
+  s.zone.sheet = "Europe/London";
+  const again = plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null, tapFor({ attempt: 2 })));
+  assert.equal(again.replayed, true);
+  assert.deepEqual(calls, []);
+  assert.ok(!s.journal.includes(ZONE_READ));
 });
 
 test("a tap whose problem write fails still saves, and the error is logged", () => {

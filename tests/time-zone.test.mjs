@@ -250,6 +250,21 @@ test("a run reads its times in the Time zone row's zone, reading Settings first 
   }
 });
 
+test("a date in a Settings cell reads on the Time zone row's day, the spreadsheet's while the row has none", () => {
+  // 2:00 PM on Nov 1 in Chicago is 1:30 AM on Nov 2 in Kolkata.
+  const at = new Date("2026-11-01T20:00:00Z");
+  for (const [row, spreadsheetZone, day] of [
+    ["Asia/Kolkata", "America/Chicago", "2026-11-02"],
+    ["America/Chicago", "Asia/Kolkata", "2026-11-01"],
+    ["", "Asia/Kolkata", "2026-11-02"],
+    ["", "America/Chicago", "2026-11-01"],
+    ["nowhere", "Asia/Kolkata", "2026-11-02"],
+  ]) {
+    const { ctx } = kiosk({ "Time zone": row, "Kiosk launch date": at }, { spreadsheetZone });
+    assert.equal(ctx.readSettings_()["Kiosk launch date"], day, row + " on " + spreadsheetZone);
+  }
+});
+
 test("with no Time zone, kioskTimeZone throws the staff step", () => {
   const { ctx } = kiosk({ "Time zone": "" });
   assert.throws(() => ctx.kioskDate_(new Date()), { message: STEP });
