@@ -367,7 +367,7 @@ function generalSettingsDescriptions() {
     [roster.phone]:
       "The header of the volunteer list's phone column; blank means Volunteer Phone. The list needs the column, even empty: the tablet asks for a phone only when two people share a name.",
     [roster.email]:
-      "The header of the volunteer list's email column; blank means Email or Email Address. Only Kiosk admin > Email hours… reads it.",
+      "The header of the volunteer list's email column; blank means Email or Email Address. Kiosk admin > Email hours… and the hours request job read it; the tablet never does.",
     [roster.startDate]:
       "The header of the volunteer list's start date column; blank means Start Date mm/dd/yyyy. The list needs the column, even empty: only the first-shift welcome reads it.",
     [roster.token]:
@@ -739,8 +739,8 @@ function rosterColumnMapping(settings) {
 
 /**
  * Profiles headers the kiosk needs, after normalizeHeader. Email isn't needed here: the
- * tablet and the kiosk list never read it; only Kiosk admin > Email hours… reads it,
- * straight from Profiles (profileEmails_). The token is found separately, under one of
+ * tablet and the kiosk list never read it; Kiosk admin > Email hours… and the hours
+ * request job read it, straight from Profiles (profileEmails_). The token is found separately, under one of
  * profileTokenHeaders().
  */
 function requiredProfileHeaders() {
