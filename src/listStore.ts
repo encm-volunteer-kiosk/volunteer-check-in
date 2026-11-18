@@ -12,7 +12,7 @@
 // tablet's own saves laid over: those live in the save queue (saveQueue.ts). It keeps what an
 // instant check-in or check-out reads: each volunteer's missed check-out answer, open Shift
 // ID, window end and milestone steps, the open row's tap time (which a Change of arrival
-// reads), the milestone texts, the tablet clock's offset from the
+// reads), the milestone texts, the page's Settings, the tablet clock's offset from the
 // server's, and the stamp of the list request, which says when it was asked for.
 //
 // Plain TypeScript only (no enums, namespaces or parameter properties): the tests import
@@ -21,6 +21,8 @@
 import type { Milestone, MilestoneStep, Volunteer } from "./data";
 import type { ListStamp } from "./saveQueue.ts";
 import { stepsWithNulls } from "./replies.ts";
+import { brandKey } from "./brand.ts";
+import { isPageSettings, type PageSettings } from "./words.ts";
 
 // "stored": the list came from storage and the first refresh hasn't landed yet.
 export type ListState = "loading" | "stored" | "ready" | "failed";
@@ -28,7 +30,7 @@ export type ListState = "loading" | "stored" | "ready" | "failed";
 // The storage calls used here: localStorage in the page, a fake in the tests.
 export type ListStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
-export const LIST_STORE_KEY = "encm-kiosk-volunteer-list";
+export const LIST_STORE_KEY = brandKey("kiosk-volunteer-list");
 // Bump when the stored shape changes, so old entries are ignored and removed.
 export const LIST_STORE_VERSION = 3;
 export const STORED_LIST_MAX_AGE_MS = 10 * 60_000;
@@ -53,11 +55,13 @@ type StoredVolunteer = {
 
 // What a kept list holds beside its volunteers and long-shift number. clockOffsetMs is null
 // when the server sent no clock; listStamp is null when the page sent the request before it
-// had a save queue.
+// had a save queue. pageSettings is there only when the server sent them, so a list from a
+// server before them is kept in the shape a page before them kept it, and read either way.
 export type ListExtras = {
   milestones: Milestone[];
   clockOffsetMs: number | null;
   listStamp: ListStamp | null;
+  pageSettings?: PageSettings | null;
 };
 
 export const noListExtras: ListExtras = { milestones: [], clockOffsetMs: null, listStamp: null };
@@ -180,6 +184,7 @@ export function storeList(
     milestones: extras.milestones,
     clockOffsetMs: extras.clockOffsetMs,
     listStamp: extras.listStamp,
+    ...(extras.pageSettings ? { pageSettings: extras.pageSettings } : {}),
   };
   try {
     storage?.setItem(LIST_STORE_KEY, JSON.stringify(entry));
@@ -226,6 +231,8 @@ export function readStoredList(
     milestones: usable.milestones,
     clockOffsetMs: usable.clockOffsetMs,
     listStamp: usable.listStamp,
+    // A list kept with no page Settings, or a bad one, gives none: the page shows the brand's.
+    ...(isPageSettings(usable.pageSettings) ? { pageSettings: usable.pageSettings } : {}),
   };
 }
 

@@ -22,6 +22,7 @@ import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
 const SERVER_FILES = [
+  "Brand.js",
   "Logic.js",
   "Sheets.js",
   "Api.js",

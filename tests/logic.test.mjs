@@ -7,12 +7,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import vm from "node:vm";
+import { BRAND } from "./brandFiles.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 
 const L = {};
-vm.runInNewContext(read("apps-script/Logic.js"), L);
+vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), L);
 const sample = {};
 vm.runInNewContext(read("apps-script/SampleData.js"), sample);
 
@@ -177,10 +178,10 @@ test("parseFlagMinutes falls back to 15", () => {
 // ---------------------------------------------------------------------------
 // Setup tables
 
-// The Log header, line breaks included. Columns A to N are ENCM's "2026-11 Log" tab of
-// their Volunteer Kiosk Log spreadsheet, as read live on 2026-11-12; O to R are the
+// The Log header, line breaks included. Columns A to N are the staff's own layout, from
+// the Log tab the kiosk was first fitted to, as read live on 2026-11-12; O to R are the
 // kiosk's own.
-const ENCM_LOG_HEADERS = [
+const BASE_LOG_HEADERS = [
   "Date",
   "Day",
   "Volunteer\nName",
@@ -197,9 +198,9 @@ const ENCM_LOG_HEADERS = [
   "User Token",
 ];
 const KIOSK_LOG_HEADERS = ["Status", "Check-In\nEntered By", "Check-Out\nEntered By", "Shift ID"];
-const LOG_HEADERS = [...ENCM_LOG_HEADERS, ...KIOSK_LOG_HEADERS];
+const LOG_HEADERS = [...BASE_LOG_HEADERS, ...KIOSK_LOG_HEADERS];
 
-test("logHeaders is ENCM's fourteen headers exactly, then the kiosk's four", () => {
+test("logHeaders is the base fourteen headers exactly, then the kiosk's four", () => {
   assert.deepEqual(plain(L.logHeaders()), LOG_HEADERS);
   assert.equal(L.logHeaders().length, 18);
   const H = plain(L.logHeaderNames());
@@ -235,7 +236,7 @@ test("settingsDefaults", () => {
   assert.equal(defaults["Hours email signature"], "");
   assert.equal(defaults["Hours requests"], "Off");
   assert.equal(defaults["Hours requests last run"], "");
-  assert.equal(rows.length, 24);
+  assert.equal(rows.length, 24 + L.generalSettingsDefaults().length);
   const names = rows.map((r) => r[0]);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
@@ -738,7 +739,7 @@ test("milestones table", () => {
     ["shift-1", "shift-10", "shift-25", "hours-50", "hours-100"],
   );
   assert.equal(table[0].title, "First completed shift");
-  assert.equal(table[4].message, "100 hours logged here, making East Nashville stronger.");
+  assert.equal(table[4].message, BRAND.brandMilestoneMessages()["hours-100"]);
 });
 
 const LAUNCH = "2026-11-01";
@@ -945,9 +946,9 @@ test("isOldLogLayout and missingLogHeaders", () => {
   assert.equal(L.isOldLogLayout(plain(L.oldLogHeaders())), true);
   assert.equal(L.isOldLogLayout([...plain(L.oldLogHeaders()), "Extra"]), true);
   assert.equal(L.isOldLogLayout(LOG_HEADERS), false);
-  assert.equal(L.isOldLogLayout(ENCM_LOG_HEADERS), false);
+  assert.equal(L.isOldLogLayout(BASE_LOG_HEADERS), false);
   assert.equal(L.isOldLogLayout([]), false);
-  assert.deepEqual(plain(L.missingLogHeaders(ENCM_LOG_HEADERS)), KIOSK_LOG_HEADERS);
+  assert.deepEqual(plain(L.missingLogHeaders(BASE_LOG_HEADERS)), KIOSK_LOG_HEADERS);
   assert.deepEqual(plain(L.missingLogHeaders(LOG_HEADERS)), []);
   assert.deepEqual(plain(L.missingLogHeaders(SHUFFLED)), []);
   assert.equal(L.missingLogHeaders([]).length, 15);
@@ -2580,6 +2581,12 @@ test("refusal gives each code its exact message", () => {
     HOURS_EMAIL_TOO_MANY: "Too many volunteers in one send. Press Preview again.",
     HOURS_REQUESTS_OFF:
       "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
+    ARRIVAL_CHANGES_OFF: "Please ask a board member to change your arrival time.",
+    CHECKOUT_CHANGES_OFF: "Please ask a board member to change your check-out time.",
+    EMAIL_HOURS_OFF:
+      "Email hours is turned off in Settings. Set the Email hours row to On to use it.",
+    IMPORT_OFF:
+      "Import past hours is turned off in Settings. Set the Import past hours row to On to use it.",
   };
   for (const [code, message] of Object.entries(expected)) {
     assert.deepEqual(plain(L.refusal(code)), { ok: false, refusal: code, message });
@@ -3326,7 +3333,7 @@ test("a Date typed as m/d/yyyy sorts by its day among yyyy-MM-dd dates", () => {
   });
 });
 
-// ENCM's Shifts tab layout: A "Shifts" (the weekday), B "Shift Schedule" (a label), D
+// A staff Shifts tab layout: A "Shifts" (the weekday), B "Shift Schedule" (a label), D
 // "Start", E "Finish". Invented windows; times as sheet times (a Date on 1899-12-30) and
 // as text.
 const sheetTime = (hhmm) => new Date(timeOnDate("1899-12-30", hhmm).ms);
@@ -3343,7 +3350,7 @@ const SHIFTS_FIXTURE = [
 ];
 const SHIFTS_READ = { text: READ.text, clock: (v) => READ.time(v).clock };
 
-test("shiftsTabWindows reads ENCM's layout by header, sheet times and text alike", () => {
+test("shiftsTabWindows reads a staff layout by header, sheet times and text alike", () => {
   const read = plain(L.shiftsTabWindows(SHIFTS_FIXTURE, SHIFTS_READ));
   assert.equal(read.problem, "");
   assert.deepEqual(read.windows, [

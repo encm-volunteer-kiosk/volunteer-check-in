@@ -43,9 +43,17 @@ function profilesCacheVersion() {
   return 2;
 }
 
-/** The script cache key for one Profiles file and tab. */
-function profilesCacheKey(fileId, tabName) {
-  return "profiles:v" + profilesCacheVersion() + ":" + fileId + ":" + tabName;
+/**
+ * The script cache key for one Profiles file and tab, and the Roster column rows it was read
+ * with (rosterColumnMapping), so a changed row is read at the next list call. With every
+ * row blank, or no mapping, the key is the file and tab alone. A blank fileId is this
+ * spreadsheet.
+ */
+function profilesCacheKey(fileId, tabName, mapping) {
+  const key = "profiles:v" + profilesCacheVersion() + ":" + fileId + ":" + tabName;
+  const m = mapping || {};
+  const typed = Object.keys(rosterColumnSettings()).map((k) => cellString(m[k]));
+  return typed.some((t) => t !== "") ? key + ":" + JSON.stringify(typed) : key;
 }
 
 /** The Profiles list is cached only when its JSON is at most this many UTF-8 bytes. */
@@ -140,7 +148,13 @@ function settingsDefaults(todayDate) {
     [hoursRequestsSetting(), "Off"],
     [hoursRequestsLastRunSetting(), ""],
   );
-  return rows;
+  rows.push(...generalSettingsDefaults());
+  // A row the brand gives its own default (Brand.js) gets that value instead.
+  const brand = brandSettingsDefaults();
+  return rows.map(([name, value]) => [
+    name,
+    Object.prototype.hasOwnProperty.call(brand, name) ? brand[name] : value,
+  ]);
 }
 
 /** The header of the Settings tab's column C, which says what each setting does. */
@@ -159,7 +173,7 @@ function settingsDescriptions() {
     "Kiosk access code":
       "The code a board member types on the tablet to open the kiosk: at least 16 letters (only letters count, and capitals are the same as small letters), and while it's blank or shorter no tablet can open.",
     "Volunteer Profiles file ID":
-      "Which spreadsheet the volunteer list comes from, as the long ID in its link between /d/ and /edit; while it's blank, no volunteer can be found on the tablet or in the menu.",
+      "Which spreadsheet the volunteer list comes from, as the long ID in its link between /d/ and /edit; blank means this spreadsheet.",
     "Volunteer Profiles tab":
       "The tab in that spreadsheet that holds the volunteer list; blank means a tab named Volunteer Profiles.",
     "Kiosk launch date":
@@ -204,6 +218,7 @@ function settingsDescriptions() {
       "Whether volunteers can ask for their hours on the tablet: Off hides the Request my hours link on the welcome screen; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them every 15 minutes, skipping unchecked shifts, at most weekly; blank or anything else means Off.",
     [hoursRequestsLastRunSetting()]:
       "Written by the hours request job: when it was installed or removed, or a run last sent, held or failed; a run with nothing to do writes nothing, so an old time is normal. In Auto, a request still waiting a day later shows as overdue in Email hours…, which is how a stopped job shows.",
+    ...generalSettingsDescriptions(),
   };
 }
 
@@ -215,10 +230,17 @@ function settingsDescriptions() {
  * - the same known name again: the not-used line, since only the first row counts;
  * - a name the kiosk doesn't know, every time: the unknown line;
  * - no name: "".
- * Known means an own key of settingsDescriptions(), so "toString" is unknown.
+ * Known means an own key of settingsDescriptions(), so "toString" is unknown. Each sentence
+ * is in words (wordText), but for the word rows' own, which name the default words.
  */
-function settingsDescriptionColumn(names) {
+function settingsDescriptionColumn(names, words) {
   const descriptions = settingsDescriptions();
+  const asTyped = [
+    personWordSetting(),
+    peopleWordSetting(),
+    staffWordSetting(),
+    headerWordSetting(),
+  ];
   const seen = {};
   return (names || []).map((raw) => {
     const name = cellString(raw);
@@ -230,7 +252,7 @@ function settingsDescriptionColumn(names) {
       return "Not used: an earlier row has the same name, and only the first one counts.";
     }
     seen[name] = true;
-    return descriptions[name];
+    return asTyped.indexOf(name) >= 0 ? descriptions[name] : wordText(descriptions[name], words);
   });
 }
 
@@ -242,10 +264,483 @@ function settingsDescriptionProtection() {
   return "What it does: written by the kiosk. Type a setting's value in the Value column, not here.";
 }
 
+// ---------------------------------------------------------------------------
+// General settings: the words, the organisation's name and logo, the roster's columns and
+// the switches
+//
+// Each row's code default reads as the kiosk's behaviour before the row existed, so a
+// sheet that gets the row from setupSheets works as it did. A brand may name its own
+// default for a new sheet (brandSettingsDefaults, Brand.js).
+
+function personWordSetting() {
+  return "Word for a person";
+}
+
+function peopleWordSetting() {
+  return "Word for people";
+}
+
+function staffWordSetting() {
+  return "Word for staff";
+}
+
+function headerWordSetting() {
+  return "Header word";
+}
+
+function organizationNameSetting() {
+  return "Organization name";
+}
+
+function logoLinkSetting() {
+  return "Logo link";
+}
+
+/** The Roster column rows, keyed by the field each one maps. */
+function rosterColumnSettings() {
+  return {
+    firstName: "Roster column: first name",
+    lastName: "Roster column: last name",
+    fullName: "Roster column: full name",
+    phone: "Roster column: phone",
+    email: "Roster column: email",
+    startDate: "Roster column: start date",
+    token: "Roster column: ID",
+  };
+}
+
+/** The On/Off rows, keyed by the name the code uses. Each is On unless set Off. */
+function switchSettings() {
+  return {
+    milestones: "Milestones",
+    emailHours: "Email hours",
+    importPastHours: "Import past hours",
+    arrivalChanges: "Tablet arrival changes",
+    checkOutChanges: "Tablet check-out changes",
+  };
+}
+
+/** The words a blank word row means. */
+function wordDefaults() {
+  return { person: "volunteer", people: "volunteers", staff: "board member" };
+}
+
+/** The general settings rows setupSheets adds when missing, after every older row. */
+function generalSettingsDefaults() {
+  const words = wordDefaults();
+  const rows = [
+    [personWordSetting(), words.person],
+    [peopleWordSetting(), words.people],
+    [staffWordSetting(), words.staff],
+    [headerWordSetting(), ""],
+    [organizationNameSetting(), ""],
+    [logoLinkSetting(), ""],
+  ];
+  Object.values(rosterColumnSettings()).forEach((name) => rows.push([name, ""]));
+  Object.values(switchSettings()).forEach((name) => rows.push([name, "On"]));
+  return rows;
+}
+
+/** The What it does sentence of each general settings row. */
+function generalSettingsDescriptions() {
+  const roster = rosterColumnSettings();
+  const switches = switchSettings();
+  return {
+    [personWordSetting()]:
+      "The word for one person who checks in, such as volunteer or usher; type a or an first when the kiosk would pick the wrong one (a user). A change shows from the next tap, but not in headers: rename those by hand and type the word in Header word (see the How to tab).",
+    [peopleWordSetting()]:
+      "The word for more than one person who checks in, such as volunteers or ushers, used on the tablet, in emails and on this sheet; blank means volunteers.",
+    [staffWordSetting()]:
+      "The word for the people a person at the tablet is sent to for help, such as board member or staff member; type a or an first when the kiosk would pick the wrong one; blank means board member.",
+    [headerWordSetting()]:
+      "Written by the kiosk: the word the Log, Flags and Removed shifts headers were set up with, written when the kiosk's tabs are set up and only while those tabs hold no rows; blank means volunteer. If you rename those headers by hand, type the new word here.",
+    [organizationNameSetting()]:
+      "Your organization's name: the logo's description, the heading shown when there's no logo, and the start of the emails' sender name; blank means the name the kiosk came with.",
+    [logoLinkSetting()]:
+      "The web address of an image to show as the tablet's logo, starting https://; blank, or an address that doesn't start https://, keeps the logo the kiosk came with, and an image that won't load shows the Organization name.",
+    [roster.firstName]:
+      "The header of the volunteer list's first name column; blank means Volunteer First Name, except that with Roster column: full name filled it must be blank and no first name column is read.",
+    [roster.lastName]:
+      "The header of the volunteer list's last name column; blank means Volunteer Last Name, except that with Roster column: full name filled it must be blank and no last name column is read.",
+    [roster.fullName]:
+      "The header of one column with each person's whole name, first name first (Smith, Mary greets Smith,); fill it only with first and last name blank, and choose before the first Import past hours. Blank means first and last name columns.",
+    [roster.phone]:
+      "The header of the volunteer list's phone column; blank means Volunteer Phone. The list needs the column, even empty: the tablet asks for a phone only when two people share a name.",
+    [roster.email]:
+      "The header of the volunteer list's email column; blank means Email or Email Address. Kiosk admin > Email hours… and the hours request job read it; the tablet never does.",
+    [roster.startDate]:
+      "The header of the volunteer list's start date column; blank means Start Date mm/dd/yyyy. The list needs the column, even empty: only the first-shift welcome reads it.",
+    [roster.token]:
+      "The header of the volunteer list's ID column, whose codes never change; blank means User Token or Onboarding Token.",
+    [switches.milestones]:
+      "On shows milestones and the first-shift welcome on the tablet and in the hours report; Off leaves them out; blank or anything else means On.",
+    [switches.emailHours]:
+      "On lets staff email volunteers their hours (Kiosk admin > Email hours…); Off hides it, hides the tablet's Request my hours link and reads Hours requests as Off; blank or anything else means On.",
+    [switches.importPastHours]:
+      "On shows Kiosk admin > Import past hours…; Off hides it and refuses an import; blank or anything else means On.",
+    [switches.arrivalChanges]:
+      "On lets a volunteer choose an earlier arrival on the tablet and change it when checking out; Off hides both, so staff change it; blank or anything else means On.",
+    [switches.checkOutChanges]:
+      "On lets a volunteer choose an earlier check-out time on the tablet; Off hides it, so staff change it; blank or anything else means On.",
+  };
+}
+
+/**
+ * An On/Off row: the cell, trimmed, in any case. "on" is true, "off" is false, and
+ * anything else, blank included, is the row's code default, so a typo keeps the kiosk as
+ * it was. ("Flags email" keeps its own reading: parseFlagsEmailOn.)
+ */
+function parseOnOffSetting(text, codeDefault) {
+  const value = cellString(text).toLowerCase();
+  if (value === "on") return true;
+  if (value === "off") return false;
+  return codeDefault;
+}
+
+/** Every switch from Settings, as {milestones, emailHours, ...}: true is On. */
+function kioskSwitches(settings) {
+  const s = settings || {};
+  const out = {};
+  Object.entries(switchSettings()).forEach(([key, name]) => {
+    out[key] = parseOnOffSetting(s[name], true);
+  });
+  return out;
+}
+
+/**
+ * A word row as {word, article}. Spaces collapse; blank means fallback. A value may start
+ * with its own "a" or "an", which is then the article and is left off the word; otherwise
+ * a word starting a, e, i or o takes "an" and any other takes "a".
+ */
+function parseWordSetting(text, fallback) {
+  const value = cellString(text).replace(/\s+/g, " ") || fallback;
+  const typed = /^(a|an) (.+)$/i.exec(value);
+  if (typed) return { word: typed[2], article: typed[1].toLowerCase() };
+  return { word: value, article: /^[aeio]/i.test(value) ? "an" : "a" };
+}
+
+/** The three words from Settings: {person, personArticle, people, staff, staffArticle}. */
+function kioskWords(settings) {
+  const s = settings || {};
+  const defaults = wordDefaults();
+  const person = parseWordSetting(s[personWordSetting()], defaults.person);
+  const staff = parseWordSetting(s[staffWordSetting()], defaults.staff);
+  return {
+    person: person.word,
+    personArticle: person.article,
+    people: cellString(s[peopleWordSetting()]).replace(/\s+/g, " ") || defaults.people,
+    staff: staff.word,
+    staffArticle: staff.article,
+  };
+}
+
+/** The word the person-word headers were written with: Header word, bare; blank is volunteer. */
+function headerWord(settings) {
+  return parseWordSetting((settings || {})[headerWordSetting()], wordDefaults().person).word;
+}
+
+/** How a person-word header starts: word, bare and capitalised, or Volunteer when blank. */
+function headerWordText(word) {
+  return capitalized(parseWordSetting(word, "Volunteer").word);
+}
+
+/**
+ * The person-word headers' names under the Header word in use, folded onto today's, as
+ * {normalized worded name: normalized today's name}; {} while the Header word is blank or
+ * volunteer. Kept for the Settings it was made from, since a header map asks for it per cell.
+ */
+function personHeaderFolds() {
+  const word = wordsInUse().header;
+  if (personHeaderFoldsMemo && personHeaderFoldsMemo.word === word) {
+    return personHeaderFoldsMemo.folds;
+  }
+  const folds = {};
+  if (normalizeHeader(word) !== normalizeHeader(wordDefaults().person)) {
+    const today = [logHeaderNames().name, logHeaderNames().role, flagHeaderNames().name];
+    const worded = [
+      logHeaderNames(word).name,
+      logHeaderNames(word).role,
+      flagHeaderNames(word).name,
+    ];
+    worded.forEach((h, i) => (folds[normalizeHeader(h)] = normalizeHeader(today[i])));
+  }
+  personHeaderFoldsMemo = { word, folds };
+  return folds;
+}
+let personHeaderFoldsMemo = null;
+
+/**
+ * A Log, Flags or Removed shifts header as the code matches it: normalizeHeader's form, with
+ * a person-word header under the Header word in use read as today's name, so code that
+ * finds, copies or matches a header by name takes either as one header.
+ */
+function headerKey(header) {
+  const k = normalizeHeader(header);
+  const folds = personHeaderFolds();
+  return Object.prototype.hasOwnProperty.call(folds, k) ? folds[k] : k;
+}
+
+/** A header as a message names it: today's name, or under the Header word in use, its name. */
+function headerInUse(header) {
+  const word = wordsInUse().header;
+  const today = [logHeaderNames(), flagHeaderNames()];
+  const worded = [logHeaderNames(word), flagHeaderNames(word)];
+  for (let t = 0; t < today.length; t++) {
+    const key = Object.keys(today[t]).find((k) => today[t][k] === header);
+    if (key) return worded[t][key];
+  }
+  return header;
+}
+
+/**
+ * The word setupSheets writes into the person-word headers and Header word: the person
+ * word, bare, when it isn't the word the headers have now (Header word, blank as
+ * volunteer), else null. Whether it may write is setupSheets' (no rows on the three tabs).
+ */
+function headerWordToWrite(settings) {
+  const wanted = kioskWords(settings).person;
+  return normalizeHeader(wanted) === normalizeHeader(headerWord(settings)) ? null : wanted;
+}
+
+/**
+ * The person-word header cells of headerRow to rewrite in word to, as [{col (1-based),
+ * header}]. names is logHeaderNames or flagHeaderNames, keys the person-word keys of it
+ * that the tab holds. A cell named as one of them, under today's word or under from (the
+ * Header word now), gets that header under to. Every other cell is left alone.
+ */
+function headerWordWrites(headerRow, names, keys, from, to) {
+  const wanted = {};
+  keys.forEach((k) => {
+    wanted[normalizeHeader(names()[k])] = names(to)[k];
+    wanted[normalizeHeader(names(from)[k])] = names(to)[k];
+  });
+  const writes = [];
+  (headerRow || []).forEach((cell, i) => {
+    const k = normalizeHeader(cell);
+    if (k && Object.prototype.hasOwnProperty.call(wanted, k) && cell !== wanted[k]) {
+      writes.push({ col: i + 1, header: wanted[k] });
+    }
+  });
+  return writes;
+}
+
+/** The page's title: the person word, capitalised, and " Check-In". */
+function pageTitle(settings) {
+  return capitalized(kioskWords(settings).person) + " Check-In";
+}
+
+/**
+ * The Settings the page reads from the list reply: words (kioskWords), organizationName
+ * (Settings "Organization name", "" while blank, when the page shows the brand's name) and
+ * logoLink (parseLogoLink, "" for the brand's logo) and switches (kioskSwitches: the page
+ * hides what is Off, and the server refuses it too).
+ */
+function pageSettings(settings) {
+  const s = settings || {};
+  return {
+    words: kioskWords(s),
+    organizationName: cellString(s[organizationNameSetting()]),
+    logoLink: parseLogoLink(s[logoLinkSetting()]),
+    switches: kioskSwitches(s),
+  };
+}
+
+/** A word with its first letter capitalised, as at the start of a sentence or a header. */
+function capitalized(word) {
+  const s = String(word);
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** The words of a sheet's Settings for wordText: kioskWords and the Header word. */
+function sheetWords(settings) {
+  return Object.assign(kioskWords(settings), { header: headerWord(settings) });
+}
+
+/** The default words, as sheetWords gives them for a sheet whose word rows are blank. */
+function defaultWords() {
+  return sheetWords({});
+}
+
+/** True when words would write every text as it is: the default words, or none. */
+function wordsAreDefault(words) {
+  if (!words) return true;
+  const d = wordDefaults();
+  return (
+    words.person === d.person &&
+    words.personArticle === "a" &&
+    words.people === d.people &&
+    words.staff === d.staff &&
+    words.staffArticle === "a" &&
+    (words.header || d.person).toLowerCase() === d.person
+  );
+}
+
+/**
+ * Text written with the default words, in a sheet's words (sheetWords). With the default
+ * words it returns the text as it is. Otherwise "volunteer", "volunteers" and "board
+ * member" become the person, people and staff words, capitalised where the text
+ * capitalises them, and an "a" before one takes that word's article. A sentence that uses
+ * the verb becomes a neutral one, since a noun setting can't conjugate a verb. Interface
+ * names keep their text: Settings rows and roster headers such as Volunteer Profiles and
+ * Volunteer First Name. The Log and Flags header names (Volunteer Name, Volunteer
+ * Role/Type) take the Header word, as the headers on the sheet do.
+ *
+ * The page (src/words.ts) and the admin window (AdminDialog.html) hold the same rewrite;
+ * a test holds the three to the same output.
+ */
+function wordText(text, words) {
+  if (wordsAreDefault(words) || typeof text !== "string" || text === "") return text;
+  let out = text;
+  wordVerbSentences().forEach(([from, to]) => {
+    out = out.split(from).join(to);
+  });
+  return out.replace(
+    /\b(?:([Aa]) )?(volunteer coordinator|[Vv]olunteers?|[Bb]oard members?)\b(?!-)/g,
+    (match, article, noun, offset, whole) => {
+      const rest = whole.slice(offset + (article ? 2 : 0));
+      if (wordKeptNames().some((name) => rest.startsWith(name))) return match;
+      const cap = (w, like) => (/^[A-Z]/.test(like) ? capitalized(w) : w);
+      if (wordHeaderNames().some((name) => rest.startsWith(name))) {
+        return (article ? article + " " : "") + cap(words.header || wordDefaults().person, noun);
+      }
+      let word;
+      let wordArticle;
+      if (/^volunteers$/i.test(noun)) {
+        word = words.people;
+      } else if (/^volunteer$/i.test(noun)) {
+        word = words.person;
+        wordArticle = words.personArticle;
+      } else {
+        // "a volunteer coordinator" is ENCM's other name for staff.
+        word = /s$/.test(noun) ? words.staff + "s" : words.staff;
+        wordArticle = words.staffArticle;
+      }
+      return article ? cap(wordArticle || "a", article) + " " + word : cap(word, noun);
+    },
+  );
+}
+
+/** Sentences that use the verb, and the neutral form wordText gives them. */
+function wordVerbSentences() {
+  return [
+    ["Thank you for volunteering with us.", "Thank you."],
+    ["Thank you for volunteering.", "Thank you."],
+    ["Keep Volunteering", "Not yet"],
+    ["without volunteering", "without doing the shift"],
+  ];
+}
+
+/** Interface names that start with the person word and keep their text under any words. */
+function wordKeptNames() {
+  return [
+    "Volunteer Profiles",
+    "volunteer profiles",
+    "Volunteer First Name",
+    "volunteer first name",
+    "Volunteer Last Name",
+    "volunteer last name",
+    "Volunteer Phone",
+    "volunteer phone",
+    "Volunteer hour value",
+    "Volunteer ID",
+    "Volunteer Kiosk",
+    "Volunteer Hours",
+  ];
+}
+
+/** Log and Flags header names, as text names them, that take the Header word. */
+function wordHeaderNames() {
+  return [
+    "Volunteer Name",
+    "Volunteer\nName",
+    "volunteer name",
+    "Volunteer Role/Type",
+    "Volunteer\nRole/Type",
+    "volunteer role/type",
+  ];
+}
+
+/** The admin window's own lines that name people (AdminDialog.html's w("…")). */
+function adminDialogLines() {
+  return [
+    "Paste a Shift ID, or choose a volunteer and a date.",
+    "Please choose a volunteer.",
+    "Please tick at least one volunteer.",
+    "The ticked volunteers changed. Press Preview again.",
+    "None of the ticked volunteers can be sent; see the preview.",
+    "volunteer",
+    "volunteers",
+    " of these volunteers at the same moment, so they may get two emails. See the Hours emails tab.",
+  ];
+}
+
+/**
+ * What AdminDialog.html prints in words: its two labels, the Shift ID hint, and texts, each
+ * of its own lines whose words differ, keyed by its text in the default words ({} under the
+ * default words).
+ */
+function adminDialogWords(words) {
+  const texts = {};
+  adminDialogLines().forEach((line) => {
+    const worded = wordText(line, words);
+    if (worded !== line) texts[line] = worded;
+  });
+  return {
+    person: wordText("Volunteer", words),
+    people: wordText("Volunteers", words),
+    findShiftHint: wordText("(paste it, or find the shift by volunteer and date)", words),
+    texts,
+  };
+}
+
+// The Settings this run read last (useSettings), for text built where Settings aren't
+// passed: refusals, the emails' sender name, and the Log, Flags and Removed shifts header
+// lookups. Each server call reads Settings before it builds such a text or reads a header,
+// and Apps Script starts every call with this unset. Unset reads as blank Settings: the
+// default words and the brand's name.
+let settingsInUse = null;
+
+/** Keeps Settings just read for this run (wordsInUse, flagsEmailSenderName). */
+function useSettings(settings) {
+  settingsInUse = settings || null;
+}
+
+/** The words of the Settings this run read last, or the default words. */
+function wordsInUse() {
+  return sheetWords(settingsInUse);
+}
+
+/** Settings "Organization name", or the brand's name while it's blank. */
+function kioskOrganizationName(settings) {
+  return cellString((settings || {})[organizationNameSetting()]) || brandOrganizationName();
+}
+
+/** The emails' sender name: the Organization name's, or the brand's while it's blank. */
+function kioskSenderName(settings) {
+  const name = cellString((settings || {})[organizationNameSetting()]);
+  return name ? name + " Check-In Kiosk" : brandSenderName();
+}
+
+/** Settings "Logo link": the address when it starts https://, else "" (the brand's logo). */
+function parseLogoLink(text) {
+  const value = cellString(text);
+  return /^https:\/\//.test(value) ? value : "";
+}
+
+/** Each Roster column row, trimmed, keyed as rosterColumnSettings(): "" means blank. */
+function rosterColumnMapping(settings) {
+  const s = settings || {};
+  const out = {};
+  Object.entries(rosterColumnSettings()).forEach(([key, name]) => {
+    out[key] = cellString(s[name]);
+  });
+  return out;
+}
+
 /**
  * Profiles headers the kiosk needs, after normalizeHeader. Email isn't needed here: the
- * tablet and the kiosk list never read it; only Kiosk admin > Email hours… reads it,
- * straight from Profiles (profileEmails_). The token is found separately, under one of
+ * tablet and the kiosk list never read it; Kiosk admin > Email hours… and the hours
+ * request job read it, straight from Profiles (profileEmails_). The token is found separately, under one of
  * profileTokenHeaders().
  */
 function requiredProfileHeaders() {
@@ -258,11 +753,227 @@ function requiredProfileHeaders() {
 }
 
 /**
- * The two names the User Token column goes by in Profiles, after normalizeHeader. ENCM
- * calls it Onboarding Token today and may rename it User Token; exactly one must be there.
+ * The two names the User Token column goes by in Profiles, after normalizeHeader. A
+ * roster may call it Onboarding Token or User Token; exactly one must be there.
  */
 function profileTokenHeaders() {
   return ["onboarding token", "user token"];
+}
+
+/** True when Settings "Roster column: full name" names a whole-name column. */
+function rosterUsesFullName(mapping) {
+  return cellString((mapping || {}).fullName) !== "";
+}
+
+/**
+ * The message for a column a Roster column row names that the list doesn't have: the
+ * header as typed and the row that typed it.
+ */
+function rosterMissingColumnMessage(key, typed) {
+  return (
+    'Volunteer Profiles has no "' +
+    cellString(typed) +
+    '" column, the header Settings ' +
+    rosterColumnSettings()[key] +
+    " names."
+  );
+}
+
+/**
+ * Throws when Roster column: full name is filled beside first name or last name: a list
+ * gives names one way or the other.
+ */
+function requireOneNameLayout(mapping) {
+  const m = mapping || {};
+  if (!rosterUsesFullName(m)) return;
+  if (cellString(m.firstName) === "" && cellString(m.lastName) === "") return;
+  const rows = rosterColumnSettings();
+  throw new Error(
+    "Settings " +
+      rows.fullName +
+      " is filled, so " +
+      rows.firstName +
+      " and " +
+      rows.lastName +
+      " must be blank.",
+  );
+}
+
+/**
+ * The index of one roster column (headers after normalizeHeader). A filled Roster column
+ * row is the only header looked for; a blank one means the kiosk's own header (fallback).
+ * With a whole-name list, first and last name are blank and never looked for
+ * (profileColumns).
+ * Throws when it is missing: today's message for the kiosk's own, or one naming the
+ * header and the Settings row.
+ */
+function rosterColumn(headers, mapping, key, fallback) {
+  const typed = cellString((mapping || {})[key]);
+  if (typed) {
+    const at = headers.indexOf(normalizeHeader(typed));
+    if (at < 0) throw new Error(rosterMissingColumnMessage(key, typed));
+    return at;
+  }
+  const at = headers.indexOf(fallback);
+  if (at < 0) throw new Error('Volunteer Profiles has no "' + fallback + '" column.');
+  return at;
+}
+
+/** The ID column: the Roster column: ID row's header, else profileTokenColumn. */
+function rosterIdColumn(headers, mapping) {
+  const typed = cellString((mapping || {}).token);
+  if (!typed) return profileTokenColumn(headers);
+  const at = headers.indexOf(normalizeHeader(typed));
+  if (at < 0) throw new Error(rosterMissingColumnMessage("token", typed));
+  return at;
+}
+
+/**
+ * The columns parseProfiles reads, as {firstName, lastName, phone, startDate, token}, or
+ * {fullName, phone, startDate, token} for a whole-name list, each found by rosterColumn in
+ * that order. Throws as rosterColumn and requireOneNameLayout do.
+ */
+function profileColumns(headers, mapping) {
+  requireOneNameLayout(mapping);
+  const wanted = requiredProfileHeaders();
+  const keys = rosterUsesFullName(mapping)
+    ? ["fullName", "phone", "startDate"]
+    : ["firstName", "lastName", "phone", "startDate"];
+  const col = {};
+  keys.forEach((key) => {
+    col[key] = rosterColumn(headers, mapping, key, wanted[key]);
+  });
+  col.token = rosterIdColumn(headers, mapping);
+  return col;
+}
+
+/**
+ * The header setupSheets writes on a volunteer list tab it makes in this spreadsheet: the
+ * kiosk's own header names, so the tab needs no Roster column row.
+ */
+function peopleTabHeader() {
+  return [
+    "Volunteer First Name",
+    "Volunteer Last Name",
+    "Volunteer Phone",
+    "Email",
+    "Start Date mm/dd/yyyy",
+    "User Token",
+  ];
+}
+
+/**
+ * Why setupSampleProfiles changes nothing, before it opens the tab, or "": a Profiles file
+ * is named, or a Roster column row is filled (the sample header uses the kiosk's names).
+ */
+function sampleProfilesRefusal(fileId, mapping) {
+  if (cellString(fileId)) {
+    return "Settings already names a Volunteer Profiles file; nothing done.";
+  }
+  const m = mapping || {};
+  if (Object.keys(rosterColumnSettings()).some((k) => cellString(m[k]) !== "")) {
+    return "A Roster column row on the Settings tab is filled, and the sample people use the kiosk's own headers; nothing done.";
+  }
+  return "";
+}
+
+/** Why setupSampleProfiles leaves a tab that already holds people. */
+function sampleProfilesTabRefusal(tabName) {
+  return "The " + tabName + " tab has rows below its header; nothing done.";
+}
+
+/** The Settings row that holds the day the kiosk started. */
+function launchDateSetting() {
+  return "Kiosk launch date";
+}
+
+/**
+ * todayDate when Settings has a Kiosk launch date row and it is blank: setupSheets writes
+ * it there. "" otherwise, so a date there, or a missing row (which the defaults add), is
+ * left alone.
+ */
+function launchDateToFill(settings, todayDate) {
+  const s = settings || {};
+  if (!Object.prototype.hasOwnProperty.call(s, launchDateSetting())) return "";
+  return cellString(s[launchDateSetting()]) === "" ? todayDate : "";
+}
+
+/** The header Fill in missing IDs gives a new ID column. */
+function fillIdsHeader() {
+  return "User Token";
+}
+
+/**
+ * Kiosk admin > Fill in missing IDs, worked out from this spreadsheet's roster tab (header
+ * row and data rows as text; data row i is sheet row i + 2) and mapping
+ * (rosterColumnMapping). Returns {refusal} (the list's own message for a column it can't
+ * find) or {header, writes}. The ID column is the one the list reads (rosterIdColumn).
+ * header is null, or {column, text} when Roster column: ID is blank and neither token
+ * column is there: fillIdsHeader() goes in the first empty header cell. writes are
+ * [{row, column, id}] (1-based), one for each blank ID cell on a row the list reads (a
+ * first and a last name, or a whole name), in row order; newId() gives each ID. A filled
+ * cell is never written.
+ */
+function fillIdsPlan(headerRow, rows, mapping, newId) {
+  const headers = (headerRow || []).map(normalizeHeader);
+  const m = mapping || {};
+  const wanted = requiredProfileHeaders();
+  let nameAt;
+  let idAt = -1;
+  try {
+    requireOneNameLayout(m);
+    nameAt = rosterUsesFullName(m)
+      ? [rosterColumn(headers, m, "fullName")]
+      : [
+          rosterColumn(headers, m, "firstName", wanted.firstName),
+          rosterColumn(headers, m, "lastName", wanted.lastName),
+        ];
+    const anyToken = profileTokenHeaders().some((h) => headers.indexOf(h) >= 0);
+    if (cellString(m.token) || anyToken) idAt = rosterIdColumn(headers, m);
+  } catch (err) {
+    return { refusal: err.message };
+  }
+  let header = null;
+  if (idAt < 0) {
+    const empty = headers.indexOf("");
+    idAt = empty >= 0 ? empty : headers.length;
+    header = { column: idAt + 1, text: fillIdsHeader() };
+  }
+  const writes = [];
+  (rows || []).forEach((cells, i) => {
+    const c = cells || [];
+    if (!nameAt.every((at) => cellString(c[at]) !== "")) return;
+    if (cellString(c[idAt]) !== "") return;
+    writes.push({ row: i + 2, column: idAt + 1, id: newId() });
+  });
+  return { header, writes };
+}
+
+/** What Fill in missing IDs tells staff when it is done. */
+function fillIdsMessage(plan) {
+  const n = plan.writes.length;
+  if (!n && !plan.header) return "Every row with a name has an ID already. Nothing was changed.";
+  const column = plan.header ? ' in a new "' + plan.header.text + '" column' : "";
+  return n
+    ? "Filled in " + plural(n, "missing ID", "missing IDs") + column + "."
+    : 'Added a "' + plan.header.text + '" column. No row with a name needed an ID.';
+}
+
+/** Why Fill in missing IDs changes nothing while the list is in another spreadsheet. */
+function fillIdsFileIdRefusal() {
+  return 'Fill in missing IDs works only on a list in this spreadsheet, and Settings "Volunteer Profiles file ID" names another one, whose IDs stay as they are. Nothing was changed.';
+}
+
+/**
+ * A whole-name cell as the two names: runs of spaces as one, the first word as firstName
+ * and the rest as lastName ("" for a one-word name).
+ */
+function splitFullName(text) {
+  const whole = cellString(text).replace(/\s+/g, " ");
+  const at = whole.indexOf(" ");
+  return at < 0
+    ? { firstName: whole, lastName: "" }
+    : { firstName: whole.slice(0, at), lastName: whole.slice(at + 1) };
 }
 
 function refusalMessages() {
@@ -331,16 +1042,23 @@ function refusalMessages() {
     HOURS_EMAIL_TOO_MANY: "Too many volunteers in one send. Press Preview again.",
     HOURS_REQUESTS_OFF:
       "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
+    ARRIVAL_CHANGES_OFF: "Please ask a board member to change your arrival time.",
+    CHECKOUT_CHANGES_OFF: "Please ask a board member to change your check-out time.",
+    EMAIL_HOURS_OFF:
+      "Email hours is turned off in Settings. Set the Email hours row to On to use it.",
+    IMPORT_OFF:
+      "Import past hours is turned off in Settings. Set the Import past hours row to On to use it.",
   };
 }
 
-/** Kiosk-logged milestones, checked in this order. */
+/** Kiosk-logged milestones, checked in this order. Their messages are the brand's. */
 function milestones() {
+  const texts = brandMilestoneMessages();
   return [
     {
       id: "shift-1",
       title: "First completed shift",
-      message: "Your first day making a difference. Welcome to the neighborhood!",
+      message: texts["shift-1"],
       kind: "shifts",
       threshold: 1,
       sinceLaunchOnly: true,
@@ -348,7 +1066,7 @@ function milestones() {
     {
       id: "shift-10",
       title: "10 shifts",
-      message: "10 shifts checked in here. Thank you for showing up for your neighbors!",
+      message: texts["shift-10"],
       kind: "shifts",
       threshold: 10,
       sinceLaunchOnly: false,
@@ -356,7 +1074,7 @@ function milestones() {
     {
       id: "shift-25",
       title: "25 shifts",
-      message: "25 shifts checked in here. That's something special.",
+      message: texts["shift-25"],
       kind: "shifts",
       threshold: 25,
       sinceLaunchOnly: false,
@@ -364,7 +1082,7 @@ function milestones() {
     {
       id: "hours-50",
       title: "50 hours",
-      message: "50 hours logged here. 50 hours of care, kindness, and community.",
+      message: texts["hours-50"],
       kind: "hours",
       threshold: 50,
       sinceLaunchOnly: false,
@@ -372,7 +1090,7 @@ function milestones() {
     {
       id: "hours-100",
       title: "100 hours",
-      message: "100 hours logged here, making East Nashville stronger.",
+      message: texts["hours-100"],
       kind: "hours",
       threshold: 100,
       sinceLaunchOnly: false,
@@ -544,6 +1262,8 @@ function profileTokenColumn(headers) {
  *
  * Every row with a first and last name either is listed with an ID of its own, or gets
  * a problem line saying why it can't check in. Rows without both names are skipped.
+ * mapping (rosterColumnMapping) finds the columns (profileColumns). With a whole-name
+ * column, a row with a name in it is read, split by splitFullName.
  * A same-name member whose phone can't confirm them (none, or the same last four as
  * another member) is listed with phoneLast4 '' so checkPhone returns PHONE_MISSING.
  * Returns {volunteers: [{id, firstName, lastName, phoneLast4, startDate, needsPhoneCheck,
@@ -551,26 +1271,27 @@ function profileTokenColumn(headers) {
  * User Token, trimmed, and stays on the server: the Log is matched by it. row is the
  * volunteer's Profiles row.
  */
-function parseProfiles(headerRow, rows, hashFn) {
-  const wanted = requiredProfileHeaders();
+function parseProfiles(headerRow, rows, hashFn, mapping) {
   const headers = headerRow.map(normalizeHeader);
-  const col = {};
-  Object.keys(wanted).forEach((key) => {
-    const at = headers.indexOf(wanted[key]);
-    if (at < 0) throw new Error('Volunteer Profiles has no "' + wanted[key] + '" column.');
-    col[key] = at;
-  });
-  col.token = profileTokenColumn(headers);
+  const col = profileColumns(headers, mapping);
+  const fullName = rosterUsesFullName(mapping);
 
   const problems = [];
   const candidates = [];
   rows.forEach((cells, i) => {
     const row = i + 2;
     const cell = (key) => cellString(cells[col[key]]);
-    const firstName = cell("firstName");
-    const lastName = cell("lastName");
-    if (!firstName || !lastName) return;
-    const name = firstName + " " + lastName;
+    let firstName;
+    let lastName;
+    if (fullName) {
+      if (!cell("fullName")) return;
+      ({ firstName, lastName } = splitFullName(cell("fullName")));
+    } else {
+      firstName = cell("firstName");
+      lastName = cell("lastName");
+      if (!firstName || !lastName) return;
+    }
+    const name = volunteerFullName({ firstName, lastName });
     const token = cell("token");
     if (!token) {
       problems.push({ row, text: "row " + row + ": " + name + " has no User Token" });
@@ -914,15 +1635,19 @@ function milestoneCrossed(beforeShifts, beforeMinutes, addMinutes, startDate, la
 
 /**
  * The kiosk's Log headers, keyed by the short names the code uses, in the order a new Log
- * gets them. The first fourteen are ENCM's own, from the "2026-11 Log" tab of their
- * Volunteer Kiosk Log, line breaks included. The last four are the kiosk's.
+ * gets them. The first fourteen are the staff's own layout, from the Log tab the kiosk was
+ * first fitted to, line breaks included. The last four are the kiosk's. With word (a
+ * Header word), Name and Role/Type start with it, capitalised, in place of Volunteer; with
+ * none, or volunteer, they are today's names. The code keys a header map by the names
+ * without word, which match either (headerKey).
  */
-function logHeaderNames() {
+function logHeaderNames(word) {
+  const person = headerWordText(word);
   return {
     date: "Date",
     day: "Day",
-    name: "Volunteer\nName",
-    role: "Volunteer\nRole/Type",
+    name: person + "\nName",
+    role: person + "\nRole/Type",
     recordedIn: "Check-In\nRecorded\n(timestamp)",
     statedIn: "Check-In\nStated\n(user)",
     recordedOut: "Check-Out\nRecorded\n(timestamp)",
@@ -965,7 +1690,7 @@ function logColumnKinds() {
   return kinds;
 }
 
-/** The header row the kiosk wrote before the Log took ENCM's layout. */
+/** The header row the kiosk wrote before the Log took its current layout. */
 function oldLogHeaders() {
   return [
     "Shift ID",
@@ -989,12 +1714,12 @@ function isOldLogLayout(headerRow) {
   return old.every((h, i) => normalizeHeader(headerRow[i]) === normalizeHeader(h));
 }
 
-/** 0-based indexes of every cell in headerRow whose header is this one. */
+/** 0-based indexes of every cell in headerRow whose header is this one (headerKey). */
 function logHeaderIndexes(headerRow, header) {
-  const wanted = normalizeHeader(header);
+  const wanted = headerKey(header);
   const found = [];
   headerRow.forEach((cell, i) => {
-    if (normalizeHeader(cell) === wanted) found.push(i);
+    if (headerKey(cell) === wanted) found.push(i);
   });
   return found;
 }
@@ -1042,7 +1767,9 @@ function logColumnFormats(headerRow) {
 }
 
 function missingLogColumnError(header) {
-  return new Error('The Log has no "' + normalizeHeader(header) + '" column. Run setupSheets().');
+  return new Error(
+    'The Log has no "' + normalizeHeader(headerInUse(header)) + '" column. Run setupSheets().',
+  );
 }
 
 /**
@@ -1061,7 +1788,7 @@ function logColumns(headerRow) {
       if (found.length > 1) {
         throw new Error(
           'The Log has more than one "' +
-            normalizeHeader(h) +
+            normalizeHeader(headerInUse(h)) +
             '" column. Rename or remove the extra one.',
         );
       }
@@ -1330,18 +2057,36 @@ function closedTotals(entries, token) {
  * tablet (decideArrivalChange); and checkOutMilestones, the milestone a
  * check-out would show by the minutes of this shift (checkOutMilestoneSteps, up to the
  * longest shift an in-window check-out can state), or null when there is no open row or
- * its start can't be read.
+ * its start can't be read. With milestonesOn false (the Milestones switch Off) it is the
+ * one step of a shift with no milestone ahead, [{fromMinutes: 0, id: null}], so the field
+ * keeps its shape and a check-out still shows at the tap.
  */
-function volunteerSummaries(volunteers, states, nowMs, windowMs, todayDate, launchDate) {
+function volunteerSummaries(
+  volunteers,
+  states,
+  nowMs,
+  windowMs,
+  todayDate,
+  launchDate,
+  milestonesOn,
+) {
   return volunteers.map((v) => {
     const state = hasLogState(states, v.token) ? logStateOf(states, v.token) : emptyLogState();
     const open = findOpenShift(state.open, v.token, nowMs, windowMs, todayDate);
     const startMs = open ? shiftStartMs(open) : NaN;
     const untilMs = open ? checkedInMs(open) + windowMs : NaN;
-    const steps =
-      isFinite(startMs) && isFinite(untilMs)
-        ? checkOutMilestoneSteps(state, v, launchDate, Math.ceil((untilMs - startMs) / 60000) + 1)
-        : null;
+    let steps = null;
+    if (isFinite(startMs) && isFinite(untilMs)) {
+      steps =
+        milestonesOn === false
+          ? [{ fromMinutes: 0, id: null }]
+          : checkOutMilestoneSteps(
+              state,
+              v,
+              launchDate,
+              Math.ceil((untilMs - startMs) / 60000) + 1,
+            );
+    }
     return {
       id: v.id,
       firstName: v.firstName,
@@ -1394,9 +2139,14 @@ function requireRowKeys(token, shiftId) {
   if (!cellString(shiftId)) throw new Error("A Log row can't be written without a Shift ID.");
 }
 
-/** The Volunteer Name cell: Profiles first name, a space, last name. */
+/**
+ * The Volunteer Name cell: Profiles first name, a space, last name; the first name alone
+ * when the last is blank (a one-word whole name), with no space after it.
+ */
 function volunteerFullName(volunteer) {
-  return cellString(volunteer.firstName) + " " + cellString(volunteer.lastName);
+  const first = cellString(volunteer.firstName);
+  const last = cellString(volunteer.lastName);
+  return last ? first + " " + last : first;
 }
 
 /**
@@ -1567,8 +2317,9 @@ function decideCheckIn(input) {
  * findOpenShift), then the stated check-out time (validateCheckOut). Input: {volunteers,
  * id (the tapped entry), digits, entries (the Log), todayDate, nowMs, windowMs, outMs
  * (null for server time), outDate, flagMinutes, longShiftHours (parseLongShiftHours),
- * launchDate}. Only the rows of the tokens checkOutTokens names are looked at, so entries
- * may be those rows alone. A check-out made with no digits under the same-name rule
+ * launchDate, milestonesOn}. milestonesOn false (the Milestones switch Off) means no
+ * milestone; missing means On. Only the rows of the tokens checkOutTokens names are looked
+ * at, so entries may be those rows alone. A check-out made with no digits under the same-name rule
  * decides and writes exactly what the same check-out with the member's digits would.
  *
  * Returns {refusal} or {volunteer, row, cells, minutes, milestone, statedOutMs, flags,
@@ -1640,13 +2391,16 @@ function decideCheckOut(input) {
     input.entries !== undefined
       ? closedTotals(input.entries, volunteer.token)
       : logStateOf(input.states, volunteer.token);
-  const milestone = milestoneCrossed(
-    before.shifts,
-    before.minutes,
-    minutes,
-    volunteer.startDate,
-    input.launchDate,
-  );
+  const milestone =
+    input.milestonesOn === false
+      ? null
+      : milestoneCrossed(
+          before.shifts,
+          before.minutes,
+          minutes,
+          volunteer.startDate,
+          input.launchDate,
+        );
   const extra = tapId ? [milestoneMismatchReason(input.shownMilestone, milestone)] : [];
   return {
     volunteer,
@@ -2488,11 +3242,18 @@ function normalizeInitials(text) {
 
 /**
  * The volunteer picker's list, [{id, label}], sorted by last name, then first name, then
- * Profiles row. The label is "First Last"; a member of a same-name group also gets their
+ * Profiles row; with a whole-name list (fullNameRoster), by the whole name as written,
+ * then row. The label is "First Last"; a member of a same-name group also gets their
  * Profiles row and phone, so staff can tell members apart and check Profiles.
  */
-function adminRosterLabels(volunteers) {
+function adminRosterLabels(volunteers, fullNameRoster) {
   const sorted = volunteers.slice().sort((a, b) => {
+    if (fullNameRoster) {
+      const byName = normalizeName(volunteerFullName(a)).localeCompare(
+        normalizeName(volunteerFullName(b)),
+      );
+      return byName || a.row - b.row;
+    }
     const byLast = normalizeName(a.lastName).localeCompare(normalizeName(b.lastName));
     if (byLast) return byLast;
     const byFirst = normalizeName(a.firstName).localeCompare(normalizeName(b.firstName));
@@ -2876,9 +3637,10 @@ function andList(items) {
 
 /**
  * What the preview and the result say about an address problem. rows are the Profiles rows
- * it is about, cell the Email cell's text.
+ * it is about, cell the Email cell's text, header (for no-email-column) the header Roster
+ * column: email names, or "" while that row is blank.
  */
-function hoursEmailProblemText(problem, rows, cell) {
+function hoursEmailProblemText(problem, rows, cell, header) {
   const row = rows && rows.length ? rows[0] : "";
   switch (problem) {
     case "no-email":
@@ -2894,7 +3656,9 @@ function hoursEmailProblemText(problem, rows, cell) {
         '". Fix it there, then press Preview again.'
       );
     case "no-email-column":
-      return "Volunteer Profiles has no Email column.";
+      return cellString(header)
+        ? rosterMissingColumnMessage("email", header)
+        : "Volunteer Profiles has no Email column.";
     case "duplicate-token":
       return (
         "Volunteer Profiles rows " +
@@ -2902,7 +3666,7 @@ function hoursEmailProblemText(problem, rows, cell) {
         " have the same User Token. Fix it there, then press Preview again."
       );
     default:
-      return "Not on the volunteer list any more; press Preview again.";
+      return wordText("Not on the volunteer list any more; press Preview again.", wordsInUse());
   }
 }
 
@@ -2913,12 +3677,15 @@ function hoursEmailProblemText(problem, rows, cell) {
  * row number, because rows move; rows lists every sheet row with that token. problem is "" or one of no-email, bad-email (hoursEmailAddress),
  * not-found (no row has the token), duplicate-token (two or more do; row is the first) and
  * no-email-column (the header has none of profileEmailHeaders(), for every volunteer). text
- * is hoursEmailProblemText, "" with no problem. Throws as profileTokenColumn does.
+ * is hoursEmailProblemText, "" with no problem. mapping (rosterColumnMapping) names the
+ * Email and ID headers when its rows are filled: a filled Email row is the only header
+ * looked for. Throws as rosterIdColumn does.
  */
-function profileEmailsFrom(headerRow, rows, volunteers) {
+function profileEmailsFrom(headerRow, rows, volunteers, mapping) {
   const headers = (headerRow || []).map(normalizeHeader);
-  const tokenAt = profileTokenColumn(headers);
-  const names = profileEmailHeaders();
+  const tokenAt = rosterIdColumn(headers, mapping);
+  const typedEmail = cellString((mapping || {}).email);
+  const names = typedEmail ? [normalizeHeader(typedEmail)] : profileEmailHeaders();
   const emailAt = headers.findIndex((h) => names.indexOf(h) >= 0);
   const byToken = new Map();
   (rows || []).forEach((cells, i) => {
@@ -2948,7 +3715,7 @@ function profileEmailsFrom(headerRow, rows, volunteers) {
       row: sheetRows.length ? sheetRows[0] : 0,
       rows: sheetRows,
       problem,
-      text: problem ? hoursEmailProblemText(problem, sheetRows, cell) : "",
+      text: problem ? hoursEmailProblemText(problem, sheetRows, cell, typedEmail) : "",
     };
   });
   return out;
@@ -2989,7 +3756,7 @@ function hoursEmailRowsText(rows) {
 
 /** The sentence a same-name warning adds. */
 function hoursEmailSameNameText() {
-  return "Two volunteers share this name; check whose they are.";
+  return wordText("Two volunteers share this name; check whose they are.", wordsInUse());
 }
 
 /**
@@ -3098,8 +3865,10 @@ function hoursEmailPlan(input) {
       " under this name with a User Token no listed volunteer has, " +
       hoursOf(otherToken) +
       " hours",
-    "they aren't in these totals; this may be an old or mistyped User Token. If they're this volunteer's, change it to their current User Token on those rows." +
-      sameName,
+    wordText(
+      "they aren't in these totals; this may be an old or mistyped User Token. If they're this volunteer's, change it to their current User Token on those rows.",
+      wordsInUse(),
+    ) + sameName,
   );
   const auto = counted.filter(isAuto);
   warn(
@@ -3141,8 +3910,10 @@ function hoursEmailPlan(input) {
       " under this name with an import: User Token, " +
       hoursOf(standIns) +
       " hours",
-    "they aren't in these totals; if they're this volunteer's, type their User Token over the import: token on those rows." +
-      sameName,
+    wordText(
+      "they aren't in these totals; if they're this volunteer's, type their User Token over the import: token on those rows.",
+      wordsInUse(),
+    ) + sameName,
   );
   if (!input.flags) {
     warnings.push({
@@ -3158,7 +3929,7 @@ function hoursEmailPlan(input) {
       count: 0,
       rows: [],
       text:
-        "This volunteer has no counted hours yet; the email will say so." +
+        wordText("This volunteer has no counted hours yet; the email will say so.", wordsInUse()) +
         (input.attach === true ? " " + hoursEmailNoFileText() : ""),
     });
   }
@@ -3280,9 +4051,11 @@ function hoursEmailTotalLines(plan) {
  * printed as zero rather than the no-hours line when nothing else counts. Every email names who to contact, since nobody can reply to it;
  * the contact's lines are joined with ", " as the Kiosk contact line joins them. The
  * signature's lines go one per line under the thanks. The file line shows only when the
- * email carries the file (hoursEmailHasFile).
+ * email carries the file (hoursEmailHasFile). The kiosk's own lines are in the words in use
+ * (wordText); the name, contact and signature are as typed.
  */
 function hoursEmailMessage(input) {
+  const w = (text) => wordText(text, wordsInUse());
   const plan = input.plan;
   const period = plan.period;
   const month = monthName(period.month);
@@ -3292,19 +4065,19 @@ function hoursEmailMessage(input) {
   const blocks = [["Hi " + cellString(input.firstName) + ","]];
   if (request) {
     blocks.push([
-      "You asked for your hours at the volunteer kiosk on " +
+      w("You asked for your hours at the volunteer kiosk on ") +
         hoursEmailLongDate(request.date) +
         ".",
     ]);
   }
   blocks.push([
-    "Here are the volunteer hours we have for you " +
+    w("Here are the volunteer hours we have for you ") +
       (last ? "through " : "as of ") +
       hoursEmailLongDate(period.asOf) +
       ":",
   ]);
   if (!plan.all.shifts && !left) {
-    blocks.push(["We don't have any volunteer hours recorded for you yet."]);
+    blocks.push([w("We don't have any volunteer hours recorded for you yet.")]);
   } else if (!plan.all.shifts) {
     blocks.push(hoursEmailTotalLines(plan).map((line) => "  " + line));
   } else {
@@ -3335,9 +4108,9 @@ function hoursEmailMessage(input) {
     "This email comes from an address that can't take replies. If anything looks wrong, please contact:",
     settingLines(input.contact).join(", "),
   ]);
-  blocks.push(["Thank you for volunteering."].concat(settingLines(input.signature)));
+  blocks.push([w("Thank you for volunteering.")].concat(settingLines(input.signature)));
   return {
-    subject: "Your volunteer hours for " + month,
+    subject: w("Your volunteer hours for ") + month,
     body: blocks.map((b) => b.join("\n")).join("\n\n"),
   };
 }
@@ -3380,12 +4153,18 @@ function hoursEmailDigestText(d) {
 
 /** The set problem a blank Hours email contact gives. */
 function hoursEmailContactProblem() {
-  return "Type who volunteers should contact about their hours in Hours email contact on the Settings tab, then press Preview again.";
+  return wordText(
+    "Type who volunteers should contact about their hours in Hours email contact on the Settings tab, then press Preview again.",
+    wordsInUse(),
+  );
 }
 
 /** The set problem when no ticked volunteer can be sent. */
 function hoursEmailNoneProblem() {
-  return "None of the ticked volunteers can be sent; fix the problems shown, then press Preview again.";
+  return wordText(
+    "None of the ticked volunteers can be sent; fix the problems shown, then press Preview again.",
+    wordsInUse(),
+  );
 }
 
 /**
@@ -3603,6 +4382,17 @@ function hoursRequestsLastRunSetting() {
 function parseHoursRequestsMode(text) {
   const s = cellString(text).toLowerCase();
   return s === "approve" || s === "auto" ? s : "off";
+}
+
+/**
+ * The hours request mode Settings give: "Hours requests" (parseHoursRequestsMode), read as
+ * "off" whatever it holds while the Email hours switch is Off, since requests are answered
+ * through Email hours.
+ */
+function hoursRequestsMode(settings) {
+  const s = settings || {};
+  if (!kioskSwitches(s).emailHours) return "off";
+  return parseHoursRequestsMode(s[hoursRequestsSetting()]);
 }
 
 /** The mode as the Mode column and the dialog write it: "Approve", "Auto" or "Off". */
@@ -3942,7 +4732,8 @@ function hoursRequestHoldReason(code, detail) {
     case "contact":
       return "Hours email contact on the Settings tab is blank.";
     case "no-email-column":
-      return "Volunteer Profiles has no Email column.";
+      // The entry's own text names a header Roster column: email names.
+      return cellString(d.text) || "Volunteer Profiles has no Email column.";
     case "no-email":
       return "No email on their Volunteer Profiles row (row " + d.row + ").";
     case "bad-email":
@@ -3954,7 +4745,7 @@ function hoursRequestHoldReason(code, detail) {
         " have the same User Token."
       );
     case "not-found":
-      return "Not on the volunteer list any more.";
+      return wordText("Not on the volunteer list any more.", wordsInUse());
     case "flags-unreadable":
       return "The Flags tab couldn't be read, so shifts couldn't be checked.";
     case "checked-in":
@@ -3962,7 +4753,10 @@ function hoursRequestHoldReason(code, detail) {
     case "send-failed":
       return "The send failed: " + hoursEmailLogText(d.message);
     case "stopped":
-      return "An automatic send stopped part way and may have gone. Check this volunteer's Hours emails row (Result stopped) and the Sent mail of the account in its Sent from before sending again.";
+      return wordText(
+        "An automatic send stopped part way and may have gone. Check this volunteer's Hours emails row (Result stopped) and the Sent mail of the account in its Sent from before sending again.",
+        wordsInUse(),
+      );
     default:
       return cellString(d.reason);
   }
@@ -4186,11 +4980,17 @@ function hoursRequestHeldLine(request) {
 function hoursRequestNotListedLine(n) {
   if (!(n > 0)) return "";
   if (n === 1) {
-    return "1 hours request is from a volunteer not on the volunteer list. Close it on the Hours requests tab.";
+    return wordText(
+      "1 hours request is from a volunteer not on the volunteer list. Close it on the Hours requests tab.",
+      wordsInUse(),
+    );
   }
   return (
     n +
-    " hours requests are from volunteers not on the volunteer list. Close them on the Hours requests tab."
+    wordText(
+      " hours requests are from volunteers not on the volunteer list. Close them on the Hours requests tab.",
+      wordsInUse(),
+    )
   );
 }
 
@@ -4293,7 +5093,7 @@ function isRemovedExtraHeader(header) {
 function headerCounts(headerRow) {
   const counts = {};
   (headerRow || []).forEach((h) => {
-    const k = normalizeHeader(h);
+    const k = headerKey(h);
     if (k) counts[k] = (Object.prototype.hasOwnProperty.call(counts, k) ? counts[k] : 0) + 1;
   });
   return counts;
@@ -4330,32 +5130,33 @@ function removedHeaderWrites(logHeader, removedHeader) {
   const have = headerCounts(removedHeader);
   const wanted = [];
   (logHeader || []).forEach((h) => {
-    const k = normalizeHeader(h);
+    const k = headerKey(h);
     if (!k || have[k] || isRemovedExtraHeader(h)) return;
     have[k] = 1;
     wanted.push(cellString(h));
   });
   extraList.forEach((h) => {
-    if (!have[normalizeHeader(h)]) wanted.push(h);
+    if (!have[headerKey(h)]) wanted.push(h);
   });
   return wanted.map((header, i) => ({ col: last + 2 + i, header }));
 }
 
 /**
  * A row of width cells for toHeader, each copied from the fromRow cell under the same
- * header in fromHeader (normalizeHeader forms; the leftmost when one repeats). A header
+ * header in fromHeader (headerKey forms, so a person-word header under either word is one
+ * header; the leftmost when one repeats). A header
  * goes to its leftmost column in toHeader only. A cell with no match, or under a blank
  * header, is null, so the caller decides what goes there.
  */
 function headerMapCopy(fromHeader, fromRow, toHeader, width) {
   const from = {};
   (fromHeader || []).forEach((h, i) => {
-    const k = normalizeHeader(h);
+    const k = headerKey(h);
     if (k && !Object.prototype.hasOwnProperty.call(from, k)) from[k] = i;
   });
   const used = {};
   return Array.from({ length: width }, (_, j) => {
-    const k = normalizeHeader((toHeader || [])[j]);
+    const k = headerKey((toHeader || [])[j]);
     if (!k || used[k] || !Object.prototype.hasOwnProperty.call(from, k)) return null;
     used[k] = true;
     const value = (fromRow || [])[from[k]];
@@ -4495,7 +5296,7 @@ function shiftChoiceLabel(entry, clock) {
   ].join(" · ");
   const lines = [
     "Date: " + (cellString(e.dateText) || "blank"),
-    "Volunteer: " + (cellString(e.name) || "blank"),
+    wordText("Volunteer: ", wordsInUse()) + (cellString(e.name) || "blank"),
     "Status: " + (cellString(e.status) || "blank"),
     "Check-in: stated " + time(e.statedInMs) + ", recorded " + time(e.recordedInMs),
     "Check-out: stated " + time(e.statedOutMs) + ", recorded " + time(e.recordedOutMs),
@@ -4565,7 +5366,7 @@ function removeFlagMatches(flag, only) {
 function refusal(code) {
   const message = refusalMessages()[code];
   if (!message) throw new Error("Unknown refusal code: " + code);
-  return { ok: false, refusal: code, message };
+  return { ok: false, refusal: code, message: wordText(message, wordsInUse()) };
 }
 
 // ---------------------------------------------------------------------------
@@ -5217,11 +6018,12 @@ function percentChange(change, previous) {
  * "count"). current and previous are monthFigures results.
  */
 function monthOverMonth(current, previous) {
+  const L = (label) => wordText(label, wordsInUse());
   return [
     ["hours", "Stated hours", "hours", "hundredths"],
     ["shifts", "Shifts", "count", "shifts"],
-    ["headcount", "Volunteers", "count", "headcount"],
-    ["newVolunteers", "New volunteers", "count", "newVolunteers"],
+    ["headcount", L("Volunteers"), "count", "headcount"],
+    ["newVolunteers", L("New volunteers"), "count", "newVolunteers"],
   ].map(([id, label, unit, key]) => {
     const change = current[key] - previous[key];
     return {
@@ -5352,7 +6154,8 @@ function periodTables(counted, period, first) {
  * Every calculation of one period's report, from reportEntry rows of the whole Log. period
  * is a report period (reportPeriod). rateCents is parseMoneyCents of the Settings value: a
  * number, null (blank) or NaN (can't be read). cols is the reportColumns map, used only to
- * tell whether Role/Type and Activity are there; without it both are taken as present. No
+ * tell whether Role/Type and Activity are there; without it both are taken as present.
+ * milestonesOn false (the Milestones switch Off) leaves milestones out; missing means On. No
  * clock and no sheet. "In the period" means a row dated in it (inPeriod).
  *
  * Returns {
@@ -5368,7 +6171,8 @@ function periodTables(counted, period, first) {
  *   review: reviewGroups(entries, period), openCount,    rows to review, open count
  *   yearToDate: {hundredths, shifts, headcount} or null, 1 January to the period's last day,
  *                                                        for a month or quarter only
- *   milestones: [{label, title, date, row}],             milestones crossed
+ *   milestones: [{label, title, date, row}] or null,     milestones crossed; null with
+ *                                                        milestonesOn false
  *   value: {rateCents, cents, message},                  volunteer value, cents null with a message
  *   previous: the period compared against, or null       previousPeriod
  *   comparison: monthOverMonth(...) or null              against previous
@@ -5377,7 +6181,7 @@ function periodTables(counted, period, first) {
  *                                                        of any dated Log row, null with none
  * }. Nothing in it is a User Token.
  */
-function periodReport(entries, period, rateCents, cols) {
+function periodReport(entries, period, rateCents, cols, milestonesOn) {
   const H = logHeaderNames();
   const missing = (header) =>
     Boolean(cols) && !(typeof cols[header] === "number" && cols[header] >= 0);
@@ -5494,12 +6298,15 @@ function periodReport(entries, period, rateCents, cols) {
     review,
     openCount: review[0].rows.length,
     yearToDate,
-    milestones: milestonesCrossedIn(entries, period).map((m) => ({
-      label: labels.get(m.token).label,
-      title: m.title,
-      date: m.date,
-      row: m.row,
-    })),
+    milestones:
+      milestonesOn === false
+        ? null
+        : milestonesCrossedIn(entries, period).map((m) => ({
+            label: labels.get(m.token).label,
+            title: m.title,
+            date: m.date,
+            row: m.row,
+          })),
     value,
     previous: before,
     comparison: before ? monthOverMonth(figures, monthFigures(entries, before, first)) : null,
@@ -5596,6 +6403,7 @@ function openShiftsLine(count, period) {
  * cell holds a User Token.
  */
 function reportRows(report, month, initials, madeAtText) {
+  const L = (label) => wordText(label, wordsInUse());
   const period = asPeriod(month);
   const isMonth = period.kind === "month";
   const values = [];
@@ -5639,21 +6447,21 @@ function reportRows(report, month, initials, madeAtText) {
   addAs("section", "Summary");
   add("Stated hours", Hh(report.hundredths));
   add("Shifts", N(report.shifts));
-  add("Volunteers", N(report.headcount));
+  add(L("Volunteers"), N(report.headcount));
   if (isMonth) {
-    add("New volunteers", N(report.newVolunteers.length), report.newVolunteers.join(", "));
+    add(L("New volunteers"), N(report.newVolunteers.length), report.newVolunteers.join(", "));
   } else {
-    add("New volunteers", N(report.newVolunteers.length));
+    add(L("New volunteers"), N(report.newVolunteers.length));
   }
   add(
     "Average shift (hours)",
     report.averageHundredths === null ? "" : Hh(report.averageHundredths),
   );
   if (report.value.cents === null) {
-    add("Volunteer value", report.value.message);
+    add(L("Volunteer value"), report.value.message);
   } else {
     add(
-      "Volunteer value",
+      L("Volunteer value"),
       [report.value.cents / 100, "$#,##0.00"],
       "at " + moneyText(report.value.rateCents) + " an hour",
     );
@@ -5699,7 +6507,7 @@ function reportRows(report, month, initials, madeAtText) {
     );
     add("Stated hours", Hh(report.yearToDate.hundredths));
     add("Shifts", N(report.yearToDate.shifts));
-    add("Volunteers", N(report.yearToDate.headcount));
+    add(L("Volunteers"), N(report.yearToDate.headcount));
   }
 
   [
@@ -5709,7 +6517,7 @@ function reportRows(report, month, initials, madeAtText) {
     if (!list) return;
     table(
       title,
-      [name, "Shifts", "Stated hours", "Volunteers", "New volunteers"],
+      [name, "Shifts", "Stated hours", L("Volunteers"), L("New volunteers")],
       list.map((r) => [r.label, N(r.shifts), Hh(r.hundredths), N(r.headcount), N(r.newVolunteers)]),
     );
     if (list.length) {
@@ -5726,15 +6534,15 @@ function reportRows(report, month, initials, madeAtText) {
   const hoursRows = (list, labelKey) =>
     list.map((g) => [g[labelKey], N(g.shifts), Hh(g.hundredths)]);
   table(
-    "Hours per volunteer",
-    ["Volunteer", "Shifts", "Stated hours"],
+    L("Hours per volunteer"),
+    [L("Volunteer"), "Shifts", "Stated hours"],
     hoursRows(report.volunteers, "label"),
   );
   if (report.volunteers.length) add("Total", N(report.shifts), Hh(report.hundredths));
   if (period.kind === "quarter" || period.kind === "year" || period.kind === "range") {
     table(
-      "New volunteers",
-      ["Volunteer", "First shift"],
+      L("New volunteers"),
+      [L("Volunteer"), "First shift"],
       report.newVolunteerShifts.map((v) => [v.label, v.date]),
     );
   }
@@ -5746,18 +6554,21 @@ function reportRows(report, month, initials, madeAtText) {
     const title = "Hours by " + name + (t.columnMissing ? " (no " + name + " column)" : "");
     table(title, [name, "Shifts", "Stated hours"], hoursRows(t.groups, "label"));
   });
-  table(
-    isMonth ? "Milestones crossed this month" : "Milestones crossed in this period",
-    ["Volunteer", "Milestone", "Date", "Log row"],
-    report.milestones.map((m) => [m.label, m.title, m.date, N(m.row)]),
-  );
+  // The Milestones switch Off leaves the part out (periodReport's milestones null).
+  if (report.milestones) {
+    table(
+      isMonth ? "Milestones crossed this month" : "Milestones crossed in this period",
+      [L("Volunteer"), "Milestone", "Date", "Log row"],
+      report.milestones.map((m) => [m.label, m.title, m.date, N(m.row)]),
+    );
+  }
 
   blank();
   addAs("section", "Rows to review", "Log row numbers are as of when this report was made.");
   report.review.forEach((g) => {
     addAs("section", g.title + ": " + g.rows.length);
     if (!g.rows.length) return;
-    addAs("header", "Date", "Volunteer", "Status", "Log row", "Detail");
+    addAs("header", "Date", L("Volunteer"), "Status", "Log row", "Detail");
     g.rows.forEach((r) => add(r.date, r.name, r.status || "(blank)", N(r.row), r.detail));
   });
 
@@ -7642,11 +8453,14 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath, choices) {
 // raised again on the next check. Reviewed By and Notes are staff's; the script writes
 // Reviewed once, unticked, on the row it appends.
 
-/** The Flags headers, keyed by the short names the code uses, in the order a new tab gets them. */
-function flagHeaderNames() {
+/**
+ * The Flags headers, keyed by the short names the code uses, in the order a new tab gets
+ * them. With word (a Header word), Name starts with it, as logHeaderNames.
+ */
+function flagHeaderNames(word) {
   return {
     date: "Date",
-    name: "Volunteer Name",
+    name: headerWordText(word) + " Name",
     shiftId: "Shift ID",
     reason: "Reason",
     raisedAt: "Raised At",
@@ -7716,13 +8530,15 @@ function flagColumns(headerRow) {
     if (required.indexOf(h) >= 0) {
       if (!found.length) {
         throw new Error(
-          'The Flags tab has no "' + normalizeHeader(h) + '" column. Run setupSheets().',
+          'The Flags tab has no "' +
+            normalizeHeader(headerInUse(h)) +
+            '" column. Run setupSheets().',
         );
       }
       if (found.length > 1) {
         throw new Error(
           'The Flags tab has more than one "' +
-            normalizeHeader(h) +
+            normalizeHeader(headerInUse(h)) +
             '" column. Rename or remove the extra one.',
         );
       }
@@ -7888,19 +8704,7 @@ function flagFilterViewRequests(cols, sheetId, existingViewId) {
  * - yellow, grey, blue: tab colours (lookTabColours).
  */
 function lookPalette() {
-  return {
-    navy: "#062f5a",
-    teal: "#168c86",
-    white: "#ffffff",
-    band: "#eef7fc",
-    open: "#fff4d6",
-    alert: "#fbe3e2",
-    reviewed: "#8a9aa8",
-    section: "#dff3fb",
-    yellow: "#f9bd2f",
-    grey: "#52687b",
-    blue: "#0669a9",
-  };
+  return brandLookPalette();
 }
 
 /** Each tab's colour, from lookPalette. hoursData is for when that tab is shown. */
@@ -8343,9 +9147,12 @@ function defaultFlagsEmailHour() {
   return 8;
 }
 
-/** The weekly email's sender name. The address is the job owner's domain no-reply address. */
+/**
+ * The kiosk's emails' sender name (kioskSenderName), from the Settings this run read last.
+ * The address is the job owner's domain no-reply address.
+ */
 function flagsEmailSenderName() {
-  return "ENCM Volunteer Kiosk";
+  return kioskSenderName(settingsInUse);
 }
 
 /** How many of the week's flags the email lists before "and N more". */
@@ -8575,8 +9382,10 @@ function flagsEmailMessage(input) {
   const counts =
     plural(recent.length, "new flag", "new flags") + " this week, " + unreviewed + " unreviewed";
   const subject = flagsNews
-    ? "Volunteer kiosk: " + (auto.stale ? "auto clock-out not running, " : "") + counts
-    : "Volunteer kiosk: hours requests this week";
+    ? wordText("Volunteer kiosk: ", wordsInUse()) +
+      (auto.stale ? "auto clock-out not running, " : "") +
+      counts
+    : wordText("Volunteer kiosk: hours requests this week", wordsInUse());
 
   const text = [];
   const html = [];
@@ -8650,8 +9459,11 @@ function flagsEmailMessage(input) {
     );
   }
   para(
-    'Sent by the volunteer kiosk because Settings "Flags email" is On. Set it to Off to stop' +
-      " these emails.",
+    wordText(
+      'Sent by the volunteer kiosk because Settings "Flags email" is On. Set it to Off to stop' +
+        " these emails.",
+      wordsInUse(),
+    ),
   );
   return { subject, body: text.join("\n\n"), htmlBody: html.join("\n") };
 }
@@ -8659,8 +9471,8 @@ function flagsEmailMessage(input) {
 // ---------------------------------------------------------------------------
 // Past hours import
 //
-// The Kiosk admin menu's Import past hours (Import.js) reads a tab laid out like ENCM's
-// "Historical Hours": a header row, then one row per shift with its Date, First name, Last
+// The Kiosk admin menu's Import past hours (Import.js) reads a tab laid out like a staff
+// "Historical Hours" tab: a header row, then one row per shift with its Date, First name, Last
 // name and hours, and optionally the month tab and cell the shift was copied from. Each
 // shift becomes a closed Log row with its stated hours and no times. Import.js reads and
 // writes; the rules are here.
@@ -8799,7 +9611,7 @@ function importFileId(text) {
  * indexes {date, firstName, lastName, hours, sourceTab, sourceCell}, -1 when absent;
  * missing lists the required headers the row lacks. Date, First name and Last name are
  * required. Hours is the column headed "Hours", else the column right after Last name
- * (ENCM's tab leaves it unheaded). "Source cell" is optional, and the unheaded column just
+ * (a staff tab may leave it unheaded). "Source cell" is optional, and the unheaded column just
  * left of it, when that isn't the hours column, is the source tab. Both are kept only for
  * the row's Notes.
  */
@@ -8824,9 +9636,15 @@ function importColumns(headerRow) {
   return { cols, missing };
 }
 
-/** The same-name key of a written name: volunteerNameKey of its first and last name. */
-function importNameKey(firstName, lastName) {
-  return volunteerNameKey({ firstName, lastName });
+/**
+ * The same-name key of a written name: volunteerNameKey of its first and last name. For a
+ * whole-name list (fullNameRoster) the two are joined and split as the list's names are
+ * (splitFullName), so "Mary Ann" and "Smith" match "Mary Ann Smith"; with first and last
+ * name columns they are keyed as written, as every earlier import was.
+ */
+function importNameKey(firstName, lastName, fullNameRoster) {
+  if (!fullNameRoster) return volunteerNameKey({ firstName, lastName });
+  return volunteerNameKey(splitFullName(cellString(firstName) + " " + cellString(lastName)));
 }
 
 /** A written name as it goes on the Log: first and last, trimmed, runs of spaces as one. */
@@ -9040,7 +9858,8 @@ function importHours(value) {
  * neighbours' keys; importRowCounts keeps an imported row's key when a row left out for
  * its date or name is fixed above it.
  *
- * A name matches when exactly one Profiles volunteer has its name key. Returns {refusal}
+ * A name matches when exactly one Profiles volunteer has its name key (importNameKey;
+ * input.fullNameRoster true for a whole-name list). Returns {refusal}
  * (headers), or {rowsRead, toImport, alreadyImported, onLog, leftOut}: the
  * first three are lists of items {sourceRow, date, firstName, lastName, name, nameKey, key,
  * shiftId, hours, volunteer (null when unmatched), matches, sourceTab, sourceCell,
@@ -9084,7 +9903,7 @@ function importPlan(input) {
       firstName,
       lastName,
       hasName: firstName !== "" || lastName !== "",
-      nameKey: importNameKey(firstName, lastName),
+      nameKey: importNameKey(firstName, lastName, input.fullNameRoster === true),
     });
   });
   const counts = importRowCounts(
@@ -10116,8 +10935,13 @@ function logCheckMessage(result) {
 // text lives here, so each release that runs setupSheets keeps it current. Staff text
 // never names code: it quotes only what staff see on screen.
 
-/** The hover note on each Log header, keyed like logHeaderNames(). */
-function logHeaderNotes() {
+/** The hover note on each Log header, keyed like logHeaderNames(), in word (headerNoteWords). */
+function logHeaderNotes(word) {
+  return headerNotesInWord(todayLogHeaderNotes(), word);
+}
+
+/** The Log's hover notes with the Header word blank. */
+function todayLogHeaderNotes() {
   return {
     date: "The shift's date, as yyyy-mm-dd. Filled by the kiosk; change it only to fix a mistake.",
     day: "The weekday of the Date. Filled by the kiosk.",
@@ -10152,8 +10976,13 @@ function logHeaderNotes() {
   };
 }
 
-/** The hover note on each Flags header, keyed like flagHeaderNames(). */
-function flagHeaderNotes() {
+/** The hover note on each Flags header, keyed like flagHeaderNames(), in word. */
+function flagHeaderNotes(word) {
+  return headerNotesInWord(todayFlagHeaderNotes(), word);
+}
+
+/** The Flags tab's hover notes with the Header word blank. */
+function todayFlagHeaderNotes() {
   return {
     date: "The flagged shift's Date on the Log. Filled by the kiosk.",
     name: "The flagged shift's volunteer. Filled by the kiosk.",
@@ -10183,14 +11012,37 @@ function headerNotePastTexts() {
   return [];
 }
 
-/** Every text the kiosk counts as its own note: the current Log and Flags notes, then the past ones. */
-function headerNoteKioskTexts() {
-  const log = logHeaderNotes();
-  const flags = flagHeaderNotes();
-  return Object.keys(log)
-    .map((k) => log[k])
-    .concat(Object.keys(flags).map((k) => flags[k]))
-    .concat(headerNotePastTexts());
+/**
+ * The words a header note is written in: the default words with the person word the Header
+ * word, so a note reads as the header above it does.
+ */
+function headerNoteWords(word) {
+  const person = parseWordSetting(word, wordDefaults().person);
+  return Object.assign(defaultWords(), {
+    person: person.word,
+    personArticle: person.article,
+    header: person.word,
+  });
+}
+
+/** notes, keyed as they are, each in word (headerNoteWords); as they are with no word. */
+function headerNotesInWord(notes, word) {
+  const words = headerNoteWords(word);
+  const out = {};
+  Object.keys(notes).forEach((k) => (out[k] = wordText(notes[k], words)));
+  return out;
+}
+
+/**
+ * Every text the kiosk counts as its own note: the current Log and Flags notes under
+ * today's word and under word (a Header word), then the past ones.
+ */
+function headerNoteKioskTexts(word) {
+  const texts = [];
+  [logHeaderNotes(), flagHeaderNotes(), logHeaderNotes(word), flagHeaderNotes(word)].forEach(
+    (notes) => Object.keys(notes).forEach((k) => texts.push(notes[k])),
+  );
+  return Array.from(new Set(texts.concat(headerNotePastTexts())));
 }
 
 /**
@@ -10200,19 +11052,19 @@ function headerNoteKioskTexts() {
  * on a cell whose note is empty or is exactly one of its own texts, compared with ===,
  * nothing trimmed or folded first; every other note is returned as it is, character for
  * character, so words staff wrote are kept unless they are exactly a kiosk text.
- * - A kiosk header (normalizeHeader match, every place it appears): its own current text
+ * - A kiosk header (headerKey match, every place it appears): its own current text
  *   when the note is empty or a kiosk text; else the note as it is.
  * - Any other cell: "" when the note is a kiosk text, which there describes the wrong
  *   column; else the note as it is.
  */
 function headerNotesRow(headerRow, names, notes, existing, kioskTexts) {
   const byHeader = new Map();
-  Object.keys(names).forEach((k) => byHeader.set(normalizeHeader(names[k]), notes[k]));
+  Object.keys(names).forEach((k) => byHeader.set(headerKey(names[k]), notes[k]));
   const kiosk = new Set(kioskTexts || []);
   const have = existing || [];
   return (headerRow || []).map((cell, i) => {
     const e = have[i] === null || have[i] === undefined ? "" : String(have[i]);
-    const h = normalizeHeader(cell);
+    const h = headerKey(cell);
     if (h !== "" && byHeader.has(h)) return e === "" || kiosk.has(e) ? byHeader.get(h) : e;
     return kiosk.has(e) ? "" : e;
   });
@@ -10348,13 +11200,16 @@ function withKioskContact(text, note) {
  * "text", "step", "tip" or "item"; a step's text carries its own number. The one contact
  * line has text "" and a formula, kioskContactFormula. setupSheets rewrites the whole tab
  * from this on every run, so a release that changes this text, or the Hours lines it copies
- * from hoursHowTo() and hoursDateNote(), runs setupSheets after the push.
+ * from hoursHowTo() and hoursDateNote(), runs setupSheets after the push. The text is in
+ * words (wordText), and the column sections in the Header word, as the headers and their
+ * notes are on the sheet; with no words, as written.
  */
-function howToSections() {
-  const text = (t) => ({ kind: "text", text: t });
-  const step = (t) => ({ kind: "step", text: t });
-  const tip = (t) => ({ kind: "tip", text: t });
-  const item = (t) => ({ kind: "item", text: t });
+function howToSections(words) {
+  const text = (t) => ({ kind: "text", text: wordText(t, words) });
+  const step = (t) => ({ kind: "step", text: wordText(t, words) });
+  const tip = (t) => ({ kind: "tip", text: wordText(t, words) });
+  const item = (t) => ({ kind: "item", text: wordText(t, words) });
+  const header = (words || defaultWords()).header;
   return [
     {
       title: "Problems with the kiosk",
@@ -10567,6 +11422,54 @@ function howToSections() {
       ],
     },
     {
+      title: "Use your own words, name and logo",
+      lines: [
+        text(
+          "The kiosk calls the people who check in volunteers, and the people they ask for help board members. Three rows on the Settings tab change those words on the tablet, in the Kiosk admin windows, in the emails and on this tab, from the next tap.",
+        ),
+        step(
+          "1. Type the word for one person in Word for a person, such as usher, and the word for more than one in Word for people, such as ushers. Type a or an first when the kiosk would pick the wrong one, as in an hourly helper.",
+        ),
+        step(
+          "2. Type the word for the people someone at the tablet asks for help in Word for staff, such as staff member.",
+        ),
+        tip(
+          "The Log and Flags headers take the word only while the Log, Flags and Removed shifts tabs hold no rows, when the kiosk's tabs are set up. After that, change them by hand: rename Volunteer Name and Volunteer Role/Type on the Log, Volunteer Name on the Flags tab and the same two on Removed shifts if it exists, then type the same word in Header word, all before the next tap.",
+        ),
+        text(
+          "Organization name puts your organization's name in the logo's place when there is no logo, as the logo's description, and at the start of the emails' sender name. Logo link takes the web address of an image, starting https://; the tablet shows it as the logo, and the Organization name if it won't load.",
+        ),
+      ],
+    },
+    {
+      title: "Turn parts of the kiosk on or off",
+      lines: [
+        text(
+          "Milestones, Email hours, Import past hours, Tablet arrival changes and Tablet check-out changes on the Settings tab each take On or Off; blank or anything else means On. Off hides that part on the tablet and in the Kiosk admin menu, and the kiosk refuses it. The menu changes the next time the spreadsheet is opened.",
+        ),
+        text(
+          "With Tablet arrival changes or Tablet check-out changes Off, volunteers can't choose an earlier time on the tablet; staff still fix times with Add a shift and Fix a sign-out.",
+        ),
+      ],
+    },
+    {
+      title: "Read your own volunteer list",
+      lines: [
+        text(
+          "The kiosk reads the volunteer list from the spreadsheet in Volunteer Profiles file ID, on the tab in Volunteer Profiles tab. When your list's headers differ from the kiosk's, type each header, as it is on your list, in its Roster column row on the Settings tab. Blank means the kiosk's own header, and a header that isn't on the list stops the tablet's list until it is fixed.",
+        ),
+        text(
+          "A list with one column for the whole name: type its header in Roster column: full name and leave first name and last name blank. Choose this before the first Import past hours.",
+        ),
+        text(
+          "With Volunteer Profiles file ID blank, the list is the Volunteer Profiles tab of this spreadsheet (or the tab named in Volunteer Profiles tab). When the kiosk's tabs are set up and that tab is missing, the kiosk makes it with its own headers: type or paste one row per volunteer below them.",
+        ),
+        text(
+          "Each volunteer needs a User Token that never changes, because the Log finds their shifts by it. Kiosk admin > Fill in missing IDs gives every row with a name and no token a random one, and never changes a token already there. It shows in the menu only while Volunteer Profiles file ID is blank.",
+        ),
+      ],
+    },
+    {
       title: "Look up hours (the Hours tab)",
       lines: [
         text(
@@ -10634,11 +11537,11 @@ function howToSections() {
         text(
           "Each Log and Flags column header has a hover note with the text below. Once you write your own note on a header, or change the kiosk's, the kiosk leaves it exactly as you left it, and its own text stays here. If you delete a note, the kiosk puts its own back the next time it is updated.",
         ),
-      ].concat(howToColumnLines(logHeaderNames(), logHeaderNotes())),
+      ].concat(howToColumnLines(logHeaderNames(header), logHeaderNotes(header))),
     },
     {
       title: "What the Flags columns hold",
-      lines: howToColumnLines(flagHeaderNames(), flagHeaderNotes()),
+      lines: howToColumnLines(flagHeaderNames(header), flagHeaderNotes(header)),
     },
   ];
 }
@@ -10646,11 +11549,11 @@ function howToSections() {
 /**
  * The How to tab's rows, one per line of column A, as [{kind, text, formula?}]: the title,
  * the two notes under it, then per section a blank row, its heading and its lines. Only
- * the contact line has a formula.
+ * the contact line has a formula. The text is in words (howToSections).
  */
-function howToRows() {
+function howToRows(words) {
   const rows = [
-    { kind: "title", text: "How to: the volunteer kiosk sheet" },
+    { kind: "title", text: wordText("How to: the volunteer kiosk sheet", words) },
     {
       kind: "note",
       text: "Short how-tos for the jobs staff do in this spreadsheet. The kiosk writes this tab and rewrites it whenever the kiosk is updated, so changes made here won't last; to suggest a change, tell the kiosk's developers.",
@@ -10660,9 +11563,9 @@ function howToRows() {
       text: "Hover over a column header on the Log or the Flags tab to see what that column holds; the same notes are at the end of this tab. On the Settings tab, the What it does column explains each setting.",
     },
   ];
-  howToSections().forEach((section) => {
+  howToSections(words).forEach((section) => {
     rows.push({ kind: "blank", text: "" });
-    rows.push({ kind: "heading", text: section.title });
+    rows.push({ kind: "heading", text: wordText(section.title, words) });
     section.lines.forEach((line) =>
       rows.push(
         line.formula

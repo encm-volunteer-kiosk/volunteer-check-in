@@ -12,7 +12,12 @@ import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
 const L = {};
-vm.runInNewContext(readFileSync(new URL("apps-script/Logic.js", root), "utf8"), L);
+vm.runInNewContext(
+  readFileSync(new URL("apps-script/Brand.js", root), "utf8") +
+    "\n" +
+    readFileSync(new URL("apps-script/Logic.js", root), "utf8"),
+  L,
+);
 
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const ZONE = "America/Chicago";

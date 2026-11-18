@@ -1,0 +1,31 @@
+/* The brand's colours and the welcome screen's background graphic. Every other style reads
+   these tokens; index.css imports this file. */
+
+:root {
+  --blue: #0669a9;
+  --blue-dark: #00528b;
+  --navy: #062f5a;
+  --light-blue: #dff3fb;
+  --warm: #fbf8f2;
+  --surface: #fffdfa;
+  --text: #082f58;
+  --muted: #52687b;
+  --border: #b9d4e2;
+  --yellow: #f9bd2f;
+  --teal: #168c86;
+  --green: #168c63;
+  --green-light: #e9f7ea;
+  --error: #b33b38;
+  --focus: #d18b00;
+  /* A checked-in card past "Long shift flag hours", or with no check-in time */
+  --late-text: #7a4a00;
+  --late-bg: #fff3d1;
+  --late-border: #d9a21b;
+  --late-action: #9a6200;
+  /* Behind the graphic, and the whole background while it loads */
+  --shell-background: #fcf4e5;
+}
+
+.app-shell::before {
+  background: url("./assets/east-nashville-graphic.webp") center center / cover no-repeat;
+}

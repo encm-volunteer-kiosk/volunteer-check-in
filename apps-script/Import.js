@@ -146,6 +146,7 @@ function adminImportRun(key, form) {
 function importJob_(form) {
   const f = form || {};
   const settings = readSettings_();
+  if (!kioskSwitches(settings).importPastHours) return { refusal: refusal("IMPORT_OFF") };
   const fileId = importFileId(f.file);
   if (!fileId) return { refusal: importRefusal("IMPORT_FILE_ID") };
   const tab = cellString(f.tab) || importDefaultTab();
@@ -166,6 +167,7 @@ function importJob_(form) {
     rows: values.slice(1).map((cells) => cells.map((value) => importCell_(value, zone))),
     todayDate: centralDate_(new Date()),
     volunteers: getProfiles_(settings),
+    fullNameRoster: rosterUsesFullName(rosterColumnMapping(settings)),
     ledgerKeys: ledger.keys,
     ledgerRows: importLedgerRows(ledger.lines, fileId, tab),
     logShiftIds: view.shiftIds,

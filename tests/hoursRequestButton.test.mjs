@@ -24,7 +24,7 @@ const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 
 const L = {};
-vm.runInNewContext(read("apps-script/Logic.js"), L);
+vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), L);
 const serverText = L.refusalMessages();
 
 // ---------------------------------------------------------------------------
@@ -217,7 +217,7 @@ test("App.tsx: a request is its own call through settleWithin and afterHoursRequ
   );
   assert.ok(request.includes("HOURS_REQUEST_TIMEOUT_MS"));
   assert.ok(request.includes("hoursPhoneStepAfter(reply)"));
-  assert.ok(request.includes("afterHoursRequest(reply, firstName)"));
+  assert.ok(request.includes("afterHoursRequest(reply, firstName, wordsRef.current)"));
   assert.ok(request.includes("lockKiosk(next.lock)"));
   // A reply is used only while its request is the current one.
   assert.ok(request.includes("if (seq !== hoursRequestSeq.current) return;"));

@@ -42,8 +42,9 @@ function requireEditorRun_() {
  * the Flags tab's Reviewed checkbox and its "Flags: Unreviewed" view, and the look; never
  * changes a cell with text in it or deletes a row, except for the help it rewrites on
  * every run: Settings column C, the How to tab, and a header note that is empty or still
- * exactly one of the kiosk's own texts. So running it twice changes nothing. Runs only
- * from the Apps Script editor.
+ * exactly one of the kiosk's own texts; and the person-word headers and Header word while
+ * the Log, Flags and Removed shifts hold no rows (setupHeaderWord_). So running it twice
+ * changes nothing. Runs only from the Apps Script editor.
  */
 function setupSheets() {
   requireEditorRun_();
@@ -68,6 +69,9 @@ function setupSheets() {
   if (missing.length) {
     settings.getRange(settings.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
   }
+  // A blank Kiosk launch date gets today's date, so a fresh copy has one; a date is kept.
+  const launch = launchDateToFill(existing, centralDate_(new Date()));
+  if (launch) setSetting_(launchDateSetting(), launch);
   settings.getRange(1, 3).setValue(settingsDescriptionHeader());
   writeSettingsDescriptions_(settings);
   protectOnce_(
@@ -80,10 +84,49 @@ function setupSheets() {
   markSettingsEdited_();
 
   setupFlags_(ss);
-  writeHeaderNotes_(sheet_(LOG_TAB), logHeaderNames(), logHeaderNotes());
-  writeHeaderNotes_(sheet_(FLAGS_TAB), flagHeaderNames(), flagHeaderNotes());
+  setupPeopleTab_(ss);
+  const word = setupHeaderWord_(ss);
+  writeHeaderNotes_(sheet_(LOG_TAB), logHeaderNames(word), logHeaderNotes(word), word);
+  writeHeaderNotes_(sheet_(FLAGS_TAB), flagHeaderNames(word), flagHeaderNotes(word), word);
   applyLooks_(ss);
   setupHowTo_(ss);
+}
+
+/**
+ * The header words part of setupSheets. When the person word isn't the word the headers
+ * have (headerWordToWrite, Logic.js), and the Log and Flags hold no row below their header
+ * and Removed shifts is missing or holds none, writes the person word into the Log's Name
+ * and Role/Type headers, the Flags Name header, the Log headers on Removed shifts, and
+ * Header word. With a row on any of the three, changes nothing. Returns the Header word
+ * the headers have after it.
+ */
+function setupHeaderWord_(ss) {
+  const settings = readSettings_();
+  const from = headerWord(settings);
+  const to = headerWordToWrite(settings);
+  if (to === null) return from;
+  const log = sheet_(LOG_TAB);
+  const flags = sheet_(FLAGS_TAB);
+  const removed = ss.getSheetByName(removedTabName());
+  if ([log, flags, removed].some((sheet) => sheet && sheet.getLastRow() > 1)) return from;
+  const write = (sheet, names, keys) => {
+    if (!sheet) return;
+    headerWordWrites(logHeaderRow_(sheet), names, keys, from, to).forEach((w) =>
+      sheet.getRange(1, w.col).setValue(w.header),
+    );
+  };
+  // The Log's header changes, so it is stamped first and last, as setupLog_ is.
+  markLogChanged_();
+  try {
+    write(log, logHeaderNames, ["name", "role"]);
+  } finally {
+    markLogChanged_();
+  }
+  write(flags, flagHeaderNames, ["name"]);
+  write(removed, logHeaderNames, ["name", "role"]);
+  setSetting_(headerWordSetting(), to);
+  useSettings(Object.assign({}, settings, { [headerWordSetting()]: to }));
+  return to;
 }
 
 /**
@@ -266,24 +309,51 @@ function logHeaderRow_(sheet) {
 }
 
 /**
- * Development only: creates "Volunteer Profiles (sample)" from SampleData.js and points
- * Settings at it. Does nothing when Settings already names a Profiles file. Runs only
- * from the Apps Script editor.
+ * Fills this spreadsheet's volunteer list tab with SampleData.js's header and invented
+ * people, replacing a tab that holds only a header (and making the tab when it's
+ * missing). Changes nothing, and says why in the log, when Settings names a Profiles file,
+ * when any Roster column row is filled (the sample header uses the kiosk's own names), or
+ * when the tab has any row below its header. Runs only from the Apps Script editor.
  */
 function setupSampleProfiles() {
   requireEditorRun_();
-  if (readSettings_()["Volunteer Profiles file ID"]) {
-    Logger.log("Settings already names a Volunteer Profiles file; nothing done.");
+  const settings = readSettings_();
+  const refused = sampleProfilesRefusal(
+    settings["Volunteer Profiles file ID"],
+    rosterColumnMapping(settings),
+  );
+  if (refused) {
+    Logger.log(refused);
+    return;
+  }
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const tabName = profilesTabName_(settings);
+  const sheet = ss.getSheetByName(tabName) || ss.insertSheet(tabName);
+  if (sheet.getLastRow() > 1) {
+    Logger.log(sampleProfilesTabRefusal(tabName));
     return;
   }
   const rows = sampleProfileRows_();
-  const file = SpreadsheetApp.create("Volunteer Profiles (sample)");
-  const sheet = file.getSheets()[0];
-  sheet.setName("Volunteer Profiles");
+  sheet.clearContents();
   sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
   sheet.setFrozenRows(1);
-  setSetting_("Volunteer Profiles file ID", file.getId());
-  Logger.log("Created " + file.getUrl());
+  Logger.log("Wrote " + (rows.length - 1) + " sample people to the " + tabName + " tab.");
+}
+
+/**
+ * The volunteer list tab in this spreadsheet, made with the kiosk's own header
+ * (peopleTabHeader) when Settings names no Profiles file and the tab is missing. With a
+ * Profiles file named, or the tab there, changes nothing.
+ */
+function setupPeopleTab_(ss) {
+  const settings = readSettings_();
+  if (settings["Volunteer Profiles file ID"]) return;
+  const tabName = profilesTabName_(settings);
+  if (ss.getSheetByName(tabName)) return;
+  const header = peopleTabHeader();
+  const sheet = ss.insertSheet(tabName);
+  sheet.getRange(1, 1, 1, header.length).setNumberFormat("@").setValues([header]);
+  sheet.setFrozenRows(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +589,8 @@ function sheet_(name) {
 
 /**
  * Settings as {name: text}; the first row with a name wins. Read from the tab on every
- * call; a check-in or check-out takes Settings from cachedSettings_ instead.
+ * call; a check-in or check-out takes Settings from cachedSettings_ instead. Both keep the
+ * Settings they read for this run (useSettings, Logic.js).
  */
 function readSettings_() {
   const values = sheet_(SETTINGS_TAB).getDataRange().getValues();
@@ -530,6 +601,7 @@ function readSettings_() {
       settings[name] = cellText_(values[i][1]);
     }
   }
+  useSettings(settings);
   return settings;
 }
 
@@ -616,7 +688,10 @@ function cachedSettings_() {
     console.error("Settings cache not read: " + (e && e.message ? e.message : String(e)));
     hit = null;
   }
-  if (hit) return { settings: hit, cached: true };
+  if (hit) {
+    useSettings(hit);
+    return { settings: hit, cached: true };
+  }
   return { settings: refreshSettingsCache_(), cached: false };
 }
 
@@ -655,18 +730,19 @@ function onEdit(e) {
 
 /**
  * The kiosk list [{id, firstName, lastName, phoneLast4, startDate, needsPhoneCheck,
- * token, row}], from the cache when it holds one. On a cache miss it reads Profiles in one
- * call and rewrites the Settings "Profiles problems" value. Never writes to Profiles. The
+ * token, row}], from the cache when it holds one. On a cache miss it reads Profiles
+ * (profilesSheet_, with the Roster column rows) in one call and rewrites the Settings
+ * "Profiles problems" value. Never writes to Profiles. The
  * cache key carries profilesCacheVersion(), so a list cached in an older shape is never
  * read. A cache error, or a cached list that can't be read, counts as a miss; a failed put
  * is logged and changes nothing else.
  */
 function getProfiles_(settings) {
-  const fileId = settings["Volunteer Profiles file ID"];
-  const tabName = settings["Volunteer Profiles tab"] || "Volunteer Profiles";
-  if (!fileId) throw new Error('The Settings value "Volunteer Profiles file ID" is empty.');
+  const fileId = settings["Volunteer Profiles file ID"] || "";
+  const tabName = profilesTabName_(settings);
+  const mapping = rosterColumnMapping(settings);
 
-  const key = profilesCacheKey(fileId, tabName);
+  const key = profilesCacheKey(fileId, tabName, mapping);
   try {
     const hit = CacheService.getScriptCache().get(key);
     if (hit) return JSON.parse(hit);
@@ -674,13 +750,11 @@ function getProfiles_(settings) {
     console.error("Profiles cache not read: " + (e && e.message ? e.message : String(e)));
   }
 
-  const sheet = SpreadsheetApp.openById(fileId).getSheetByName(tabName);
-  if (!sheet) throw new Error('Volunteer Profiles has no tab named "' + tabName + '".');
-  const values = sheet
+  const values = profilesSheet_(settings)
     .getDataRange()
     .getValues()
     .map((row) => row.map(cellText_));
-  const parsed = parseProfiles(values[0] || [], values.slice(1), sha256Hex_);
+  const parsed = parseProfiles(values[0] || [], values.slice(1), sha256Hex_, mapping);
 
   const problems = parsed.problems.map((p) => p.text).join("\n");
   if (problems !== (settings["Profiles problems"] || "")) {
@@ -701,21 +775,39 @@ function getProfiles_(settings) {
 /**
  * Each volunteer's address from the Email column of their own Profiles row, for Kiosk
  * admin > Email hours…: {id: {email, row, problem, text}} (profileEmailsFrom, Logic.js).
- * Opens the same file and tab getProfiles_ reads and reads the sheet in one call for the
- * whole set; the row is found by User Token, not by row number. Never reads through or
+ * Opens the same file and tab getProfiles_ reads (profilesSheet_) and reads the sheet in
+ * one call for the whole set; the row is found by User Token, not by row number. Never reads through or
  * writes to the Profiles cache, whose list keeps no email, and never writes to Profiles.
  */
 function profileEmails_(settings, volunteers) {
-  const fileId = settings["Volunteer Profiles file ID"];
-  const tabName = settings["Volunteer Profiles tab"] || "Volunteer Profiles";
-  if (!fileId) throw new Error('The Settings value "Volunteer Profiles file ID" is empty.');
-  const sheet = SpreadsheetApp.openById(fileId).getSheetByName(tabName);
-  if (!sheet) throw new Error('Volunteer Profiles has no tab named "' + tabName + '".');
-  const values = sheet
+  const values = profilesSheet_(settings)
     .getDataRange()
     .getValues()
     .map((row) => row.map(cellText_));
-  return profileEmailsFrom(values[0] || [], values.slice(1), volunteers);
+  return profileEmailsFrom(
+    values[0] || [],
+    values.slice(1),
+    volunteers,
+    rosterColumnMapping(settings),
+  );
+}
+
+/** Settings "Volunteer Profiles tab", or Volunteer Profiles while it's blank. */
+function profilesTabName_(settings) {
+  return settings["Volunteer Profiles tab"] || "Volunteer Profiles";
+}
+
+/**
+ * The volunteer list's tab: in the spreadsheet Settings "Volunteer Profiles file ID" names,
+ * or in this spreadsheet while it's blank. Throws when the tab isn't there.
+ */
+function profilesSheet_(settings) {
+  const fileId = settings["Volunteer Profiles file ID"];
+  const tabName = profilesTabName_(settings);
+  const file = fileId ? SpreadsheetApp.openById(fileId) : SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = file.getSheetByName(tabName);
+  if (!sheet) throw new Error('Volunteer Profiles has no tab named "' + tabName + '".');
+  return sheet;
 }
 
 // ---------------------------------------------------------------------------
@@ -1791,7 +1883,7 @@ function writeRowCells_(sheet, cols, kinds, row, changes) {
 /**
  * Settings column C from row 2 down: one settingsDescriptionColumn (Logic.js) text per row
  * down to the last row with a name, each name read by cellText_ as readSettings_ reads it,
- * in one setValues. C below that row, down to the tab's last row, is cleared, so text left
+ * in the words of the Settings setupSheets read (wordsInUse), in one setValues. C below that row, down to the tab's last row, is cleared, so text left
  * by a deleted row never sits beside the next appended setting. Writes no other column.
  */
 function writeSettingsDescriptions_(settings) {
@@ -1808,7 +1900,7 @@ function writeSettingsDescriptions_(settings) {
   if (named) {
     settings
       .getRange(2, 3, named, 1)
-      .setValues(settingsDescriptionColumn(names.slice(0, named)).map((t) => [t]));
+      .setValues(settingsDescriptionColumn(names.slice(0, named), wordsInUse()).map((t) => [t]));
   }
   if (named + 1 < last) settings.getRange(named + 2, 3, last - named - 1, 1).clearContent();
 }
@@ -1825,14 +1917,14 @@ function protectOnce_(existing, description, protect) {
 
 /**
  * The header notes on a Log or Flags tab's row 1, from A to the header's width: one
- * getNotes, then headerNotesRow (Logic.js) with headerNoteKioskTexts(), and a setNote only
+ * getNotes, then headerNotesRow (Logic.js) with headerNoteKioskTexts(word), and a setNote only
  * on each cell whose note changes. A note the rule keeps, a staff note above all, is never
  * written back, so it can't be altered by a round trip through Sheets.
  */
-function writeHeaderNotes_(sheet, names, notes) {
+function writeHeaderNotes_(sheet, names, notes, word) {
   const header = logHeaderRow_(sheet);
   const existing = sheet.getRange(1, 1, 1, header.length).getNotes()[0];
-  const wanted = headerNotesRow(header, names, notes, existing, headerNoteKioskTexts());
+  const wanted = headerNotesRow(header, names, notes, existing, headerNoteKioskTexts(word));
   wanted.forEach((note, i) => {
     if (note !== existing[i]) sheet.getRange(1, i + 1).setNote(note);
   });
@@ -1901,7 +1993,7 @@ function setupHowTo_(ss) {
     () => sheet.protect(),
   );
 
-  const rows = howToRows();
+  const rows = howToRows(wordsInUse());
   const styles = howToStyles();
   const pick = (field) => rows.map((r) => [styles[r.kind][field]]);
   sheet.clear();

@@ -1,7 +1,8 @@
 {
   "preview": {
     "ok": true,
-    "from": "ENCM Volunteer Kiosk, from a no-reply address (sent by staff@example.org)",
+    "from": "{senderName}, from a no-reply address (sent by staff@example.org)",
+    "senderName": "{senderName}",
     "month": "2026-11",
     "asOf": "2026-11-14",
     "volunteers": [

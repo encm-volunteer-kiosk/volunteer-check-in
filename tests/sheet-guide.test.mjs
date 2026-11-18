@@ -19,7 +19,7 @@ const read = (path) => readFileSync(new URL(path, root), "utf8");
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
 const L = {};
-vm.runInNewContext(read("apps-script/Logic.js"), L);
+vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), L);
 
 const SERVER_FILES = [
   "Admin.js",
@@ -211,11 +211,12 @@ test("every setting the server code writes has a description", () => {
     "Auto clock-out last run",
     "Daily jobs installed by",
     "Flags email last run",
+    "Header word",
     "Hours requests last run",
+    "Kiosk launch date",
     "Past hours file ID",
     "Past hours tab",
     "Profiles problems",
-    "Volunteer Profiles file ID",
   ]);
   const d = plain(L.settingsDescriptions());
   written.forEach((name) => assert.ok(d[name], name));
@@ -291,7 +292,7 @@ test("every note text a release has written is still known to the kiosk", () => 
   shipped.forEach((t) => assert.ok(kiosk.has(t), "no longer the kiosk's: " + JSON.stringify(t)));
 });
 
-// The ENCM Log header, line breaks included.
+// The Log header, line breaks included.
 const LOG_HEADERS = values(L.logHeaderNames());
 
 test("headerNotesRow writes a note only on an empty note or an exact kiosk text", () => {
@@ -336,7 +337,7 @@ test("headerNotesRow writes a note only on an empty note or an exact kiosk text"
     );
   });
 
-  // ENCM's live header, reordered, a header twice and a missing note list.
+  // The live header, reordered, a header twice and a missing note list.
   assert.deepEqual(row(LOG_HEADERS, []), values(notes));
   const reversed = [...LOG_HEADERS].reverse();
   assert.deepEqual(row(reversed, []), values(notes).reverse());
@@ -532,8 +533,12 @@ const BLANK_TEXT =
   "If the kiosk or this sheet isn't working and this tab doesn't help, ask whoever looks after the kiosk. To name them here, type their name and an email or phone in Kiosk contact on the Settings tab.";
 const PREFIX = "If the kiosk or this sheet isn't working and this tab doesn't help, contact: ";
 
+// The rows before the general settings, which come after every older row.
+const olderRows = () =>
+  plain(L.settingsDefaults("2026-11-13")).slice(0, -L.generalSettingsDefaults().length);
+
 test("Kiosk contact is the last Settings row before the hours email rows, blank by default, with its sentence", () => {
-  const rows = plain(L.settingsDefaults("2026-11-13"));
+  const rows = olderRows();
   assert.equal(L.kioskContactSetting(), "Kiosk contact");
   assert.deepEqual(rows[rows.length - 5], ["Kiosk contact", ""]);
   assert.equal(rows.filter((r) => r[0] === "Kiosk contact").length, 1);
@@ -541,7 +546,7 @@ test("Kiosk contact is the last Settings row before the hours email rows, blank 
 });
 
 test("the two hours email rows come before the hours request rows, blank by default, with their sentences", () => {
-  const rows = plain(L.settingsDefaults("2026-11-13"));
+  const rows = olderRows();
   assert.equal(L.hoursEmailContactSetting(), "Hours email contact");
   assert.equal(L.hoursEmailSignatureSetting(), "Hours email signature");
   assert.deepEqual(rows.slice(-4, -2), [
@@ -559,8 +564,8 @@ test("the two hours email rows come before the hours request rows, blank by defa
   );
 });
 
-test("the two hours request rows are the last two Settings rows, Off and blank, with their sentences", () => {
-  const rows = plain(L.settingsDefaults("2026-11-13"));
+test("the two hours request rows are the last two rows before the general settings, Off and blank, with their sentences", () => {
+  const rows = olderRows();
   assert.equal(L.hoursRequestsSetting(), "Hours requests");
   assert.equal(L.hoursRequestsLastRunSetting(), "Hours requests last run");
   assert.deepEqual(rows.slice(-2), [

@@ -24,6 +24,7 @@ import {
 import type { Tap } from "./saveQueue";
 import { DEFAULT_LONG_SHIFT_HOURS, longShiftHoursOf } from "./cardTime";
 import { nameKey } from "./sameName";
+import { pageSettingsOf, type PageSettings } from "./words";
 import { callLog, recorded, type CallLog } from "./callRecord";
 import {
   arrivalChangeFromServer,
@@ -102,13 +103,15 @@ export type ArrivalChangeResult = {
 // checked-in card turns amber (8 when the server sends none), the milestone texts a
 // check-out's steps name, the server's clock during the call (null from an older server,
 // whose list then can't decide an instant result), and whether the welcome screen's Request
-// my hours link shows (false when the server sends none).
+// my hours link shows (false when the server sends none), and the page's Settings (null from
+// a server older than them, when the page shows the brand's).
 export type VolunteerList = {
   volunteers: VolunteerSummary[];
   longShiftHours: number;
   milestones: Milestone[];
   serverNow: number | null;
   hoursRequests: boolean;
+  pageSettings: PageSettings | null;
 };
 
 export interface KioskApi {
@@ -214,6 +217,7 @@ export const gasApi: KioskApi = {
       longShiftHours: longShiftHoursOf(reply),
       ...listExtrasOf(reply),
       hoursRequests: hoursRequestsOf(reply),
+      pageSettings: pageSettingsOf(reply),
     };
   },
   // Without a tap the call carries today's four arguments.
@@ -270,6 +274,8 @@ const refusalMessages: Record<string, string> = {
   TAP_UNREADABLE: "A kiosk tap can't be read.",
   HOURS_REQUESTS_OFF:
     "Emailing hours from the kiosk is turned off right now. Please ask a board member.",
+  ARRIVAL_CHANGES_OFF: "Please ask a board member to change your arrival time.",
+  CHECKOUT_CHANGES_OFF: "Please ask a board member to change your check-out time.",
 };
 
 const refuse = (code: string): Refusal => ({ refusal: code, message: refusalMessages[code] });
@@ -457,6 +463,7 @@ export const localApi: KioskApi & { hoursRequestsOpen(): string[]; reset(): void
       milestones: localMilestones,
       serverNow: Date.now(),
       hoursRequests: true,
+      pageSettings: null,
     };
   },
   async checkIn(code, id, arrivalIso, phoneLast4, tap) {

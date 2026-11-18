@@ -37,7 +37,8 @@ function memoryStorage() {
 globalThis.localStorage = memoryStorage();
 globalThis.sessionStorage = memoryStorage();
 
-const STORAGE_KEY = "encm-volunteer-kiosk-v1";
+const { brandKey } = await import("../src/brand.ts");
+const STORAGE_KEY = brandKey("volunteer-kiosk-v1");
 const CODE = "invented-kiosk-code";
 const MIN = 60_000;
 

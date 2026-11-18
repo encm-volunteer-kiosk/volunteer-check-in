@@ -13,6 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { BRAND, fillBrand } from "./brandFiles.mjs";
 
 const html = readFileSync(new URL("../apps-script/AdminDialog.html", import.meta.url), "utf8");
 const SCRIPT = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"));
@@ -172,6 +173,7 @@ function previewReply(
   return {
     ok: true,
     from: "volunteer@example.org",
+    senderName: BRAND.brandSenderName(),
     month: "2026-11",
     asOf: "2026-11-14",
     volunteers: ids.map((id, i) => {
@@ -360,9 +362,12 @@ test("email window: while a Preview is pending every control is off; a reply wit
   assert.match(text, /Last emailed: never/);
   assert.match(text, /November 2026 so far: 6\.50 hours \(2 shifts\)/);
   assert.match(text, /All time: 112\.00 hours \(45 shifts\)/);
-  assert.match(
-    text,
-    /From: ENCM Volunteer Kiosk, from a no-reply address \(sent by volunteer@example\.org\)/,
+  assert.ok(
+    text.includes(
+      "From: " +
+        BRAND.brandSenderName() +
+        ", from a no-reply address (sent by volunteer@example.org)",
+    ),
   );
   assert.match(text, /Email text/);
 });
@@ -818,7 +823,7 @@ for (const [mode, [name, reply]] of Object.entries(LOADS)) {
 // on the volunteer list.
 
 const REPLIES = JSON.parse(
-  readFileSync(new URL("./hours-email-replies.json", import.meta.url), "utf8"),
+  fillBrand(readFileSync(new URL("./hours-email-replies.json", import.meta.url), "utf8")),
 );
 
 const blocks = (d) => d.$("email-detail").children;
@@ -847,7 +852,7 @@ test("email window: the server's own preview and send replies show line by line"
   const shown = [...blocks(d)];
   assert.equal(shown.length, 6);
   assert.deepEqual(shown[0].text.split("\n"), [
-    "From: ENCM Volunteer Kiosk, from a no-reply address (sent by staff@example.org)",
+    "From: " + BRAND.brandSenderName() + ", from a no-reply address (sent by staff@example.org)",
     "5 ticked: 3 will be sent, 2 won't.",
   ]);
   assert.deepEqual(shown[1].text.split("\n"), [
@@ -934,7 +939,12 @@ test("email window: the server's own preview and send replies show line by line"
 // real rule, and check the window shows it.
 
 const L = {};
-vm.runInNewContext(readFileSync(new URL("../apps-script/Logic.js", import.meta.url), "utf8"), L);
+vm.runInNewContext(
+  readFileSync(new URL("../apps-script/Brand.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("../apps-script/Logic.js", import.meta.url), "utf8"),
+  L,
+);
 const HOUR = 3600000;
 const REQ_NOW = Date.UTC(2026, 10, 21, 18, 0);
 const req = (n, status, ageHours, more = {}) => ({

@@ -17,7 +17,7 @@
  * that row's Check-In Recorded, the latest arrival a Change on the check-out screen may
  * choose (apiChangeArrival). The list also carries one boolean, hoursRequests: whether the
  * welcome screen's Request my hours link shows (Settings "Hours requests" is Approve or
- * Auto). The tablet never receives the mode, and no call
+ * Auto, and Email hours is On). The tablet never receives the mode, and no call
  * sends it an email address or says whether a volunteer has one.
  *
  * A check-in or check-out the tablet already showed comes with a tap (readTap, Logic.js):
@@ -64,11 +64,22 @@
  * record: a failed copy is logged and never changes the reply.
  */
 
-/** Serves the page shell, which holds no volunteer data. */
+/**
+ * Serves the page shell, which holds no volunteer data. Its title is the one Settings value
+ * it reads (pageTitle): when Settings can't be read, the title takes the brand's word, so
+ * the title never stops the page loading.
+ */
 function doGet() {
+  let title;
+  try {
+    title = pageTitle(cachedSettings_().settings);
+  } catch (e) {
+    console.error("Settings not read for the page title: " + (e && e.message ? e.message : e));
+    title = pageTitle(brandSettingsDefaults());
+  }
   // From a file, not a template: the bundled page can contain the "<?" scriptlet marker.
   return HtmlService.createHtmlOutputFromFile("Index")
-    .setTitle("Volunteer Check-In")
+    .setTitle(title)
     .addMetaTag("viewport", "width=device-width, initial-scale=1")
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
 }
@@ -91,9 +102,12 @@ function apiCheckAccess(code) {
  * openShiftId, openUntil, openShiftTapped and checkOutMilestones are as volunteerSummaries (Logic.js) gives
  * them. longShiftHours is "Long shift flag hours" (parseLongShiftHours), the time in past
  * which the page marks a card. hoursRequests is true when Settings "Hours requests" is
- * Approve or Auto (parseHoursRequestsMode), false when Off. milestones are [{id, title, message}], the texts the steps
- * name. serverNow is the server's clock in ms, taken last, so the page can tell how far
- * its own clock is off.
+ * Approve or Auto and the Email hours switch is On (hoursRequestsMode), false otherwise.
+ * milestones are [{id, title, message}], the texts the steps
+ * name. words, organizationName, logoLink and switches are the page's Settings (pageSettings).
+ * With the Milestones switch Off every checkOutMilestones holds the one step of no milestone.
+ * serverNow is the server's clock in ms, taken last, so the page can tell how far its own
+ * clock is off.
  *
  * Reads every row of every Profiles volunteer (listLogStates_), since the notice answer
  * and the milestone steps need the whole history.
@@ -114,10 +128,12 @@ function apiListVolunteers(code) {
       autoClockOutWindowMs(settings["Auto clock-out after hours"]),
       centralDate_(now),
       settings["Kiosk launch date"],
+      kioskSwitches(settings).milestones,
     ),
     longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
-    hoursRequests: parseHoursRequestsMode(settings[hoursRequestsSetting()]) !== "off",
+    hoursRequests: hoursRequestsMode(settings) !== "off",
     milestones: milestones().map((m) => ({ id: m.id, title: m.title, message: m.message })),
+    ...pageSettings(settings),
     serverNow: Date.now(),
   };
 }
@@ -127,7 +143,8 @@ function apiListVolunteers(code) {
  * hours link. id is the list entry tapped and digits
  * the phone's last four or null, read by the check-in rule (resolveVolunteer), so in a
  * same-name group the digits pick who is asking. Returns {ok: true} or a refusal: ACCESS
- * for a wrong code; HOURS_REQUESTS_OFF when Settings "Hours requests" is Off;
+ * for a wrong code; HOURS_REQUESTS_OFF when Settings "Hours requests" is Off or the Email
+ * hours switch is Off (hoursRequestsMode);
  * NOT_FOUND, PHONE_NEEDED, PHONE_WRONG or PHONE_MISSING as for a check-in, with no Flags
  * row, since this isn't a tap; BUSY when the lock isn't free within 10 seconds.
  *
@@ -142,7 +159,7 @@ function apiListVolunteers(code) {
 function apiRequestHours(code, id, digits) {
   const { settings, denied } = settingsForCode_(code);
   if (denied) return denied;
-  const mode = parseHoursRequestsMode(settings[hoursRequestsSetting()]);
+  const mode = hoursRequestsMode(settings);
   if (mode === "off") return refusal("HOURS_REQUESTS_OFF");
   const found = resolveVolunteer(getProfiles_(settings), id, digits);
   if (found.refusal) return refusal(found.refusal);
@@ -198,11 +215,15 @@ function listLogStates_(volunteers) {
  * missedSignOut: false, replayed: true}, with that row's times (null when unreadable). A
  * notice the tablet showed that isn't the server's answer is flagged on the new row. A
  * refusal writes one Flags row (raiseTapRefusal_). TAP_UNREADABLE when the tap can't be
- * read, before the lock.
+ * read, before the lock. ARRIVAL_CHANGES_OFF, before the lock, for a chosen arrival while
+ * Settings switch Tablet arrival changes Off.
  */
 function apiCheckIn(code, id, arrivalIso, digits, tap) {
   const { settings, denied } = settingsForCode_(code);
   if (denied) return denied;
+  if (arrivalMsFromIso(arrivalIso) !== null && !kioskSwitches(settings).arrivalChanges) {
+    return refusal("ARRIVAL_CHANGES_OFF");
+  }
   const t = readTap(tap, "in");
   if (t && t.unreadable) return refusal("TAP_UNREADABLE");
   const run = logCacheRun_();
@@ -329,10 +350,15 @@ function apiCheckIn(code, id, arrivalIso, digits, tap) {
  * and minutes (null when unreadable). A milestone the tablet showed that isn't the
  * server's is flagged on the row. A refusal other than BUSY writes one Flags row
  * (raiseTapRefusal_). TAP_UNREADABLE when the tap can't be read, before the lock.
+ * CHECKOUT_CHANGES_OFF, before the lock, for a chosen check-out time while Settings switch
+ * Tablet check-out changes Off. The Milestones switch Off means milestone null.
  */
 function apiCheckOut(code, id, digits, checkOutIso, tap) {
   const { settings, denied } = settingsForCode_(code);
   if (denied) return denied;
+  if (arrivalMsFromIso(checkOutIso) !== null && !kioskSwitches(settings).checkOutChanges) {
+    return refusal("CHECKOUT_CHANGES_OFF");
+  }
   const t = readTap(tap, "out");
   if (t && t.unreadable) return refusal("TAP_UNREADABLE");
   const run = logCacheRun_();
@@ -361,6 +387,7 @@ function apiCheckOut(code, id, digits, checkOutIso, tap) {
           flagMinutes: parseFlagMinutes(settings["Check-out flag minutes"]),
           longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
           launchDate: settings["Kiosk launch date"],
+          milestonesOn: kioskSwitches(settings).milestones,
           ...tapInput,
         };
         let planned = null;
@@ -451,7 +478,8 @@ function apiCheckOut(code, id, digits, checkOutIso, tap) {
  * screen. id and digits are as for apiCheckOut, and who it is is found by the check-out's
  * rule (checkOutTokens). shiftId is the open row's Shift ID the screen showed, fromIso the
  * start it showed and arrivalIso the new arrival. Returns {ok: true, id, shiftId,
- * arrivedAt, changed} or a refusal: ACCESS before the lock; then, under it, NOT_FOUND, a
+ * arrivedAt, changed} or a refusal: ACCESS, then ARRIVAL_CHANGES_OFF while Settings switch
+ * Tablet arrival changes Off, before the lock; then, under it, NOT_FOUND, a
  * phone refusal, NOT_IN, ARRIVAL_ROW_CHANGED, ARRIVAL_UNCHANGEABLE, ARRIVAL_OTHER_DAY,
  * ARRIVAL_FUTURE or ARRIVAL_AFTER_CHECK_IN, in decideArrivalChange's order (Logic.js);
  * BUSY when the lock isn't free within 10 seconds, or when the row read again just before
@@ -470,6 +498,7 @@ function apiCheckOut(code, id, digits, checkOutIso, tap) {
 function apiChangeArrival(code, id, digits, shiftId, fromIso, arrivalIso) {
   const { settings, denied } = settingsForCode_(code);
   if (denied) return denied;
+  if (!kioskSwitches(settings).arrivalChanges) return refusal("ARRIVAL_CHANGES_OFF");
   const run = logCacheRun_();
   return withLock_(
     () =>

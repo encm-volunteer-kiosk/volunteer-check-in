@@ -522,7 +522,7 @@ function hoursAutoSentCount_(now) {
  */
 function hoursRequestsWaiting_(settings, now) {
   try {
-    const mode = parseHoursRequestsMode(settings[hoursRequestsSetting()]);
+    const mode = hoursRequestsMode(settings);
     return hoursRequestsWaitingCount(readHoursRequests_() || [], mode, now.getTime());
   } catch (err) {
     console.log("Flags email: the Hours requests tab couldn't be read: " + errorMessage_(err));
@@ -775,7 +775,7 @@ function deleteHoursRequestTriggers_() {
  */
 function hoursRequestRun_(now) {
   const settings = readSettings_();
-  if (parseHoursRequestsMode(settings[hoursRequestsSetting()]) !== "auto") return;
+  if (hoursRequestsMode(settings) !== "auto") return;
   const nowMs = now.getTime();
   // waiting counts the requests the run leaves waiting; held every request it holds.
   const run = {

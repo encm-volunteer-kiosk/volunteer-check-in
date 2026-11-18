@@ -1,0 +1,23 @@
+{
+ "queue": "{\"version\":1,\"epoch\":\"epoch-before\",\"seq\":2,\"saves\":[{\"key\":\"00000001-0000-4000-8000-000000000001\",\"kind\":\"in\",\"volunteerId\":\"v-ada\",\"firstName\":\"Ada\",\"lastName\":\"Example\",\"shiftId\":null,\"tapAt\":1795017540000,\"shown\":{\"missedSignOut\":true},\"arrival\":\"2026-11-18T15:59:00.000Z\",\"sends\":1,\"nextTryAt\":0,\"retries\":0,\"lastSendAt\":1795017541000,\"replies\":0},{\"key\":\"00000002-0000-4000-8000-000000000002\",\"kind\":\"out\",\"volunteerId\":\"v-ben\",\"firstName\":\"Ben\",\"lastName\":\"Sample\",\"shiftId\":\"shift-ben\",\"tapAt\":1795017550000,\"shown\":{\"milestoneId\":\"hours-2\"},\"arrival\":null,\"sends\":0,\"nextTryAt\":0,\"retries\":0,\"lastSendAt\":0,\"replies\":0}],\"failed\":[{\"key\":\"00000003-0000-4000-8000-000000000003\",\"kind\":\"in\",\"name\":\"Cy Invented\",\"tapAt\":1795017560000,\"reason\":\"Already checked in.\",\"maybeSaved\":false}],\"marks\":[{\"key\":\"00000003-0000-4000-8000-000000000003\",\"volunteerId\":\"v-cy\",\"seq\":1,\"at\":1795017562000,\"listAfter\":0,\"state\":\"unknown\",\"arrival\":null},{\"key\":\"00000004-0000-4000-8000-000000000004\",\"volunteerId\":\"v-di\",\"seq\":1,\"at\":1795017572000,\"listAfter\":0,\"state\":\"in\",\"arrival\":\"2026-11-18T15:59:30.000Z\"}],\"unreadable\":false}",
+ "list": "{\"version\":3,\"code\":\"code-before\",\"savedAt\":1795017600000,\"volunteers\":[{\"id\":\"v-ada\",\"firstName\":\"Ada\",\"lastName\":\"Example\",\"checkedIn\":false,\"currentCheckIn\":null,\"needsPhoneCheck\":false,\"missedSignOut\":true},{\"id\":\"v-ben\",\"firstName\":\"Ben\",\"lastName\":\"Sample\",\"checkedIn\":true,\"currentCheckIn\":\"2026-11-18T13:00:00.000Z\",\"needsPhoneCheck\":false,\"openShiftId\":\"shift-ben\",\"openUntil\":\"2026-11-19T01:00:00.000Z\",\"checkOutMilestones\":[{\"fromMinutes\":0,\"id\":null},{\"fromMinutes\":120,\"id\":\"hours-2\"}]},{\"id\":\"v-cy\",\"firstName\":\"Cy\",\"lastName\":\"Invented\",\"checkedIn\":false,\"currentCheckIn\":null,\"needsPhoneCheck\":false},{\"id\":\"v-di\",\"firstName\":\"Di\",\"lastName\":\"Madeup\",\"checkedIn\":false,\"currentCheckIn\":null,\"needsPhoneCheck\":true}],\"longShiftHours\":8,\"milestones\":[{\"id\":\"hours-2\",\"title\":\"Two hours\",\"message\":\"Two hours today.\"}],\"clockOffsetMs\":1200,\"listStamp\":{\"epoch\":\"epoch-before\",\"seq\":2,\"requestedAt\":1795017599500}}",
+ "code": "code-before",
+ "savedAt": 1795017600000,
+ "saves": [
+  "00000001-0000-4000-8000-000000000001",
+  "00000002-0000-4000-8000-000000000002"
+ ],
+ "failed": [
+  "00000003-0000-4000-8000-000000000003"
+ ],
+ "marks": [
+  "00000003-0000-4000-8000-000000000003",
+  "00000004-0000-4000-8000-000000000004"
+ ],
+ "volunteers": [
+  "v-ada",
+  "v-ben",
+  "v-cy",
+  "v-di"
+ ]
+}

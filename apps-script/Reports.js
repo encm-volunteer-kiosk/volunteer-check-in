@@ -811,8 +811,10 @@ function adminMonthlyReport(key, form) {
   const log = withLock_(readReportLog_);
   if (!log.entries) return log;
 
-  const rateCents = parseMoneyCents(readSettings_()[volunteerHourValueSetting()] || "");
-  const report = periodReport(log.entries, period, rateCents, log.cols);
+  const settings = readSettings_();
+  const rateCents = parseMoneyCents(settings[volunteerHourValueSetting()] || "");
+  const milestonesOn = kioskSwitches(settings).milestones;
+  const report = periodReport(log.entries, period, rateCents, log.cols, milestonesOn);
   const madeAt = Utilities.formatDate(now, kioskTimeZone(), "yyyy-MM-dd h:mm a");
   const sheet = writeReportTab_(period, reportRows(report, period, initials, madeAt));
   const urls = reportDownloadUrls(

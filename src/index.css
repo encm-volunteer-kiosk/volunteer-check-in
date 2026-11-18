@@ -2,27 +2,10 @@
 
 @import "tailwindcss";
 
+/* The brand's colour tokens and welcome background. */
+@import "./brand.css";
+
 :root {
-  --blue: #0669a9;
-  --blue-dark: #00528b;
-  --navy: #062f5a;
-  --light-blue: #dff3fb;
-  --warm: #fbf8f2;
-  --surface: #fffdfa;
-  --text: #082f58;
-  --muted: #52687b;
-  --border: #b9d4e2;
-  --yellow: #f9bd2f;
-  --teal: #168c86;
-  --green: #168c63;
-  --green-light: #e9f7ea;
-  --error: #b33b38;
-  --focus: #d18b00;
-  /* A checked-in card past "Long shift flag hours", or with no check-in time */
-  --late-text: #7a4a00;
-  --late-bg: #fff3d1;
-  --late-border: #d9a21b;
-  --late-action: #9a6200;
   font-family: "Nunito", ui-rounded, system-ui, sans-serif;
   color: var(--text);
   background: var(--warm);
@@ -67,14 +50,14 @@
   overflow: visible;
   overscroll-behavior: none;
   isolation: isolate;
-  background: #fcf4e5;
+  background: var(--shell-background);
 }
 .app-shell::before {
   content: "";
   position: fixed;
   z-index: -2;
   inset: 0;
-  background: url("./assets/east-nashville-graphic.webp") center center / cover no-repeat;
+  /* The brand's graphic, if it has one: brand.css. */
 }
 .app-shell::after {
   content: "";
@@ -182,6 +165,17 @@
   background: rgba(255, 252, 246, 0.88);
   box-shadow: 0 5px 18px rgba(36, 67, 53, 0.08);
   backdrop-filter: blur(5px);
+}
+
+/* The organisation's name in the logo's place: no Logo link and no bundled logo, or an image
+   that didn't load. It keeps the logo's width, so the row lays out as with an image. */
+.logo-name {
+  margin-block: -8px;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.15;
+  color: var(--navy);
+  overflow-wrap: anywhere;
 }
 .date {
   margin: -7px -10px;

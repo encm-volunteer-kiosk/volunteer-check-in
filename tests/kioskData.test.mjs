@@ -180,7 +180,7 @@ test("the notice shows once: the check-in that carries it is the next one looked
 
 test("the local API's refusal messages are the server's", () => {
   const L = {};
-  vm.runInNewContext(read("apps-script/Logic.js"), L);
+  vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), L);
   const server = L.refusalMessages();
   const api = read("src/api.ts");
   const block = api.slice(

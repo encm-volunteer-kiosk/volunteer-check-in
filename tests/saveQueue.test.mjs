@@ -69,7 +69,12 @@ import { stepsWithNulls } from "../src/replies.ts";
 import { viaScriptRun } from "./scriptRun.mjs";
 
 const L = {};
-vm.runInNewContext(readFileSync(new URL("../apps-script/Logic.js", import.meta.url), "utf8"), L);
+vm.runInNewContext(
+  readFileSync(new URL("../apps-script/Brand.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("../apps-script/Logic.js", import.meta.url), "utf8"),
+  L,
+);
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
 const MIN = 60_000;

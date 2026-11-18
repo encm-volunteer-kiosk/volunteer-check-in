@@ -22,7 +22,7 @@ const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 
 const L = {};
-vm.runInNewContext(read("apps-script/Logic.js"), L);
+vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), L);
 const serverText = L.refusalMessages();
 
 // Tuesday 2026-11-17, Central (UTC-6): checked in by a tap at 9:14 AM, seen at 11:00 AM.
@@ -344,4 +344,26 @@ test("App.tsx: a Change waits for the server with its own mark, and an answer mo
   assert.ok(save.includes("arrival: reply.arrivedAt"));
   assert.ok(save.includes("afterArrivalChange(reply)"));
   assert.ok(save.includes("if (!current()) return;"));
+});
+
+test("App.tsx: the switches hide the screens' time changes, each by its own switch", () => {
+  assert.ok(
+    app.includes(
+      "const { arrivalChanges: arrivalsChangeable, checkOutChanges: checkOutsChangeable } =\n    pageSwitchesOf(pageSettings);",
+    ),
+  );
+  const confirmScreen = slice(app, '{code && screen === "confirm" && selected && (', "\n      )}");
+  assert.match(confirmScreen, /onOpenPicker=\{\s*arrivalsChangeable\s*\?/);
+  const checkoutScreen = slice(
+    app,
+    '{code && screen === "checkout" && selected && (',
+    "\n      )}",
+  );
+  assert.match(checkoutScreen, /onOpenPicker=\{\s*checkOutPickable && checkOutsChangeable\s*\?/);
+  assert.match(checkoutScreen, /offered:\s*arrivalsChangeable &&\s*showsArrivalChange\(\{/);
+  // A Change refused because the switch went Off shows its own message on the picker.
+  assert.deepEqual(afterArrivalChange({ refusal: "ARRIVAL_CHANGES_OFF", message: "m" }), {
+    kind: "line",
+    text: "m",
+  });
 });

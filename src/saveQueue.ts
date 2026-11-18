@@ -23,12 +23,15 @@
 // Plain TypeScript only (no enums, namespaces or parameter properties): the tests import
 // this file in Node, which strips the types without a loader.
 
+import { brandKey } from "./brand.ts";
 import { clearStoredList, type ListStorage } from "./listStore.ts";
+import { personName } from "./names.ts";
+import { wordText, type Words } from "./words.ts";
 
-export const SAVE_QUEUE_KEY = "encm-kiosk-save-queue";
+export const SAVE_QUEUE_KEY = brandKey("kiosk-save-queue");
 export const SAVE_QUEUE_VERSION = 1;
-export const SAVE_QUEUE_LOCK = "encm-kiosk-save-queue";
-export const SAVE_RUNNER_LOCK = "encm-kiosk-save-runner";
+export const SAVE_QUEUE_LOCK = brandKey("kiosk-save-queue");
+export const SAVE_RUNNER_LOCK = brandKey("kiosk-save-runner");
 
 // A list is trusted for 6 minutes from the moment the page asked for it.
 export const LIST_TRUST_MS = 360_000;
@@ -668,7 +671,7 @@ export function tapOf(save: QueuedSave, sentAt: number): Tap {
     sentAt,
     attempt: save.sends,
     shown: save.shown,
-    name: `${save.firstName} ${save.lastName}`,
+    name: personName(save),
   };
 }
 
@@ -805,7 +808,7 @@ export function afterAttempt(key: string, result: AttemptResult, now: number): C
     const failure = (reason: string, maybeSaved: boolean): FailedSave => ({
       key,
       kind: save.kind,
-      name: `${save.firstName} ${save.lastName}`,
+      name: personName(save),
       tapAt: save.tapAt,
       reason,
       maybeSaved,
@@ -1090,12 +1093,13 @@ export type SavingContext = {
  * none. "Try again in a moment" only while a send of that save is going (this page holds the
  * runner lock, or the save was sent within one attempt's wait), the tablet is online, the
  * save is the head and no attempt of it has failed; otherwise the line asks a volunteer who
- * is leaving to tell a board member the time.
+ * is leaving to tell a board member the time. The line is in words (wordText, words.ts).
  */
 export function stillSavingText(
   queue: SaveQueue,
   volunteerId: string,
   ctx: SavingContext,
+  words?: Words,
 ): string | null {
   const save = queue.saves.find((s) => s.volunteerId === volunteerId);
   if (!save) return null;
@@ -1104,9 +1108,12 @@ export function stillSavingText(
   const sending =
     ctx.runnerHeld || (save.lastSendAt > 0 && sinceSend >= 0 && sinceSend < ATTEMPT_MS);
   if (ctx.online && queue.saves[0].key === save.key && save.retries === 0 && sending) {
-    return `We're still saving your last ${what}. Please try again in a moment.`;
+    return wordText(`We're still saving your last ${what}. Please try again in a moment.`, words);
   }
-  return `Your last ${what} hasn't reached the sheet yet. If you're leaving now, please tell a board member the time.`;
+  return wordText(
+    `Your last ${what} hasn't reached the sheet yet. If you're leaving now, please tell a board member the time.`,
+    words,
+  );
 }
 
 /**

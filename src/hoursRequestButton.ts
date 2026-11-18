@@ -13,6 +13,7 @@
 // this file in Node, which strips the types without a loader.
 
 import type { Refusal } from "./api";
+import { wordText, type Words } from "./words.ts";
 
 /** How long the tablet waits for the server's answer before it says to try again. */
 export const HOURS_REQUEST_TIMEOUT_MS = 30_000;
@@ -59,18 +60,24 @@ const shownRefusals = ["PHONE_NEEDED", "PHONE_WRONG", "PHONE_MISSING", "NOT_FOUN
 /**
  * What a request's answer does. reply is the call's result, or "failed" for a call that
  * failed or timed out. A recorded request and one already open read the same. ACCESS locks
- * the kiosk to the setup screen, as a list's ACCESS does.
+ * the kiosk to the setup screen, as a list's ACCESS does. The page's own lines are given in
+ * words (wordText, words.ts); a refusal's message comes in them from the server.
  */
 export function afterHoursRequest(
   reply: true | Refusal | "failed",
   firstName: string,
+  words?: Words,
 ): { lock: string } | HoursRequestState {
   if (reply === true)
-    return { kind: "line", text: hoursRequestRecordedText(firstName), again: false };
+    return {
+      kind: "line",
+      text: wordText(hoursRequestRecordedText(firstName), words),
+      again: false,
+    };
   if (reply === "failed") return { kind: "line", text: hoursRequestFailedText, again: true };
   if (reply.refusal === "ACCESS") return { lock: reply.message };
   if (reply.refusal === "HOURS_REQUESTS_OFF") {
-    return { kind: "line", text: hoursRequestsOffText, again: false };
+    return { kind: "line", text: wordText(hoursRequestsOffText, words), again: false };
   }
   if (shownRefusals.includes(reply.refusal)) {
     return { kind: "line", text: reply.message, again: true };

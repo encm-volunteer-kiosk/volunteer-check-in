@@ -9,10 +9,10 @@
 //   google.script.run. Each must check that the person at the sheet runs it, and that it
 //   holds a dialog key the spreadsheet's menu issued, before it reads or writes anything.
 //   Four kinds are exempt from the key only: the dialog openers, which make it; the menu
-//   items that open no dialog (refreshHoursNow, checkLogNow), which check getUi as the
-//   openers do; the functions run from the editor as setupSheets is (setupReports,
-//   setupDailyJobs, removeDailyJobs); and the trigger handlers, which check the trigger's
-//   id instead. The list of functions comes from the files' source, so a public function
+//   items that open no dialog (refreshHoursNow, checkLogNow, fillMissingIds), which check
+//   getUi as the openers do; the functions run from the editor as setupSheets is
+//   (setupReports, setupDailyJobs, removeDailyJobs); and the trigger handlers, which check
+//   the trigger's id instead. The list of functions comes from the files' source, so a public function
 //   added later is held to the same rule.
 // - The glue: the admin functions read and write an in-memory Log through Sheets.js, and
 //   the kiosk's check-in and check-out copy their flags to an in-memory Flags tab.
@@ -28,11 +28,16 @@ import { readFileSync, readdirSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
 import { createHash } from "node:crypto";
+import { summaryFromServer, toVolunteer } from "../src/replies.ts";
+import { freshQueue, qualifies } from "../src/saveQueue.ts";
+import { viaScriptRun } from "./scriptRun.mjs";
 import { formatInZone } from "./zoneFormat.mjs";
+import { BRAND, fillBrand } from "./brandFiles.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 const SERVER_FILES = [
+  "Brand.js",
   "Logic.js",
   "Sheets.js",
   "Api.js",
@@ -304,7 +309,7 @@ class FakeSheet {
  * by default; insertSheet makes one) and opts.quota the mail quota left today (1500).
  * mail records the quota and every MailApp.sendEmail ({message, held}); mail.events lists
  * both in order, each with whether the script lock was held. A send uses one of the quota.
- * blobs lists every Utilities.newBlob. lock is the script lock: lock.busy (true, or a
+ * blobs lists every Utilities.newBlob. alerts lists every message getUi().alert shows. lock is the script lock: lock.busy (true, or a
  * function of the try's number from 0) makes tryLock fail, lock.held says whether it is
  * held now, and lock.tries and lock.takes count tryLock calls and the ones that got it.
  * faults holds functions a test sets to make a call throw: sendEmail(message) returns a
@@ -373,11 +378,17 @@ function server(opts = {}) {
     Object.defineProperty(sheet, "journal", { value: journal });
   };
   if (sheets["Hours emails"]) register("Hours emails", sheets["Hours emails"]);
+  // opts.people: this spreadsheet's own Volunteer Profiles tab, header first.
+  if (opts.people) {
+    sheets["Volunteer Profiles"] = new FakeSheet(opts.people);
+    register("Volunteer Profiles", sheets["Volunteer Profiles"]);
+  }
   if (opts.hoursRequests) {
     sheets["Hours requests"] = new FakeSheet(opts.hoursRequests);
     register("Hours requests", sheets["Hours requests"]);
   }
   const shown = [];
+  const alerts = [];
   const menu = [];
   let uuid = 0;
   const faults = {};
@@ -524,6 +535,7 @@ function server(opts = {}) {
         return {
           createMenu: (title) => (menu.push(title), builder),
           showModalDialog: (output, title) => shown.push({ output, title }),
+          alert: (message) => alerts.push(message),
         };
       },
       ProtectionType: { SHEET: "SHEET" },
@@ -637,6 +649,7 @@ function server(opts = {}) {
     cache,
     sheets,
     shown,
+    alerts,
     menu,
     errors,
     logs,
@@ -680,7 +693,7 @@ const TRIGGER_ONLY = [
 // is the editor, not the installer: its trigger id is its only check.
 const EDIT_TRIGGER = ["runHoursSort"];
 // A Kiosk admin menu item that opens no dialog: like an opener, it checks getUi first.
-const MENU_RUN = ["refreshHoursNow", "checkLogNow"];
+const MENU_RUN = ["refreshHoursNow", "checkLogNow", "fillMissingIds"];
 const KEYED = PUBLIC.filter(
   (name) =>
     name !== "onOpen" &&
@@ -954,16 +967,23 @@ test("the menu items that open no dialog read nothing outside the spreadsheet's 
 });
 
 test("onOpen adds the menu first, and its items name the openers, Refresh Hours and Check the Log now", () => {
-  const { ctx, calls, menu } = server({ active: "" });
+  const { ctx, calls, menu, sheets } = server({ active: "" });
   const logs = [];
   ctx.console.log = (...args) => logs.push(args.join(" "));
+  const menuAtSettingsRead = [];
+  sheets.Settings.afterValues = () => menuAtSettingsRead.push([...menu]);
   // getUi comes first and the menu is whole before anything else. The Hours note after it
   // (tests/reports-sheet.test.mjs) finds no Hours tabs on this stand-in and fails; the
   // failure is logged and costs nothing.
   assert.equal(ctx.onOpen({}), undefined);
+  // getUi, then the menu is created before anything is read; the one read before the menu
+  // is added is Settings, for the switches.
   assert.equal(calls[0], "SpreadsheetApp.getUi");
+  assert.deepEqual(menuAtSettingsRead, [["Kiosk admin"]]);
   const added = calls.indexOf("menu.addToUi");
-  assert.deepEqual(onlyFrom(calls.slice(0, added + 1), ["SpreadsheetApp.getUi", "menu."]), []);
+  assert.deepEqual(onlyFrom(calls.slice(0, added + 1), ["SpreadsheetApp.getUi", "menu."]), [
+    "SpreadsheetApp.getActiveSpreadsheet",
+  ]);
   assert.deepEqual(calls.slice(added + 1), ["SpreadsheetApp.getActiveSpreadsheet"]);
   assert.equal(logs.length, 1);
   assert.match(logs[0], /^Hours note \(open\) failed: /);
@@ -986,6 +1006,169 @@ test("onOpen adds the menu first, and its items name the openers, Refresh Hours 
   const web = server({ ui: false });
   assert.throws(() => web.ctx.onOpen(), /getUi/);
   assert.deepEqual(onlyFrom(web.calls, ["SpreadsheetApp.getUi"]), []);
+});
+
+test("onOpen leaves out the items whose switch is Off, and only those", () => {
+  const base = [
+    ["Setting", "Value"],
+    ["Volunteer Profiles file ID", "file-1"],
+  ];
+  const itemsWith = (rows) => {
+    const s = server({ active: "", settings: [...base, ...rows] });
+    s.ctx.console.log = () => {};
+    s.ctx.onOpen({});
+    return s.menu.slice(1).map((item) => item[0]);
+  };
+  const all = itemsWith([]);
+  assert.equal(all.length, 9);
+  assert.deepEqual(
+    itemsWith([["Email hours", "off"]]),
+    all.filter((x) => x !== "Email hours…"),
+  );
+  assert.deepEqual(
+    itemsWith([["Import past hours", " OFF "]]),
+    all.filter((x) => x !== "Import past hours…"),
+  );
+  // Switches with no menu item, and a typo, leave the menu whole.
+  assert.deepEqual(
+    itemsWith([
+      ["Milestones", "Off"],
+      ["Tablet arrival changes", "Off"],
+      ["Tablet check-out changes", "Off"],
+      ["Email hours", "of"],
+    ]),
+    all,
+  );
+});
+
+test("onOpen shows every item when Settings can't be read, and logs why", () => {
+  for (const settings of [null, "throws"]) {
+    const s = server({ active: "", settings: settings === null ? null : undefined });
+    if (settings === "throws") {
+      s.sheets.Settings.afterValues = () => {
+        throw new Error("Settings read failed");
+      };
+    }
+    const logs = [];
+    s.ctx.console.log = (...a) => logs.push(a.join(" "));
+    assert.equal(s.ctx.onOpen({}), undefined);
+    assert.equal(s.menu.length, 10, String(settings));
+    assert.match(logs[0], /^Settings not read for the menu, so it shows every item: /);
+  }
+});
+
+// This spreadsheet's own volunteer list: Volunteer Profiles file ID blank.
+const OWN_LIST_SETTINGS = [
+  ["Setting", "Value"],
+  ["Volunteer Profiles file ID", ""],
+  ["Volunteer Profiles tab", "Volunteer Profiles"],
+];
+const PEOPLE_HEADER = [
+  "Volunteer First Name",
+  "Volunteer Last Name",
+  "Volunteer Phone",
+  "Email",
+  "Start Date mm/dd/yyyy",
+  "User Token",
+];
+
+test("onOpen adds Fill in missing IDs last, only while the list is in this spreadsheet", () => {
+  const s = server({ active: "", settings: OWN_LIST_SETTINGS });
+  s.ctx.console.log = () => {};
+  s.ctx.onOpen({});
+  assert.equal(s.menu.length, 11);
+  assert.deepEqual(s.menu.at(-1), ["Fill in missing IDs", "fillMissingIds"]);
+  // With a Profiles file named, the nine items, as before.
+  const named = server({ active: "" });
+  named.ctx.console.log = () => {};
+  named.ctx.onOpen({});
+  assert.equal(named.menu.length, 10);
+  assert.ok(!named.menu.some((item) => item[0] === "Fill in missing IDs"));
+});
+
+test("Fill in missing IDs refuses, changing nothing, while Settings names a Profiles file", () => {
+  const s = server({ profiles: [PEOPLE_HEADER, ["Ana", "Diaz", "", "", "", ""]] });
+  assert.equal(s.ctx.fillMissingIds(), undefined);
+  assert.deepEqual(s.alerts, [s.ctx.fillIdsFileIdRefusal()]);
+  assert.match(s.alerts[0], /"Volunteer Profiles file ID"/);
+  assert.ok(!s.calls.includes("SpreadsheetApp.openById"));
+  assert.ok(!s.journal.some((j) => j.startsWith("write ")));
+});
+
+test("Fill in missing IDs fills this spreadsheet's list under the lock, and the next list read sees the IDs", () => {
+  const s = server({
+    settings: OWN_LIST_SETTINGS,
+    people: [
+      PEOPLE_HEADER,
+      ["Ana", "Diaz", "555-0101", "", "", ""],
+      ["Ben", "Ode", "555-0102", "", "", "kept"],
+      ["", "", "", "", "", ""],
+    ],
+  });
+  // A list read before the fill is cached; the fill clears it.
+  const before = s.ctx.getProfiles_(s.ctx.readSettings_());
+  assert.deepEqual(plain(before.map((v) => v.token)), ["kept"]);
+  s.lock.held = false;
+  assert.equal(s.ctx.fillMissingIds(), undefined);
+  assert.deepEqual(s.alerts, ["Filled in 1 missing ID."]);
+  assert.equal(s.lock.takes, 1);
+  const people = s.sheets["Volunteer Profiles"];
+  assert.equal(people.rows[1][5], "uuid-1");
+  assert.equal(people.rows[2][5], "kept");
+  assert.equal(people.rows[3][5], "");
+  const after = s.ctx.getProfiles_(s.ctx.readSettings_());
+  assert.deepEqual(plain(after.map((v) => v.token)), ["uuid-1", "kept"]);
+  // A second run finds nothing to fill.
+  s.ctx.fillMissingIds();
+  assert.equal(s.alerts[1], "Every row with a name has an ID already. Nothing was changed.");
+});
+
+test("Fill in missing IDs reports a list it can't read, changing nothing", () => {
+  const noTab = server({ settings: OWN_LIST_SETTINGS });
+  noTab.ctx.fillMissingIds();
+  assert.deepEqual(noTab.alerts, ['Volunteer Profiles has no tab named "Volunteer Profiles".']);
+  const mappedOff = server({
+    settings: [...OWN_LIST_SETTINGS, ["Roster column: ID", "Member ID"]],
+    people: [PEOPLE_HEADER, ["Ana", "Diaz", "", "", "", ""]],
+  });
+  mappedOff.ctx.fillMissingIds();
+  assert.deepEqual(mappedOff.alerts, [
+    'Volunteer Profiles has no "Member ID" column, the header Settings Roster column: ID names. Nothing was changed.',
+  ]);
+  assert.ok(!mappedOff.journal.some((j) => j.startsWith("write Volunteer Profiles")));
+});
+
+test("with Volunteer Profiles file ID blank, the tablet's list is this spreadsheet's tab, read through the Roster column rows", () => {
+  const s = server({
+    settings: [
+      ...OWN_LIST_SETTINGS,
+      ["Roster column: full name", "Name"],
+      ["Roster column: phone", "Phone"],
+      ["Roster column: start date", "Start"],
+      ["Roster column: ID", "ID"],
+    ],
+    people: [
+      ["Name", "Phone", "Start", "ID"],
+      ["Madonna", "555-0101", "", "t-1"],
+      ["Mary Ann Smith", "555-0102", "", "t-2"],
+    ],
+  });
+  const settings = s.ctx.readSettings_();
+  const list = s.ctx.getProfiles_(settings);
+  assert.deepEqual(plain(list.map((v) => [v.firstName, v.lastName])), [
+    ["Madonna", ""],
+    ["Mary", "Ann Smith"],
+  ]);
+  assert.ok(!s.calls.includes("SpreadsheetApp.openById"));
+  // Cached under a key that carries the rows.
+  const key = s.ctx.profilesCacheKey("", "Volunteer Profiles", s.ctx.rosterColumnMapping(settings));
+  assert.ok(s.cache.has(key));
+  assert.notEqual(key, s.ctx.profilesCacheKey("", "Volunteer Profiles"));
+  // The admin picker: the whole names as written.
+  assert.deepEqual(plain(s.ctx.adminRosterLabelsFor_(settings).map((v) => v.label)), [
+    "Madonna",
+    "Mary Ann Smith",
+  ]);
 });
 
 test("an opener puts a fresh key only into the dialog's HTML, and the key then works", () => {
@@ -1499,7 +1682,7 @@ test("flagRowUsed: a row holding only an unticked box is free; anything else is 
 
 test("a new flag goes right under the last row in use, not under the tab's unticked boxes", () => {
   const width = FLAG_HEADER.length;
-  // ENCM's tab: boxes to row 1150, three flags at the top, and staff's note further down.
+  // A live tab: boxes to row 1150, three flags at the top, and staff's note further down.
   const flag = (id) => flagCells({ "Shift ID": id, Reason: "late", Source: "kiosk check-in" });
   const s = kiosk({
     flags: boxedFlags(1150, { 2: flag("s-a"), 3: flag("s-b"), 4: flag("s-c") }),
@@ -3164,7 +3347,7 @@ test("Email hours: a preview leaves out a volunteer with no email and tickets th
   assert.equal(reply.asOf, EMAIL_TODAY);
   assert.equal(
     reply.from,
-    "ENCM Volunteer Kiosk, from a no-reply address (sent by staff@example.org)",
+    BRAND.brandSenderName() + ", from a no-reply address (sent by staff@example.org)",
   );
   // Roster order, each once.
   assert.deepEqual(
@@ -4100,7 +4283,10 @@ test("Email hours: the replies the window's tests use are the server's own", () 
     attach: true,
   });
   const send = sendHours(s, preview.ticket, preview.sendIds);
-  assert.deepEqual({ preview, send }, JSON.parse(read("tests/hours-email-replies.json")));
+  assert.deepEqual(
+    { preview, send },
+    JSON.parse(fillBrand(read("tests/hours-email-replies.json"))),
+  );
 });
 
 test("Email hours: the lock is held only to take and to write the rows, never at a Log read or a send", () => {
@@ -5390,6 +5576,7 @@ const LOG_WRITE_CLASSES = {
   deleteLogRow_: { class: "log", why: "a stamping helper" },
   appendLogValues_: { class: "log", why: "a stamping helper" },
   setupLog_: { class: "log", why: "stamps first and last" },
+  setupHeaderWord_: { class: "log", why: "stamps first and last around its Log header writes" },
 
   writeLogCells_: {
     class: "log, no value change",
@@ -5429,11 +5616,10 @@ const LOG_WRITE_CLASSES = {
   appendKindRows_: { class: "tab", tab: "hoursRequestTab()", in: "hoursRequestSheet_" },
   writeRowCells_: { class: "tab", tab: "hoursRequestTab()", in: "hoursRequestSheet_" },
   setupHowTo_: { class: "tab", tab: "howToTabName()" },
-  setupSampleProfiles: {
-    class: "tab",
-    tab: '"Volunteer Profiles"',
-    why: "a new spreadsheet file",
-  },
+  // The volunteer list tab of this spreadsheet, named by Settings "Volunteer Profiles tab".
+  setupSampleProfiles: { class: "tab", tab: "profilesTabName_(settings)" },
+  setupPeopleTab_: { class: "tab", tab: "profilesTabName_(settings)" },
+  fillMissingIds_: { class: "tab", tab: "profilesSheet_(settings)" },
   importLedgerSheet_: { class: "tab", tab: "importLedgerTab()" },
   appendLedgerLines_: { class: "tab", tab: "importLedgerTab()", in: "importLedgerSheet_" },
   insertHoursTab_: { class: "tab", ...HOURS_TABS, why: "the Hours tab and its data tab" },
@@ -5559,7 +5745,10 @@ test("every function that can write a cell is classed, and only the stamping one
   for (const [name, entry] of Object.entries(LOG_WRITE_CLASSES)) {
     const fn = functions[name];
     if (entry.class === "log") {
-      assert.ok(STAMPING_HELPERS.includes(name) || name === "setupLog_", name);
+      assert.ok(
+        STAMPING_HELPERS.includes(name) || ["setupLog_", "setupHeaderWord_"].includes(name),
+        name,
+      );
     } else if (entry.class === "array") {
       assert.deepEqual([...fn.writes], ["sort"], name + " calls only sort");
     } else if (entry.class === "tab") {
@@ -6088,4 +6277,181 @@ test("apiChangeArrival with the Log cache on reads the whole Log, forgets the ma
     ),
   );
   assert.ok(storedMap(refused.s), "a refusal stores the map");
+});
+
+// ---------------------------------------------------------------------------------------
+// The On/Off switches: the server refuses what is Off, whatever the page shows
+
+// Sam started after this launch date, so his first check-out crosses First completed shift.
+const switchKiosk = (rows, opts = {}) =>
+  kiosk({ settings: KIOSK_SETTINGS.concat([["Kiosk launch date", "2026-01-01"]], rows), ...opts });
+const openSam = () => [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")];
+
+test("Tablet arrival changes Off refuses a chosen arrival and a Change before the lock, in the staff word", () => {
+  const s = switchKiosk([
+    ["Tablet arrival changes", "Off"],
+    ["Word for staff", "staff member"],
+  ]);
+  assert.deepEqual(plain(s.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(24), null)), {
+    ok: false,
+    refusal: "ARRIVAL_CHANGES_OFF",
+    message: "Please ask a staff member to change your arrival time.",
+  });
+  assert.ok(!s.calls.includes("LockService.getScriptLock"), "no lock taken");
+  assert.equal(s.sheets.Log.lastRow(), 1);
+  // A check-in at the tap's own time still saves.
+  assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null)).ok, true);
+
+  const open = switchKiosk([["Tablet arrival changes", " off "]], { log: openSam() });
+  const change = plain(
+    open.ctx.apiChangeArrival(
+      CODE,
+      SAM.id,
+      null,
+      "s-open",
+      at(TODAY, "08:00").toISOString(),
+      at(TODAY, "07:00").toISOString(),
+    ),
+  );
+  assert.equal(change.refusal, "ARRIVAL_CHANGES_OFF");
+  assert.equal(change.message, "Please ask a board member to change your arrival time.");
+  assert.ok(!open.calls.includes("LockService.getScriptLock"), "no lock taken");
+  assert.equal(
+    open.sheets.Log.rowByHeader(2)["Check-In Stated (user)"].getTime(),
+    at(TODAY, "08:00").getTime(),
+  );
+});
+
+test("Tablet check-out changes Off refuses a chosen check-out time, and a check-out at the tap still saves", () => {
+  const s = switchKiosk([["Tablet check-out changes", "OFF"]], { log: openSam() });
+  assert.deepEqual(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30))), {
+    ok: false,
+    refusal: "CHECKOUT_CHANGES_OFF",
+    message: "Please ask a board member to change your check-out time.",
+  });
+  assert.ok(!s.calls.includes("LockService.getScriptLock"), "no lock taken");
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "open");
+  assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, null)).ok, true);
+  assert.equal(s.sheets.Log.rowByHeader(2).Status, "closed");
+});
+
+test("a switch typo or blank keeps the tablet's time changes", () => {
+  for (const value of ["", "of", "yes"]) {
+    const s = switchKiosk(
+      [
+        ["Tablet arrival changes", value],
+        ["Tablet check-out changes", value],
+      ],
+      { log: openSam() },
+    );
+    assert.equal(plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30))).ok, true, value);
+    assert.equal(plain(s.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(5), null)).ok, true, value);
+  }
+});
+
+test("Milestones Off: the list keeps one step with no milestone, and a check-out shows none", () => {
+  const on = switchKiosk([], { log: openSam() });
+  const off = switchKiosk([["Milestones", "Off"]], { log: openSam() });
+  const steps = (s) => plain(s.ctx.apiListVolunteers(CODE)).volunteers[0].checkOutMilestones;
+  assert.equal(steps(on)[0].id, "shift-1");
+  assert.deepEqual(steps(off), [{ fromMinutes: 0, id: null }]);
+  assert.equal(plain(off.ctx.apiListVolunteers(CODE)).switches.milestones, false);
+  assert.equal(plain(on.ctx.apiCheckOut(CODE, SAM.id, null, null)).milestone.id, "shift-1");
+  assert.equal(plain(off.ctx.apiCheckOut(CODE, SAM.id, null, null)).milestone, null);
+  // With no open row the field is null, as with the switch On.
+  assert.equal(steps(switchKiosk([["Milestones", "Off"]])), null);
+});
+
+test("Email hours Off hides Request my hours and refuses a request, whatever Hours requests holds", () => {
+  for (const mode of ["Auto", "Approve"]) {
+    const s = requestKiosk(mode);
+    s.sheets.Settings.rows.push(["Email hours", "Off"]);
+    assert.equal(plain(s.ctx.apiListVolunteers(CODE)).hoursRequests, false, mode);
+    assert.equal(plain(s.ctx.apiRequestHours(CODE, SAM.id, null)).refusal, "HOURS_REQUESTS_OFF");
+    assert.equal(s.sheets["Hours requests"], undefined, mode);
+  }
+});
+
+test("Email hours Off: the window's calls refuse, naming the row, and a send already previewed sends nothing", () => {
+  const off = emailServer({ settings: EMAIL_SETTINGS.concat([["Email hours", "Off"]]) });
+  const message = "Email hours is turned off in Settings. Set the Email hours row to On to use it.";
+  assert.deepEqual(plain(off.ctx.adminHoursRequests("k")), {
+    ok: false,
+    refusal: "EMAIL_HOURS_OFF",
+    message,
+  });
+  assert.equal(previewHours(off, [MARIA.id]).refusal, "EMAIL_HOURS_OFF");
+
+  // Previewed while On, sent after the switch went Off: each taken volunteer gets a row
+  // saying why, and no email goes.
+  const s = emailServer();
+  const p = previewHours(s, [MARIA.id, JAMES.id]);
+  s.sheets.Settings.rows.push(["Email hours", "Off"]);
+  const reply = sendHours(s, p.ticket, p.sendIds);
+  assert.deepEqual(
+    reply.results.map((r) => r.result),
+    p.sendIds.map(() => "not sent: " + message),
+  );
+  assert.deepEqual(s.mail.sent, []);
+  assert.equal(hoursEmailRows(s).length, p.sendIds.length);
+});
+
+test("no switch takes a tap off the instant path: the list's instant fields keep their shape and qualifies its answer", () => {
+  const SWITCH_ROWS = [
+    "Milestones",
+    "Email hours",
+    "Import past hours",
+    "Tablet arrival changes",
+    "Tablet check-out changes",
+  ];
+  // Sam is checked in since 8:00 with First completed shift ahead; Ruth is checked out.
+  const ruthClosed = closedBy("s-ruth", YESTERDAY, "kiosk");
+  ruthClosed[LOG_HEADER.indexOf("User Token")] = "tok-ruth";
+  ruthClosed[LOG_HEADER.indexOf("Volunteer Name")] = "Ruth Okafor";
+  const log = [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00"), ruthClosed];
+  const listWith = (rows) =>
+    plain(switchKiosk(rows, { volunteers: [SAM, RUTH], log }).ctx.apiListVolunteers(CODE));
+  const queue = freshQueue();
+  const ctx = {
+    hasCode: true,
+    codeStored: true,
+    foregroundPending: false,
+    online: true,
+    calls: { latestReply: NOW - 5_000, latestEnded: null, waiting: [] },
+    listState: "ready",
+    now: NOW,
+    listStamp: { epoch: queue.epoch, seq: queue.seq, requestedAt: NOW - 60_000 },
+    clockOffsetMs: 1_000,
+    queue,
+    heldMarks: [],
+    arrivalPicker: false,
+    checkOutPicker: false,
+  };
+  const INSTANT = ["missedSignOut", "openShiftId", "openUntil", "openShiftTapped"];
+  const answers = (reply) =>
+    viaScriptRun(reply.volunteers)
+      .map(summaryFromServer)
+      .map(toVolunteer)
+      .map((v) => [qualifies("in", v, ctx), qualifies("out", v, ctx)]);
+  const allOn = listWith([]);
+  const onAnswers = answers(allOn);
+  assert.deepEqual(onAnswers, [
+    [false, true],
+    [true, false],
+  ]);
+  for (const name of SWITCH_ROWS) {
+    const off = listWith([[name, "Off"]]);
+    assert.deepEqual(answers(off), onAnswers, name);
+    off.volunteers.forEach((v, i) => {
+      for (const field of INSTANT) assert.deepEqual(v[field], allOn.volunteers[i][field], name);
+      const steps = v.checkOutMilestones;
+      if (allOn.volunteers[i].checkOutMilestones === null) assert.equal(steps, null, name);
+      else {
+        assert.ok(steps.length >= 1, name);
+        for (const step of steps) {
+          assert.deepEqual(Object.keys(step).sort(), ["fromMinutes", "id"], name);
+        }
+      }
+    });
+  }
 });

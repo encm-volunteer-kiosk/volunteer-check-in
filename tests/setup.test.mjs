@@ -1,24 +1,24 @@
 // Tests for setupSheets (apps-script/Sheets.js) and the pure header and look helpers it
 // uses in apps-script/Logic.js. Logic.js and Sheets.js are loaded into one context the way
-// Apps Script loads them, with a small in-memory stand-in for SpreadsheetApp and the
-// advanced Sheets service's filter views, bandings, conditional formats and formats, so
-// the real setupSheets runs against it.
+// Apps Script loads them, with the in-memory stand-in for SpreadsheetApp and the advanced
+// Sheets service in fakeSpreadsheet.mjs, so the real setupSheets runs against it.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { createHash } from "node:crypto";
 import { cachedLogMap } from "./log-cache-tap.mjs";
-import { formatInZone } from "./zoneFormat.mjs";
+import { FakeSheet, FakeSpreadsheet, OWNER, server, sheetWith } from "./fakeSpreadsheet.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
-// The Log header, line breaks included. Columns A to N are ENCM's "2026-11 Log" tab of
-// their Volunteer Kiosk Log spreadsheet, as read live on 2026-11-12; O to R are the
+// The Log header, line breaks included. Columns A to N are the staff's own layout, from
+// the Log tab the kiosk was first fitted to, as read live on 2026-11-12; O to R are the
 // kiosk's own.
-const ENCM_LOG_HEADERS = [
+const BASE_LOG_HEADERS = [
   "Date",
   "Day",
   "Volunteer\nName",
@@ -35,7 +35,7 @@ const ENCM_LOG_HEADERS = [
   "User Token",
 ];
 const KIOSK_LOG_HEADERS = ["Status", "Check-In\nEntered By", "Check-Out\nEntered By", "Shift ID"];
-const LOG_HEADERS = [...ENCM_LOG_HEADERS, ...KIOSK_LOG_HEADERS];
+const LOG_HEADERS = [...BASE_LOG_HEADERS, ...KIOSK_LOG_HEADERS];
 const OLD_LOG_HEADERS = [
   "Shift ID",
   "Volunteer ID",
@@ -51,560 +51,6 @@ const OLD_LOG_HEADERS = [
   "Staff note",
 ];
 const TIME_FORMAT = "yyyy-mm-dd h:mm am/pm";
-const OWNER = "owner@example.org";
-
-// ---------------------------------------------------------------------------
-// In-memory spreadsheet
-
-class FakeRange {
-  constructor(sheet, row, col, rows, cols) {
-    Object.assign(this, { sheet, row, col, rows, cols });
-  }
-  getValues() {
-    const out = [];
-    for (let r = 0; r < this.rows; r++) {
-      const line = [];
-      for (let c = 0; c < this.cols; c++) line.push(this.sheet.get(this.row + r, this.col + c));
-      out.push(line);
-    }
-    return out;
-  }
-  setValues(values) {
-    assert.equal(values.length, this.rows, "setValues row count");
-    values.forEach((line, r) => {
-      assert.equal(line.length, this.cols, "setValues column count");
-      line.forEach((v, c) => this.sheet.set(this.row + r, this.col + c, v));
-    });
-    return this;
-  }
-  setValue(value) {
-    this.sheet.set(this.row, this.col, value);
-    return this;
-  }
-  // A formula is kept apart from the values; the cell's value stays as it was written.
-  setFormula(formula) {
-    assert.equal(this.rows * this.cols, 1, "setFormula on one cell");
-    this.sheet.formulas.set(this.row + "," + this.col, formula);
-    return this;
-  }
-  getFormula() {
-    return this.sheet.formulas.get(this.row + "," + this.col) || "";
-  }
-  setNumberFormat(format) {
-    for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c < this.cols; c++) {
-        this.sheet.formats.set(this.row + r + "," + (this.col + c), format);
-      }
-    }
-    return this;
-  }
-  setDataValidation(rule) {
-    this.sheet.validations.set(
-      this.row + "," + this.col + "," + this.rows + "," + this.cols,
-      JSON.stringify(rule),
-    );
-    return this;
-  }
-  each(fn) {
-    for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c < this.cols; c++) fn(this.row + r, this.col + c, r, c);
-    }
-  }
-  clearContent() {
-    this.each((r, c) => this.sheet.set(r, c, ""));
-    return this;
-  }
-  getNotes() {
-    const out = [];
-    for (let r = 0; r < this.rows; r++) {
-      const line = [];
-      for (let c = 0; c < this.cols; c++) line.push(this.sheet.note(this.row + r, this.col + c));
-      out.push(line);
-    }
-    return out;
-  }
-  setNote(note) {
-    assert.equal(this.rows * this.cols, 1, "setNote on one cell");
-    this.sheet.noteWrites.push([this.row, this.col, note]);
-    const key = this.row + "," + this.col;
-    if (note === "" || note === null) this.sheet.notes.delete(key);
-    else this.sheet.notes.set(key, String(note));
-    return this;
-  }
-  setNotes() {
-    assert.fail("the kiosk writes header notes one changed cell at a time");
-  }
-  // The per-cell format arrays the How to tab sets, kept by format name.
-  setStyles(name, values) {
-    assert.equal(values.length, this.rows, name + " row count");
-    this.each((r, c, i, j) => this.sheet.styles.set(name + " " + r + "," + c, values[i][j]));
-    return this;
-  }
-  setFontWeights(v) {
-    return this.setStyles("weight", v);
-  }
-  setFontSizes(v) {
-    return this.setStyles("size", v);
-  }
-  setFontColors(v) {
-    return this.setStyles("colour", v);
-  }
-  setBackgrounds(v) {
-    return this.setStyles("background", v);
-  }
-  setFontStyles(v) {
-    return this.setStyles("style", v);
-  }
-  setWrap(on) {
-    this.sheet.wraps.set(this.a1(), on);
-    return this;
-  }
-  a1() {
-    return this.row + "," + this.col + "," + this.rows + "," + this.cols;
-  }
-  protect() {
-    return this.sheet.addProtection("RANGE", this.a1());
-  }
-}
-
-class FakeProtection {
-  constructor(sheet, type, where) {
-    Object.assign(this, { sheet, type, where, description: "", warningOnly: false });
-  }
-  setDescription(d) {
-    this.description = d;
-    return this;
-  }
-  getDescription() {
-    return this.description;
-  }
-  setWarningOnly(w) {
-    this.warningOnly = w;
-    return this;
-  }
-  isWarningOnly() {
-    return this.warningOnly;
-  }
-}
-
-class FakeSheet {
-  constructor(name, maxRows = 1000, maxCols = 26, sheetId = 0) {
-    this.name = name;
-    this.sheetId = sheetId;
-    this.values = new Map();
-    // Formulas by "row,col"; writing a value to the cell removes its formula, as in Sheets.
-    this.formulas = new Map();
-    this.formats = new Map();
-    // Data validations by "row,col,rows,cols" of the range they were set on.
-    this.validations = new Map();
-    this.maxRows = maxRows;
-    this.maxCols = maxCols;
-    this.frozen = 0;
-    // What the advanced Sheets service's look requests set, by range and fields.
-    this.cellLook = new Map();
-    this.dims = new Map();
-    this.tabColor = null;
-    // Header notes by "row,col", and every setNote call in order.
-    this.notes = new Map();
-    this.noteWrites = [];
-    this.protections = [];
-    this.styles = new Map();
-    this.wraps = new Map();
-    this.colWidths = new Map();
-    this.tabColorHex = null;
-  }
-  note(r, c) {
-    return this.notes.has(r + "," + c) ? this.notes.get(r + "," + c) : "";
-  }
-  addProtection(type, where) {
-    const p = new FakeProtection(this, type, where);
-    this.protections.push(p);
-    return p;
-  }
-  protect() {
-    return this.addProtection("SHEET", "sheet");
-  }
-  getProtections(type) {
-    assert.ok(type === "RANGE" || type === "SHEET", "a protection type: " + type);
-    return this.protections.filter((p) => p.type === type);
-  }
-  clear() {
-    this.values.clear();
-    this.formulas.clear();
-    this.formats.clear();
-    this.styles.clear();
-    this.wraps.clear();
-  }
-  insertRowsAfter(after, count) {
-    assert.equal(after, this.maxRows, "rows are only added at the end");
-    this.maxRows += count;
-  }
-  setColumnWidth(col, px) {
-    this.colWidths.set(col, px);
-  }
-  setTabColor(hex) {
-    this.tabColorHex = hex;
-  }
-  addDeveloperMetadata(key, value) {
-    this.ss.metadata.push({ key, value, sheet: this });
-  }
-  get(r, c) {
-    return this.values.has(r + "," + c) ? this.values.get(r + "," + c) : "";
-  }
-  set(r, c, v) {
-    assert.ok(r <= this.maxRows && c <= this.maxCols, "write outside the sheet at " + r + "," + c);
-    this.formulas.delete(r + "," + c);
-    if (v === "") this.values.delete(r + "," + c);
-    else this.values.set(r + "," + c, v);
-  }
-  format(r, c) {
-    return this.formats.get(r + "," + c);
-  }
-  getName() {
-    return this.name;
-  }
-  getSheetId() {
-    return this.sheetId;
-  }
-  setName(name) {
-    this.name = name;
-    return this;
-  }
-  getLastRow() {
-    let last = 0;
-    for (const key of this.values.keys()) last = Math.max(last, Number(key.split(",")[0]));
-    return last;
-  }
-  getLastColumn() {
-    let last = 0;
-    for (const key of this.values.keys()) last = Math.max(last, Number(key.split(",")[1]));
-    return last;
-  }
-  getMaxRows() {
-    return this.maxRows;
-  }
-  getMaxColumns() {
-    return this.maxCols;
-  }
-  insertColumnsAfter(after, count) {
-    assert.equal(after, this.maxCols, "columns are only added at the end");
-    this.maxCols += count;
-  }
-  getRange(row, col, rows = 1, cols = 1) {
-    if (typeof row === "string") {
-      // Only column A1 ranges such as "A:B" or "C2:C" are used.
-      const m = /^([A-Z])(\d*):([A-Z])$/.exec(row);
-      assert.ok(m, "an A1 range the stand-in knows: " + row);
-      const a = m[1].charCodeAt(0) - 64;
-      const b = m[3].charCodeAt(0) - 64;
-      const top = m[2] ? Number(m[2]) : 1;
-      return new FakeRange(this, top, a, this.maxRows - top + 1, b - a + 1);
-    }
-    assert.ok(rows >= 1 && cols >= 1, "a range needs at least one row and column");
-    return new FakeRange(this, row, col, rows, cols);
-  }
-  getDataRange() {
-    return this.getRange(1, 1, Math.max(this.getLastRow(), 1), Math.max(this.getLastColumn(), 1));
-  }
-  setFrozenRows(n) {
-    this.frozen = n;
-  }
-  row(r) {
-    return this.getRange(r, 1, 1, Math.max(this.getLastColumn(), 1)).getValues()[0];
-  }
-  snapshot() {
-    return {
-      name: this.name,
-      values: [...this.values.entries()].sort(),
-      formulas: [...this.formulas.entries()].sort(),
-      formats: [...this.formats.entries()].sort(),
-      validations: [...this.validations.entries()].sort(),
-      maxCols: this.maxCols,
-      frozen: this.frozen,
-      cellLook: [...this.cellLook.entries()].sort(),
-      dims: [...this.dims.entries()].sort(),
-      tabColor: this.tabColor,
-      notes: [...this.notes.entries()].sort(),
-      protections: this.protections.map((p) => [p.type, p.where, p.description, p.warningOnly]),
-      styles: [...this.styles.entries()].sort(),
-      wraps: [...this.wraps.entries()].sort(),
-      colWidths: [...this.colWidths.entries()].sort(),
-      tabColorHex: this.tabColorHex,
-    };
-  }
-}
-
-class FakeSpreadsheet {
-  constructor() {
-    this.sheets = [];
-    this.timeZone = "America/Chicago";
-    // Filter views, bandings and conditional format rules by sheetId, as the advanced
-    // Sheets service holds them.
-    this.views = new Map();
-    this.bandings = new Map();
-    this.rules = new Map();
-    this.nextSheetId = 100;
-    this.nextViewId = 1;
-    this.nextBandingId = 1;
-    // Developer metadata on sheets, as {key, value, sheet}.
-    this.metadata = [];
-  }
-  getId() {
-    return "file-1";
-  }
-  getSheetByName(name) {
-    return this.sheets.find((s) => s.name === name) || null;
-  }
-  insertSheet(name, index) {
-    // Sheets refuses a name that differs from a tab's only in capitals.
-    assert.ok(
-      !this.sheets.some((s) => s.name.toLowerCase() === name.toLowerCase()),
-      "a tab named " + name + " already exists",
-    );
-    const sheet = new FakeSheet(name, 1000, 26, this.nextSheetId++);
-    sheet.ss = this;
-    if (index === undefined) this.sheets.push(sheet);
-    else this.sheets.splice(index, 0, sheet);
-    return sheet;
-  }
-  getSheets() {
-    return [...this.sheets];
-  }
-  deleteSheet(sheet) {
-    this.sheets = this.sheets.filter((s) => s !== sheet);
-    this.metadata = this.metadata.filter((m) => m.sheet !== sheet);
-  }
-  moveSheet(sheet, index) {
-    this.sheets = this.sheets.filter((s) => s !== sheet);
-    this.sheets.splice(index, 0, sheet);
-  }
-  createDeveloperMetadataFinder() {
-    const ss = this;
-    let key = null;
-    const finder = {
-      withKey: (k) => ((key = k), finder),
-      find: () =>
-        ss.metadata
-          .filter((m) => m.key === key)
-          .map((m) => ({
-            getKey: () => m.key,
-            getValue: () => m.value,
-            getLocation: () => ({ getSheet: () => m.sheet }),
-          })),
-    };
-    return finder;
-  }
-  getSpreadsheetTimeZone() {
-    return this.timeZone;
-  }
-  setSpreadsheetTimeZone(tz) {
-    this.timeZone = tz;
-  }
-  tabNames() {
-    return this.sheets.map((s) => s.name);
-  }
-  snapshot() {
-    return {
-      timeZone: this.timeZone,
-      sheets: this.sheets.map((s) => s.snapshot()),
-      views: [...this.views.entries()].sort(),
-      // A banding's id changes when it is replaced; its range and colours are the look.
-      bandings: [...this.bandings.entries()]
-        .sort()
-        .map(([id, list]) => [id, list.map(({ bandedRangeId, ...b }) => b)]),
-      rules: [...this.rules.entries()].sort(),
-      metadata: this.metadata.map((m) => [m.key, m.value, m.sheet.sheetId]),
-    };
-  }
-}
-
-/** True when two GridRanges share a cell; a missing end runs to the tab's edge. */
-function overlaps(a, b) {
-  const meet = (s1, e1, s2, e2) => (s1 || 0) < (e2 ?? Infinity) && (s2 || 0) < (e1 ?? Infinity);
-  return (
-    meet(a.startRowIndex, a.endRowIndex, b.startRowIndex, b.endRowIndex) &&
-    meet(a.startColumnIndex, a.endColumnIndex, b.startColumnIndex, b.endColumnIndex)
-  );
-}
-
-/**
- * The advanced Sheets service's calls setupSheets makes: filter views on ss.views,
- * bandings on ss.bandings, conditional format rules on ss.rules, and the formats the look
- * sets on each sheet. opts.failOn names a request type that throws, as the API does when
- * it refuses a request.
- */
-function sheetsService(ss, opts = {}) {
-  const byId = (sheetId) => {
-    const sheet = ss.sheets.find((s) => s.sheetId === sheetId);
-    assert.ok(sheet, "no sheet " + sheetId);
-    return sheet;
-  };
-  return {
-    Spreadsheets: {
-      get: (id, params) => {
-        assert.equal(id, "file-1");
-        const fields = params.fields;
-        return {
-          sheets: ss.sheets.map((s) => {
-            const out = { properties: { sheetId: s.sheetId } };
-            const views = ss.views.get(s.sheetId);
-            if (/filterViews\(filterViewId,title\)/.test(fields) && views && views.length) {
-              out.filterViews = plain(views);
-            }
-            const bands = ss.bandings.get(s.sheetId);
-            if (/bandedRanges\(bandedRangeId\)/.test(fields) && bands && bands.length) {
-              out.bandedRanges = bands.map((b) => ({ bandedRangeId: b.bandedRangeId }));
-            }
-            const rules = ss.rules.get(s.sheetId);
-            if (/conditionalFormats/.test(fields) && rules && rules.length) {
-              out.conditionalFormats = plain(rules);
-            }
-            return out;
-          }),
-        };
-      },
-      batchUpdate: (body, id) => {
-        assert.equal(id, "file-1");
-        for (const r of body.requests) {
-          const type = Object.keys(r)[0];
-          if (type === opts.failOn) throw new Error("Invalid requests[0]." + type);
-          if (r.deleteBanding) {
-            const found = [...ss.bandings.values()].find((list) =>
-              list.some((b) => b.bandedRangeId === r.deleteBanding.bandedRangeId),
-            );
-            assert.ok(found, "deleted banding exists");
-            found.splice(
-              found.findIndex((b) => b.bandedRangeId === r.deleteBanding.bandedRangeId),
-              1,
-            );
-          } else if (r.addBanding) {
-            const band = plain(r.addBanding.bandedRange);
-            const list = ss.bandings.get(band.range.sheetId) || [];
-            // Two bandings may not share a cell.
-            assert.ok(!list.some((b) => overlaps(b.range, band.range)), "bandings overlap");
-            list.push({ ...band, bandedRangeId: ss.nextBandingId++ });
-            ss.bandings.set(band.range.sheetId, list);
-          } else if (r.deleteConditionalFormatRule) {
-            const { sheetId, index } = r.deleteConditionalFormatRule;
-            const list = ss.rules.get(sheetId) || [];
-            assert.ok(index >= 0 && index < list.length, "deleted rule exists");
-            list.splice(index, 1);
-          } else if (r.addConditionalFormatRule) {
-            const { index, rule } = plain(r.addConditionalFormatRule);
-            const sheetId = rule.ranges[0].sheetId;
-            assert.ok(
-              rule.ranges.every((g) => g.sheetId === sheetId),
-              "one sheet per rule",
-            );
-            const list = ss.rules.get(sheetId) || [];
-            assert.ok(index >= 0 && index <= list.length, "rule index in the list");
-            list.splice(index, 0, rule);
-            ss.rules.set(sheetId, list);
-          } else if (r.repeatCell) {
-            const { range, cell, fields } = plain(r.repeatCell);
-            const { sheetId, ...where } = range;
-            byId(sheetId).cellLook.set(JSON.stringify(where) + " " + fields, cell);
-          } else if (r.updateDimensionProperties) {
-            const { range, properties, fields } = plain(r.updateDimensionProperties);
-            assert.equal(fields, "pixelSize");
-            byId(range.sheetId).dims.set(
-              range.dimension + " " + range.startIndex + "-" + range.endIndex,
-              properties.pixelSize,
-            );
-          } else if (r.updateSheetProperties) {
-            const { properties, fields } = plain(r.updateSheetProperties);
-            assert.equal(fields, "tabColorStyle");
-            byId(properties.sheetId).tabColor = properties.tabColorStyle;
-          } else if (r.addFilterView) {
-            const view = { ...plain(r.addFilterView.filter), filterViewId: ss.nextViewId++ };
-            const list = ss.views.get(view.range.sheetId) || [];
-            list.push(view);
-            ss.views.set(view.range.sheetId, list);
-          } else {
-            assert.ok(r.updateFilterView, "a request the stand-in knows: " + type);
-            const { filterViewId, ...view } = plain(r.updateFilterView.filter);
-            assert.equal(r.updateFilterView.fields, "title,range,filterSpecs,sortSpecs");
-            const list = ss.views.get(view.range.sheetId) || [];
-            const i = list.findIndex((v) => v.filterViewId === filterViewId);
-            assert.ok(i >= 0, "updated view exists");
-            list[i] = { ...view, filterViewId };
-          }
-        }
-      },
-    },
-  };
-}
-
-/**
- * A fresh context with Logic.js and Sheets.js loaded and SpreadsheetApp pointing at ss.
- * opts.noSheetsService leaves the advanced Sheets service out, as when it is off;
- * opts.failOn is passed to sheetsService. opts.cache is the script cache, a Map of key
- * to value (a new one by default); opts.props the script properties, also a Map (new by
- * default); opts.onFlush runs on each SpreadsheetApp.flush;
- * opts.errors collects what the server logs with console.error.
- */
-function server(ss, opts = {}) {
-  const cache = opts.cache || new Map();
-  const props = opts.props || new Map();
-  const checkbox = () => {
-    const rule = {};
-    const b = {
-      requireCheckbox: () => ((rule.checkbox = true), b),
-      build: () => rule,
-    };
-    return b;
-  };
-  const ctx = {
-    console: {
-      log: () => {},
-      error: (...args) => (opts.errors || []).push(args.join(" ")),
-    },
-    CacheService: {
-      getScriptCache: () => ({
-        get: (k) => (cache.has(k) ? cache.get(k) : null),
-        put: (k, v) => void cache.set(k, v),
-      }),
-    },
-    // Script properties, where Log writes put the Log changed stamp.
-    PropertiesService: {
-      getScriptProperties: () => ({
-        getProperty: (k) => (props.has(k) ? props.get(k) : null),
-        setProperty: (k, v) => void props.set(k, String(v)),
-        deleteProperty: (k) => void props.delete(k),
-      }),
-    },
-    SpreadsheetApp: {
-      getActiveSpreadsheet: () => ss,
-      newDataValidation: checkbox,
-      ProtectionType: { RANGE: "RANGE", SHEET: "SHEET" },
-      flush: () => (opts.onFlush ? opts.onFlush() : undefined),
-    },
-    Session: {
-      getActiveUser: () => ({ getEmail: () => OWNER }),
-      getEffectiveUser: () => ({ getEmail: () => OWNER }),
-    },
-    Utilities: {
-      formatDate: (date, tz, format) => {
-        if (format === "yyyy-MM-dd HH:mm:ss") return formatInZone(date, tz, format);
-        assert.equal(format, "yyyy-MM-dd");
-        return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(date);
-      },
-    },
-  };
-  if (!opts.noSheetsService) ctx.Sheets = sheetsService(ss, opts);
-  vm.createContext(ctx);
-  vm.runInContext(read("apps-script/Logic.js"), ctx);
-  vm.runInContext(read("apps-script/Sheets.js"), ctx);
-  return ctx;
-}
-
-function sheetWith(ss, name, rows, maxCols = 26) {
-  const sheet = new FakeSheet(name, 1000, maxCols, ss.nextSheetId++);
-  sheet.ss = ss;
-  rows.forEach((line, r) => line.forEach((v, c) => sheet.set(r + 1, c + 1, v)));
-  ss.sheets.push(sheet);
-  return sheet;
-}
 
 function expectKioskFormats(sheet, header) {
   header.forEach((h, i) => {
@@ -639,8 +85,8 @@ test("a full header row gets nothing, in any order", () => {
   assert.deepEqual(plain(L.logHeaderWrites(LOG_HEADERS.map((h) => h.replace(/\n/g, " ")))), []);
 });
 
-test("ENCM's fourteen headers get the kiosk's four after them", () => {
-  assert.deepEqual(plain(L.logHeaderWrites(ENCM_LOG_HEADERS)), [
+test("the base fourteen headers get the kiosk's four after them", () => {
+  assert.deepEqual(plain(L.logHeaderWrites(BASE_LOG_HEADERS)), [
     { col: 15, header: "Status" },
     { col: 16, header: "Check-In\nEntered By" },
     { col: 17, header: "Check-Out\nEntered By" },
@@ -682,7 +128,7 @@ test("logColumnFormats formats kiosk columns only, in column order", () => {
 // ---------------------------------------------------------------------------
 // setupSheets on the in-memory spreadsheet
 
-test("on a new spreadsheet the Log header is exactly logHeaders() and ENCM's live tab", () => {
+test("on a new spreadsheet the Log header is exactly logHeaders() and the base layout", () => {
   const ss = new FakeSpreadsheet();
   ss.timeZone = "America/New_York";
   const S = server(ss);
@@ -690,7 +136,7 @@ test("on a new spreadsheet the Log header is exactly logHeaders() and ENCM's liv
   assert.equal(ss.timeZone, "America/Chicago");
   const log = ss.getSheetByName("Log");
   assert.deepEqual(log.row(1), plain(S.logHeaders()));
-  assert.deepEqual(log.row(1).slice(0, 14), ENCM_LOG_HEADERS);
+  assert.deepEqual(log.row(1).slice(0, 14), BASE_LOG_HEADERS);
   assert.deepEqual(log.row(1), LOG_HEADERS);
   assert.equal(log.frozen, 1);
   assert.equal(log.getLastRow(), 1);
@@ -709,9 +155,9 @@ test("on a new spreadsheet Settings gets every default, the check-out flag at 15
   const settings = ss.getSheetByName("Settings");
   assert.deepEqual(settings.row(1), ["Setting", "Value", "What it does"]);
   const rows = settings.getDataRange().getValues().slice(1);
-  // One row per default: 24, worked out from settingsDefaults.
+  // One row per default: 24, worked out from settingsDefaults, then the general settings.
   assert.equal(rows.length, S.settingsDefaults("2026-11-13").length);
-  assert.equal(rows.length, 24);
+  assert.equal(rows.length, 24 + S.generalSettingsDefaults().length);
   const names = rows.map((r) => r[0]);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
   assert.deepEqual(rows.find((r) => r[0] === "Check-out flag minutes").slice(0, 2), [
@@ -738,11 +184,11 @@ test("setupSheets stamps the Settings cache after its Settings rows reach the sh
   const before = Date.now() - 1000;
   cache.set(S.settingsCacheKey(), S.settingsCacheValue({ "Kiosk access code": "x" }, before));
   S.setupSheets();
-  // The header and one row per default: 25.
+  // The header and one row per default: 25, then the general settings.
   assert.deepEqual(atFlush, [
     { stamped: false, rows: S.settingsDefaults("2026-11-13").length + 1 },
   ]);
-  assert.equal(atFlush[0].rows, 25);
+  assert.equal(atFlush[0].rows, 25 + S.generalSettingsDefaults().length);
   const stamp = cache.get(S.settingsStampKey());
   assert.match(stamp, /^\d+$/);
   assert.ok(Number(stamp) >= before + 1000);
@@ -809,7 +255,15 @@ test("an old-layout Log is renamed and a new Log started; old rows are left as t
   const before = JSON.stringify(old.values ? [...old.values.entries()].sort() : null);
   const S = server(ss);
   S.setupSheets();
-  assert.deepEqual(ss.tabNames(), ["How to", "Log (old layout)", "Settings", "Log", "Flags"]);
+  // With no Profiles file named, the volunteer list tab is made in this spreadsheet.
+  assert.deepEqual(ss.tabNames(), [
+    "How to",
+    "Log (old layout)",
+    "Settings",
+    "Log",
+    "Flags",
+    "Volunteer Profiles",
+  ]);
   assert.equal(ss.getSheetByName("Log (old layout)"), old);
   assert.equal(JSON.stringify([...old.values.entries()].sort()), before);
   const log = ss.getSheetByName("Log");
@@ -831,9 +285,9 @@ test("an old-layout Log beside an existing old-layout tab stops and names it", (
   assert.deepEqual(ss.tabNames(), ["Log", "Log (old layout)"]);
 });
 
-test("ENCM's sketch header with a staff column after it gets the kiosk's four, nothing overwritten", () => {
+test("the base header with a staff column after it gets the kiosk's four, nothing overwritten", () => {
   const ss = new FakeSpreadsheet();
-  const header = [...ENCM_LOG_HEADERS, "Checked by"];
+  const header = [...BASE_LOG_HEADERS, "Checked by"];
   const row = [
     "2026-11-03",
     "Tuesday",
@@ -907,7 +361,7 @@ test("existing Settings values are kept and missing rows appended", () => {
   assert.deepEqual(rows[0], ["Kiosk access code", "lettersonlylettersonly"]);
   assert.deepEqual(rows[1], ["Arrival flag minutes", "20"]);
   assert.equal(rows.length, S.settingsDefaults("2026-11-13").length);
-  assert.equal(rows.length, 24);
+  assert.equal(rows.length, 24 + S.generalSettingsDefaults().length);
   assert.deepEqual(
     rows.find((r) => r[0] === "Check-out flag minutes"),
     ["Check-out flag minutes", "15"],
@@ -943,7 +397,8 @@ test("setupSheets makes the Flags tab: header, formats, checkbox, frozen row and
   const ss = new FakeSpreadsheet();
   const S = server(ss);
   S.setupSheets();
-  assert.deepEqual(ss.tabNames(), ["How to", "Log", "Settings", "Flags"]);
+  // With no Profiles file named, the volunteer list tab is made in this spreadsheet.
+  assert.deepEqual(ss.tabNames(), ["How to", "Log", "Settings", "Flags", "Volunteer Profiles"]);
   const flags = ss.getSheetByName("Flags");
   assert.deepEqual(flags.row(1), FLAG_HEADERS);
   assert.equal(flags.getLastRow(), 1);
@@ -1057,7 +512,7 @@ test("without the advanced Sheets service, setupSheets names the view step and t
   assert.deepEqual(ss.getSheetByName("Log").row(1), LOG_HEADERS);
   const settingsRows = ss.getSheetByName("Settings").getDataRange().getValues().length;
   assert.equal(settingsRows, S.settingsDefaults("2026-11-13").length + 1);
-  assert.equal(settingsRows, 25);
+  assert.equal(settingsRows, 25 + S.generalSettingsDefaults().length);
   assert.equal(ss.views.size, 0);
 });
 
@@ -1109,7 +564,7 @@ const colour = (c) => (c === "N" ? NAVY : TEAL);
 const formulaOf = (rule) => rule.booleanRule.condition.values[0].userEnteredValue;
 
 test("the palette is the kiosk page's colours, and the tints are light", () => {
-  const css = read("src/index.css");
+  const css = read("src/brand.css");
   const page = (name) => new RegExp("--" + name + ":\\s*(#[0-9a-f]{6});").exec(css)[1];
   const P = plain(L.lookPalette());
   assert.equal(P.navy, page("navy"));
@@ -1729,7 +1184,8 @@ test("Kiosk contact: a staff value survives every run; a tab without the row get
   const rows = [["Setting", "Value"]].concat(
     plain(S.settingsDefaults("2026-11-13"))
       .filter((r) => r[0] !== "Kiosk contact")
-      .map((r) => [r[0], r[1] || "kept"]),
+      // Header word stays blank: setupSheets writes it while the Log holds no rows.
+      .map((r) => [r[0], r[1] || (r[0] === "Header word" ? "" : "kept")]),
   );
   const tab = sheetWith(old, "Settings", rows);
   const O = server(old);
@@ -1777,7 +1233,8 @@ test("the hours email rows: staff values survive every run; a tab without them g
   const rows = [["Setting", "Value"]].concat(
     plain(S.settingsDefaults("2026-11-13"))
       .filter((r) => !r[0].startsWith("Hours email"))
-      .map((r) => [r[0], r[1] || "kept"]),
+      // Header word stays blank: setupSheets writes it while the Log holds no rows.
+      .map((r) => [r[0], r[1] || (r[0] === "Header word" ? "" : "kept")]),
   );
   const tab = sheetWith(old, "Settings", rows);
   const O = server(old);
@@ -1874,4 +1331,174 @@ test("How to, stop cases: an unmarked tab of that name in any capitals, and two 
     () => S.setupSheets(),
     /^Error: These tabs all carry the kiosk's How to mark: Help, Copy of Help\. Delete the copy, then run setupSheets again\.$/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// The header words
+
+const settingValue = (tab, name) => {
+  const row = tab
+    .getDataRange()
+    .getValues()
+    .find((r) => r[0] === name);
+  return row ? row[1] : undefined;
+};
+
+test("a sheet whose Log and Flags hold no rows takes the person word into its headers and Header word", () => {
+  const ss = new FakeSpreadsheet();
+  const log = sheetWith(ss, "Log", [LOG_HEADERS]);
+  const settings = sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Word for a person", "an usher"],
+  ]);
+  const S = server(ss);
+  S.setupSheets();
+  assert.equal(log.get(1, 3), "Usher\nName");
+  assert.equal(log.get(1, 4), "Usher\nRole/Type");
+  assert.equal(ss.getSheetByName("Flags").get(1, 2), "Usher Name");
+  assert.equal(settingValue(settings, "Header word"), "usher");
+  assert.match(notesRow(log)[2], /^The usher's first and last name/);
+  // The Log still reads, and a second run changes nothing.
+  assert.equal(S.readLogColumns_()["Volunteer\nName"], 2);
+  const before = JSON.stringify([log.row(1), notesRow(log), settings.getDataRange().getValues()]);
+  S.setupSheets();
+  assert.equal(
+    JSON.stringify([log.row(1), notesRow(log), settings.getDataRange().getValues()]),
+    before,
+  );
+});
+
+test("with a shift on the Log, the headers and Header word stay as they are", () => {
+  const ss = new FakeSpreadsheet();
+  const shift = LOG_HEADERS.map(() => "");
+  shift[0] = "2026-11-02";
+  const log = sheetWith(ss, "Log", [LOG_HEADERS, shift]);
+  const settings = sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Word for a person", "usher"],
+  ]);
+  server(ss).setupSheets();
+  assert.deepEqual(log.row(1).slice(0, LOG_HEADERS.length), LOG_HEADERS);
+  assert.equal(ss.getSheetByName("Flags").get(1, 2), "Volunteer Name");
+  assert.equal(settingValue(settings, "Header word"), "");
+});
+
+// ---------------------------------------------------------------------------
+// The volunteer list in this spreadsheet, and the launch date
+
+const PEOPLE_HEADER = [
+  "Volunteer First Name",
+  "Volunteer Last Name",
+  "Volunteer Phone",
+  "Email",
+  "Start Date mm/dd/yyyy",
+  "User Token",
+];
+
+test("with Volunteer Profiles file ID blank, setupSheets makes the list tab with the kiosk's headers, once", () => {
+  const ss = new FakeSpreadsheet();
+  sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Volunteer Profiles tab", "People"],
+  ]);
+  const S = server(ss);
+  S.setupSheets();
+  const people = ss.getSheetByName("People");
+  assert.deepEqual(people.row(1), PEOPLE_HEADER);
+  assert.equal(people.getLastRow(), 1);
+  assert.equal(people.frozen, 1);
+  // The list reads it with every Roster column row blank.
+  assert.deepEqual(plain(S.parseProfiles(people.row(1), [], () => "0".repeat(64))), {
+    volunteers: [],
+    problems: [],
+  });
+  // A tab already there, with people on it, is left as it is.
+  people.getRange(2, 1, 1, 6).setValues([["Ana", "Diaz", "", "", "", "t-1"]]);
+  people.getRange(1, 3).setValue("Mobile");
+  S.setupSheets();
+  assert.deepEqual(people.row(1), [
+    "Volunteer First Name",
+    "Volunteer Last Name",
+    "Mobile",
+    "Email",
+    "Start Date mm/dd/yyyy",
+    "User Token",
+  ]);
+  assert.equal(ss.sheets.filter((t) => t.name === "People").length, 1);
+});
+
+test("with a Profiles file named, setupSheets makes no list tab", () => {
+  const ss = new FakeSpreadsheet();
+  sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Volunteer Profiles file ID", "file-1"],
+  ]);
+  server(ss).setupSheets();
+  assert.equal(ss.getSheetByName("Volunteer Profiles"), null);
+});
+
+test("setupSheets fills a blank Kiosk launch date with today, and keeps a date", () => {
+  const ss = new FakeSpreadsheet();
+  const settings = sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Kiosk launch date", ""],
+  ]);
+  const S = server(ss);
+  S.setupSheets();
+  const today = S.centralDate_(new Date());
+  assert.equal(settingValue(settings, "Kiosk launch date"), today);
+  assert.equal(
+    settings
+      .getDataRange()
+      .getValues()
+      .filter((r) => r[0] === "Kiosk launch date").length,
+    1,
+  );
+  const kept = new FakeSpreadsheet();
+  const keptSettings = sheetWith(kept, "Settings", [
+    ["Setting", "Value"],
+    ["Kiosk launch date", "2025-06-01"],
+  ]);
+  server(kept).setupSheets();
+  assert.equal(settingValue(keptSettings, "Kiosk launch date"), "2025-06-01");
+});
+
+test("setupSampleProfiles fills this spreadsheet's header-only list tab, and refuses one with people or a mapped column", () => {
+  const ss = new FakeSpreadsheet();
+  const settings = sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Volunteer Profiles file ID", ""],
+  ]);
+  const S = server(ss);
+  vm.runInContext(read("apps-script/SampleData.js"), S);
+  const logs = [];
+  S.Logger = { log: (m) => logs.push(m) };
+  S.setupSheets();
+  const people = ss.getSheetByName("Volunteer Profiles");
+  const sample = plain(S.sampleProfileRows_());
+  S.setupSampleProfiles();
+  assert.equal(people.getLastRow(), sample.length);
+  assert.deepEqual(people.row(1), sample[0]);
+  // The list reads the sample with every Roster column row blank.
+  const parsed = S.parseProfiles(people.row(1), sample.slice(1), (t) =>
+    createHash("sha256").update(t, "utf8").digest("hex"),
+  );
+  assert.ok(parsed.volunteers.length > 0);
+  // Run again: the tab has people now, so nothing changes.
+  const before = JSON.stringify(people.getDataRange().getValues());
+  S.setupSampleProfiles();
+  assert.equal(JSON.stringify(people.getDataRange().getValues()), before);
+  assert.equal(logs.at(-1), "The Volunteer Profiles tab has rows below its header; nothing done.");
+  // A filled Roster column row: nothing done.
+  const mapped = new FakeSpreadsheet();
+  sheetWith(mapped, "Settings", [
+    ["Setting", "Value"],
+    ["Roster column: phone", "Mobile"],
+  ]);
+  const M = server(mapped);
+  M.Logger = { log: (m) => logs.push(m) };
+  M.setupSampleProfiles();
+  assert.match(logs.at(-1), /Roster column row/);
+  assert.equal(mapped.getSheetByName("Volunteer Profiles"), null);
+  assert.equal(settingValue(settings, "Volunteer Profiles file ID"), "");
 });

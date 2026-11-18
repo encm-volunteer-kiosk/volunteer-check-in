@@ -6,9 +6,10 @@
  * AdminDialog.html, which calls the admin* functions below through google.script.run. The
  * menu's other items follow the same rule: Hours report (Reports.js), Email hours (below:
  * adminHoursRequests, adminHoursPreview and adminSendHours), Import past hours (Import.js), Refresh Hours
- * (refreshHoursNow, Reports.js) and Check the Log now (checkLogNow, Jobs.js). Refresh Hours and Check the Log now open no dialog, so they need
- * no key: they check requireEditorRun_ and SpreadsheetApp.getUi() before they read
- * anything.
+ * (refreshHoursNow, Reports.js), Check the Log now (checkLogNow, Jobs.js) and Fill in
+ * missing IDs (fillMissingIds, below). Refresh Hours, Check the Log now and Fill in missing
+ * IDs open no dialog, so they need no key: they check requireEditorRun_ and
+ * SpreadsheetApp.getUi() before they read anything.
  *
  * The menu and google.script.run can only call public names (no trailing _), so the
  * kiosk page could name these functions too. Every public function here therefore checks
@@ -23,9 +24,11 @@
  *      Check 1 alone would let the script owner's own browser through the web app; the
  *      key closes that.
  * onOpen runs as a simple trigger, where requireEditorRun_ can't pass. It calls getUi()
- * first and adds the menu before anything else: getUi() throws outside the spreadsheet's
- * own UI, so a call from the web app stops there, and a failure in what follows never costs
- * the menu. Then, in a try/catch, it notes on the Hours tab that opening didn't refresh it
+ * and creates the menu before it reads anything: getUi() throws outside the spreadsheet's
+ * own UI, so a call from the web app stops there. It reads Settings in a try/catch to leave
+ * out the items whose switch is Off (kioskSwitches, Logic.js); when that read fails the
+ * menu shows every item and the server's refusals cover what is Off, so a failure never
+ * costs the menu. Then, in a try/catch, it notes on the Hours tab that opening didn't refresh it
  * (noteHoursOnOpen_ in Reports.js: one hold of the document lock, N1 and B1 only, no Log
  * read), and releases the lock in its own finally.
  *
@@ -35,22 +38,34 @@
  */
 
 /**
- * Adds the Kiosk admin menu when the spreadsheet opens, then notes on the Hours tab that
- * opening didn't refresh it. From the web app it throws at getUi.
+ * Adds the Kiosk admin menu when the spreadsheet opens, without the items Settings switch
+ * Off, and with Fill in missing IDs while the volunteer list is in this spreadsheet
+ * (Volunteer Profiles file ID blank), then notes on the Hours tab that opening didn't refresh it. From the web app it throws at getUi.
  */
 function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu("Kiosk admin")
+  const menu = SpreadsheetApp.getUi().createMenu("Kiosk admin");
+  // null when Settings can't be read: then every item shows, and Fill in missing IDs
+  // doesn't.
+  let on = null;
+  let ownList = false;
+  try {
+    const settings = readSettings_();
+    on = kioskSwitches(settings);
+    ownList = !settings["Volunteer Profiles file ID"];
+  } catch (err) {
+    console.log("Settings not read for the menu, so it shows every item: " + errorMessage_(err));
+  }
+  menu
     .addItem("Add a shift…", "openAddShiftDialog")
     .addItem("Fix a sign-out…", "openFixSignOutDialog")
     .addItem("Remove a shift…", "openRemoveShiftDialog")
     .addItem("Restore a shift…", "openRestoreShiftDialog")
-    .addItem("Hours report…", "openMonthlyReportDialog")
-    .addItem("Email hours…", "openEmailHoursDialog")
-    .addItem("Import past hours…", "openImportDialog")
-    .addItem("Refresh Hours", "refreshHoursNow")
-    .addItem("Check the Log now", "checkLogNow")
-    .addToUi();
+    .addItem("Hours report…", "openMonthlyReportDialog");
+  if (!on || on.emailHours) menu.addItem("Email hours…", "openEmailHoursDialog");
+  if (!on || on.importPastHours) menu.addItem("Import past hours…", "openImportDialog");
+  menu.addItem("Refresh Hours", "refreshHoursNow").addItem("Check the Log now", "checkLogNow");
+  if (ownList) menu.addItem("Fill in missing IDs", "fillMissingIds");
+  menu.addToUi();
   const hold = hoursHold_();
   try {
     noteHoursOnOpen_(hold);
@@ -59,6 +74,62 @@ function onOpen() {
   } finally {
     releaseHoursLock_(hold);
   }
+}
+
+/** The volunteer picker's list (adminRosterLabels) from the list Settings name. */
+function adminRosterLabelsFor_(settings) {
+  return adminRosterLabels(
+    getProfiles_(settings),
+    rosterUsesFullName(rosterColumnMapping(settings)),
+  );
+}
+
+/**
+ * Kiosk admin > Fill in missing IDs: gives each person on this spreadsheet's volunteer
+ * list who has a name and no ID a random one (fillIdsPlan, Logic.js), under the script
+ * lock, then tells staff what it did. Changes nothing while Settings names a Profiles
+ * file in another spreadsheet, or when the list's columns can't be found.
+ */
+function fillMissingIds() {
+  requireEditorRun_();
+  const ui = SpreadsheetApp.getUi();
+  const settings = readSettings_();
+  if (settings["Volunteer Profiles file ID"]) {
+    ui.alert(fillIdsFileIdRefusal());
+    return;
+  }
+  let message;
+  try {
+    const result = withLock_(() => fillMissingIds_(settings));
+    message = result.message;
+  } catch (err) {
+    message = errorMessage_(err);
+  }
+  ui.alert(message);
+}
+
+/** Under the lock: Fill in missing IDs' read, plan and writes. Returns {message}. */
+function fillMissingIds_(settings) {
+  const sheet = profilesSheet_(settings);
+  const values = sheet
+    .getDataRange()
+    .getValues()
+    .map((row) => row.map(cellText_));
+  const mapping = rosterColumnMapping(settings);
+  const plan = fillIdsPlan(values[0] || [], values.slice(1), mapping, () => Utilities.getUuid());
+  if (plan.refusal) return { message: plan.refusal + " Nothing was changed." };
+  if (plan.header) sheet.getRange(1, plan.header.column).setValue(plan.header.text);
+  plan.writes.forEach((w) => sheet.getRange(w.row, w.column).setValue(sheetText(w.id)));
+  if (plan.writes.length) {
+    try {
+      CacheService.getScriptCache().remove(
+        profilesCacheKey("", profilesTabName_(settings), mapping),
+      );
+    } catch (err) {
+      console.error("Profiles cache not cleared: " + errorMessage_(err));
+    }
+  }
+  return { message: fillIdsMessage(plan) };
 }
 
 function openAddShiftDialog() {
@@ -88,7 +159,7 @@ function adminRoster(key) {
   return {
     ok: true,
     today: centralDate_(new Date()),
-    volunteers: adminRosterLabels(getProfiles_(readSettings_())),
+    volunteers: adminRosterLabelsFor_(readSettings_()),
   };
 }
 
@@ -99,13 +170,15 @@ function adminRoster(key) {
  * ("off", "approve" or "auto"); ticked, label and heldLine are what the window shows
  * (hoursRequestChoices, Logic.js), and notListed the line for requests from volunteers
  * not on the list. No tab means no requests. Reads Settings, the volunteer list and the
- * Hours requests tab, with no lock, and writes nothing.
+ * Hours requests tab, with no lock, and writes nothing. EMAIL_HOURS_OFF when Settings
+ * switch Email hours Off.
  */
 function adminHoursRequests(key) {
   const denied = adminGuard_(key);
   if (denied) return denied;
   const settings = readSettings_();
-  const mode = parseHoursRequestsMode(settings[hoursRequestsSetting()]);
+  if (!kioskSwitches(settings).emailHours) return refusal("EMAIL_HOURS_OFF");
+  const mode = hoursRequestsMode(settings);
   const listedIds = getProfiles_(settings).map((v) => v.id);
   const choices = hoursRequestChoices(
     readHoursRequests_() || [],
@@ -375,7 +448,8 @@ function adminRestoreShift(key, form) {
  * addresses (profileEmails_), the Log, Flags, the Hours emails tab's sends and the quota.
  * Returns {ok: true, from, month, asOf, volunteers: [{id, label, profilesRow, startDate,
  * to, subject, body, totals, attachment, warnings, problems, lastSent}], setProblems,
- * sendIds, chunkSize, ticket}, the volunteers in roster order; or a refusal.
+ * sendIds, chunkSize, ticket}, the volunteers in roster order; or a refusal, among them
+ * EMAIL_HOURS_OFF, after the reads, when Settings switch Email hours Off.
  *
  * A volunteer with a problem (hoursEmailAddress, or not on the list) is shown and left out.
  * A problem for the whole set (no Email column, Hours email contact blank, nobody left to
@@ -391,6 +465,7 @@ function adminHoursPreview(key, request) {
   const now = new Date();
   const account = Session.getActiveUser().getEmail();
   const base = readHoursEmailBase_(ids, hoursEmailChoice(r.choice), attach, now);
+  if (base.emailHoursOn === false) return refusal("EMAIL_HOURS_OFF");
   let sends = null;
   let sendsRead = true;
   try {
@@ -401,7 +476,7 @@ function adminHoursPreview(key, request) {
   }
   const quota = MailApp.getRemainingDailyQuota();
 
-  const roster = adminRosterLabels(base.volunteers);
+  const roster = adminRosterLabels(base.volunteers, base.fullNameRoster);
   const order = new Map(roster.map((v, i) => [v.id, i]));
   const labels = new Map(roster.map((v) => [v.id, v.label]));
   const at = (b) => (order.has(b.id) ? order.get(b.id) : roster.length);
@@ -449,6 +524,7 @@ function adminHoursPreview(key, request) {
   return {
     ok: true,
     from: hoursEmailFromLine(account),
+    senderName: flagsEmailSenderName(),
     month: base.period.month,
     asOf: base.period.asOf,
     volunteers: built.map((b) => {
@@ -456,7 +532,7 @@ function adminHoursPreview(key, request) {
       const plan = b.plan;
       return {
         id: b.id,
-        label: labels.get(b.id) || "Not on the volunteer list",
+        label: labels.get(b.id) || wordText("Not on the volunteer list", wordsInUse()),
         profilesRow: b.address && b.address.row ? b.address.row : v ? v.row : 0,
         startDate: v ? v.startDate || "" : "",
         to: b.problem ? "" : b.address.email,
@@ -504,7 +580,8 @@ function adminHoursPreview(key, request) {
  *    doesn't throw: reads, the rebuild and the send run inside a try, and the rows are
  *    written on every path.
  * 4. One volunteer's failure never stops the rest. A read that throws becomes the result
- *    of every volunteer taken, and nothing is sent.
+ *    of every volunteer taken, and nothing is sent. So does the Email hours switch Off
+ *    when the reads find it (hoursEmailSetProblems_): the take came before them.
  * 5. The lock is held only to take (step 3) and to write the rows (step 6), never across a
  *    read of the Log or a send.
  * 6. Every withLock_ return is read as a refusal or a success, and a throw from it (its
@@ -757,12 +834,18 @@ function readHoursEmailBase_(ids, choice, attach, now) {
     listedTokens: volunteers.map((v) => v.token),
     contact: settings[hoursEmailContactSetting()] || "",
     signature: settings[hoursEmailSignatureSetting()] || "",
+    emailHoursOn: kioskSwitches(settings).emailHours,
+    fullNameRoster: rosterUsesFullName(rosterColumnMapping(settings)),
   };
 }
 
-/** The problems that stop the whole set: no Email column, Hours email contact blank. */
+/**
+ * The problems that stop the whole set: the Email hours switch Off (a Send after the switch
+ * changed: the Preview refuses), no Email column, Hours email contact blank.
+ */
 function hoursEmailSetProblems_(base) {
   const problems = [];
+  if (base.emailHoursOn === false) problems.push(refusal("EMAIL_HOURS_OFF").message);
   const noColumn = Object.keys(base.emails).some(
     (id) => base.emails[id].problem === "no-email-column",
   );
@@ -890,8 +973,9 @@ function adminGuard_(key) {
 }
 
 /**
- * Opens a dialog from AdminDialog.html with a new key and the Kiosk contact line
- * (kioskContactNote) in it. mode is "add", "fix", "remove", "restore" or "email". The
+ * Opens a dialog from AdminDialog.html with a new key, the Kiosk contact line
+ * (kioskContactNote) and the window's words (adminDialogWords) in it, under a title in the
+ * sheet's words. mode is "add", "fix", "remove", "restore" or "email". The
  * dialog is 480 wide and height tall, 600 when height isn't given.
  */
 function openAdminDialog_(mode, title, height) {
@@ -903,12 +987,20 @@ function openAdminDialog_(mode, title, height) {
   page.key = key;
   page.mode = mode;
   page.contactNote = kioskContactNote(kioskContact_());
+  // kioskContact_ read Settings, so the words in use are the sheet's (the defaults when the
+  // read failed).
+  const words = wordsInUse();
+  const dialog = adminDialogWords(words);
+  page.person = dialog.person;
+  page.people = dialog.people;
+  page.findShiftHint = dialog.findShiftHint;
+  page.texts = JSON.stringify(dialog.texts);
   ui.showModalDialog(
     page
       .evaluate()
       .setWidth(480)
       .setHeight(height || 600),
-    title,
+    wordText(title, words),
   );
 }
 

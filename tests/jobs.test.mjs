@@ -11,17 +11,17 @@ import vm from "node:vm";
 import { createHash } from "node:crypto";
 import { cachedLogMap } from "./log-cache-tap.mjs";
 import { formatInZone } from "./zoneFormat.mjs";
+import { BRAND } from "./brandFiles.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 // Admin.js and Reports.js for the nightly Hours refresh and the Log check it runs.
-const SERVER_FILES = ["Logic.js", "Sheets.js", "Admin.js", "Reports.js", "Jobs.js"].map((f) => [
-  f,
-  read("apps-script/" + f),
-]);
+const SERVER_FILES = ["Brand.js", "Logic.js", "Sheets.js", "Admin.js", "Reports.js", "Jobs.js"].map(
+  (f) => [f, read("apps-script/" + f)],
+);
 
 const L = {};
-vm.runInNewContext(read("apps-script/Logic.js"), L);
+vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), L);
 
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const TZ = "America/Chicago";
@@ -810,7 +810,7 @@ test("runFlagsEmail sends at the due slot to the Settings addresses, from the no
   assert.equal(s.mail.length, 1);
   const m = s.mail[0];
   assert.equal(m.to, "staff@example.org,board@example.org");
-  assert.equal(m.name, "ENCM Volunteer Kiosk");
+  assert.equal(m.name, BRAND.brandSenderName());
   assert.equal(m.noReply, true);
   assert.equal(m.subject, "Volunteer kiosk: 2 new flags this week, 3 unreviewed");
   assert.ok(m.body.includes(SHEET_URL + "#gid=" + FLAGS_GID));
@@ -1322,7 +1322,7 @@ const openLine = (shiftId, token, name, date, tap, stated = tap) =>
     [H.shiftId]: shiftId,
   });
 const sheetTime = (hhmm) => new Date(centralMs("1899-12-30 " + hhmm));
-// ENCM's Shifts layout, invented windows.
+// A staff Shifts tab layout, invented windows.
 const SHIFTS = [
   ["Shifts", "Shift Schedule", "Lead", "Start", "Finish"],
   ["Thursday", "Morning pantry", "", sheetTime("09:00"), sheetTime("13:00")],
@@ -2146,7 +2146,7 @@ test("a run in Auto emails each clean request, leaving out unchecked shifts, wit
   );
   for (const m of s.mail) {
     assert.equal(m.noReply, true);
-    assert.equal(m.name, "ENCM Volunteer Kiosk");
+    assert.equal(m.name, BRAND.brandSenderName());
     assert.equal(m.subject, "Your volunteer hours for November 2026");
     assert.match(
       m.body,
@@ -2614,4 +2614,16 @@ test("the flags email still sends when the Hours emails or Hours requests header
     s.mail[0].body,
     /Hours requests waiting for staff: couldn't be read \(check the Hours requests tab's header row\)/,
   );
+});
+
+test("with Email hours Off, a run in Auto reads Settings only and writes nothing", () => {
+  const s = requestServer({
+    settings: { ...REQUEST_SETTINGS, "Email hours": "Off" },
+    hoursRequests: [REQUEST_HEADER, requestLine(AVERY, "2026-11-16 09:30")],
+  });
+  s.runRequests();
+  assert.equal(s.lock.tries, 0);
+  assert.deepEqual(s.mail, []);
+  assert.equal(requestRows(s)[0].Status, "waiting");
+  assert.equal(lastRun(s), "");
 });

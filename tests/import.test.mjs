@@ -2,7 +2,7 @@
 // import") and apps-script/Import.js against stand-ins for the spreadsheets. The server
 // files are loaded into one global scope, as Apps Script loads them.
 //
-// The source tab is invented, in the layout of ENCM's "Historical Hours" tab: Date, First
+// The source tab is invented, in the layout of a staff "Historical Hours" tab: Date, First
 // name, Last name, an unheaded hours column, an unheaded source-tab column and Source
 // cell. Every name in it is made up.
 
@@ -16,12 +16,11 @@ import { formatInZone } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
-const SERVER_FILES = ["Logic.js", "Sheets.js", "Api.js", "Admin.js", "Import.js"].map((f) => [
-  f,
-  read("apps-script/" + f),
-]);
+const SERVER_FILES = ["Brand.js", "Logic.js", "Sheets.js", "Api.js", "Admin.js", "Import.js"].map(
+  (f) => [f, read("apps-script/" + f)],
+);
 const L = {};
-vm.runInNewContext(read("apps-script/Logic.js"), L);
+vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), L);
 
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex");
@@ -34,7 +33,7 @@ const FILE_ID = "srcfile-0123456789";
 const FILE_LINK = "https://docs.google.com/spreadsheets/d/" + FILE_ID + "/edit#gid=0";
 
 // ---------------------------------------------------------------------------
-// The invented source tab, in ENCM's layout
+// The invented source tab, in the Historical Hours layout
 
 const SOURCE_HEADER = ["Date", "First name", "Last name", "", "", "Source cell"];
 const SOURCE_ROWS = [
@@ -663,7 +662,7 @@ test("the import leaves out the hours the Log check calls impossible", () => {
   assert.equal(L.importLeftOutReasons().hours, "hours aren't a number above 0 and at most " + most);
 });
 
-test("the invented ENCM-layout tab previews as expected", () => {
+test("the invented Historical Hours tab previews as expected", () => {
   const s = plain(L.importSummary(plan(SOURCE_ROWS)));
   assert.deepEqual(s, {
     rowsRead: 14,
@@ -770,6 +769,20 @@ test("a blank, unreadable or missing launch date changes nothing: Preview and Im
       label,
     );
   }
+});
+
+test("Import past hours Off refuses Preview and Import, naming the row, before the file is opened", () => {
+  const s = server({ settings: settingsRows([["Import past hours", "Off"]]) });
+  const expected = {
+    ok: false,
+    refusal: "IMPORT_OFF",
+    message:
+      "Import past hours is turned off in Settings. Set the Import past hours row to On to use it.",
+  };
+  assert.deepEqual(plain(s.ctx.adminImportPreview("k", FORM)), expected);
+  assert.deepEqual(plain(s.ctx.adminImportRun("k", { ...FORM, initials: "JP" })), expected);
+  assert.ok(!s.calls.includes("SpreadsheetApp.openById"));
+  assert.deepEqual(s.sheets.Log.rows, [LOG_HEADER]);
 });
 
 test("Preview writes nothing; the refusals name what's wrong", () => {
