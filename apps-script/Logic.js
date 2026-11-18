@@ -258,8 +258,8 @@ function requiredProfileHeaders() {
 }
 
 /**
- * The two names the User Token column goes by in Profiles, after normalizeHeader. ENCM
- * calls it Onboarding Token today and may rename it User Token; exactly one must be there.
+ * The two names the User Token column goes by in Profiles, after normalizeHeader. A
+ * roster may call it Onboarding Token or User Token; exactly one must be there.
  */
 function profileTokenHeaders() {
   return ["onboarding token", "user token"];
@@ -334,13 +334,14 @@ function refusalMessages() {
   };
 }
 
-/** Kiosk-logged milestones, checked in this order. */
+/** Kiosk-logged milestones, checked in this order. Their messages are the brand's. */
 function milestones() {
+  const texts = brandMilestoneMessages();
   return [
     {
       id: "shift-1",
       title: "First completed shift",
-      message: "Your first day making a difference. Welcome to the neighborhood!",
+      message: texts["shift-1"],
       kind: "shifts",
       threshold: 1,
       sinceLaunchOnly: true,
@@ -348,7 +349,7 @@ function milestones() {
     {
       id: "shift-10",
       title: "10 shifts",
-      message: "10 shifts checked in here. Thank you for showing up for your neighbors!",
+      message: texts["shift-10"],
       kind: "shifts",
       threshold: 10,
       sinceLaunchOnly: false,
@@ -356,7 +357,7 @@ function milestones() {
     {
       id: "shift-25",
       title: "25 shifts",
-      message: "25 shifts checked in here. That's something special.",
+      message: texts["shift-25"],
       kind: "shifts",
       threshold: 25,
       sinceLaunchOnly: false,
@@ -364,7 +365,7 @@ function milestones() {
     {
       id: "hours-50",
       title: "50 hours",
-      message: "50 hours logged here. 50 hours of care, kindness, and community.",
+      message: texts["hours-50"],
       kind: "hours",
       threshold: 50,
       sinceLaunchOnly: false,
@@ -372,7 +373,7 @@ function milestones() {
     {
       id: "hours-100",
       title: "100 hours",
-      message: "100 hours logged here, making East Nashville stronger.",
+      message: texts["hours-100"],
       kind: "hours",
       threshold: 100,
       sinceLaunchOnly: false,
@@ -914,8 +915,8 @@ function milestoneCrossed(beforeShifts, beforeMinutes, addMinutes, startDate, la
 
 /**
  * The kiosk's Log headers, keyed by the short names the code uses, in the order a new Log
- * gets them. The first fourteen are ENCM's own, from the "2026-11 Log" tab of their
- * Volunteer Kiosk Log, line breaks included. The last four are the kiosk's.
+ * gets them. The first fourteen are the staff's own layout, from the Log tab the kiosk was
+ * first fitted to, line breaks included. The last four are the kiosk's.
  */
 function logHeaderNames() {
   return {
@@ -965,7 +966,7 @@ function logColumnKinds() {
   return kinds;
 }
 
-/** The header row the kiosk wrote before the Log took ENCM's layout. */
+/** The header row the kiosk wrote before the Log took its current layout. */
 function oldLogHeaders() {
   return [
     "Shift ID",
@@ -7888,19 +7889,7 @@ function flagFilterViewRequests(cols, sheetId, existingViewId) {
  * - yellow, grey, blue: tab colours (lookTabColours).
  */
 function lookPalette() {
-  return {
-    navy: "#062f5a",
-    teal: "#168c86",
-    white: "#ffffff",
-    band: "#eef7fc",
-    open: "#fff4d6",
-    alert: "#fbe3e2",
-    reviewed: "#8a9aa8",
-    section: "#dff3fb",
-    yellow: "#f9bd2f",
-    grey: "#52687b",
-    blue: "#0669a9",
-  };
+  return brandLookPalette();
 }
 
 /** Each tab's colour, from lookPalette. hoursData is for when that tab is shown. */
@@ -8345,7 +8334,7 @@ function defaultFlagsEmailHour() {
 
 /** The weekly email's sender name. The address is the job owner's domain no-reply address. */
 function flagsEmailSenderName() {
-  return "ENCM Volunteer Kiosk";
+  return brandSenderName();
 }
 
 /** How many of the week's flags the email lists before "and N more". */
@@ -8659,8 +8648,8 @@ function flagsEmailMessage(input) {
 // ---------------------------------------------------------------------------
 // Past hours import
 //
-// The Kiosk admin menu's Import past hours (Import.js) reads a tab laid out like ENCM's
-// "Historical Hours": a header row, then one row per shift with its Date, First name, Last
+// The Kiosk admin menu's Import past hours (Import.js) reads a tab laid out like a staff
+// "Historical Hours" tab: a header row, then one row per shift with its Date, First name, Last
 // name and hours, and optionally the month tab and cell the shift was copied from. Each
 // shift becomes a closed Log row with its stated hours and no times. Import.js reads and
 // writes; the rules are here.
@@ -8799,7 +8788,7 @@ function importFileId(text) {
  * indexes {date, firstName, lastName, hours, sourceTab, sourceCell}, -1 when absent;
  * missing lists the required headers the row lacks. Date, First name and Last name are
  * required. Hours is the column headed "Hours", else the column right after Last name
- * (ENCM's tab leaves it unheaded). "Source cell" is optional, and the unheaded column just
+ * (a staff tab may leave it unheaded). "Source cell" is optional, and the unheaded column just
  * left of it, when that isn't the hours column, is the source tab. Both are kept only for
  * the row's Notes.
  */

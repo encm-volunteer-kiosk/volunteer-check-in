@@ -29,10 +29,12 @@ import vm from "node:vm";
 import ts from "typescript";
 import { createHash } from "node:crypto";
 import { formatInZone } from "./zoneFormat.mjs";
+import { BRAND, fillBrand } from "./brandFiles.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 const SERVER_FILES = [
+  "Brand.js",
   "Logic.js",
   "Sheets.js",
   "Api.js",
@@ -1499,7 +1501,7 @@ test("flagRowUsed: a row holding only an unticked box is free; anything else is 
 
 test("a new flag goes right under the last row in use, not under the tab's unticked boxes", () => {
   const width = FLAG_HEADER.length;
-  // ENCM's tab: boxes to row 1150, three flags at the top, and staff's note further down.
+  // A live tab: boxes to row 1150, three flags at the top, and staff's note further down.
   const flag = (id) => flagCells({ "Shift ID": id, Reason: "late", Source: "kiosk check-in" });
   const s = kiosk({
     flags: boxedFlags(1150, { 2: flag("s-a"), 3: flag("s-b"), 4: flag("s-c") }),
@@ -3164,7 +3166,7 @@ test("Email hours: a preview leaves out a volunteer with no email and tickets th
   assert.equal(reply.asOf, EMAIL_TODAY);
   assert.equal(
     reply.from,
-    "ENCM Volunteer Kiosk, from a no-reply address (sent by staff@example.org)",
+    BRAND.brandSenderName() + ", from a no-reply address (sent by staff@example.org)",
   );
   // Roster order, each once.
   assert.deepEqual(
@@ -4100,7 +4102,10 @@ test("Email hours: the replies the window's tests use are the server's own", () 
     attach: true,
   });
   const send = sendHours(s, preview.ticket, preview.sendIds);
-  assert.deepEqual({ preview, send }, JSON.parse(read("tests/hours-email-replies.json")));
+  assert.deepEqual(
+    { preview, send },
+    JSON.parse(fillBrand(read("tests/hours-email-replies.json"))),
+  );
 });
 
 test("Email hours: the lock is held only to take and to write the rows, never at a Log read or a send", () => {

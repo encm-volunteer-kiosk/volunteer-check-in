@@ -12,7 +12,7 @@ import { cachedLogMap } from "./log-cache-tap.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
-const SERVER_FILES = ["Logic.js", "Sheets.js", "Api.js", "Admin.js"].map((f) => [
+const SERVER_FILES = ["Brand.js", "Logic.js", "Sheets.js", "Api.js", "Admin.js"].map((f) => [
   f,
   read("apps-script/" + f),
 ]);
@@ -416,7 +416,7 @@ const NOW = at("2026-06-03", "10:15").getTime();
 // The pure rules
 
 const L = {};
-vm.runInNewContext(read("apps-script/Logic.js"), L);
+vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), L);
 stubLogCheck(L);
 const X = ["Removed by", "Removed at", "Removed reason"];
 

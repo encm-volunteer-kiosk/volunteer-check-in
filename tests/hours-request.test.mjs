@@ -14,7 +14,7 @@ import vm from "node:vm";
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 const L = {};
-vm.runInNewContext(read("apps-script/Logic.js"), L);
+vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), L);
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
 const HOUR = 3600000;

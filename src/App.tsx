@@ -18,9 +18,15 @@ import {
   showsArrivalChange,
   type ArrivalPick,
 } from "./arrivalChange";
-import logo from "./assets/encm-logo.png";
+import { BRAND_LOGO_URL, BRAND_ORGANIZATION_NAME, BRAND_THANKS_LINE, brandKey } from "./brand";
 import { cardTime, DEFAULT_LONG_SHIFT_HOURS } from "./cardTime";
-import { appreciationMessages, isToday, type Milestone, type Volunteer } from "./data";
+import {
+  appreciationMessages,
+  FAIL_NEXT_SAVE_KEY,
+  isToday,
+  type Milestone,
+  type Volunteer,
+} from "./data";
 import {
   clearStoredList,
   listStateAfterFailure,
@@ -124,7 +130,7 @@ type Result = SaveOwner & {
 };
 type PhoneStep = "entry" | "missing" | null;
 const TZ = "America/Chicago";
-const ACCESS_CODE_KEY = "encm-kiosk-access-code";
+const ACCESS_CODE_KEY = brandKey("kiosk-access-code");
 // The header clock reads the time this often, so it is never more than this behind the iPad's.
 const CLOCK_TICK_MS = 5_000;
 
@@ -215,10 +221,17 @@ function DateBlock() {
   );
 }
 
+/** The brand's logo, or its name as a heading for a brand with no logo. */
+function BrandLogo({ className }: { className: string }) {
+  if (!BRAND_LOGO_URL)
+    return <h1 className={className + " logo-name"}>{BRAND_ORGANIZATION_NAME}</h1>;
+  return <img className={className} src={BRAND_LOGO_URL} alt={BRAND_ORGANIZATION_NAME} />;
+}
+
 function Header() {
   return (
     <header className="header">
-      <img className="logo" src={logo} alt="East Nashville Care Market" />
+      <BrandLogo className="logo" />
       <DateBlock />
     </header>
   );
@@ -525,7 +538,7 @@ function Welcome({
 
       {/* The logo and date, here under the name card instead of above it on a landscape tablet. */}
       <div className="welcome-header">
-        <img className="logo" src={logo} alt="East Nashville Care Market" />
+        <BrandLogo className="logo" />
         {hoursLink}
         <DateBlock />
       </div>
@@ -1151,7 +1164,7 @@ function Success({
               </div>
             )}
             <p className="appreciation">{result.message}</p>
-            <p className="thanks">Thanks for showing up for your East Nashville neighbors.</p>
+            <p className="thanks">{BRAND_THANKS_LINE}</p>
           </>
         )}
         <Button onClick={onDone}>Done</Button>
@@ -1465,7 +1478,7 @@ function DevTools({ onReset }: { onReset: () => void }) {
       <button onClick={onReset}>Reset mock data</button>
       <button
         onClick={() => {
-          sessionStorage.setItem("encm-fail-next-save", "true");
+          sessionStorage.setItem(FAIL_NEXT_SAVE_KEY, "true");
           setOpen(false);
         }}
       >

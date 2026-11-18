@@ -19,7 +19,7 @@ const read = (path) => readFileSync(new URL(path, root), "utf8");
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
 const L = {};
-vm.runInNewContext(read("apps-script/Logic.js"), L);
+vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), L);
 
 const SERVER_FILES = [
   "Admin.js",
@@ -291,7 +291,7 @@ test("every note text a release has written is still known to the kiosk", () => 
   shipped.forEach((t) => assert.ok(kiosk.has(t), "no longer the kiosk's: " + JSON.stringify(t)));
 });
 
-// The ENCM Log header, line breaks included.
+// The Log header, line breaks included.
 const LOG_HEADERS = values(L.logHeaderNames());
 
 test("headerNotesRow writes a note only on an empty note or an exact kiosk text", () => {
@@ -336,7 +336,7 @@ test("headerNotesRow writes a note only on an empty note or an exact kiosk text"
     );
   });
 
-  // ENCM's live header, reordered, a header twice and a missing note list.
+  // The live header, reordered, a header twice and a missing note list.
   assert.deepEqual(row(LOG_HEADERS, []), values(notes));
   const reversed = [...LOG_HEADERS].reverse();
   assert.deepEqual(row(reversed, []), values(notes).reverse());

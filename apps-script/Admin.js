@@ -449,6 +449,7 @@ function adminHoursPreview(key, request) {
   return {
     ok: true,
     from: hoursEmailFromLine(account),
+    senderName: flagsEmailSenderName(),
     month: base.period.month,
     asOf: base.period.asOf,
     volunteers: built.map((b) => {

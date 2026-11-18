@@ -23,12 +23,13 @@
 // Plain TypeScript only (no enums, namespaces or parameter properties): the tests import
 // this file in Node, which strips the types without a loader.
 
+import { brandKey } from "./brand.ts";
 import { clearStoredList, type ListStorage } from "./listStore.ts";
 
-export const SAVE_QUEUE_KEY = "encm-kiosk-save-queue";
+export const SAVE_QUEUE_KEY = brandKey("kiosk-save-queue");
 export const SAVE_QUEUE_VERSION = 1;
-export const SAVE_QUEUE_LOCK = "encm-kiosk-save-queue";
-export const SAVE_RUNNER_LOCK = "encm-kiosk-save-runner";
+export const SAVE_QUEUE_LOCK = brandKey("kiosk-save-queue");
+export const SAVE_RUNNER_LOCK = brandKey("kiosk-save-runner");
 
 // A list is trusted for 6 minutes from the moment the page asked for it.
 export const LIST_TRUST_MS = 360_000;

@@ -836,10 +836,11 @@
         return at ? at + (last.by ? " by " + last.by : "") : "never";
       }
 
-      function fromLine(from) {
+      // from is the server's whole From line, or a bare address beside the sender name.
+      function fromLine(from, senderName) {
         if (!from) return "";
-        if (/no-reply/i.test(from)) return "From: " + from;
-        return "From: ENCM Volunteer Kiosk, from a no-reply address (sent by " + from + ")";
+        if (/no-reply/i.test(from) || !senderName) return "From: " + from;
+        return "From: " + senderName + ", from a no-reply address (sent by " + from + ")";
       }
 
       // The email's total lines: the indented lines that open its body, or its one line
@@ -885,7 +886,7 @@
         const will = reply.ticket ? (reply.sendIds || []).length : 0;
         addBlock(box, [
           ...texts(reply.setProblems),
-          fromLine(reply.from),
+          fromLine(reply.from, reply.senderName),
           people.length +
             " ticked: " +
             will +

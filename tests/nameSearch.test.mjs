@@ -20,7 +20,7 @@ const dialogSearch = dialogHtml.slice(dialogHtml.indexOf(BEGIN), dialogHtml.inde
 const dialog = vm.runInNewContext(dialogSearch + "\n;({ fold, labelMatches });");
 
 const L = {};
-vm.runInNewContext(read("apps-script/Logic.js"), L);
+vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), L);
 
 const person = (name) => {
   const [firstName, ...rest] = name.split(" ");

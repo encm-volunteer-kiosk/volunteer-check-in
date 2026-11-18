@@ -30,6 +30,7 @@ import vm from "node:vm";
 
 const root = new URL("../", import.meta.url);
 const SERVER_FILES = [
+  "Brand.js",
   "Logic.js",
   "Sheets.js",
   "Api.js",
@@ -41,7 +42,12 @@ const SERVER_FILES = [
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
 const L = {};
-vm.runInNewContext(readFileSync(new URL("apps-script/Logic.js", root), "utf8"), L);
+vm.runInNewContext(
+  readFileSync(new URL("apps-script/Brand.js", root), "utf8") +
+    "\n" +
+    readFileSync(new URL("apps-script/Logic.js", root), "utf8"),
+  L,
+);
 
 const HOURS_ID = 300;
 const DATA_ID = 301;

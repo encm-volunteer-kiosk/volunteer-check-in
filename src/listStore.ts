@@ -21,6 +21,7 @@
 import type { Milestone, MilestoneStep, Volunteer } from "./data";
 import type { ListStamp } from "./saveQueue.ts";
 import { stepsWithNulls } from "./replies.ts";
+import { brandKey } from "./brand.ts";
 
 // "stored": the list came from storage and the first refresh hasn't landed yet.
 export type ListState = "loading" | "stored" | "ready" | "failed";
@@ -28,7 +29,7 @@ export type ListState = "loading" | "stored" | "ready" | "failed";
 // The storage calls used here: localStorage in the page, a fake in the tests.
 export type ListStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
-export const LIST_STORE_KEY = "encm-kiosk-volunteer-list";
+export const LIST_STORE_KEY = brandKey("kiosk-volunteer-list");
 // Bump when the stored shape changes, so old entries are ignored and removed.
 export const LIST_STORE_VERSION = 3;
 export const STORED_LIST_MAX_AGE_MS = 10 * 60_000;

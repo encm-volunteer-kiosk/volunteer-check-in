@@ -1,4 +1,4 @@
-# Real ENCM volunteer data (names, DOB, addresses, emergency contacts). Never commit.
+# Real volunteer data (names, DOB, addresses, emergency contacts). Never commit.
 data/
 *.xlsx
 *.ods
@@ -6,7 +6,7 @@ data/
 # Invented sample data with the real column headers is the one exception.
 !sample-data/*.csv
 
-# ENCM brand files and onboarding PDF templates. Add specific images when the UI needs them.
+# Brand files and blank onboarding PDFs. Add specific images when the UI needs them.
 assets/
 # The kiosk's own images, imported by the front end.
 !/src/assets/

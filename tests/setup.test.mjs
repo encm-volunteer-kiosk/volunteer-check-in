@@ -15,10 +15,10 @@ const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
-// The Log header, line breaks included. Columns A to N are ENCM's "2026-11 Log" tab of
-// their Volunteer Kiosk Log spreadsheet, as read live on 2026-11-12; O to R are the
+// The Log header, line breaks included. Columns A to N are the staff's own layout, from
+// the Log tab the kiosk was first fitted to, as read live on 2026-11-12; O to R are the
 // kiosk's own.
-const ENCM_LOG_HEADERS = [
+const BASE_LOG_HEADERS = [
   "Date",
   "Day",
   "Volunteer\nName",
@@ -35,7 +35,7 @@ const ENCM_LOG_HEADERS = [
   "User Token",
 ];
 const KIOSK_LOG_HEADERS = ["Status", "Check-In\nEntered By", "Check-Out\nEntered By", "Shift ID"];
-const LOG_HEADERS = [...ENCM_LOG_HEADERS, ...KIOSK_LOG_HEADERS];
+const LOG_HEADERS = [...BASE_LOG_HEADERS, ...KIOSK_LOG_HEADERS];
 const OLD_LOG_HEADERS = [
   "Shift ID",
   "Volunteer ID",
@@ -593,7 +593,7 @@ function server(ss, opts = {}) {
   };
   if (!opts.noSheetsService) ctx.Sheets = sheetsService(ss, opts);
   vm.createContext(ctx);
-  vm.runInContext(read("apps-script/Logic.js"), ctx);
+  vm.runInContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), ctx);
   vm.runInContext(read("apps-script/Sheets.js"), ctx);
   return ctx;
 }
@@ -639,8 +639,8 @@ test("a full header row gets nothing, in any order", () => {
   assert.deepEqual(plain(L.logHeaderWrites(LOG_HEADERS.map((h) => h.replace(/\n/g, " ")))), []);
 });
 
-test("ENCM's fourteen headers get the kiosk's four after them", () => {
-  assert.deepEqual(plain(L.logHeaderWrites(ENCM_LOG_HEADERS)), [
+test("the base fourteen headers get the kiosk's four after them", () => {
+  assert.deepEqual(plain(L.logHeaderWrites(BASE_LOG_HEADERS)), [
     { col: 15, header: "Status" },
     { col: 16, header: "Check-In\nEntered By" },
     { col: 17, header: "Check-Out\nEntered By" },
@@ -682,7 +682,7 @@ test("logColumnFormats formats kiosk columns only, in column order", () => {
 // ---------------------------------------------------------------------------
 // setupSheets on the in-memory spreadsheet
 
-test("on a new spreadsheet the Log header is exactly logHeaders() and ENCM's live tab", () => {
+test("on a new spreadsheet the Log header is exactly logHeaders() and the base layout", () => {
   const ss = new FakeSpreadsheet();
   ss.timeZone = "America/New_York";
   const S = server(ss);
@@ -690,7 +690,7 @@ test("on a new spreadsheet the Log header is exactly logHeaders() and ENCM's liv
   assert.equal(ss.timeZone, "America/Chicago");
   const log = ss.getSheetByName("Log");
   assert.deepEqual(log.row(1), plain(S.logHeaders()));
-  assert.deepEqual(log.row(1).slice(0, 14), ENCM_LOG_HEADERS);
+  assert.deepEqual(log.row(1).slice(0, 14), BASE_LOG_HEADERS);
   assert.deepEqual(log.row(1), LOG_HEADERS);
   assert.equal(log.frozen, 1);
   assert.equal(log.getLastRow(), 1);
@@ -831,9 +831,9 @@ test("an old-layout Log beside an existing old-layout tab stops and names it", (
   assert.deepEqual(ss.tabNames(), ["Log", "Log (old layout)"]);
 });
 
-test("ENCM's sketch header with a staff column after it gets the kiosk's four, nothing overwritten", () => {
+test("the base header with a staff column after it gets the kiosk's four, nothing overwritten", () => {
   const ss = new FakeSpreadsheet();
-  const header = [...ENCM_LOG_HEADERS, "Checked by"];
+  const header = [...BASE_LOG_HEADERS, "Checked by"];
   const row = [
     "2026-11-03",
     "Tuesday",
@@ -1109,7 +1109,7 @@ const colour = (c) => (c === "N" ? NAVY : TEAL);
 const formulaOf = (rule) => rule.booleanRule.condition.values[0].userEnteredValue;
 
 test("the palette is the kiosk page's colours, and the tints are light", () => {
-  const css = read("src/index.css");
+  const css = read("src/brand.css");
   const page = (name) => new RegExp("--" + name + ":\\s*(#[0-9a-f]{6});").exec(css)[1];
   const P = plain(L.lookPalette());
   assert.equal(P.navy, page("navy"));

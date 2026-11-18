@@ -22,7 +22,7 @@ const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 
 const L = {};
-vm.runInNewContext(read("apps-script/Logic.js"), L);
+vm.runInNewContext(read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js"), L);
 const serverText = L.refusalMessages();
 
 // Tuesday 2026-11-17, Central (UTC-6): checked in by a tap at 9:14 AM, seen at 11:00 AM.

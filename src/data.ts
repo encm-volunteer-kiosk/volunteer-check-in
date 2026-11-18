@@ -1,3 +1,5 @@
+import { BRAND_APPRECIATION_MESSAGES, BRAND_LOCAL_MILESTONE_MESSAGES, brandKey } from "./brand.ts";
+
 export type Volunteer = {
   id: string;
   firstName: string;
@@ -57,7 +59,9 @@ export type KioskData = {
 
 export type Milestone = { id: string; title: string; message: string };
 
-const STORAGE_KEY = "encm-volunteer-kiosk-v1";
+const STORAGE_KEY = brandKey("volunteer-kiosk-v1");
+// Set by the prototype tools to make the next local save fail.
+export const FAIL_NEXT_SAVE_KEY = brandKey("fail-next-save");
 const TZ = "America/Chicago";
 
 const names = [
@@ -242,8 +246,8 @@ export const kioskStore = {
   },
   async save(data: KioskData): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 350));
-    if (sessionStorage.getItem("encm-fail-next-save") === "true") {
-      sessionStorage.removeItem("encm-fail-next-save");
+    if (sessionStorage.getItem(FAIL_NEXT_SAVE_KEY) === "true") {
+      sessionStorage.removeItem(FAIL_NEXT_SAVE_KEY);
       throw new Error("Simulated save failure");
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -255,30 +259,15 @@ export const kioskStore = {
   },
 };
 
-// The local store's milestones, in the order the server checks them.
+// The local store's milestones, in the order the server checks them. Their messages are the
+// brand's.
 export const localMilestones: Milestone[] = [
-  {
-    id: "shift-1",
-    title: "First completed shift",
-    message: "Your first day making a difference. Welcome to the neighborhood!",
-  },
-  {
-    id: "shift-10",
-    title: "10 shifts",
-    message: "10 times showing up for your neighbors. Thank you!",
-  },
-  {
-    id: "shift-25",
-    title: "25 shifts",
-    message: "25 shifts of showing up for East Nashville. That's something special.",
-  },
-  { id: "hours-50", title: "50 hours", message: "50 hours of care, kindness, and community." },
-  {
-    id: "hours-100",
-    title: "100 hours",
-    message: "100 hours of making East Nashville stronger.",
-  },
-];
+  { id: "shift-1", title: "First completed shift" },
+  { id: "shift-10", title: "10 shifts" },
+  { id: "shift-25", title: "25 shifts" },
+  { id: "hours-50", title: "50 hours" },
+  { id: "hours-100", title: "100 hours" },
+].map((m) => ({ ...m, message: BRAND_LOCAL_MILESTONE_MESSAGES[m.id] }));
 
 // timestamp is the stated arrival, tappedAt the moment Check In was tapped. An open shift
 // that has left the window stays open, without a check-out, as the auto clock-out finds it.
@@ -412,12 +401,4 @@ export function checkOut(
   };
 }
 
-export const appreciationMessages = [
-  "Good neighbors show up. Thanks for being one.",
-  "Your time helps make this community stronger.",
-  "Every helping hand matters.",
-  "East Nashville is better because neighbors care.",
-  "Small acts of kindness make a big difference.",
-  "Thanks for being part of what makes this neighborhood special.",
-  "Neighbors helping neighbors. That's what it's all about.",
-];
+export const appreciationMessages = BRAND_APPRECIATION_MESSAGES;

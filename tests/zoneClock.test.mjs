@@ -15,7 +15,7 @@ import { formatInZone, zoneFields } from "./zoneFormat.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
-const SERVER_FILES = ["Logic.js", "Sheets.js", "Import.js"].map((f) => [
+const SERVER_FILES = ["Brand.js", "Logic.js", "Sheets.js", "Import.js"].map((f) => [
   f,
   read("apps-script/" + f),
 ]);
