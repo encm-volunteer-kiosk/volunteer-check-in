@@ -105,8 +105,9 @@ function setupSheets() {
  * keeps the row and the name the spreadsheet stored for it in the document property
  * zoneSetAs, so an alias the spreadsheet stores by another name still matches. Then
  * remakes this account's installed daily triggers on the row's zone
- * (remakeDailyJobTriggers_). Returns the kiosk's zone, or "" with a blank or unknown row,
- * when it changes nothing and the rest of setupSheets still runs.
+ * (remakeDailyJobTriggers_); a remake that fails is logged and fails nothing. Returns the
+ * kiosk's zone, or "" with a blank or unknown row, when it changes nothing and the rest of
+ * setupSheets still runs.
  */
 function setupTimeZone_(ss) {
   const settings = ss.getSheetByName(SETTINGS_TAB) ? readSettings_() : {};
@@ -120,7 +121,13 @@ function setupTimeZone_(ss) {
       zoneSetAsText(row, ss.getSpreadsheetTimeZone()),
     );
   }
-  remakeDailyJobTriggers_();
+  // A remake that throws (quota, authorization) keeps the old triggers and is logged, so
+  // the rest of setupSheets still runs; the next run tries again.
+  try {
+    remakeDailyJobTriggers_();
+  } catch (e) {
+    console.error("Daily job triggers not remade: " + (e && e.message ? e.message : String(e)));
+  }
   return zone;
 }
 

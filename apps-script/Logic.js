@@ -455,13 +455,15 @@ const TIME_ZONE_NAMES = {};
  * time zone. The name is the one Intl gives the cell's text, so a name typed in the wrong
  * capitals reads as its proper spelling, and an alias as the zone it names. Text that
  * isn't shaped as a zone name (an offset such as +05:30, spaces) is "". Without an Intl
- * that knows time zones, a name of the right shape is taken as typed.
+ * that knows time zones, a name of the right shape is taken as typed. So is the brand's
+ * own default zone (brandTimeZone) when Intl refuses it, so a brand's kiosk never depends
+ * on Intl knowing its zone; any other name Intl refuses is "".
  */
 function parseTimeZone(text) {
   const typed = cellString(text);
   if (Object.prototype.hasOwnProperty.call(TIME_ZONE_NAMES, typed)) return TIME_ZONE_NAMES[typed];
   const shaped = /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)*$/.test(typed);
-  const zone = shaped ? intlZoneName(typed) : "";
+  const zone = shaped ? intlZoneName(typed) || (typed === brandTimeZone() ? typed : "") : "";
   TIME_ZONE_NAMES[typed] = zone;
   return zone;
 }
@@ -506,7 +508,16 @@ function timeZoneRowText(settings) {
   const s = settings || {};
   const name = timeZoneSetting();
   if (Object.prototype.hasOwnProperty.call(s, name)) return cellString(s[name]);
+  return brandTimeZone();
+}
+
+/**
+ * The Time zone a missing row reads as: the brand's default for it
+ * (brandSettingsDefaults, Brand.js), else the code's (defaultTimeZone).
+ */
+function brandTimeZone() {
   const brand = brandSettingsDefaults();
+  const name = timeZoneSetting();
   if (Object.prototype.hasOwnProperty.call(brand, name)) return cellString(brand[name]);
   return defaultTimeZone();
 }

@@ -163,6 +163,55 @@ test("a missing Time zone row reads as the brand's default, and the code's is Am
   assert.equal(L.kioskZoneOf({ "Time zone": "nowhere" }), "");
 });
 
+/** Code that makes its context's Intl refuse America/Chicago and take every other zone. */
+const REFUSE_CHICAGO = `(() => {
+  const Real = Intl.DateTimeFormat;
+  Intl.DateTimeFormat = function (locale, options) {
+    if (options && options.timeZone === "America/Chicago") {
+      throw new RangeError("Invalid time zone specified: America/Chicago");
+    }
+    return new Real(locale, options);
+  };
+})();
+`;
+
+test("with Intl refusing the brand's own zone, the brand's kiosk still works on it; other names still need Intl", () => {
+  const logic = REFUSE_CHICAGO + read("apps-script/Brand.js") + "\n" + read("apps-script/Logic.js");
+  const C = {};
+  vm.runInNewContext(logic, C);
+  assert.equal(C.intlZoneName("America/Chicago"), "");
+  assert.equal(C.parseTimeZone("America/Chicago"), "America/Chicago");
+  assert.equal(C.kioskZoneOf({}), "America/Chicago");
+  assert.equal(C.zoneRefusal({ "Time zone": "America/Chicago" }), null);
+  assert.equal(C.parseTimeZone("Europe/London"), "Europe/London");
+  for (const text of ["Mars/Olympus", "Central", ""]) {
+    assert.equal(C.parseTimeZone(text), "", JSON.stringify(text));
+  }
+
+  // On the server: the tablet comes in on Chicago with the row or without it, and reads
+  // its days there; an unknown row is still refused.
+  const code = [logic, read("apps-script/Sheets.js")];
+  for (const rows of [{ "Time zone": "America/Chicago" }, {}]) {
+    const { ctx } = kiosk(rows, { code, spreadsheetZone: "Europe/London" });
+    assert.deepEqual(plain(ctx.apiCheckAccess(CODE)), { ok: true });
+    assert.equal(ctx.kioskTimeZone(), "America/Chicago");
+    assert.equal(ctx.kioskDate_(new Date("2026-07-02T03:30:00Z")), "2026-07-01");
+  }
+  const { ctx } = kiosk({ "Time zone": "Mars/Olympus" }, { code });
+  assert.equal(ctx.apiCheckAccess(CODE).refusal, "ZONE_NOT_SET");
+
+  // Under a brand whose default is blank, America/Chicago is just another name.
+  const B = {};
+  vm.runInNewContext(
+    REFUSE_CHICAGO +
+      read("apps-script/Logic.js") +
+      '\nfunction brandSettingsDefaults() { return { "Time zone": "" }; }',
+    B,
+  );
+  assert.equal(B.parseTimeZone("America/Chicago"), "");
+  assert.equal(B.parseTimeZone("Europe/London"), "Europe/London");
+});
+
 test("under a brand whose Time zone default is blank, a missing row reads as none", () => {
   const B = blankZoneBrand();
   assert.equal(B.kioskZoneOf({}), "");
@@ -398,6 +447,31 @@ test("setupSheets installs no daily trigger that wasn't installed", () => {
   const { ctx, triggers } = kiosk({ "Time zone": "Europe/London" });
   ctx.setupSheets();
   assert.deepEqual(triggers, []);
+});
+
+test("a trigger remake that throws keeps the old trigger, is logged, and setupSheets still adds the rows", () => {
+  const errors = [];
+  const { ss, ctx, triggers } = kiosk(
+    { "Time zone": "Asia/Kolkata", "Kiosk launch date": "" },
+    { errors },
+  );
+  const auto = installed("runAutoClockOut", { atHour: 4, zone: "America/Chicago" });
+  triggers.push(auto);
+  ctx.ScriptApp.newTrigger = () => {
+    throw new Error("This script has too many triggers.");
+  };
+  ctx.setupSheets();
+  assert.deepEqual(triggers, [auto]);
+  assert.deepEqual(errors, ["Daily job triggers not remade: This script has too many triggers."]);
+  assert.equal(ss.timeZone, "Asia/Kolkata");
+  for (const [name] of plain(L.settingsDefaults(""))) {
+    assert.notEqual(settingOf(ss, name), undefined, name);
+  }
+  assert.equal(
+    settingOf(ss, "Kiosk launch date"),
+    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()),
+  );
+  assert.ok(ss.getSheetByName("Log") && ss.getSheetByName("Flags"));
 });
 
 test("an alias the spreadsheet stores by another name: setupSheets keeps the pair and sets it once", () => {
