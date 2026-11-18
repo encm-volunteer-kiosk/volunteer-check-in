@@ -1,0 +1,98 @@
+[
+  [
+    "Kiosk access code",
+    ""
+  ],
+  [
+    "Volunteer Profiles file ID",
+    ""
+  ],
+  [
+    "Volunteer Profiles tab",
+    "Volunteer Profiles"
+  ],
+  [
+    "Kiosk launch date",
+    "2026-11-13"
+  ],
+  [
+    "Arrival flag minutes",
+    "15"
+  ],
+  [
+    "Check-out flag minutes",
+    "15"
+  ],
+  [
+    "Volunteer hour value",
+    ""
+  ],
+  [
+    "Profiles problems",
+    ""
+  ],
+  [
+    "Auto clock-out after hours",
+    "12"
+  ],
+  [
+    "Auto clock-out last run",
+    ""
+  ],
+  [
+    "Long shift flag hours",
+    "8"
+  ],
+  [
+    "Flags email",
+    "Off"
+  ],
+  [
+    "Flags email to",
+    ""
+  ],
+  [
+    "Flags email day",
+    "Monday"
+  ],
+  [
+    "Flags email hour",
+    "8"
+  ],
+  [
+    "Flags email last run",
+    ""
+  ],
+  [
+    "Daily jobs installed by",
+    ""
+  ],
+  [
+    "Past hours file ID",
+    ""
+  ],
+  [
+    "Past hours tab",
+    "Historical Hours"
+  ],
+  [
+    "Kiosk contact",
+    ""
+  ],
+  [
+    "Hours email contact",
+    ""
+  ],
+  [
+    "Hours email signature",
+    ""
+  ],
+  [
+    "Hours requests",
+    "Off"
+  ],
+  [
+    "Hours requests last run",
+    ""
+  ]
+]

@@ -532,8 +532,12 @@ const BLANK_TEXT =
   "If the kiosk or this sheet isn't working and this tab doesn't help, ask whoever looks after the kiosk. To name them here, type their name and an email or phone in Kiosk contact on the Settings tab.";
 const PREFIX = "If the kiosk or this sheet isn't working and this tab doesn't help, contact: ";
 
+// The rows before the general settings, which come after every older row.
+const olderRows = () =>
+  plain(L.settingsDefaults("2026-11-13")).slice(0, -L.generalSettingsDefaults().length);
+
 test("Kiosk contact is the last Settings row before the hours email rows, blank by default, with its sentence", () => {
-  const rows = plain(L.settingsDefaults("2026-11-13"));
+  const rows = olderRows();
   assert.equal(L.kioskContactSetting(), "Kiosk contact");
   assert.deepEqual(rows[rows.length - 5], ["Kiosk contact", ""]);
   assert.equal(rows.filter((r) => r[0] === "Kiosk contact").length, 1);
@@ -541,7 +545,7 @@ test("Kiosk contact is the last Settings row before the hours email rows, blank 
 });
 
 test("the two hours email rows come before the hours request rows, blank by default, with their sentences", () => {
-  const rows = plain(L.settingsDefaults("2026-11-13"));
+  const rows = olderRows();
   assert.equal(L.hoursEmailContactSetting(), "Hours email contact");
   assert.equal(L.hoursEmailSignatureSetting(), "Hours email signature");
   assert.deepEqual(rows.slice(-4, -2), [
@@ -559,8 +563,8 @@ test("the two hours email rows come before the hours request rows, blank by defa
   );
 });
 
-test("the two hours request rows are the last two Settings rows, Off and blank, with their sentences", () => {
-  const rows = plain(L.settingsDefaults("2026-11-13"));
+test("the two hours request rows are the last two rows before the general settings, Off and blank, with their sentences", () => {
+  const rows = olderRows();
   assert.equal(L.hoursRequestsSetting(), "Hours requests");
   assert.equal(L.hoursRequestsLastRunSetting(), "Hours requests last run");
   assert.deepEqual(rows.slice(-2), [

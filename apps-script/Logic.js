@@ -140,7 +140,13 @@ function settingsDefaults(todayDate) {
     [hoursRequestsSetting(), "Off"],
     [hoursRequestsLastRunSetting(), ""],
   );
-  return rows;
+  rows.push(...generalSettingsDefaults());
+  // A row the brand gives its own default (Brand.js) gets that value instead.
+  const brand = brandSettingsDefaults();
+  return rows.map(([name, value]) => [
+    name,
+    Object.prototype.hasOwnProperty.call(brand, name) ? brand[name] : value,
+  ]);
 }
 
 /** The header of the Settings tab's column C, which says what each setting does. */
@@ -204,6 +210,7 @@ function settingsDescriptions() {
       "Whether volunteers can ask for their hours on the tablet: Off hides the Request my hours link on the welcome screen; Approve lists requests in Kiosk admin > Email hours… for staff to send; Auto emails them every 15 minutes, skipping unchecked shifts, at most weekly; blank or anything else means Off.",
     [hoursRequestsLastRunSetting()]:
       "Written by the hours request job: when it was installed or removed, or a run last sent, held or failed; a run with nothing to do writes nothing, so an old time is normal. In Auto, a request still waiting a day later shows as overdue in Email hours…, which is how a stopped job shows.",
+    ...generalSettingsDescriptions(),
   };
 }
 
@@ -240,6 +247,208 @@ function settingsDescriptionColumn(names) {
  */
 function settingsDescriptionProtection() {
   return "What it does: written by the kiosk. Type a setting's value in the Value column, not here.";
+}
+
+// ---------------------------------------------------------------------------
+// General settings: the words, the organisation's name and logo, the roster's columns and
+// the switches
+//
+// Each row's code default reads as the kiosk's behaviour before the row existed, so a
+// sheet that gets the row from setupSheets works as it did. A brand may name its own
+// default for a new sheet (brandSettingsDefaults, Brand.js).
+
+function personWordSetting() {
+  return "Word for a person";
+}
+
+function peopleWordSetting() {
+  return "Word for people";
+}
+
+function staffWordSetting() {
+  return "Word for staff";
+}
+
+function headerWordSetting() {
+  return "Header word";
+}
+
+function organizationNameSetting() {
+  return "Organization name";
+}
+
+function logoLinkSetting() {
+  return "Logo link";
+}
+
+/** The Roster column rows, keyed by the field each one maps. */
+function rosterColumnSettings() {
+  return {
+    firstName: "Roster column: first name",
+    lastName: "Roster column: last name",
+    fullName: "Roster column: full name",
+    phone: "Roster column: phone",
+    email: "Roster column: email",
+    startDate: "Roster column: start date",
+    token: "Roster column: ID",
+  };
+}
+
+/** The On/Off rows, keyed by the name the code uses. Each is On unless set Off. */
+function switchSettings() {
+  return {
+    milestones: "Milestones",
+    emailHours: "Email hours",
+    importPastHours: "Import past hours",
+    arrivalChanges: "Tablet arrival changes",
+    checkOutChanges: "Tablet check-out changes",
+  };
+}
+
+/** The words a blank word row means. */
+function wordDefaults() {
+  return { person: "volunteer", people: "volunteers", staff: "board member" };
+}
+
+/** The general settings rows setupSheets adds when missing, after every older row. */
+function generalSettingsDefaults() {
+  const words = wordDefaults();
+  const rows = [
+    [personWordSetting(), words.person],
+    [peopleWordSetting(), words.people],
+    [staffWordSetting(), words.staff],
+    [headerWordSetting(), ""],
+    [organizationNameSetting(), ""],
+    [logoLinkSetting(), ""],
+  ];
+  Object.values(rosterColumnSettings()).forEach((name) => rows.push([name, ""]));
+  Object.values(switchSettings()).forEach((name) => rows.push([name, "On"]));
+  return rows;
+}
+
+/** The What it does sentence of each general settings row. */
+function generalSettingsDescriptions() {
+  const roster = rosterColumnSettings();
+  const switches = switchSettings();
+  return {
+    [personWordSetting()]:
+      "The word for one person who checks in, such as volunteer or usher; type a or an first when the kiosk would pick the wrong one (a user). A change shows from the next tap, but not in headers: rename those by hand and type the word in Header word (see the How to tab).",
+    [peopleWordSetting()]:
+      "The word for more than one person who checks in, such as volunteers or ushers, used on the tablet, in emails and on this sheet; blank means volunteers.",
+    [staffWordSetting()]:
+      "The word for the people a person at the tablet is sent to for help, such as board member or staff member; type a or an first when the kiosk would pick the wrong one; blank means board member.",
+    [headerWordSetting()]:
+      "Written by the kiosk: the word the Log, Flags and Removed shifts headers were set up with, written when the kiosk's tabs are set up and only while those tabs hold no rows; blank means volunteer. If you rename those headers by hand, type the new word here.",
+    [organizationNameSetting()]:
+      "Your organization's name: the logo's description, the heading shown when there's no logo, and the start of the emails' sender name; blank means the name the kiosk came with.",
+    [logoLinkSetting()]:
+      "The web address of an image to show as the tablet's logo, starting https://; blank, or an address that doesn't start https://, keeps the logo the kiosk came with, and an image that won't load shows the Organization name.",
+    [roster.firstName]:
+      "The header of the volunteer list's first name column; blank means Volunteer First Name. Leave it blank when Roster column: full name is filled.",
+    [roster.lastName]:
+      "The header of the volunteer list's last name column; blank means Volunteer Last Name. Leave it blank when Roster column: full name is filled.",
+    [roster.fullName]:
+      "The header of one column with each person's whole name, first name first (Smith, Mary greets Smith,); fill it only with first and last name blank, and choose before the first Import past hours. Blank means first and last name columns.",
+    [roster.phone]:
+      "The header of the volunteer list's phone column; blank means Volunteer Phone. The list needs the column, even empty: the tablet asks for a phone only when two people share a name.",
+    [roster.email]:
+      "The header of the volunteer list's email column; blank means Email or Email Address. Only Kiosk admin > Email hours… reads it.",
+    [roster.startDate]:
+      "The header of the volunteer list's start date column; blank means Start Date mm/dd/yyyy. The list needs the column, even empty: only the first-shift welcome reads it.",
+    [roster.token]:
+      "The header of the volunteer list's ID column, whose codes never change; blank means User Token or Onboarding Token.",
+    [switches.milestones]:
+      "On shows milestones and the first-shift welcome on the tablet and in the hours report; Off leaves them out; blank or anything else means On.",
+    [switches.emailHours]:
+      "On lets staff email volunteers their hours (Kiosk admin > Email hours…); Off hides it, hides the tablet's Request my hours link and reads Hours requests as Off; blank or anything else means On.",
+    [switches.importPastHours]:
+      "On shows Kiosk admin > Import past hours…; Off hides it and refuses an import; blank or anything else means On.",
+    [switches.arrivalChanges]:
+      "On lets a volunteer choose an earlier arrival on the tablet and change it when checking out; Off hides both, so staff change it; blank or anything else means On.",
+    [switches.checkOutChanges]:
+      "On lets a volunteer choose an earlier check-out time on the tablet; Off hides it, so staff change it; blank or anything else means On.",
+  };
+}
+
+/**
+ * An On/Off row: the cell, trimmed, in any case. "on" is true, "off" is false, and
+ * anything else, blank included, is the row's code default, so a typo keeps the kiosk as
+ * it was. ("Flags email" keeps its own reading: parseFlagsEmailOn.)
+ */
+function parseOnOffSetting(text, codeDefault) {
+  const value = cellString(text).toLowerCase();
+  if (value === "on") return true;
+  if (value === "off") return false;
+  return codeDefault;
+}
+
+/** Every switch from Settings, as {milestones, emailHours, ...}: true is On. */
+function kioskSwitches(settings) {
+  const s = settings || {};
+  const out = {};
+  Object.entries(switchSettings()).forEach(([key, name]) => {
+    out[key] = parseOnOffSetting(s[name], true);
+  });
+  return out;
+}
+
+/**
+ * A word row as {word, article}. Spaces collapse; blank means fallback. A value may start
+ * with its own "a" or "an", which is then the article and is left off the word; otherwise
+ * a word starting a, e, i or o takes "an" and any other takes "a".
+ */
+function parseWordSetting(text, fallback) {
+  const value = cellString(text).replace(/\s+/g, " ") || fallback;
+  const typed = /^(a|an) (.+)$/i.exec(value);
+  if (typed) return { word: typed[2], article: typed[1].toLowerCase() };
+  return { word: value, article: /^[aeio]/i.test(value) ? "an" : "a" };
+}
+
+/** The three words from Settings: {person, personArticle, people, staff, staffArticle}. */
+function kioskWords(settings) {
+  const s = settings || {};
+  const defaults = wordDefaults();
+  const person = parseWordSetting(s[personWordSetting()], defaults.person);
+  const staff = parseWordSetting(s[staffWordSetting()], defaults.staff);
+  return {
+    person: person.word,
+    personArticle: person.article,
+    people: cellString(s[peopleWordSetting()]).replace(/\s+/g, " ") || defaults.people,
+    staff: staff.word,
+    staffArticle: staff.article,
+  };
+}
+
+/** The word the person-word headers were written with: Header word, bare; blank is volunteer. */
+function headerWord(settings) {
+  return parseWordSetting((settings || {})[headerWordSetting()], wordDefaults().person).word;
+}
+
+/** Settings "Organization name", or the brand's name while it's blank. */
+function kioskOrganizationName(settings) {
+  return cellString((settings || {})[organizationNameSetting()]) || brandOrganizationName();
+}
+
+/** The emails' sender name: the Organization name's, or the brand's while it's blank. */
+function kioskSenderName(settings) {
+  const name = cellString((settings || {})[organizationNameSetting()]);
+  return name ? name + " Check-In Kiosk" : brandSenderName();
+}
+
+/** Settings "Logo link": the address when it starts https://, else "" (the brand's logo). */
+function parseLogoLink(text) {
+  const value = cellString(text);
+  return /^https:\/\//.test(value) ? value : "";
+}
+
+/** Each Roster column row, trimmed, keyed as rosterColumnSettings(): "" means blank. */
+function rosterColumnMapping(settings) {
+  const s = settings || {};
+  const out = {};
+  Object.entries(rosterColumnSettings()).forEach(([key, name]) => {
+    out[key] = cellString(s[name]);
+  });
+  return out;
 }
 
 /**

@@ -236,7 +236,7 @@ test("settingsDefaults", () => {
   assert.equal(defaults["Hours email signature"], "");
   assert.equal(defaults["Hours requests"], "Off");
   assert.equal(defaults["Hours requests last run"], "");
-  assert.equal(rows.length, 24);
+  assert.equal(rows.length, 24 + L.generalSettingsDefaults().length);
   const names = rows.map((r) => r[0]);
   assert.equal(new Set(names).size, names.length);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);

@@ -17,6 +17,15 @@ function brandSenderName() {
   return "ENCM Volunteer Kiosk";
 }
 
+/**
+ * Settings rows whose default on a new sheet is the brand's own, as {row name: value}.
+ * setupSheets writes a missing row with this value, and with the code's default
+ * (settingsDefaults in Logic.js) for every row not named here. This brand names none.
+ */
+function brandSettingsDefaults() {
+  return {};
+}
+
 /** Each milestone's message, by milestone id (milestones() in Logic.js). */
 function brandMilestoneMessages() {
   return {
