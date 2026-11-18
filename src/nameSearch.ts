@@ -11,6 +11,8 @@
 // Plain TypeScript only (no enums, namespaces or parameter properties): the tests import
 // this file in Node, which strips the types without a loader.
 
+import { personName } from "./names.ts";
+
 // Removed before NFKD. NFKD turns each of these spacing accents into a space plus a mark,
 // which would leave a space in the middle of a name. The modifier-letter apostrophes and
 // prime, and the Greek numeral sign that NFKD turns into that prime, count as letters of
@@ -88,7 +90,7 @@ export function rankNames<T extends Named>(people: readonly T[], query: string):
   if (!foldedQuery) return [];
   return people
     .map((person) => {
-      const name = `${person.firstName} ${person.lastName}`;
+      const name = personName(person);
       return { person, name, tier: nameTier(fold(name), foldedQuery) };
     })
     .filter((entry) => entry.tier !== null)

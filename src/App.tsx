@@ -66,6 +66,7 @@ import {
   type HoursRequestState,
 } from "./hoursRequestButton";
 import { searchNames } from "./nameSearch";
+import { personName } from "./names";
 import { searchOpenAfter, type SearchOpenEvent } from "./searchOpen";
 import { QuickPicks } from "./QuickPicks.tsx";
 import { pickTime, pickedTimeToIso } from "./quickPicks";
@@ -344,16 +345,14 @@ function VolunteerCard({
       onClick={onClick}
       aria-label={
         plain
-          ? `Request hours for ${volunteer.firstName} ${volunteer.lastName}`
+          ? `Request hours for ${personName(volunteer)}`
           : time
-            ? `Check out ${volunteer.firstName} ${volunteer.lastName}, ${time.label}`
-            : `Check in ${volunteer.firstName} ${volunteer.lastName}`
+            ? `Check out ${personName(volunteer)}, ${time.label}`
+            : `Check in ${personName(volunteer)}`
       }
     >
       <span className="volunteer-name">
-        <span>
-          {volunteer.firstName} {volunteer.lastName}
-        </span>
+        <span>{personName(volunteer)}</span>
       </span>
       <span className="card-meta">
         {time ? (
@@ -760,10 +759,7 @@ function Confirmation({
           <p>
             {phoneStep ? (
               <>
-                There&apos;s more than one{" "}
-                <strong>
-                  {volunteer.firstName} {volunteer.lastName}
-                </strong>
+                There&apos;s more than one <strong>{personName(volunteer)}</strong>
                 {anotherIn ? ", and another one is checked in right now." : "."}
                 {phoneStep === "entry" &&
                   " Please enter the last four digits of your phone number."}
@@ -810,13 +806,13 @@ function Confirmation({
           )}
           {!checkout && !phoneStep && !showTimeKeyboard && (
             <div className="identity">
-              <Icon name="user" /> {volunteer.firstName} {volunteer.lastName}
+              <Icon name="user" /> {personName(volunteer)}
             </div>
           )}
           {hasKeyboard && (
             <div className="checkin-details">
               <div className="identity">
-                <Icon name="user" /> {volunteer.firstName} {volunteer.lastName}
+                <Icon name="user" /> {personName(volunteer)}
               </div>
               <div className="arrival-time">
                 <span>
@@ -957,11 +953,8 @@ function HoursConfirm({
         <p aria-live="polite">
           {phoneStep ? (
             <>
-              There&apos;s more than one{" "}
-              <strong>
-                {volunteer.firstName} {volunteer.lastName}
-              </strong>
-              .{phoneStep === "entry" && " Please enter the last four digits of your phone number."}
+              There&apos;s more than one <strong>{personName(volunteer)}</strong>.
+              {phoneStep === "entry" && " Please enter the last four digits of your phone number."}
             </>
           ) : state.kind === "line" ? (
             state.text
@@ -1050,8 +1043,8 @@ function SaveBanner({
         )}
         {stuck.map((s) => (
           <li key={s.key}>
-            Not saved yet: {s.firstName} {s.lastName}, {what(s.kind)} at {at(s.tapAt)}. The tablet
-            keeps trying.
+            Not saved yet: {personName(s)}, {what(s.kind)} at {at(s.tapAt)}. The tablet keeps
+            trying.
           </li>
         ))}
       </ul>

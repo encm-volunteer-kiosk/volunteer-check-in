@@ -43,9 +43,17 @@ function profilesCacheVersion() {
   return 2;
 }
 
-/** The script cache key for one Profiles file and tab. */
-function profilesCacheKey(fileId, tabName) {
-  return "profiles:v" + profilesCacheVersion() + ":" + fileId + ":" + tabName;
+/**
+ * The script cache key for one Profiles file and tab, and the Roster column rows it was read
+ * with (rosterColumnMapping), so a changed row is read at the next list call. With every
+ * row blank, or no mapping, the key is the file and tab alone. A blank fileId is this
+ * spreadsheet.
+ */
+function profilesCacheKey(fileId, tabName, mapping) {
+  const key = "profiles:v" + profilesCacheVersion() + ":" + fileId + ":" + tabName;
+  const m = mapping || {};
+  const typed = Object.keys(rosterColumnSettings()).map((k) => cellString(m[k]));
+  return typed.some((t) => t !== "") ? key + ":" + JSON.stringify(typed) : key;
 }
 
 /** The Profiles list is cached only when its JSON is at most this many UTF-8 bytes. */
@@ -165,7 +173,7 @@ function settingsDescriptions() {
     "Kiosk access code":
       "The code a board member types on the tablet to open the kiosk: at least 16 letters (only letters count, and capitals are the same as small letters), and while it's blank or shorter no tablet can open.",
     "Volunteer Profiles file ID":
-      "Which spreadsheet the volunteer list comes from, as the long ID in its link between /d/ and /edit; while it's blank, no volunteer can be found on the tablet or in the menu.",
+      "Which spreadsheet the volunteer list comes from, as the long ID in its link between /d/ and /edit; blank means this spreadsheet.",
     "Volunteer Profiles tab":
       "The tab in that spreadsheet that holds the volunteer list; blank means a tab named Volunteer Profiles.",
     "Kiosk launch date":
@@ -351,9 +359,9 @@ function generalSettingsDescriptions() {
     [logoLinkSetting()]:
       "The web address of an image to show as the tablet's logo, starting https://; blank, or an address that doesn't start https://, keeps the logo the kiosk came with, and an image that won't load shows the Organization name.",
     [roster.firstName]:
-      "The header of the volunteer list's first name column; blank means Volunteer First Name. Leave it blank when Roster column: full name is filled.",
+      "The header of the volunteer list's first name column; blank means Volunteer First Name, except that with Roster column: full name filled it must be blank and no first name column is read.",
     [roster.lastName]:
-      "The header of the volunteer list's last name column; blank means Volunteer Last Name. Leave it blank when Roster column: full name is filled.",
+      "The header of the volunteer list's last name column; blank means Volunteer Last Name, except that with Roster column: full name filled it must be blank and no last name column is read.",
     [roster.fullName]:
       "The header of one column with each person's whole name, first name first (Smith, Mary greets Smith,); fill it only with first and last name blank, and choose before the first Import past hours. Blank means first and last name columns.",
     [roster.phone]:
@@ -752,6 +760,222 @@ function profileTokenHeaders() {
   return ["onboarding token", "user token"];
 }
 
+/** True when Settings "Roster column: full name" names a whole-name column. */
+function rosterUsesFullName(mapping) {
+  return cellString((mapping || {}).fullName) !== "";
+}
+
+/**
+ * The message for a column a Roster column row names that the list doesn't have: the
+ * header as typed and the row that typed it.
+ */
+function rosterMissingColumnMessage(key, typed) {
+  return (
+    'Volunteer Profiles has no "' +
+    cellString(typed) +
+    '" column, the header Settings ' +
+    rosterColumnSettings()[key] +
+    " names."
+  );
+}
+
+/**
+ * Throws when Roster column: full name is filled beside first name or last name: a list
+ * gives names one way or the other.
+ */
+function requireOneNameLayout(mapping) {
+  const m = mapping || {};
+  if (!rosterUsesFullName(m)) return;
+  if (cellString(m.firstName) === "" && cellString(m.lastName) === "") return;
+  const rows = rosterColumnSettings();
+  throw new Error(
+    "Settings " +
+      rows.fullName +
+      " is filled, so " +
+      rows.firstName +
+      " and " +
+      rows.lastName +
+      " must be blank.",
+  );
+}
+
+/**
+ * The index of one roster column (headers after normalizeHeader). A filled Roster column
+ * row is the only header looked for; a blank one means the kiosk's own header (fallback).
+ * With a whole-name list, first and last name are blank and never looked for
+ * (profileColumns).
+ * Throws when it is missing: today's message for the kiosk's own, or one naming the
+ * header and the Settings row.
+ */
+function rosterColumn(headers, mapping, key, fallback) {
+  const typed = cellString((mapping || {})[key]);
+  if (typed) {
+    const at = headers.indexOf(normalizeHeader(typed));
+    if (at < 0) throw new Error(rosterMissingColumnMessage(key, typed));
+    return at;
+  }
+  const at = headers.indexOf(fallback);
+  if (at < 0) throw new Error('Volunteer Profiles has no "' + fallback + '" column.');
+  return at;
+}
+
+/** The ID column: the Roster column: ID row's header, else profileTokenColumn. */
+function rosterIdColumn(headers, mapping) {
+  const typed = cellString((mapping || {}).token);
+  if (!typed) return profileTokenColumn(headers);
+  const at = headers.indexOf(normalizeHeader(typed));
+  if (at < 0) throw new Error(rosterMissingColumnMessage("token", typed));
+  return at;
+}
+
+/**
+ * The columns parseProfiles reads, as {firstName, lastName, phone, startDate, token}, or
+ * {fullName, phone, startDate, token} for a whole-name list, each found by rosterColumn in
+ * that order. Throws as rosterColumn and requireOneNameLayout do.
+ */
+function profileColumns(headers, mapping) {
+  requireOneNameLayout(mapping);
+  const wanted = requiredProfileHeaders();
+  const keys = rosterUsesFullName(mapping)
+    ? ["fullName", "phone", "startDate"]
+    : ["firstName", "lastName", "phone", "startDate"];
+  const col = {};
+  keys.forEach((key) => {
+    col[key] = rosterColumn(headers, mapping, key, wanted[key]);
+  });
+  col.token = rosterIdColumn(headers, mapping);
+  return col;
+}
+
+/**
+ * The header setupSheets writes on a volunteer list tab it makes in this spreadsheet: the
+ * kiosk's own header names, so the tab needs no Roster column row.
+ */
+function peopleTabHeader() {
+  return [
+    "Volunteer First Name",
+    "Volunteer Last Name",
+    "Volunteer Phone",
+    "Email",
+    "Start Date mm/dd/yyyy",
+    "User Token",
+  ];
+}
+
+/**
+ * Why setupSampleProfiles changes nothing, before it opens the tab, or "": a Profiles file
+ * is named, or a Roster column row is filled (the sample header uses the kiosk's names).
+ */
+function sampleProfilesRefusal(fileId, mapping) {
+  if (cellString(fileId)) {
+    return "Settings already names a Volunteer Profiles file; nothing done.";
+  }
+  const m = mapping || {};
+  if (Object.keys(rosterColumnSettings()).some((k) => cellString(m[k]) !== "")) {
+    return "A Roster column row on the Settings tab is filled, and the sample people use the kiosk's own headers; nothing done.";
+  }
+  return "";
+}
+
+/** Why setupSampleProfiles leaves a tab that already holds people. */
+function sampleProfilesTabRefusal(tabName) {
+  return "The " + tabName + " tab has rows below its header; nothing done.";
+}
+
+/** The Settings row that holds the day the kiosk started. */
+function launchDateSetting() {
+  return "Kiosk launch date";
+}
+
+/**
+ * todayDate when Settings has a Kiosk launch date row and it is blank: setupSheets writes
+ * it there. "" otherwise, so a date there, or a missing row (which the defaults add), is
+ * left alone.
+ */
+function launchDateToFill(settings, todayDate) {
+  const s = settings || {};
+  if (!Object.prototype.hasOwnProperty.call(s, launchDateSetting())) return "";
+  return cellString(s[launchDateSetting()]) === "" ? todayDate : "";
+}
+
+/** The header Fill in missing IDs gives a new ID column. */
+function fillIdsHeader() {
+  return "User Token";
+}
+
+/**
+ * Kiosk admin > Fill in missing IDs, worked out from this spreadsheet's roster tab (header
+ * row and data rows as text; data row i is sheet row i + 2) and mapping
+ * (rosterColumnMapping). Returns {refusal} (the list's own message for a column it can't
+ * find) or {header, writes}. The ID column is the one the list reads (rosterIdColumn).
+ * header is null, or {column, text} when Roster column: ID is blank and neither token
+ * column is there: fillIdsHeader() goes in the first empty header cell. writes are
+ * [{row, column, id}] (1-based), one for each blank ID cell on a row the list reads (a
+ * first and a last name, or a whole name), in row order; newId() gives each ID. A filled
+ * cell is never written.
+ */
+function fillIdsPlan(headerRow, rows, mapping, newId) {
+  const headers = (headerRow || []).map(normalizeHeader);
+  const m = mapping || {};
+  const wanted = requiredProfileHeaders();
+  let nameAt;
+  let idAt = -1;
+  try {
+    requireOneNameLayout(m);
+    nameAt = rosterUsesFullName(m)
+      ? [rosterColumn(headers, m, "fullName")]
+      : [
+          rosterColumn(headers, m, "firstName", wanted.firstName),
+          rosterColumn(headers, m, "lastName", wanted.lastName),
+        ];
+    const anyToken = profileTokenHeaders().some((h) => headers.indexOf(h) >= 0);
+    if (cellString(m.token) || anyToken) idAt = rosterIdColumn(headers, m);
+  } catch (err) {
+    return { refusal: err.message };
+  }
+  let header = null;
+  if (idAt < 0) {
+    const empty = headers.indexOf("");
+    idAt = empty >= 0 ? empty : headers.length;
+    header = { column: idAt + 1, text: fillIdsHeader() };
+  }
+  const writes = [];
+  (rows || []).forEach((cells, i) => {
+    const c = cells || [];
+    if (!nameAt.every((at) => cellString(c[at]) !== "")) return;
+    if (cellString(c[idAt]) !== "") return;
+    writes.push({ row: i + 2, column: idAt + 1, id: newId() });
+  });
+  return { header, writes };
+}
+
+/** What Fill in missing IDs tells staff when it is done. */
+function fillIdsMessage(plan) {
+  const n = plan.writes.length;
+  if (!n && !plan.header) return "Every row with a name has an ID already. Nothing was changed.";
+  const column = plan.header ? ' in a new "' + plan.header.text + '" column' : "";
+  return n
+    ? "Filled in " + plural(n, "missing ID", "missing IDs") + column + "."
+    : 'Added a "' + plan.header.text + '" column. No row with a name needed an ID.';
+}
+
+/** Why Fill in missing IDs changes nothing while the list is in another spreadsheet. */
+function fillIdsFileIdRefusal() {
+  return 'Fill in missing IDs works only on a list in this spreadsheet, and Settings "Volunteer Profiles file ID" names another one, whose IDs stay as they are. Nothing was changed.';
+}
+
+/**
+ * A whole-name cell as the two names: runs of spaces as one, the first word as firstName
+ * and the rest as lastName ("" for a one-word name).
+ */
+function splitFullName(text) {
+  const whole = cellString(text).replace(/\s+/g, " ");
+  const at = whole.indexOf(" ");
+  return at < 0
+    ? { firstName: whole, lastName: "" }
+    : { firstName: whole.slice(0, at), lastName: whole.slice(at + 1) };
+}
+
 function refusalMessages() {
   return {
     ACCESS: "This kiosk needs to be set up. Please ask a board member.",
@@ -1038,6 +1262,8 @@ function profileTokenColumn(headers) {
  *
  * Every row with a first and last name either is listed with an ID of its own, or gets
  * a problem line saying why it can't check in. Rows without both names are skipped.
+ * mapping (rosterColumnMapping) finds the columns (profileColumns). With a whole-name
+ * column, a row with a name in it is read, split by splitFullName.
  * A same-name member whose phone can't confirm them (none, or the same last four as
  * another member) is listed with phoneLast4 '' so checkPhone returns PHONE_MISSING.
  * Returns {volunteers: [{id, firstName, lastName, phoneLast4, startDate, needsPhoneCheck,
@@ -1045,26 +1271,27 @@ function profileTokenColumn(headers) {
  * User Token, trimmed, and stays on the server: the Log is matched by it. row is the
  * volunteer's Profiles row.
  */
-function parseProfiles(headerRow, rows, hashFn) {
-  const wanted = requiredProfileHeaders();
+function parseProfiles(headerRow, rows, hashFn, mapping) {
   const headers = headerRow.map(normalizeHeader);
-  const col = {};
-  Object.keys(wanted).forEach((key) => {
-    const at = headers.indexOf(wanted[key]);
-    if (at < 0) throw new Error('Volunteer Profiles has no "' + wanted[key] + '" column.');
-    col[key] = at;
-  });
-  col.token = profileTokenColumn(headers);
+  const col = profileColumns(headers, mapping);
+  const fullName = rosterUsesFullName(mapping);
 
   const problems = [];
   const candidates = [];
   rows.forEach((cells, i) => {
     const row = i + 2;
     const cell = (key) => cellString(cells[col[key]]);
-    const firstName = cell("firstName");
-    const lastName = cell("lastName");
-    if (!firstName || !lastName) return;
-    const name = firstName + " " + lastName;
+    let firstName;
+    let lastName;
+    if (fullName) {
+      if (!cell("fullName")) return;
+      ({ firstName, lastName } = splitFullName(cell("fullName")));
+    } else {
+      firstName = cell("firstName");
+      lastName = cell("lastName");
+      if (!firstName || !lastName) return;
+    }
+    const name = volunteerFullName({ firstName, lastName });
     const token = cell("token");
     if (!token) {
       problems.push({ row, text: "row " + row + ": " + name + " has no User Token" });
@@ -1912,9 +2139,14 @@ function requireRowKeys(token, shiftId) {
   if (!cellString(shiftId)) throw new Error("A Log row can't be written without a Shift ID.");
 }
 
-/** The Volunteer Name cell: Profiles first name, a space, last name. */
+/**
+ * The Volunteer Name cell: Profiles first name, a space, last name; the first name alone
+ * when the last is blank (a one-word whole name), with no space after it.
+ */
 function volunteerFullName(volunteer) {
-  return cellString(volunteer.firstName) + " " + cellString(volunteer.lastName);
+  const first = cellString(volunteer.firstName);
+  const last = cellString(volunteer.lastName);
+  return last ? first + " " + last : first;
 }
 
 /**
@@ -3010,11 +3242,18 @@ function normalizeInitials(text) {
 
 /**
  * The volunteer picker's list, [{id, label}], sorted by last name, then first name, then
- * Profiles row. The label is "First Last"; a member of a same-name group also gets their
+ * Profiles row; with a whole-name list (fullNameRoster), by the whole name as written,
+ * then row. The label is "First Last"; a member of a same-name group also gets their
  * Profiles row and phone, so staff can tell members apart and check Profiles.
  */
-function adminRosterLabels(volunteers) {
+function adminRosterLabels(volunteers, fullNameRoster) {
   const sorted = volunteers.slice().sort((a, b) => {
+    if (fullNameRoster) {
+      const byName = normalizeName(volunteerFullName(a)).localeCompare(
+        normalizeName(volunteerFullName(b)),
+      );
+      return byName || a.row - b.row;
+    }
     const byLast = normalizeName(a.lastName).localeCompare(normalizeName(b.lastName));
     if (byLast) return byLast;
     const byFirst = normalizeName(a.firstName).localeCompare(normalizeName(b.firstName));
@@ -3398,9 +3637,10 @@ function andList(items) {
 
 /**
  * What the preview and the result say about an address problem. rows are the Profiles rows
- * it is about, cell the Email cell's text.
+ * it is about, cell the Email cell's text, header (for no-email-column) the header Roster
+ * column: email names, or "" while that row is blank.
  */
-function hoursEmailProblemText(problem, rows, cell) {
+function hoursEmailProblemText(problem, rows, cell, header) {
   const row = rows && rows.length ? rows[0] : "";
   switch (problem) {
     case "no-email":
@@ -3416,7 +3656,9 @@ function hoursEmailProblemText(problem, rows, cell) {
         '". Fix it there, then press Preview again.'
       );
     case "no-email-column":
-      return "Volunteer Profiles has no Email column.";
+      return cellString(header)
+        ? rosterMissingColumnMessage("email", header)
+        : "Volunteer Profiles has no Email column.";
     case "duplicate-token":
       return (
         "Volunteer Profiles rows " +
@@ -3435,12 +3677,15 @@ function hoursEmailProblemText(problem, rows, cell) {
  * row number, because rows move; rows lists every sheet row with that token. problem is "" or one of no-email, bad-email (hoursEmailAddress),
  * not-found (no row has the token), duplicate-token (two or more do; row is the first) and
  * no-email-column (the header has none of profileEmailHeaders(), for every volunteer). text
- * is hoursEmailProblemText, "" with no problem. Throws as profileTokenColumn does.
+ * is hoursEmailProblemText, "" with no problem. mapping (rosterColumnMapping) names the
+ * Email and ID headers when its rows are filled: a filled Email row is the only header
+ * looked for. Throws as rosterIdColumn does.
  */
-function profileEmailsFrom(headerRow, rows, volunteers) {
+function profileEmailsFrom(headerRow, rows, volunteers, mapping) {
   const headers = (headerRow || []).map(normalizeHeader);
-  const tokenAt = profileTokenColumn(headers);
-  const names = profileEmailHeaders();
+  const tokenAt = rosterIdColumn(headers, mapping);
+  const typedEmail = cellString((mapping || {}).email);
+  const names = typedEmail ? [normalizeHeader(typedEmail)] : profileEmailHeaders();
   const emailAt = headers.findIndex((h) => names.indexOf(h) >= 0);
   const byToken = new Map();
   (rows || []).forEach((cells, i) => {
@@ -3470,7 +3715,7 @@ function profileEmailsFrom(headerRow, rows, volunteers) {
       row: sheetRows.length ? sheetRows[0] : 0,
       rows: sheetRows,
       problem,
-      text: problem ? hoursEmailProblemText(problem, sheetRows, cell) : "",
+      text: problem ? hoursEmailProblemText(problem, sheetRows, cell, typedEmail) : "",
     };
   });
   return out;
@@ -4487,7 +4732,8 @@ function hoursRequestHoldReason(code, detail) {
     case "contact":
       return "Hours email contact on the Settings tab is blank.";
     case "no-email-column":
-      return "Volunteer Profiles has no Email column.";
+      // The entry's own text names a header Roster column: email names.
+      return cellString(d.text) || "Volunteer Profiles has no Email column.";
     case "no-email":
       return "No email on their Volunteer Profiles row (row " + d.row + ").";
     case "bad-email":
@@ -9390,9 +9636,15 @@ function importColumns(headerRow) {
   return { cols, missing };
 }
 
-/** The same-name key of a written name: volunteerNameKey of its first and last name. */
-function importNameKey(firstName, lastName) {
-  return volunteerNameKey({ firstName, lastName });
+/**
+ * The same-name key of a written name: volunteerNameKey of its first and last name. For a
+ * whole-name list (fullNameRoster) the two are joined and split as the list's names are
+ * (splitFullName), so "Mary Ann" and "Smith" match "Mary Ann Smith"; with first and last
+ * name columns they are keyed as written, as every earlier import was.
+ */
+function importNameKey(firstName, lastName, fullNameRoster) {
+  if (!fullNameRoster) return volunteerNameKey({ firstName, lastName });
+  return volunteerNameKey(splitFullName(cellString(firstName) + " " + cellString(lastName)));
 }
 
 /** A written name as it goes on the Log: first and last, trimmed, runs of spaces as one. */
@@ -9606,7 +9858,8 @@ function importHours(value) {
  * neighbours' keys; importRowCounts keeps an imported row's key when a row left out for
  * its date or name is fixed above it.
  *
- * A name matches when exactly one Profiles volunteer has its name key. Returns {refusal}
+ * A name matches when exactly one Profiles volunteer has its name key (importNameKey;
+ * input.fullNameRoster true for a whole-name list). Returns {refusal}
  * (headers), or {rowsRead, toImport, alreadyImported, onLog, leftOut}: the
  * first three are lists of items {sourceRow, date, firstName, lastName, name, nameKey, key,
  * shiftId, hours, volunteer (null when unmatched), matches, sourceTab, sourceCell,
@@ -9650,7 +9903,7 @@ function importPlan(input) {
       firstName,
       lastName,
       hasName: firstName !== "" || lastName !== "",
-      nameKey: importNameKey(firstName, lastName),
+      nameKey: importNameKey(firstName, lastName, input.fullNameRoster === true),
     });
   });
   const counts = importRowCounts(
@@ -11207,6 +11460,12 @@ function howToSections(words) {
         ),
         text(
           "A list with one column for the whole name: type its header in Roster column: full name and leave first name and last name blank. Choose this before the first Import past hours.",
+        ),
+        text(
+          "With Volunteer Profiles file ID blank, the list is the Volunteer Profiles tab of this spreadsheet (or the tab named in Volunteer Profiles tab). When the kiosk's tabs are set up and that tab is missing, the kiosk makes it with its own headers: type or paste one row per volunteer below them.",
+        ),
+        text(
+          "Each volunteer needs a User Token that never changes, because the Log finds their shifts by it. Kiosk admin > Fill in missing IDs gives every row with a name and no token a random one, and never changes a token already there. It shows in the menu only while Volunteer Profiles file ID is blank.",
         ),
       ],
     },

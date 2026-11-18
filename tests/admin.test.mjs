@@ -9,10 +9,10 @@
 //   google.script.run. Each must check that the person at the sheet runs it, and that it
 //   holds a dialog key the spreadsheet's menu issued, before it reads or writes anything.
 //   Four kinds are exempt from the key only: the dialog openers, which make it; the menu
-//   items that open no dialog (refreshHoursNow, checkLogNow), which check getUi as the
-//   openers do; the functions run from the editor as setupSheets is (setupReports,
-//   setupDailyJobs, removeDailyJobs); and the trigger handlers, which check the trigger's
-//   id instead. The list of functions comes from the files' source, so a public function
+//   items that open no dialog (refreshHoursNow, checkLogNow, fillMissingIds), which check
+//   getUi as the openers do; the functions run from the editor as setupSheets is
+//   (setupReports, setupDailyJobs, removeDailyJobs); and the trigger handlers, which check
+//   the trigger's id instead. The list of functions comes from the files' source, so a public function
 //   added later is held to the same rule.
 // - The glue: the admin functions read and write an in-memory Log through Sheets.js, and
 //   the kiosk's check-in and check-out copy their flags to an in-memory Flags tab.
@@ -309,7 +309,7 @@ class FakeSheet {
  * by default; insertSheet makes one) and opts.quota the mail quota left today (1500).
  * mail records the quota and every MailApp.sendEmail ({message, held}); mail.events lists
  * both in order, each with whether the script lock was held. A send uses one of the quota.
- * blobs lists every Utilities.newBlob. lock is the script lock: lock.busy (true, or a
+ * blobs lists every Utilities.newBlob. alerts lists every message getUi().alert shows. lock is the script lock: lock.busy (true, or a
  * function of the try's number from 0) makes tryLock fail, lock.held says whether it is
  * held now, and lock.tries and lock.takes count tryLock calls and the ones that got it.
  * faults holds functions a test sets to make a call throw: sendEmail(message) returns a
@@ -378,11 +378,17 @@ function server(opts = {}) {
     Object.defineProperty(sheet, "journal", { value: journal });
   };
   if (sheets["Hours emails"]) register("Hours emails", sheets["Hours emails"]);
+  // opts.people: this spreadsheet's own Volunteer Profiles tab, header first.
+  if (opts.people) {
+    sheets["Volunteer Profiles"] = new FakeSheet(opts.people);
+    register("Volunteer Profiles", sheets["Volunteer Profiles"]);
+  }
   if (opts.hoursRequests) {
     sheets["Hours requests"] = new FakeSheet(opts.hoursRequests);
     register("Hours requests", sheets["Hours requests"]);
   }
   const shown = [];
+  const alerts = [];
   const menu = [];
   let uuid = 0;
   const faults = {};
@@ -529,6 +535,7 @@ function server(opts = {}) {
         return {
           createMenu: (title) => (menu.push(title), builder),
           showModalDialog: (output, title) => shown.push({ output, title }),
+          alert: (message) => alerts.push(message),
         };
       },
       ProtectionType: { SHEET: "SHEET" },
@@ -642,6 +649,7 @@ function server(opts = {}) {
     cache,
     sheets,
     shown,
+    alerts,
     menu,
     errors,
     logs,
@@ -685,7 +693,7 @@ const TRIGGER_ONLY = [
 // is the editor, not the installer: its trigger id is its only check.
 const EDIT_TRIGGER = ["runHoursSort"];
 // A Kiosk admin menu item that opens no dialog: like an opener, it checks getUi first.
-const MENU_RUN = ["refreshHoursNow", "checkLogNow"];
+const MENU_RUN = ["refreshHoursNow", "checkLogNow", "fillMissingIds"];
 const KEYED = PUBLIC.filter(
   (name) =>
     name !== "onOpen" &&
@@ -1047,6 +1055,120 @@ test("onOpen shows every item when Settings can't be read, and logs why", () => 
     assert.equal(s.menu.length, 10, String(settings));
     assert.match(logs[0], /^Settings not read for the menu, so it shows every item: /);
   }
+});
+
+// This spreadsheet's own volunteer list: Volunteer Profiles file ID blank.
+const OWN_LIST_SETTINGS = [
+  ["Setting", "Value"],
+  ["Volunteer Profiles file ID", ""],
+  ["Volunteer Profiles tab", "Volunteer Profiles"],
+];
+const PEOPLE_HEADER = [
+  "Volunteer First Name",
+  "Volunteer Last Name",
+  "Volunteer Phone",
+  "Email",
+  "Start Date mm/dd/yyyy",
+  "User Token",
+];
+
+test("onOpen adds Fill in missing IDs last, only while the list is in this spreadsheet", () => {
+  const s = server({ active: "", settings: OWN_LIST_SETTINGS });
+  s.ctx.console.log = () => {};
+  s.ctx.onOpen({});
+  assert.equal(s.menu.length, 11);
+  assert.deepEqual(s.menu.at(-1), ["Fill in missing IDs", "fillMissingIds"]);
+  // With a Profiles file named, the nine items, as before.
+  const named = server({ active: "" });
+  named.ctx.console.log = () => {};
+  named.ctx.onOpen({});
+  assert.equal(named.menu.length, 10);
+  assert.ok(!named.menu.some((item) => item[0] === "Fill in missing IDs"));
+});
+
+test("Fill in missing IDs refuses, changing nothing, while Settings names a Profiles file", () => {
+  const s = server({ profiles: [PEOPLE_HEADER, ["Ana", "Diaz", "", "", "", ""]] });
+  assert.equal(s.ctx.fillMissingIds(), undefined);
+  assert.deepEqual(s.alerts, [s.ctx.fillIdsFileIdRefusal()]);
+  assert.match(s.alerts[0], /"Volunteer Profiles file ID"/);
+  assert.ok(!s.calls.includes("SpreadsheetApp.openById"));
+  assert.ok(!s.journal.some((j) => j.startsWith("write ")));
+});
+
+test("Fill in missing IDs fills this spreadsheet's list under the lock, and the next list read sees the IDs", () => {
+  const s = server({
+    settings: OWN_LIST_SETTINGS,
+    people: [
+      PEOPLE_HEADER,
+      ["Ana", "Diaz", "555-0101", "", "", ""],
+      ["Ben", "Ode", "555-0102", "", "", "kept"],
+      ["", "", "", "", "", ""],
+    ],
+  });
+  // A list read before the fill is cached; the fill clears it.
+  const before = s.ctx.getProfiles_(s.ctx.readSettings_());
+  assert.deepEqual(plain(before.map((v) => v.token)), ["kept"]);
+  s.lock.held = false;
+  assert.equal(s.ctx.fillMissingIds(), undefined);
+  assert.deepEqual(s.alerts, ["Filled in 1 missing ID."]);
+  assert.equal(s.lock.takes, 1);
+  const people = s.sheets["Volunteer Profiles"];
+  assert.equal(people.rows[1][5], "uuid-1");
+  assert.equal(people.rows[2][5], "kept");
+  assert.equal(people.rows[3][5], "");
+  const after = s.ctx.getProfiles_(s.ctx.readSettings_());
+  assert.deepEqual(plain(after.map((v) => v.token)), ["uuid-1", "kept"]);
+  // A second run finds nothing to fill.
+  s.ctx.fillMissingIds();
+  assert.equal(s.alerts[1], "Every row with a name has an ID already. Nothing was changed.");
+});
+
+test("Fill in missing IDs reports a list it can't read, changing nothing", () => {
+  const noTab = server({ settings: OWN_LIST_SETTINGS });
+  noTab.ctx.fillMissingIds();
+  assert.deepEqual(noTab.alerts, ['Volunteer Profiles has no tab named "Volunteer Profiles".']);
+  const mappedOff = server({
+    settings: [...OWN_LIST_SETTINGS, ["Roster column: ID", "Member ID"]],
+    people: [PEOPLE_HEADER, ["Ana", "Diaz", "", "", "", ""]],
+  });
+  mappedOff.ctx.fillMissingIds();
+  assert.deepEqual(mappedOff.alerts, [
+    'Volunteer Profiles has no "Member ID" column, the header Settings Roster column: ID names. Nothing was changed.',
+  ]);
+  assert.ok(!mappedOff.journal.some((j) => j.startsWith("write Volunteer Profiles")));
+});
+
+test("with Volunteer Profiles file ID blank, the tablet's list is this spreadsheet's tab, read through the Roster column rows", () => {
+  const s = server({
+    settings: [
+      ...OWN_LIST_SETTINGS,
+      ["Roster column: full name", "Name"],
+      ["Roster column: phone", "Phone"],
+      ["Roster column: start date", "Start"],
+      ["Roster column: ID", "ID"],
+    ],
+    people: [
+      ["Name", "Phone", "Start", "ID"],
+      ["Madonna", "555-0101", "", "t-1"],
+      ["Mary Ann Smith", "555-0102", "", "t-2"],
+    ],
+  });
+  const settings = s.ctx.readSettings_();
+  const list = s.ctx.getProfiles_(settings);
+  assert.deepEqual(plain(list.map((v) => [v.firstName, v.lastName])), [
+    ["Madonna", ""],
+    ["Mary", "Ann Smith"],
+  ]);
+  assert.ok(!s.calls.includes("SpreadsheetApp.openById"));
+  // Cached under a key that carries the rows.
+  const key = s.ctx.profilesCacheKey("", "Volunteer Profiles", s.ctx.rosterColumnMapping(settings));
+  assert.ok(s.cache.has(key));
+  assert.notEqual(key, s.ctx.profilesCacheKey("", "Volunteer Profiles"));
+  // The admin picker: the whole names as written.
+  assert.deepEqual(plain(s.ctx.adminRosterLabelsFor_(settings).map((v) => v.label)), [
+    "Madonna",
+    "Mary Ann Smith",
+  ]);
 });
 
 test("an opener puts a fresh key only into the dialog's HTML, and the key then works", () => {
@@ -5494,11 +5616,10 @@ const LOG_WRITE_CLASSES = {
   appendKindRows_: { class: "tab", tab: "hoursRequestTab()", in: "hoursRequestSheet_" },
   writeRowCells_: { class: "tab", tab: "hoursRequestTab()", in: "hoursRequestSheet_" },
   setupHowTo_: { class: "tab", tab: "howToTabName()" },
-  setupSampleProfiles: {
-    class: "tab",
-    tab: '"Volunteer Profiles"',
-    why: "a new spreadsheet file",
-  },
+  // The volunteer list tab of this spreadsheet, named by Settings "Volunteer Profiles tab".
+  setupSampleProfiles: { class: "tab", tab: "profilesTabName_(settings)" },
+  setupPeopleTab_: { class: "tab", tab: "profilesTabName_(settings)" },
+  fillMissingIds_: { class: "tab", tab: "profilesSheet_(settings)" },
   importLedgerSheet_: { class: "tab", tab: "importLedgerTab()" },
   appendLedgerLines_: { class: "tab", tab: "importLedgerTab()", in: "importLedgerSheet_" },
   insertHoursTab_: { class: "tab", ...HOURS_TABS, why: "the Hours tab and its data tab" },

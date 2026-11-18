@@ -25,6 +25,7 @@
 
 import { brandKey } from "./brand.ts";
 import { clearStoredList, type ListStorage } from "./listStore.ts";
+import { personName } from "./names.ts";
 import { wordText, type Words } from "./words.ts";
 
 export const SAVE_QUEUE_KEY = brandKey("kiosk-save-queue");
@@ -670,7 +671,7 @@ export function tapOf(save: QueuedSave, sentAt: number): Tap {
     sentAt,
     attempt: save.sends,
     shown: save.shown,
-    name: `${save.firstName} ${save.lastName}`,
+    name: personName(save),
   };
 }
 
@@ -807,7 +808,7 @@ export function afterAttempt(key: string, result: AttemptResult, now: number): C
     const failure = (reason: string, maybeSaved: boolean): FailedSave => ({
       key,
       kind: save.kind,
-      name: `${save.firstName} ${save.lastName}`,
+      name: personName(save),
       tapAt: save.tapAt,
       reason,
       maybeSaved,

@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { createHash } from "node:crypto";
 import { cachedLogMap } from "./log-cache-tap.mjs";
 import { formatInZone } from "./zoneFormat.mjs";
 
@@ -308,6 +309,12 @@ class FakeSheet {
   }
   setFrozenRows(n) {
     this.frozen = n;
+  }
+  /** Every cell's value and formula go; formats and notes stay, as in Sheets. */
+  clearContents() {
+    this.values.clear();
+    this.formulas.clear();
+    return this;
   }
   row(r) {
     return this.getRange(r, 1, 1, Math.max(this.getLastColumn(), 1)).getValues()[0];
@@ -809,7 +816,15 @@ test("an old-layout Log is renamed and a new Log started; old rows are left as t
   const before = JSON.stringify(old.values ? [...old.values.entries()].sort() : null);
   const S = server(ss);
   S.setupSheets();
-  assert.deepEqual(ss.tabNames(), ["How to", "Log (old layout)", "Settings", "Log", "Flags"]);
+  // With no Profiles file named, the volunteer list tab is made in this spreadsheet.
+  assert.deepEqual(ss.tabNames(), [
+    "How to",
+    "Log (old layout)",
+    "Settings",
+    "Log",
+    "Flags",
+    "Volunteer Profiles",
+  ]);
   assert.equal(ss.getSheetByName("Log (old layout)"), old);
   assert.equal(JSON.stringify([...old.values.entries()].sort()), before);
   const log = ss.getSheetByName("Log");
@@ -943,7 +958,8 @@ test("setupSheets makes the Flags tab: header, formats, checkbox, frozen row and
   const ss = new FakeSpreadsheet();
   const S = server(ss);
   S.setupSheets();
-  assert.deepEqual(ss.tabNames(), ["How to", "Log", "Settings", "Flags"]);
+  // With no Profiles file named, the volunteer list tab is made in this spreadsheet.
+  assert.deepEqual(ss.tabNames(), ["How to", "Log", "Settings", "Flags", "Volunteer Profiles"]);
   const flags = ss.getSheetByName("Flags");
   assert.deepEqual(flags.row(1), FLAG_HEADERS);
   assert.equal(flags.getLastRow(), 1);
@@ -1926,4 +1942,124 @@ test("with a shift on the Log, the headers and Header word stay as they are", ()
   assert.deepEqual(log.row(1).slice(0, LOG_HEADERS.length), LOG_HEADERS);
   assert.equal(ss.getSheetByName("Flags").get(1, 2), "Volunteer Name");
   assert.equal(settingValue(settings, "Header word"), "");
+});
+
+// ---------------------------------------------------------------------------
+// The volunteer list in this spreadsheet, and the launch date
+
+const PEOPLE_HEADER = [
+  "Volunteer First Name",
+  "Volunteer Last Name",
+  "Volunteer Phone",
+  "Email",
+  "Start Date mm/dd/yyyy",
+  "User Token",
+];
+
+test("with Volunteer Profiles file ID blank, setupSheets makes the list tab with the kiosk's headers, once", () => {
+  const ss = new FakeSpreadsheet();
+  sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Volunteer Profiles tab", "People"],
+  ]);
+  const S = server(ss);
+  S.setupSheets();
+  const people = ss.getSheetByName("People");
+  assert.deepEqual(people.row(1), PEOPLE_HEADER);
+  assert.equal(people.getLastRow(), 1);
+  assert.equal(people.frozen, 1);
+  // The list reads it with every Roster column row blank.
+  assert.deepEqual(plain(S.parseProfiles(people.row(1), [], () => "0".repeat(64))), {
+    volunteers: [],
+    problems: [],
+  });
+  // A tab already there, with people on it, is left as it is.
+  people.getRange(2, 1, 1, 6).setValues([["Ana", "Diaz", "", "", "", "t-1"]]);
+  people.getRange(1, 3).setValue("Mobile");
+  S.setupSheets();
+  assert.deepEqual(people.row(1), [
+    "Volunteer First Name",
+    "Volunteer Last Name",
+    "Mobile",
+    "Email",
+    "Start Date mm/dd/yyyy",
+    "User Token",
+  ]);
+  assert.equal(ss.sheets.filter((t) => t.name === "People").length, 1);
+});
+
+test("with a Profiles file named, setupSheets makes no list tab", () => {
+  const ss = new FakeSpreadsheet();
+  sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Volunteer Profiles file ID", "file-1"],
+  ]);
+  server(ss).setupSheets();
+  assert.equal(ss.getSheetByName("Volunteer Profiles"), null);
+});
+
+test("setupSheets fills a blank Kiosk launch date with today, and keeps a date", () => {
+  const ss = new FakeSpreadsheet();
+  const settings = sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Kiosk launch date", ""],
+  ]);
+  const S = server(ss);
+  S.setupSheets();
+  const today = S.centralDate_(new Date());
+  assert.equal(settingValue(settings, "Kiosk launch date"), today);
+  assert.equal(
+    settings
+      .getDataRange()
+      .getValues()
+      .filter((r) => r[0] === "Kiosk launch date").length,
+    1,
+  );
+  const kept = new FakeSpreadsheet();
+  const keptSettings = sheetWith(kept, "Settings", [
+    ["Setting", "Value"],
+    ["Kiosk launch date", "2025-06-01"],
+  ]);
+  server(kept).setupSheets();
+  assert.equal(settingValue(keptSettings, "Kiosk launch date"), "2025-06-01");
+});
+
+test("setupSampleProfiles fills this spreadsheet's header-only list tab, and refuses one with people or a mapped column", () => {
+  const ss = new FakeSpreadsheet();
+  const settings = sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Volunteer Profiles file ID", ""],
+  ]);
+  const S = server(ss);
+  vm.runInContext(read("apps-script/SampleData.js"), S);
+  const logs = [];
+  S.Logger = { log: (m) => logs.push(m) };
+  S.setupSheets();
+  const people = ss.getSheetByName("Volunteer Profiles");
+  const sample = plain(S.sampleProfileRows_());
+  S.setupSampleProfiles();
+  assert.equal(people.getLastRow(), sample.length);
+  assert.deepEqual(people.row(1), sample[0]);
+  // The list reads the sample with every Roster column row blank.
+  const parsed = S.parseProfiles(people.row(1), sample.slice(1), (t) =>
+    createHash("sha256").update(t, "utf8").digest("hex"),
+  );
+  assert.ok(parsed.volunteers.length > 0);
+  // Run again: the tab has people now, so nothing changes.
+  const before = JSON.stringify(people.getDataRange().getValues());
+  S.setupSampleProfiles();
+  assert.equal(JSON.stringify(people.getDataRange().getValues()), before);
+  assert.equal(logs.at(-1), "The Volunteer Profiles tab has rows below its header; nothing done.");
+  // A filled Roster column row: nothing done.
+  const mapped = new FakeSpreadsheet();
+  sheetWith(mapped, "Settings", [
+    ["Setting", "Value"],
+    ["Roster column: phone", "Mobile"],
+  ]);
+  const M = server(mapped);
+  M.Logger = { log: (m) => logs.push(m) };
+  M.setupSampleProfiles();
+  assert.match(logs.at(-1), /Roster column row/);
+  assert.equal(mapped.getSheetByName("Volunteer Profiles"), null);
+  assert.equal(settingValue(settings, "Volunteer Profiles file ID"), "");
 });

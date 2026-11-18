@@ -213,10 +213,10 @@ test("every setting the server code writes has a description", () => {
     "Flags email last run",
     "Header word",
     "Hours requests last run",
+    "Kiosk launch date",
     "Past hours file ID",
     "Past hours tab",
     "Profiles problems",
-    "Volunteer Profiles file ID",
   ]);
   const d = plain(L.settingsDescriptions());
   written.forEach((name) => assert.ok(d[name], name));

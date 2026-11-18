@@ -167,6 +167,7 @@ function importJob_(form) {
     rows: values.slice(1).map((cells) => cells.map((value) => importCell_(value, zone))),
     todayDate: centralDate_(new Date()),
     volunteers: getProfiles_(settings),
+    fullNameRoster: rosterUsesFullName(rosterColumnMapping(settings)),
     ledgerKeys: ledger.keys,
     ledgerRows: importLedgerRows(ledger.lines, fileId, tab),
     logShiftIds: view.shiftIds,

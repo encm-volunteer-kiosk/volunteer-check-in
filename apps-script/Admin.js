@@ -6,9 +6,10 @@
  * AdminDialog.html, which calls the admin* functions below through google.script.run. The
  * menu's other items follow the same rule: Hours report (Reports.js), Email hours (below:
  * adminHoursRequests, adminHoursPreview and adminSendHours), Import past hours (Import.js), Refresh Hours
- * (refreshHoursNow, Reports.js) and Check the Log now (checkLogNow, Jobs.js). Refresh Hours and Check the Log now open no dialog, so they need
- * no key: they check requireEditorRun_ and SpreadsheetApp.getUi() before they read
- * anything.
+ * (refreshHoursNow, Reports.js), Check the Log now (checkLogNow, Jobs.js) and Fill in
+ * missing IDs (fillMissingIds, below). Refresh Hours, Check the Log now and Fill in missing
+ * IDs open no dialog, so they need no key: they check requireEditorRun_ and
+ * SpreadsheetApp.getUi() before they read anything.
  *
  * The menu and google.script.run can only call public names (no trailing _), so the
  * kiosk page could name these functions too. Every public function here therefore checks
@@ -38,14 +39,19 @@
 
 /**
  * Adds the Kiosk admin menu when the spreadsheet opens, without the items Settings switch
- * Off, then notes on the Hours tab that opening didn't refresh it. From the web app it throws at getUi.
+ * Off, and with Fill in missing IDs while the volunteer list is in this spreadsheet
+ * (Volunteer Profiles file ID blank), then notes on the Hours tab that opening didn't refresh it. From the web app it throws at getUi.
  */
 function onOpen() {
   const menu = SpreadsheetApp.getUi().createMenu("Kiosk admin");
-  // null when Settings can't be read: then every item shows.
+  // null when Settings can't be read: then every item shows, and Fill in missing IDs
+  // doesn't.
   let on = null;
+  let ownList = false;
   try {
-    on = kioskSwitches(readSettings_());
+    const settings = readSettings_();
+    on = kioskSwitches(settings);
+    ownList = !settings["Volunteer Profiles file ID"];
   } catch (err) {
     console.log("Settings not read for the menu, so it shows every item: " + errorMessage_(err));
   }
@@ -57,10 +63,9 @@ function onOpen() {
     .addItem("Hours report…", "openMonthlyReportDialog");
   if (!on || on.emailHours) menu.addItem("Email hours…", "openEmailHoursDialog");
   if (!on || on.importPastHours) menu.addItem("Import past hours…", "openImportDialog");
-  menu
-    .addItem("Refresh Hours", "refreshHoursNow")
-    .addItem("Check the Log now", "checkLogNow")
-    .addToUi();
+  menu.addItem("Refresh Hours", "refreshHoursNow").addItem("Check the Log now", "checkLogNow");
+  if (ownList) menu.addItem("Fill in missing IDs", "fillMissingIds");
+  menu.addToUi();
   const hold = hoursHold_();
   try {
     noteHoursOnOpen_(hold);
@@ -69,6 +74,62 @@ function onOpen() {
   } finally {
     releaseHoursLock_(hold);
   }
+}
+
+/** The volunteer picker's list (adminRosterLabels) from the list Settings name. */
+function adminRosterLabelsFor_(settings) {
+  return adminRosterLabels(
+    getProfiles_(settings),
+    rosterUsesFullName(rosterColumnMapping(settings)),
+  );
+}
+
+/**
+ * Kiosk admin > Fill in missing IDs: gives each person on this spreadsheet's volunteer
+ * list who has a name and no ID a random one (fillIdsPlan, Logic.js), under the script
+ * lock, then tells staff what it did. Changes nothing while Settings names a Profiles
+ * file in another spreadsheet, or when the list's columns can't be found.
+ */
+function fillMissingIds() {
+  requireEditorRun_();
+  const ui = SpreadsheetApp.getUi();
+  const settings = readSettings_();
+  if (settings["Volunteer Profiles file ID"]) {
+    ui.alert(fillIdsFileIdRefusal());
+    return;
+  }
+  let message;
+  try {
+    const result = withLock_(() => fillMissingIds_(settings));
+    message = result.message;
+  } catch (err) {
+    message = errorMessage_(err);
+  }
+  ui.alert(message);
+}
+
+/** Under the lock: Fill in missing IDs' read, plan and writes. Returns {message}. */
+function fillMissingIds_(settings) {
+  const sheet = profilesSheet_(settings);
+  const values = sheet
+    .getDataRange()
+    .getValues()
+    .map((row) => row.map(cellText_));
+  const mapping = rosterColumnMapping(settings);
+  const plan = fillIdsPlan(values[0] || [], values.slice(1), mapping, () => Utilities.getUuid());
+  if (plan.refusal) return { message: plan.refusal + " Nothing was changed." };
+  if (plan.header) sheet.getRange(1, plan.header.column).setValue(plan.header.text);
+  plan.writes.forEach((w) => sheet.getRange(w.row, w.column).setValue(sheetText(w.id)));
+  if (plan.writes.length) {
+    try {
+      CacheService.getScriptCache().remove(
+        profilesCacheKey("", profilesTabName_(settings), mapping),
+      );
+    } catch (err) {
+      console.error("Profiles cache not cleared: " + errorMessage_(err));
+    }
+  }
+  return { message: fillIdsMessage(plan) };
 }
 
 function openAddShiftDialog() {
@@ -98,7 +159,7 @@ function adminRoster(key) {
   return {
     ok: true,
     today: centralDate_(new Date()),
-    volunteers: adminRosterLabels(getProfiles_(readSettings_())),
+    volunteers: adminRosterLabelsFor_(readSettings_()),
   };
 }
 
@@ -415,7 +476,7 @@ function adminHoursPreview(key, request) {
   }
   const quota = MailApp.getRemainingDailyQuota();
 
-  const roster = adminRosterLabels(base.volunteers);
+  const roster = adminRosterLabels(base.volunteers, base.fullNameRoster);
   const order = new Map(roster.map((v, i) => [v.id, i]));
   const labels = new Map(roster.map((v) => [v.id, v.label]));
   const at = (b) => (order.has(b.id) ? order.get(b.id) : roster.length);
@@ -774,6 +835,7 @@ function readHoursEmailBase_(ids, choice, attach, now) {
     contact: settings[hoursEmailContactSetting()] || "",
     signature: settings[hoursEmailSignatureSetting()] || "",
     emailHoursOn: kioskSwitches(settings).emailHours,
+    fullNameRoster: rosterUsesFullName(rosterColumnMapping(settings)),
   };
 }
 
