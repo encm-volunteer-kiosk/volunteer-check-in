@@ -1,13 +1,19 @@
 // The Time zone row: how a cell reads as a zone, what a missing, blank or unknown row
 // does on the tablet, in the Kiosk admin windows and in the daily jobs, and that a run
-// reads every time in the row's zone.
+// reads every time in the row's zone. The zone suites at the end tap the kiosk and work out
+// the page's times (src/, imported as it is) under three zones.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { createHash } from "node:crypto";
 import { FakeSpreadsheet, server, sheetWith } from "./fakeSpreadsheet.mjs";
 import { formatInZone } from "./zoneFormat.mjs";
+import { kioskDay, setKioskZone } from "../src/kioskZone.ts";
+import { pageSettingsOf } from "../src/words.ts";
+import { kioskMinutes, pickTime, pickedTimeToIso } from "../src/quickPicks.ts";
+import { cardTime } from "../src/cardTime.ts";
 
 const read = (path) => readFileSync(new URL("../" + path, import.meta.url), "utf8");
 const plain = (x) => JSON.parse(JSON.stringify(x));
@@ -31,7 +37,8 @@ function blankZoneBrand() {
 /**
  * A server context on a spreadsheet whose Settings hold the access code and rows (an
  * object of name to value), with Api.js, Jobs.js and Admin.js loaded, ScriptApp's
- * triggers recorded in triggers and the script lock always free.
+ * triggers recorded in triggers and the script lock always free. opts.now, when given, is
+ * an object whose ms is the server's clock, changeable between calls.
  */
 function kiosk(rows, opts = {}) {
   const ss = new FakeSpreadsheet();
@@ -74,6 +81,25 @@ function kiosk(rows, opts = {}) {
     assert.equal(format, "yyyy-MM-dd HH:mm:ss");
     return new Date(zoneMs(text, zone));
   };
+  // What a tap needs beyond the rest: the token hash and Shift IDs.
+  ctx.Utilities.DigestAlgorithm = { SHA_256: "SHA_256" };
+  ctx.Utilities.Charset = { UTF_8: "UTF_8" };
+  ctx.Utilities.computeDigest = (algorithm, text) =>
+    [...createHash("sha256").update(text, "utf8").digest()].map((b) => (b > 127 ? b - 256 : b));
+  let uuid = 0;
+  ctx.Utilities.getUuid = () => "uuid-" + ++uuid;
+  if (opts.now) {
+    const RealDate = vm.runInContext("Date", ctx);
+    const clock = opts.now;
+    ctx.Date = class extends RealDate {
+      constructor(...args) {
+        super(...(args.length ? args : [clock.ms]));
+      }
+      static now() {
+        return clock.ms;
+      }
+    };
+  }
   ctx.HtmlService = {};
   for (const file of ["Api.js", "Jobs.js", "Admin.js"]) {
     vm.runInContext(read("apps-script/" + file), ctx, { filename: file });
@@ -605,4 +631,183 @@ test("a compare that can't write is logged and returns the text", () => {
     PROBLEM("Europe/London", "America/Chicago"),
   );
   assert.deepEqual(errors, ["Time zone problem not written: Service Spreadsheets timed out"]);
+});
+
+// ---------------------------------------------------------------------------
+// The zone suites: the same taps and page times under America/Chicago, under a zone whose
+// summer time starts and ends on other dates (Europe/London) and under one with none
+// (Asia/Kolkata). Between London's and Chicago's autumn changes (2026-10-25 and
+// 2026-11-01) the three are 5, 0 and -5.5 hours from Chicago's wall clock.
+
+const ZONES = ["America/Chicago", "Europe/London", "Asia/Kolkata"];
+
+/**
+ * A kiosk whose Time zone row is zone, set up (so the spreadsheet is on the row's zone, or
+ * on spreadsheetZone when given, as if staff changed it in File > Settings afterwards), with
+ * one person, Sam Reed, on the People tab. clock.ms is the server's clock.
+ */
+function tappingKiosk(zone, clock, spreadsheetZone) {
+  const k = kiosk({ "Time zone": zone }, { now: clock });
+  k.ctx.setupSheets();
+  if (spreadsheetZone) k.ss.timeZone = spreadsheetZone;
+  k.ss
+    .getSheetByName("Volunteer Profiles")
+    .getRange(2, 1, 1, 6)
+    .setValues([["Sam", "Reed", "5550001234", "", "", "tok-sam"]]);
+  const list = k.ctx.apiListVolunteers(CODE);
+  assert.equal(list.ok, true, zone);
+  return { ...k, list, sam: list.volunteers[0].id };
+}
+
+/** The Log's rows under the header, as {Date, Day, in, out} (in and out as ISO or ""). */
+function logRows(ss) {
+  const [header, ...rows] = ss.getSheetByName("Log").getDataRange().getValues();
+  const col = (start) => header.findIndex((h) => String(h).startsWith(start));
+  // A Date made in the server's context isn't an instanceof this one's.
+  const iso = (v) => (v && typeof v.toISOString === "function" ? v.toISOString() : v);
+  return rows.map((r) => ({
+    Date: r[col("Date")],
+    Day: r[col("Day")],
+    in: iso(r[col("Check-In\nRecorded")]),
+    out: iso(r[col("Check-Out\nRecorded")]),
+  }));
+}
+
+/** zoneMs as ISO. */
+const zoneIso = (text, zone) => new Date(zoneMs(text, zone)).toISOString();
+
+/** Runs fn with the page on zone, then puts the page back on Chicago. */
+function onPage(zone, fn) {
+  setKioskZone(zone);
+  try {
+    return fn();
+  } finally {
+    setKioskZone(undefined);
+  }
+}
+
+test("the zone suites: taps either side of midnight land on the kiosk's own date", () => {
+  for (const zone of ZONES) {
+    const clock = { ms: zoneMs("2026-10-28 23:50:00", zone) };
+    const k = tappingKiosk(zone, clock);
+    assert.equal(k.ss.timeZone, zone, zone);
+    assert.equal(k.ctx.apiCheckIn(CODE, k.sam, null, null).ok, true, zone);
+    clock.ms = zoneMs("2026-10-29 00:20:00", zone);
+    assert.equal(k.ctx.apiCheckOut(CODE, k.sam, null, null).ok, true, zone);
+    clock.ms = zoneMs("2026-10-29 00:30:00", zone);
+    assert.equal(k.ctx.apiCheckIn(CODE, k.sam, null, null).ok, true, zone);
+    assert.deepEqual(
+      logRows(k.ss),
+      [
+        {
+          Date: "2026-10-28",
+          Day: "Wednesday",
+          in: zoneIso("2026-10-28 23:50:00", zone),
+          out: zoneIso("2026-10-29 00:20:00", zone),
+        },
+        { Date: "2026-10-29", Day: "Thursday", in: zoneIso("2026-10-29 00:30:00", zone), out: "" },
+      ],
+      zone,
+    );
+    // The zones match: no problem row, and the tablet's list names the zone.
+    assert.equal(settingOf(k.ss, "Time zone problem"), "", zone);
+    assert.equal(k.list.timeZone, L.parseTimeZone(zone), zone);
+  }
+});
+
+test("the zone suites: the page reads the list's zone and agrees with the server's day", () => {
+  for (const zone of ZONES) {
+    const clock = { ms: zoneMs("2026-10-28 23:50:00", zone) };
+    const k = tappingKiosk(zone, clock);
+    const settings = pageSettingsOf(plain(k.list));
+    onPage(settings.timeZone, () => {
+      const arrived = clock.ms;
+      const now = new Date(arrived);
+      assert.equal(kioskDay(arrived), "2026-10-28", zone);
+      assert.equal(kioskDay(arrived), k.ctx.kioskDate_(now), zone);
+      assert.equal(kioskMinutes(now), 23 * 60 + 50, zone);
+      // A time picked at 11:50 PM keeps its day after midnight, and names that day's instant.
+      const picked = pickTime("23:45", now);
+      assert.deepEqual(picked, { time: "23:45", day: "2026-10-28" }, zone);
+      assert.equal(pickedTimeToIso(picked), zoneIso("2026-10-28 23:45:00", zone), zone);
+      // The card: 11:50 PM the same evening, and the time in once past midnight.
+      const iso = new Date(arrived).toISOString();
+      assert.equal(cardTime(iso, arrived + 5 * 60000, 8).text, "in 11:50 PM", zone);
+      const after = cardTime(iso, zoneMs("2026-10-29 00:20:00", zone), 8);
+      assert.deepEqual(
+        after,
+        { text: "30m in", late: false, label: "checked in yesterday at 11:50 PM" },
+        zone,
+      );
+    });
+  }
+});
+
+test("the zone suites: a picked time on a summer time change day names the zone's instant", () => {
+  // The days Chicago's and London's clocks change in 2026.
+  const days = ["2026-03-08", "2026-03-29", "2026-10-25", "2026-11-01"];
+  for (const zone of ZONES) {
+    onPage(zone, () => {
+      for (const day of days) {
+        const iso = pickedTimeToIso({ time: "09:00", day });
+        assert.equal(iso, zoneIso(day + " 09:00:00", zone), zone + " " + day);
+        assert.equal(kioskDay(Date.parse(iso)), day, zone + " " + day);
+        assert.equal(kioskMinutes(new Date(iso)), 9 * 60, zone + " " + day);
+      }
+    });
+  }
+  // Under Chicago, the instants the page sent before the Time zone row, unchanged.
+  assert.deepEqual(
+    days.map((day) => pickedTimeToIso({ time: "09:00", day })),
+    [
+      "2026-03-08T14:00:00.000Z",
+      "2026-03-29T14:00:00.000Z",
+      "2026-10-25T14:00:00.000Z",
+      "2026-11-01T15:00:00.000Z",
+    ],
+  );
+});
+
+test("zones apart: the kiosk works on the row's zone, and a change to the row rewrites the problem", () => {
+  // 00:30 on Oct 29 in London is 7:30 PM on Oct 28 in Chicago.
+  const clock = { ms: zoneMs("2026-10-29 00:30:00", "Europe/London") };
+  const k = tappingKiosk("Europe/London", clock, "America/Chicago");
+  const calls = [];
+  const real = k.ctx.setSetting_;
+  k.ctx.setSetting_ = (name, value) => (calls.push([name, value]), real(name, value));
+  const problem = (row) =>
+    "Settings says " +
+    row +
+    ", the spreadsheet is on America/Chicago; times shown on the sheet and times typed into" +
+    " it are off until they match. Correct the Time zone row if it's wrong, then run setupSheets.";
+
+  assert.equal(k.ctx.apiCheckIn(CODE, k.sam, null, null).ok, true);
+  assert.equal(logRows(k.ss)[0].Date, "2026-10-29");
+  assert.deepEqual(calls, [["Time zone problem", problem("Europe/London")]]);
+
+  // Staff change the Time zone row: the next tap works on it and rewrites the problem.
+  const setRow = (value) => {
+    const settings = k.ss.getSheetByName("Settings");
+    const row =
+      settings
+        .getDataRange()
+        .getValues()
+        .findIndex((r) => r[0] === "Time zone") + 1;
+    settings.getRange(row, 2).setValue(value);
+    k.ctx.markSettingsEdited_();
+  };
+  calls.length = 0;
+  setRow("Asia/Kolkata");
+  clock.ms += 60 * 60000;
+  assert.equal(k.ctx.apiCheckOut(CODE, k.sam, null, null).ok, true);
+  assert.deepEqual(calls, [["Time zone problem", problem("Asia/Kolkata")]]);
+  assert.equal(k.ctx.kioskTimeZone(), L.parseTimeZone("Asia/Kolkata"));
+
+  // The row now names the spreadsheet's zone: the next tap clears the problem.
+  calls.length = 0;
+  setRow("America/Chicago");
+  clock.ms += 60 * 60000;
+  assert.equal(k.ctx.apiCheckIn(CODE, k.sam, null, null).ok, true);
+  assert.deepEqual(calls, [["Time zone problem", ""]]);
+  assert.equal(logRows(k.ss)[1].Date, "2026-10-28");
 });
