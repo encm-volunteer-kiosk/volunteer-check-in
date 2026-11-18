@@ -1,5 +1,6 @@
 // This brand's Settings: a sheet gets the rows it had before the general settings, in the
-// same order with the same values, then the general rows with values that change nothing.
+// same order with the same values, then the general rows and the time zone rows with values
+// that change nothing.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -17,7 +18,7 @@ test("the brand names no Settings default of its own", () => {
   assert.deepEqual(plain(L.brandSettingsDefaults()), {});
 });
 
-test("settingsDefaults is the earlier list, then the general rows appended last", () => {
+test("settingsDefaults is the earlier list, then the general rows and the time zone rows appended last", () => {
   assert.deepEqual(plain(L.settingsDefaults("2026-11-13")), [
     ...BEFORE,
     ["Word for a person", "volunteer"],
@@ -38,5 +39,7 @@ test("settingsDefaults is the earlier list, then the general rows appended last"
     ["Import past hours", "On"],
     ["Tablet arrival changes", "On"],
     ["Tablet check-out changes", "On"],
+    ["Time zone", "America/Chicago"],
+    ["Time zone problem", ""],
   ]);
 });

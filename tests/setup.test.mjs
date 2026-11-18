@@ -51,6 +51,8 @@ const OLD_LOG_HEADERS = [
   "Staff note",
 ];
 const TIME_FORMAT = "yyyy-mm-dd h:mm am/pm";
+/** Settings rows setupSheets itself writes, which a test leaves blank. */
+const KIOSK_WRITTEN = ["Header word", "Time zone problem"];
 
 function expectKioskFormats(sheet, header) {
   header.forEach((h, i) => {
@@ -157,7 +159,10 @@ test("on a new spreadsheet Settings gets every default, the check-out flag at 15
   const rows = settings.getDataRange().getValues().slice(1);
   // One row per default: 24, worked out from settingsDefaults, then the general settings.
   assert.equal(rows.length, S.settingsDefaults("2026-11-13").length);
-  assert.equal(rows.length, 24 + S.generalSettingsDefaults().length);
+  assert.equal(
+    rows.length,
+    24 + S.generalSettingsDefaults().length + S.timeZoneSettingsDefaults().length,
+  );
   const names = rows.map((r) => r[0]);
   assert.equal(names.indexOf("Check-out flag minutes"), names.indexOf("Arrival flag minutes") + 1);
   assert.deepEqual(rows.find((r) => r[0] === "Check-out flag minutes").slice(0, 2), [
@@ -188,7 +193,10 @@ test("setupSheets stamps the Settings cache after its Settings rows reach the sh
   assert.deepEqual(atFlush, [
     { stamped: false, rows: S.settingsDefaults("2026-11-13").length + 1 },
   ]);
-  assert.equal(atFlush[0].rows, 25 + S.generalSettingsDefaults().length);
+  assert.equal(
+    atFlush[0].rows,
+    25 + S.generalSettingsDefaults().length + S.timeZoneSettingsDefaults().length,
+  );
   const stamp = cache.get(S.settingsStampKey());
   assert.match(stamp, /^\d+$/);
   assert.ok(Number(stamp) >= before + 1000);
@@ -361,7 +369,10 @@ test("existing Settings values are kept and missing rows appended", () => {
   assert.deepEqual(rows[0], ["Kiosk access code", "lettersonlylettersonly"]);
   assert.deepEqual(rows[1], ["Arrival flag minutes", "20"]);
   assert.equal(rows.length, S.settingsDefaults("2026-11-13").length);
-  assert.equal(rows.length, 24 + S.generalSettingsDefaults().length);
+  assert.equal(
+    rows.length,
+    24 + S.generalSettingsDefaults().length + S.timeZoneSettingsDefaults().length,
+  );
   assert.deepEqual(
     rows.find((r) => r[0] === "Check-out flag minutes"),
     ["Check-out flag minutes", "15"],
@@ -512,7 +523,10 @@ test("without the advanced Sheets service, setupSheets names the view step and t
   assert.deepEqual(ss.getSheetByName("Log").row(1), LOG_HEADERS);
   const settingsRows = ss.getSheetByName("Settings").getDataRange().getValues().length;
   assert.equal(settingsRows, S.settingsDefaults("2026-11-13").length + 1);
-  assert.equal(settingsRows, 25 + S.generalSettingsDefaults().length);
+  assert.equal(
+    settingsRows,
+    25 + S.generalSettingsDefaults().length + S.timeZoneSettingsDefaults().length,
+  );
   assert.equal(ss.views.size, 0);
 });
 
@@ -1184,8 +1198,9 @@ test("Kiosk contact: a staff value survives every run; a tab without the row get
   const rows = [["Setting", "Value"]].concat(
     plain(S.settingsDefaults("2026-11-13"))
       .filter((r) => r[0] !== "Kiosk contact")
-      // Header word stays blank: setupSheets writes it while the Log holds no rows.
-      .map((r) => [r[0], r[1] || (r[0] === "Header word" ? "" : "kept")]),
+      // Header word stays blank: setupSheets writes it while the Log holds no rows. So does
+      // Time zone problem, which setupSheets clears once the zones match.
+      .map((r) => [r[0], r[1] || (KIOSK_WRITTEN.includes(r[0]) ? "" : "kept")]),
   );
   const tab = sheetWith(old, "Settings", rows);
   const O = server(old);
@@ -1233,8 +1248,9 @@ test("the hours email rows: staff values survive every run; a tab without them g
   const rows = [["Setting", "Value"]].concat(
     plain(S.settingsDefaults("2026-11-13"))
       .filter((r) => !r[0].startsWith("Hours email"))
-      // Header word stays blank: setupSheets writes it while the Log holds no rows.
-      .map((r) => [r[0], r[1] || (r[0] === "Header word" ? "" : "kept")]),
+      // Header word stays blank: setupSheets writes it while the Log holds no rows. So does
+      // Time zone problem, which setupSheets clears once the zones match.
+      .map((r) => [r[0], r[1] || (KIOSK_WRITTEN.includes(r[0]) ? "" : "kept")]),
   );
   const tab = sheetWith(old, "Settings", rows);
   const O = server(old);
@@ -1445,7 +1461,7 @@ test("setupSheets fills a blank Kiosk launch date with today, and keeps a date",
   ]);
   const S = server(ss);
   S.setupSheets();
-  const today = S.centralDate_(new Date());
+  const today = S.kioskDate_(new Date());
   assert.equal(settingValue(settings, "Kiosk launch date"), today);
   assert.equal(
     settings

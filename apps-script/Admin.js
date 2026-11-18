@@ -158,7 +158,7 @@ function adminRoster(key) {
   if (denied) return denied;
   return {
     ok: true,
-    today: centralDate_(new Date()),
+    today: kioskDate_(new Date()),
     volunteers: adminRosterLabelsFor_(readSettings_()),
   };
 }
@@ -185,7 +185,7 @@ function adminHoursRequests(key) {
     mode,
     Date.now(),
     listedIds,
-    (ms) => centralDate_(new Date(ms)),
+    (ms) => kioskDate_(new Date(ms)),
   );
   return { ok: true, mode, requests: choices.requests, notListed: choices.notListed };
 }
@@ -199,7 +199,7 @@ function adminOpenShifts(key) {
 
 /**
  * Adds a closed shift for a volunteer. form is {id, date, inTime, outTime, note,
- * initials}: date yyyy-MM-dd and times HH:mm, Central. {ok: true, row, name, hours} or a
+ * initials}: date yyyy-MM-dd and times HH:mm, kiosk time. {ok: true, row, name, hours} or a
  * refusal.
  */
 function adminAddShift(key, form) {
@@ -216,7 +216,7 @@ function adminAddShift(key, form) {
       volunteers: getProfiles_(readSettings_()),
       id: f.id,
       entries: readLog_(cols),
-      todayDate: centralDate_(now),
+      todayDate: kioskDate_(now),
       nowMs: now.getTime(),
       date: f.date,
       inMs: inTime.ms,
@@ -348,7 +348,7 @@ function adminRemoveShift(key, form) {
     const flags = markFlagsSafely_(shiftId, {
       tick: true,
       initials: decision.initials,
-      note: removeFlagNote(decision.initials, decision.reason, centralDate_(now)),
+      note: removeFlagNote(decision.initials, decision.reason, kioskDate_(now)),
       only: {
         row: target.row,
         date: target.entry.dateText,
@@ -429,7 +429,7 @@ function adminRestoreShift(key, form) {
     removed.sheet.deleteRow(target.row);
     const flags = markFlagsSafely_(shiftId, {
       tick: false,
-      note: restoreFlagNote(decision.initials, centralDate_(now)),
+      note: restoreFlagNote(decision.initials, kioskDate_(now)),
     });
     return {
       ok: true,
@@ -822,7 +822,7 @@ function readHoursEmailBase_(ids, choice, attach, now) {
     console.log("Flags not read for the hours email: " + errorMessage_(err));
     flags = null;
   }
-  const todayDate = centralDate_(now);
+  const todayDate = kioskDate_(now);
   return {
     volunteers,
     emails,
@@ -1021,7 +1021,7 @@ function adminRefusal_(decision) {
   return overlapRefusal(decision.conflict, adminClock_, decision.openStartMs);
 }
 
-/** A Central clock time such as "9:00 AM". */
+/** A kiosk clock time such as "9:00 AM". */
 function adminClock_(ms) {
   return Utilities.formatDate(new Date(ms), kioskTimeZone(), "h:mm a");
 }

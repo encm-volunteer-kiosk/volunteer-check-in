@@ -49,18 +49,23 @@ test("each row's code default, and a missing row, read as the kiosk before the r
   }
 });
 
-test("the general rows come after every older row, each once, with a sentence", () => {
+test("the general rows come after every older row, then the time zone rows, each once, with a sentence", () => {
   const rows = plain(L.settingsDefaults("2026-11-13"));
   const general = plain(L.generalSettingsDefaults());
+  const zone = plain(L.timeZoneSettingsDefaults());
   assert.equal(general.length, 18);
+  assert.deepEqual(zone, [
+    ["Time zone", "America/Chicago"],
+    ["Time zone problem", ""],
+  ]);
   assert.deepEqual(
-    rows.slice(-general.length).map((r) => r[0]),
-    general.map((r) => r[0]),
+    rows.slice(-general.length - zone.length).map((r) => r[0]),
+    [...general, ...zone].map((r) => r[0]),
   );
   const names = rows.map((r) => r[0]);
   assert.equal(new Set(names).size, names.length);
   const d = plain(L.settingsDescriptions());
-  general.forEach(([name]) => assert.ok(d[name], name));
+  [...general, ...zone].forEach(([name]) => assert.ok(d[name], name));
 });
 
 test("an On/Off row reads on and off in any case, and anything else as its default", () => {

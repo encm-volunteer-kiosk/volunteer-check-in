@@ -8,7 +8,7 @@ import {
   QUICK_ANSWERS,
   agoText,
   canNudge,
-  centralMinutes,
+  kioskMinutes,
   clockText,
   floorQuarter,
   fromTimeValue,
@@ -179,22 +179,22 @@ test("time values and the readout text", () => {
   assert.equal(agoText(12 * 60, range), "2 hr ago");
 });
 
-test("centralMinutes reads the Central clock", () => {
+test("kioskMinutes reads the kiosk's clock, Chicago by default", () => {
   // 2026-11-13 20:14:59 UTC is 2:14 PM CST (UTC-6).
-  assert.equal(centralMinutes(new Date("2026-11-13T20:14:59Z")), 14 * 60 + 14);
+  assert.equal(kioskMinutes(new Date("2026-11-13T20:14:59Z")), 14 * 60 + 14);
   // 2026-07-01 05:07 UTC is 00:07 CDT (UTC-5).
-  assert.equal(centralMinutes(new Date("2026-07-01T05:07:00Z")), 7);
+  assert.equal(kioskMinutes(new Date("2026-07-01T05:07:00Z")), 7);
   // Midnight reads as 0, not 24:00.
-  assert.equal(centralMinutes(new Date("2026-11-14T06:00:00Z")), 0);
+  assert.equal(kioskMinutes(new Date("2026-11-14T06:00:00Z")), 0);
 });
 
 test("a quick answer sends the time its chip shows when the quarter hour turns before the tap", () => {
   // The chips were drawn at 2:14:55 PM (latest 2:00 PM), so "15 min ago" shows 1:45 PM.
-  const drawn = quickRange(0, centralMinutes(new Date("2026-11-13T20:14:55Z")));
+  const drawn = quickRange(0, kioskMinutes(new Date("2026-11-13T20:14:55Z")));
   const answer = quickAnswers(drawn).find((item) => item.label === "15 min ago");
   assert.equal(clockText(answer.minutes), "1:45 PM");
   // The tap lands at 2:15:05 PM, when the latest quarter hour is 2:15 PM.
-  const tapped = quickRange(0, centralMinutes(new Date("2026-11-13T20:15:05Z")));
+  const tapped = quickRange(0, kioskMinutes(new Date("2026-11-13T20:15:05Z")));
   assert.equal(tapped.latest, 14 * 60 + 15);
   assert.equal(pickMinutes(answer.minutes, drawn.latest - answer.minutes, tapped), 13 * 60 + 45);
 });
@@ -218,7 +218,7 @@ test("a time picked before Central midnight and sent after it keeps the day it w
   // The picker opens at 11:52 PM Central on Nov 13 and holds 11:45 PM; the tap comes at
   // 12:00:30 AM on Nov 14.
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-14T05:52:00Z") });
-  const picked = pickTime(toTimeValue(floorQuarter(centralMinutes())));
+  const picked = pickTime(toTimeValue(floorQuarter(kioskMinutes())));
   assert.equal(picked.time, "23:45");
   t.mock.timers.setTime(Date.parse("2026-11-14T06:00:30Z"));
   const sent = pickedTimeToIso(picked);

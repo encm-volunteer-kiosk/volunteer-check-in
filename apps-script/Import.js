@@ -165,7 +165,7 @@ function importJob_(form) {
   const plan = importPlan({
     header: (values[0] || []).map(cellText_),
     rows: values.slice(1).map((cells) => cells.map((value) => importCell_(value, zone))),
-    todayDate: centralDate_(new Date()),
+    todayDate: kioskDate_(new Date()),
     volunteers: getProfiles_(settings),
     fullNameRoster: rosterUsesFullName(rosterColumnMapping(settings)),
     ledgerKeys: ledger.keys,
@@ -181,7 +181,7 @@ function importJob_(form) {
 /**
  * A source cell for importPlan: a date as yyyy-MM-dd, a number as it is, anything else as
  * text. A date cell holds midnight in the source spreadsheet's own time zone, so it is read
- * in that zone (zone); read in Central, a source set east of Central would land a day early.
+ * in that zone (zone); read in the kiosk's zone, a source set east of it would land a day early.
  */
 function importCell_(value, zone) {
   if (typeof value === "number") return value;
@@ -193,7 +193,7 @@ function importCell_(value, zone) {
  * What the import needs from the Log, from four single-column reads (Shift ID, Date, User
  * Token and Status), never the full width: {shiftIds, kioskDays}. shiftIds are the
  * non-blank Shift IDs, kioskDays the importKioskDays (Logic.js) of every row. Cells are
- * read as logEntry reads them: a Date cell as its Central yyyy-MM-dd.
+ * read as logEntry reads them: a Date cell as its kiosk yyyy-MM-dd.
  */
 function readLogDays_(cols) {
   const sheet = sheet_(LOG_TAB);

@@ -143,14 +143,15 @@ export function inactivityMs(screen: Screen): number | null {
 export type StatusCode = "ALREADY_IN" | "NOT_IN";
 
 /**
- * Where a refusal of a check-in or check-out leads: the setup screen for a refused code,
+ * Where a refusal of a check-in or check-out leads: the setup screen for a refused code
+ * or a kiosk with no time zone,
  * the status screen when the volunteer is already checked in or not checked in, the phone
  * step for a phone refusal, and otherwise back to the confirm screen with the message.
  */
 export function refusalOutcome(
   code: string,
 ): "lock" | "status" | "phone-entry" | "phone-missing" | "message" {
-  if (code === "ACCESS") return "lock";
+  if (code === "ACCESS" || code === "ZONE_NOT_SET") return "lock";
   if (code === "ALREADY_IN" || code === "NOT_IN") return "status";
   if (code === "PHONE_WRONG" || code === "PHONE_NEEDED") return "phone-entry";
   if (code === "PHONE_MISSING") return "phone-missing";

@@ -328,6 +328,10 @@ class FakeSheet {
  * a cache get throw (it may also act, as a hook, and return false), cacheRemoveIgnored(key)
  * true to make a remove do nothing without an error, and propGet(key), propSet(key) and
  * propDelete(key) true to make that property call throw.
+ *
+ * For the time zone: opts.spreadsheetZone is the spreadsheet's own zone (America/Chicago by
+ * default), changeable through zone.sheet, and opts.docProps the document properties
+ * ({zoneSetAs: ...}); docProps is the Map of them, and stores lists "docProps.get <key>".
  */
 function server(opts = {}) {
   const calls = [];
@@ -336,6 +340,9 @@ function server(opts = {}) {
   const logs = [];
   const journal = [];
   const props = new Map(Object.entries(opts.props || {}));
+  // The spreadsheet's own zone (zone.sheet) and the document properties.
+  const zone = { sheet: opts.spreadsheetZone || TZ };
+  const docProps = new Map(Object.entries(opts.docProps || {}));
   const stores = [];
   const puts = [];
   // With opts.settingsCacheFails, every cache call on a Settings key throws, as in a cache
@@ -487,6 +494,12 @@ function server(opts = {}) {
             props.delete(k);
           },
         }),
+      getDocumentProperties: () => ({
+        getProperty: (k) => {
+          stores.push("docProps.get " + k);
+          return docProps.has(k) ? docProps.get(k) : null;
+        },
+      }),
     }),
     ScriptApp: service("ScriptApp", {
       getProjectTriggers: () =>
@@ -559,6 +572,10 @@ function server(opts = {}) {
           return sheets[name];
         },
         getUrl: () => "https://docs.google.com/spreadsheets/d/log-1/edit",
+        getSpreadsheetTimeZone: () => {
+          journal.push("read spreadsheet getSpreadsheetTimeZone");
+          return zone.sheet;
+        },
       }),
       openById: (id) => {
         if (faults.openById && faults.openById()) throw new Error("Profiles read failed");
@@ -661,6 +678,8 @@ function server(opts = {}) {
     props,
     stores,
     puts,
+    zone,
+    docProps,
   };
 }
 
@@ -2818,22 +2837,32 @@ test("the Log table read takes one token or a list, and keeps a row whose token 
 const isRead = (entry) => entry.startsWith("read ");
 const isLogWrite = (entry) => entry.startsWith("write Log ");
 
+/** The time zone compare's read, after the lock's closing flush (afterTap_). */
+const ZONE_READ = "read spreadsheet getSpreadsheetTimeZone";
+
 /**
- * The journal split at the call's first Log write: {before, after}, after starting with
- * that write. Fails when the call wrote nothing to the Log.
+ * The journal split at the call's first Log write: {before, after, compare}, after starting
+ * with that write and running to the time zone compare, which comes once the lock's
+ * closing flush is through, and compare from it on. Fails when the call wrote nothing to
+ * the Log.
  */
 const atFirstLogWrite = (journal) => {
   const i = journal.findIndex(isLogWrite);
   assert.ok(i > 0, "the call writes the Log");
-  return { before: journal.slice(0, i), after: journal.slice(i) };
+  const z = journal.indexOf(ZONE_READ, i);
+  const end = z < 0 ? journal.length : z;
+  assert.equal(journal[end - 1], "flush", "the compare comes after the lock's flush");
+  return { before: journal.slice(0, i), after: journal.slice(i, end), compare: journal.slice(end) };
 };
 
 test("a flagged check-in reads nothing after its Log write", () => {
   const s = kiosk({});
   const reply = plain(s.ctx.apiCheckIn(CODE, SAM.id, minutesBefore(24), null));
   assert.equal(reply.ok, true);
-  const { before, after } = atFirstLogWrite(s.journal.slice());
+  const { before, after, compare } = atFirstLogWrite(s.journal.slice());
   assert.deepEqual(after.filter(isRead), [], "no read after the Log write");
+  // Then, after the flush, the zones are compared: they match, so nothing is written.
+  assert.deepEqual(compare, [ZONE_READ]);
   // Every Flags read came before it: the tab, its header, last row, grid and formats. A
   // tab with no rows below the header has no rows to read for the last one in use.
   const width = FLAG_HEADER.length;
@@ -2871,8 +2900,10 @@ test("a flagged check-out reads nothing after its Log write", () => {
   const s = kiosk({ log: [LOG_HEADER, kioskOpen("s-open", TODAY, "08:00")] });
   const reply = plain(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30)));
   assert.equal(reply.ok, true);
-  const { before, after } = atFirstLogWrite(s.journal.slice());
+  const { before, after, compare } = atFirstLogWrite(s.journal.slice());
   assert.deepEqual(after.filter(isRead), [], "no read after the Log write");
+  // Then, after the flush, the zones are compared: they match, so nothing is written.
+  assert.deepEqual(compare, [ZONE_READ]);
   assert.ok(before.includes("read Flags getNumberFormats 2,1,1," + FLAG_HEADER.length));
   assert.deepEqual(
     after.filter((e) => e.startsWith("write Flags ")).map((e) => e.split(" ")[2]),
@@ -5593,10 +5624,11 @@ const LOG_WRITE_CLASSES = {
     why: "setupReports' warning-only protections",
   },
 
-  setupSheets: {
+  setupSheets: { class: "tab", tab: "SETTINGS_TAB", why: "writes Settings" },
+  setupTimeZone_: {
     class: "tab",
     tab: "SETTINGS_TAB",
-    why: "writes Settings; its time zone change comes just before setupLog_, which stamps first",
+    why: "sets the spreadsheet's zone, in setupSheets just before setupLog_, which stamps first",
   },
   setupFlags_: { class: "tab", tab: "FLAGS_TAB" },
   setSetting_: { class: "tab", tab: "SETTINGS_TAB" },
@@ -6454,4 +6486,159 @@ test("no switch takes a tap off the instant path: the list's instant fields keep
       }
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// The Time zone problem row, from the tablet
+
+/** The Settings tab's value for name in s, or undefined with no such row. */
+const settingIn = (s, name) => {
+  const row = s.sheets.Settings.rows.find((r) => r[0] === name);
+  return row ? row[1] : undefined;
+};
+
+/** s.ctx.setSetting_, wrapped to record each call as [name, value]. */
+const spySetSetting = (s) => {
+  const calls = [];
+  const real = s.ctx.setSetting_;
+  s.ctx.setSetting_ = (name, value) => (calls.push([name, value]), real(name, value));
+  return calls;
+};
+
+const zoneProblem = (row, sheet) =>
+  "Settings says " +
+  row +
+  ", the spreadsheet is on " +
+  sheet +
+  "; times shown on the sheet and times typed into it are off until they match. Correct the" +
+  " Time zone row if it's wrong, then run setupSheets.";
+
+test("while the zones match, a check-in and a check-out write no Settings", () => {
+  const cases = [
+    [
+      "equal names",
+      [
+        ["Time zone", "America/Chicago"],
+        ["Time zone problem", ""],
+      ],
+      {},
+      false,
+    ],
+    [
+      "an alias setupSheets kept",
+      [
+        ["Time zone", "US/Central"],
+        ["Time zone problem", ""],
+      ],
+      { zoneSetAs: JSON.stringify({ row: "US/Central", stored: "America/Chicago" }) },
+      true,
+    ],
+    ["no Time zone problem row", [["Time zone", "America/Chicago"]], {}, false],
+    ["no Time zone row", [], {}, false],
+  ];
+  for (const [label, rows, docProps, readsPair] of cases) {
+    const s = kiosk({ settings: [...KIOSK_SETTINGS, ...rows], docProps });
+    const calls = spySetSetting(s);
+    assert.equal(s.ctx.apiCheckIn(CODE, SAM.id, null, null).ok, true, label);
+    assert.equal(s.ctx.apiCheckOut(CODE, SAM.id, null, null).ok, true, label);
+    assert.deepEqual(calls, [], label);
+    assert.equal(s.stores.includes("docProps.get zoneSetAs"), readsPair, label);
+    assert.equal(settingIn(s, "Time zone problem"), rows.length > 1 ? "" : undefined, label);
+    assert.deepEqual(s.errors, [], label);
+  }
+});
+
+test("zones apart: the first tap writes the problem row, the next doesn't, a change rewrites it, a match clears it", () => {
+  const s = kiosk({ spreadsheetZone: "America/New_York" });
+  const calls = spySetSetting(s);
+  assert.equal(s.ctx.apiCheckIn(CODE, SAM.id, null, null).ok, true);
+  const first = zoneProblem("America/Chicago", "America/New_York");
+  assert.deepEqual(calls, [["Time zone problem", first]]);
+  assert.equal(settingIn(s, "Time zone problem"), first);
+
+  // The second tap reads the row it wrote: no write.
+  calls.length = 0;
+  assert.equal(s.ctx.apiCheckOut(CODE, SAM.id, null, null).ok, true);
+  assert.deepEqual(calls, []);
+
+  // The spreadsheet's zone changes: the next tap rewrites it.
+  s.zone.sheet = "Europe/London";
+  assert.equal(s.ctx.apiCheckIn(CODE, SAM.id, null, null).ok, true);
+  assert.deepEqual(calls, [["Time zone problem", zoneProblem("America/Chicago", "Europe/London")]]);
+
+  // The zones match again: the next tap clears it.
+  calls.length = 0;
+  s.zone.sheet = "America/Chicago";
+  assert.equal(s.ctx.apiCheckOut(CODE, SAM.id, null, null).ok, true);
+  assert.deepEqual(calls, [["Time zone problem", ""]]);
+  assert.equal(settingIn(s, "Time zone problem"), "");
+  assert.deepEqual(s.errors, []);
+});
+
+test("a row staff clear by hand while the zones differ is written again at the next tap", () => {
+  const s = kiosk({ spreadsheetZone: "America/New_York" });
+  s.ctx.apiCheckIn(CODE, SAM.id, null, null);
+  const row = s.sheets.Settings.rows.findIndex((r) => r[0] === "Time zone problem") + 1;
+  s.sheets.Settings.getRange(row, 2).setValue("");
+  // A staff edit stamps the Settings cache, as onEdit does.
+  s.ctx.markSettingsEdited_();
+  const calls = spySetSetting(s);
+  s.ctx.apiCheckOut(CODE, SAM.id, null, null);
+  assert.deepEqual(calls, [
+    ["Time zone problem", zoneProblem("America/Chicago", "America/New_York")],
+  ]);
+});
+
+test("the problem writes nothing to the Log, Admin Alerts? or Flags, so hours lists see the same rows", () => {
+  const tap = (spreadsheetZone) => {
+    const s = kiosk({ spreadsheetZone, log: [LOG_HEADER, kioskOpen("s-sam", TODAY, "08:00")] });
+    // A flagged check-out, then a plain check-in.
+    assert.equal(s.ctx.apiCheckOut(CODE, SAM.id, null, minutesBefore(30)).ok, true);
+    assert.equal(s.ctx.apiCheckIn(CODE, SAM.id, null, null).ok, true);
+    return s;
+  };
+  const apart = tap("America/New_York");
+  const same = tap("America/Chicago");
+  assert.notEqual(settingIn(apart, "Time zone problem"), undefined);
+  assert.equal(settingIn(same, "Time zone problem"), undefined);
+  // The Log (with Admin Alerts?) and the Flags tab, which the hours request list and the
+  // Email hours plan read, are cell for cell the same.
+  assert.deepEqual(plain(apart.sheets.Log.rows), plain(same.sheets.Log.rows));
+  assert.deepEqual(plain(apart.sheets.Flags.rows), plain(same.sheets.Flags.rows));
+  assert.equal(apart.sheets.Log.rowByHeader(2)["Admin Alerts?"], "check-out differs by 30 min");
+  assert.equal(apart.sheets.Flags.getLastRow(), 2);
+});
+
+test("a refused or replayed tap compares no zones", () => {
+  const s = kiosk({ spreadsheetZone: "America/New_York" });
+  const calls = spySetSetting(s);
+  // Not checked in: NOT_IN, and a Flags row for nothing shown, but no compare.
+  assert.equal(s.ctx.apiCheckOut(CODE, SAM.id, null, null).refusal, "NOT_IN");
+  assert.deepEqual(calls, []);
+  assert.ok(!s.journal.includes(ZONE_READ));
+
+  // A tapped check-in compares once; its replay, with the spreadsheet's zone changed since
+  // so a compare would write, compares nothing.
+  assert.equal(s.ctx.apiCheckIn(CODE, SAM.id, null, null, tapFor()).ok, true);
+  assert.deepEqual(calls, [
+    ["Time zone problem", zoneProblem("America/Chicago", "America/New_York")],
+  ]);
+  calls.length = 0;
+  s.journal.length = 0;
+  s.zone.sheet = "Europe/London";
+  const again = plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null, tapFor({ attempt: 2 })));
+  assert.equal(again.replayed, true);
+  assert.deepEqual(calls, []);
+  assert.ok(!s.journal.includes(ZONE_READ));
+});
+
+test("a tap whose problem write fails still saves, and the error is logged", () => {
+  const s = kiosk({ spreadsheetZone: "America/New_York" });
+  s.ctx.setSetting_ = () => {
+    throw new Error("Service Spreadsheets timed out");
+  };
+  const reply = plain(s.ctx.apiCheckIn(CODE, SAM.id, null, null));
+  assert.equal(reply.ok, true);
+  assert.equal(s.sheets.Log.getLastRow(), 2);
+  assert.deepEqual(s.errors, ["Time zone problem not written: Service Spreadsheets timed out"]);
 });

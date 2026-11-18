@@ -84,7 +84,7 @@ function doGet() {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
 }
 
-/** {ok: true} or ACCESS. */
+/** {ok: true}, ACCESS or ZONE_NOT_SET. */
 function apiCheckAccess(code) {
   return accessRefusal_(code, refreshSettingsCache_()) || { ok: true };
 }
@@ -104,7 +104,8 @@ function apiCheckAccess(code) {
  * which the page marks a card. hoursRequests is true when Settings "Hours requests" is
  * Approve or Auto and the Email hours switch is On (hoursRequestsMode), false otherwise.
  * milestones are [{id, title, message}], the texts the steps
- * name. words, organizationName, logoLink and switches are the page's Settings (pageSettings).
+ * name. words, organizationName, logoLink, switches and timeZone are the page's Settings
+ * (pageSettings).
  * With the Milestones switch Off every checkOutMilestones holds the one step of no milestone.
  * serverNow is the server's clock in ms, taken last, so the page can tell how far its own
  * clock is off.
@@ -126,7 +127,7 @@ function apiListVolunteers(code) {
       states,
       now.getTime(),
       autoClockOutWindowMs(settings["Auto clock-out after hours"]),
-      centralDate_(now),
+      kioskDate_(now),
       settings["Kiosk launch date"],
       kioskSwitches(settings).milestones,
     ),
@@ -231,7 +232,7 @@ function apiCheckIn(code, id, arrivalIso, digits, tap) {
     () =>
       withLogCacheLine_(run, () => {
         const now = new Date();
-        const today = centralDate_(now);
+        const today = kioskDate_(now);
         const volunteers = getProfiles_(settings);
         const who = resolveVolunteer(volunteers, id, digits);
         if (who.refusal) {
@@ -252,7 +253,7 @@ function apiCheckIn(code, id, arrivalIso, digits, tap) {
           nowMs: now.getTime(),
           windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
           arrivedMs,
-          arrivedDate: Number.isFinite(arrivedMs) ? centralDate_(new Date(arrivedMs)) : "",
+          arrivedDate: Number.isFinite(arrivedMs) ? kioskDate_(new Date(arrivedMs)) : "",
           flagMinutes: parseFlagMinutes(settings["Arrival flag minutes"]),
           launchDate: settings["Kiosk launch date"],
           tapShiftId: t ? t.tapId : null,
@@ -320,7 +321,7 @@ function apiCheckIn(code, id, arrivalIso, digits, tap) {
           missedSignOut: decision.missedSignOut,
         };
       }),
-    () => fillLogMap_(run),
+    (reply) => afterTap_(run, settings, reply),
   );
 }
 
@@ -379,11 +380,11 @@ function apiCheckOut(code, id, digits, checkOutIso, tap) {
           volunteers,
           id,
           digits,
-          todayDate: centralDate_(now),
+          todayDate: kioskDate_(now),
           nowMs: now.getTime(),
           windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
           outMs,
-          outDate: Number.isFinite(outMs) ? centralDate_(new Date(outMs)) : "",
+          outDate: Number.isFinite(outMs) ? kioskDate_(new Date(outMs)) : "",
           flagMinutes: parseFlagMinutes(settings["Check-out flag minutes"]),
           longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
           launchDate: settings["Kiosk launch date"],
@@ -469,7 +470,7 @@ function apiCheckOut(code, id, digits, checkOutIso, tap) {
           milestone: decision.milestone,
         };
       }),
-    () => fillLogMap_(run),
+    (reply) => afterTap_(run, settings, reply),
   );
 }
 
@@ -523,14 +524,14 @@ function apiChangeArrival(code, id, digits, shiftId, fromIso, arrivalIso) {
           id,
           digits,
           entries: log.entries,
-          todayDate: centralDate_(now),
+          todayDate: kioskDate_(now),
           nowMs: now.getTime(),
           windowMs: autoClockOutWindowMs(settings["Auto clock-out after hours"]),
           shiftId,
           fromMs: fromMs === null ? NaN : fromMs,
           arrivedMs: arrivedMs === null ? NaN : arrivedMs,
           flagMinutes: parseFlagMinutes(settings["Arrival flag minutes"]),
-          dateOf: (ms) => centralDate_(new Date(ms)),
+          dateOf: (ms) => kioskDate_(new Date(ms)),
           clockOf: (ms) => zoneClock_(new Date(ms), kioskTimeZone()),
         });
         if (decision.refusal) {
@@ -634,7 +635,7 @@ function refuseTap_(t, kind, code, volunteer, nowMs) {
 /**
  * One Flags row for a tapped save the server refused, after the tablet showed it saved,
  * under the call's lock and before the refusal is returned; no Log cell is written. Date
- * is the Central date of the tap, Name the Profiles name when the volunteer was found,
+ * is the kiosk date of the tap, Name the Profiles name when the volunteer was found,
  * else the name the tablet sent; Shift ID the tap's ID for a check-in and the row it named
  * for a check-out; Log Row blank. The reason is tapRefusalReason (Logic.js). BUSY is
  * retried and ACCESS keeps the save on the tablet, so neither is flagged. A broken Flags
@@ -646,7 +647,7 @@ function raiseTapRefusal_(t, kind, code, volunteer, nowMs) {
   const reasons = [tapRefusalReason(kind, clockLabel(zoneClock_(tapAt, kioskTimeZone())), code)];
   raiseFlags_(
     {
-      date: centralDate_(tapAt),
+      date: kioskDate_(tapAt),
       name: volunteer ? volunteerFullName(volunteer) : t.name,
       shiftId: kind === "in" ? t.tapId : t.shiftId,
       raisedAtMs: nowMs,
@@ -707,6 +708,20 @@ function keepLogMap_(run, log) {
   if (run.on) run.put = log.map;
 }
 
+/**
+ * withLock_'s after for a check-in or check-out, once the lock's flush is through: the log
+ * map (fillLogMap_), then, for a reply that wrote a save, the time zone compare
+ * (compareTimeZones_, Sheets.js), which writes the Time zone problem row only when its
+ * text changes. Coming after the flush, it reads nothing between the Log write and it.
+ */
+function afterTap_(run, settings, reply) {
+  try {
+    fillLogMap_(run);
+  } finally {
+    if (reply && reply.ok && !reply.replayed) compareTimeZones_(settings);
+  }
+}
+
 /** After the flush: stores run's map when the switch read on and the call has one to store. */
 function fillLogMap_(run) {
   if (!run.on || (!run.put && !run.why)) return;
@@ -714,21 +729,23 @@ function fillLogMap_(run) {
 }
 
 /**
- * The ACCESS refusal, or null when the code is right. settings are the Settings the call
- * already read; without them this reads Settings itself. Runs before any lock is taken, so
- * calls without the code never hold the lock or make the tablet's call return BUSY.
- * A refused code waits one second. There is no lockout: a lockout would let anyone with
- * the link lock the real tablet out.
+ * The ACCESS refusal, then ZONE_NOT_SET while the Time zone row is blank or isn't a time
+ * zone (zoneRefusal, Logic.js), or null when the code is right and the kiosk has a zone.
+ * settings are the Settings the call already read; without them this reads Settings
+ * itself. Runs before any lock is taken, so calls without the code never hold the lock or
+ * make the tablet's call return BUSY. A refused code waits one second. There is no
+ * lockout: a lockout would let anyone with the link lock the real tablet out.
  */
 function accessRefusal_(code, settings) {
-  const stored = (settings || readSettings_())["Kiosk access code"];
-  if (!checkAccessCode(code, stored)) return null;
+  const s = settings || readSettings_();
+  if (!checkAccessCode(code, s["Kiosk access code"])) return zoneRefusal(s);
   Utilities.sleep(1000);
   return refusal("ACCESS");
 }
 
 /**
- * {settings} when code is the kiosk access code, else {denied: the ACCESS refusal}, for a
+ * {settings} when code is the kiosk access code and the kiosk has a time zone, else
+ * {denied: the ACCESS or ZONE_NOT_SET refusal (accessRefusal_)}, for a
  * check-in or check-out, before any lock. Settings come from cachedSettings_ (Sheets.js).
  * A code the cached copy doesn't accept is checked again against Settings read from the
  * tab, which also refreshes the copy: a code changed since the copy was read works at
@@ -737,7 +754,8 @@ function accessRefusal_(code, settings) {
 function settingsForCode_(code) {
   const first = cachedSettings_();
   if (!checkAccessCode(code, first.settings["Kiosk access code"])) {
-    return { settings: first.settings };
+    const zone = zoneRefusal(first.settings);
+    return zone ? { denied: zone } : { settings: first.settings };
   }
   const settings = first.cached ? refreshSettingsCache_() : first.settings;
   const denied = accessRefusal_(code, settings);

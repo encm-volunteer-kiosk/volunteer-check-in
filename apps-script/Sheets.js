@@ -34,7 +34,10 @@ function requireEditorRun_() {
 }
 
 /**
- * Creates or updates the Log, Settings and Flags tabs and the staff help: the Log header,
+ * Creates or updates the Log, Settings and Flags tabs and the staff help. First the time
+ * zone (setupTimeZone_): the spreadsheet's zone and this account's installed daily
+ * triggers follow a valid Time zone row; with a blank or unknown row they are left, and
+ * so is a blank Kiosk launch date. Then the Log header,
  * formats and any missing Settings row (setupLog_ for the Log), Settings' What it does
  * column, then the Flags tab (setupFlags_), so a failure there leaves the Log and Settings
  * set up, then the Log and Flags header notes, the look of all three (applyLooks_), and
@@ -42,16 +45,15 @@ function requireEditorRun_() {
  * the Flags tab's Reviewed checkbox and its "Flags: Unreviewed" view, and the look; never
  * changes a cell with text in it or deletes a row, except for the help it rewrites on
  * every run: Settings column C, the How to tab, and a header note that is empty or still
- * exactly one of the kiosk's own texts; and the person-word headers and Header word while
- * the Log, Flags and Removed shifts hold no rows (setupHeaderWord_). So running it twice
+ * exactly one of the kiosk's own texts; the person-word headers and Header word while
+ * the Log, Flags and Removed shifts hold no rows (setupHeaderWord_); and the Time zone
+ * problem row, which it clears once the zones match (compareTimeZones_). So running it twice
  * changes nothing. Runs only from the Apps Script editor.
  */
 function setupSheets() {
   requireEditorRun_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  if (ss.getSpreadsheetTimeZone() !== kioskTimeZone()) {
-    ss.setSpreadsheetTimeZone(kioskTimeZone());
-  }
+  const zone = setupTimeZone_(ss);
 
   setupLog_(ss);
 
@@ -63,15 +65,19 @@ function setupSheets() {
   }
   settings.setFrozenRows(1);
   const existing = readSettings_();
-  const missing = settingsDefaults(centralDate_(new Date())).filter(
+  // Today's date waits for a time zone: with none, Kiosk launch date is added or left blank.
+  const today = zone ? kioskDate_(new Date()) : "";
+  const missing = settingsDefaults(today).filter(
     (row) => !Object.prototype.hasOwnProperty.call(existing, row[0]),
   );
   if (missing.length) {
     settings.getRange(settings.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
   }
   // A blank Kiosk launch date gets today's date, so a fresh copy has one; a date is kept.
-  const launch = launchDateToFill(existing, centralDate_(new Date()));
+  const launch = launchDateToFill(existing, today);
   if (launch) setSetting_(launchDateSetting(), launch);
+  // The zones now match, so this clears a Time zone problem left from before.
+  compareTimeZones_(existing);
   settings.getRange(1, 3).setValue(settingsDescriptionHeader());
   writeSettingsDescriptions_(settings);
   protectOnce_(
@@ -90,6 +96,85 @@ function setupSheets() {
   writeHeaderNotes_(sheet_(FLAGS_TAB), flagHeaderNames(word), flagHeaderNotes(word), word);
   applyLooks_(ss);
   setupHowTo_(ss);
+}
+
+/**
+ * The time zone part of setupSheets, first. With a Time zone row that is a time zone (a
+ * missing row reads as the brand's default, timeZoneRowText), and the spreadsheet's zone
+ * not matching it (zonesMatch), sets the spreadsheet's zone from the row as typed, then
+ * keeps the row and the name the spreadsheet stored for it in the document property
+ * zoneSetAs, so an alias the spreadsheet stores by another name still matches. Then
+ * remakes this account's installed daily triggers on the row's zone
+ * (remakeDailyJobTriggers_); a remake that fails is logged and fails nothing. Returns the
+ * kiosk's zone, or "" with a blank or unknown row, when it changes nothing and the rest of
+ * setupSheets still runs.
+ */
+function setupTimeZone_(ss) {
+  const settings = ss.getSheetByName(SETTINGS_TAB) ? readSettings_() : {};
+  const zone = kioskZoneOf(settings);
+  if (!zone) return "";
+  const row = timeZoneRowText(settings);
+  if (!zonesMatch(row, ss.getSpreadsheetTimeZone(), zoneSetAs_)) {
+    ss.setSpreadsheetTimeZone(row);
+    PropertiesService.getDocumentProperties().setProperty(
+      zoneSetAsProperty(),
+      zoneSetAsText(row, ss.getSpreadsheetTimeZone()),
+    );
+  }
+  // A remake that throws (quota, authorization) keeps the old triggers and is logged, so
+  // the rest of setupSheets still runs; the next run tries again.
+  try {
+    remakeDailyJobTriggers_();
+  } catch (e) {
+    console.error("Daily job triggers not remade: " + (e && e.message ? e.message : String(e)));
+  }
+  return zone;
+}
+
+/**
+ * Remakes this account's installed daily-job triggers that run at an hour (dailyJobs,
+ * Logic.js) on the kiosk's zone: for each, a new trigger (createJobTrigger_, Jobs.js),
+ * then the old one deleted, so a failure leaves the old one. A trigger that runs every few
+ * hours has no zone and is left; so is a job not installed. Google lists only this
+ * account's triggers, so another account's keep their hour until that account runs
+ * setupDailyJobs. Returns how many it remade.
+ */
+function remakeDailyJobTriggers_() {
+  const jobs = dailyJobs().filter((job) => !job.everyHours);
+  let remade = 0;
+  ScriptApp.getProjectTriggers().forEach((t) => {
+    const job = jobs.find((j) => j.handler === t.getHandlerFunction());
+    if (!job) return;
+    createJobTrigger_(job);
+    ScriptApp.deleteTrigger(t);
+    remade++;
+  });
+  return remade;
+}
+
+/** The pair setupSheets kept in the document property zoneSetAs (parseZoneSetAs), or null. */
+function zoneSetAs_() {
+  return parseZoneSetAs(PropertiesService.getDocumentProperties().getProperty(zoneSetAsProperty()));
+}
+
+/**
+ * Compares the Time zone row in settings, the Settings the caller read, with the
+ * spreadsheet's zone (timeZoneProblemText, Logic.js), and writes the Time zone problem row
+ * with setSetting_ only when the text differs from the row's value in settings: zones that
+ * stay apart cost one write, not one per call. Returns the row's text after it. Never
+ * throws: a failed read or write is logged, and the next compare tries again.
+ */
+function compareTimeZones_(settings) {
+  const was = cellString((settings || {})[timeZoneProblemSetting()]);
+  let text = was;
+  try {
+    const sheetZone = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+    text = timeZoneProblemText(settings, sheetZone, zoneSetAs_);
+    if (text !== was) setSetting_(timeZoneProblemSetting(), text);
+  } catch (e) {
+    console.error("Time zone problem not written: " + (e && e.message ? e.message : String(e)));
+  }
+  return text;
 }
 
 /**
@@ -363,18 +448,18 @@ function isDate_(value) {
   return Object.prototype.toString.call(value) === "[object Date]";
 }
 
-/** A cell as text: a Date as its Central yyyy-MM-dd, anything else trimmed. */
+/** A cell as text: a Date as its kiosk yyyy-MM-dd, anything else trimmed. */
 function cellText_(value) {
-  if (isDate_(value)) return centralDate_(value);
+  if (isDate_(value)) return kioskDate_(value);
   return cellString(value);
 }
 
 /**
- * A date-time cell as {ms, date, clock}: its milliseconds, its Central yyyy-MM-dd and its
- * Central "HH:mm". A date value has all three; Sheets keeps a time typed with no date as a
+ * A date-time cell as {ms, date, clock}: its milliseconds, its kiosk yyyy-MM-dd and its
+ * kiosk "HH:mm". A date value has all three; Sheets keeps a time typed with no date as a
  * date on 1899-12-30, whose clock is the time as typed. Text that clockText (Logic.js)
  * reads as a time of day gives only the clock, with ms NaN and date empty; other text is
- * read by Date.parse, with clock empty. ms is NaN and date and clock empty when the cell
+ * read by Date.parse, in the kiosk's zone (textTimeMs_), with clock empty. ms is NaN and date and clock empty when the cell
  * isn't a readable time.
  */
 function cellTime_(value) {
@@ -384,19 +469,45 @@ function cellTime_(value) {
     if (!isFinite(ms)) return none;
     return {
       ms,
-      date: centralDate_(value),
+      date: kioskDate_(value),
       clock: zoneClock_(value, kioskTimeZone()),
     };
   }
   const text = cellString(value);
   const clock = clockText(text);
   if (clock) return { ms: NaN, date: "", clock };
-  const ms = text ? Date.parse(text) : NaN;
-  return isFinite(ms) ? { ms, date: centralDate_(new Date(ms)), clock: "" } : none;
+  const ms = textTimeMs_(text);
+  return isFinite(ms) ? { ms, date: kioskDate_(new Date(ms)), clock: "" } : none;
 }
 
 /**
- * A Central time on a date as {ms, date}: dateText yyyy-MM-dd and timeText "HH:mm". ms is
+ * A date-time text's milliseconds by Date.parse, NaN when it can't be read. Date.parse
+ * reads a text that names no zone in the script's own zone (timeTextInScriptZone, Logic.js);
+ * while the kiosk's zone is another, its wall-clock time is read again in the kiosk's.
+ */
+function textTimeMs_(text) {
+  const ms = text ? Date.parse(text) : NaN;
+  if (!isFinite(ms)) return NaN;
+  const zone = kioskTimeZone();
+  if (zone === scriptTimeZone() || !timeTextInScriptZone(text)) return ms;
+  const d = new Date(ms);
+  const wall =
+    padNumber_(d.getFullYear(), 4) +
+    "-" +
+    padNumber_(d.getMonth() + 1, 2) +
+    "-" +
+    padNumber_(d.getDate(), 2) +
+    " " +
+    padNumber_(d.getHours(), 2) +
+    ":" +
+    padNumber_(d.getMinutes(), 2) +
+    ":" +
+    padNumber_(d.getSeconds(), 2);
+  return Utilities.parseDate(wall, zone, "yyyy-MM-dd HH:mm:ss").getTime();
+}
+
+/**
+ * A kiosk time on a date as {ms, date}: dateText yyyy-MM-dd and timeText "HH:mm". ms is
  * NaN and date '' when either can't be read. A time skipped when daylight time starts
  * reads as the later time Utilities.parseDate gives.
  */
@@ -404,10 +515,47 @@ function timeOnDate_(dateText, timeText) {
   const text = adminDateTimeText(dateText, timeText);
   if (!text) return { ms: NaN, date: "" };
   const parsed = Utilities.parseDate(text, kioskTimeZone(), "yyyy-MM-dd HH:mm");
-  return { ms: parsed.getTime(), date: centralDate_(parsed) };
+  return { ms: parsed.getTime(), date: kioskDate_(parsed) };
 }
 
-function centralDate_(date) {
+// True once this run has read Settings for its time zone (kioskTimeZone).
+let zoneSettingsRead_ = false;
+
+/**
+ * The kiosk's time zone: the IANA name the Settings this run read last give it
+ * (kioskZoneOf, Logic.js). Every date and time the kiosk records, shows or emails is read
+ * in it. A run that has read no Settings yet reads them first, once; Settings that can't
+ * be read count as a missing row, the brand's default. Throws the staff step
+ * (timeZoneStepMessage) while the Time zone row is blank or isn't a time zone; the
+ * tablet's calls check first and refuse ZONE_NOT_SET instead.
+ */
+function kioskTimeZone() {
+  if (!settingsAreInUse() && !zoneSettingsRead_) {
+    zoneSettingsRead_ = true;
+    try {
+      readSettings_();
+    } catch (e) {
+      // Read as a missing row; the call's own Settings read says what is wrong.
+    }
+  }
+  const zone = zoneInUse();
+  if (!zone) throw new Error(timeZoneStepMessage());
+  return zone;
+}
+
+/**
+ * Settings read from the tab when the kiosk has a time zone; else throws the staff step
+ * (timeZoneStepMessage). For the jobs and the menu items that must stop before they
+ * change anything.
+ */
+function requireKioskZone_() {
+  const settings = readSettings_();
+  if (!kioskZoneOf(settings)) throw new Error(timeZoneStepMessage());
+  return settings;
+}
+
+/** A Date's yyyy-MM-dd in the kiosk's time zone. */
+function kioskDate_(date) {
   return zoneDate_(date, kioskTimeZone());
 }
 
@@ -442,7 +590,7 @@ function zoneClock_(date, zone) {
  *
  * Each UTC hour's offset is read once, at the hour's start (hourOffset_), and kept for the
  * rest of the script run. That offset holds for the whole hour when the zone's clock can
- * only change on a whole UTC hour. America/Chicago, the kiosk's zone, does: from local
+ * only change on a whole UTC hour. America/Chicago does: from local
  * mean time to Central at 18:00 UTC in 1883, and since then whole-hour offsets changed at
  * a whole local hour. Any other zone may change at a half hour (America/St_Johns) or at
  * an odd second (a local mean time), so its hour is used only when the next hour's start
@@ -594,11 +742,24 @@ function sheet_(name) {
  */
 function readSettings_() {
   const values = sheet_(SETTINGS_TAB).getDataRange().getValues();
+  // A date in a Settings cell reads in the zone these Settings name, so the Time zone row
+  // is found first, by its text; with none, in the spreadsheet's zone.
+  let zone = null;
+  const dateZone = () => {
+    if (zone === null) {
+      const row = values.find((r, i) => i > 0 && cellString(r[0]) === timeZoneSetting());
+      zone =
+        kioskZoneOf(row ? { [timeZoneSetting()]: cellString(row[1]) } : {}) ||
+        SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+    }
+    return zone;
+  };
+  const text = (value) => (isDate_(value) ? zoneDate_(value, dateZone()) : cellString(value));
   const settings = {};
   for (let i = 1; i < values.length; i++) {
-    const name = cellText_(values[i][0]);
+    const name = text(values[i][0]);
     if (name && !Object.prototype.hasOwnProperty.call(settings, name)) {
-      settings[name] = cellText_(values[i][1]);
+      settings[name] = text(values[i][1]);
     }
   }
   useSettings(settings);
@@ -1517,7 +1678,7 @@ function deleteLogRow_(row, opts) {
  * The Removed shifts tab as {sheet, header, rows}, or null when there is no such tab.
  * Each row is {row, values, formats, entry}: entry is shiftEntry_ through a column map
  * built from the tab's own header (each Log header's leftmost column, -1 when missing),
- * plus removedBy, removedAtMs, removedAtDate (Central yyyy-MM-dd) and removedReason.
+ * plus removedBy, removedAtMs, removedAtDate (kiosk yyyy-MM-dd) and removedReason.
  * One read of the values and one of the formats.
  */
 function readRemoved_() {
@@ -1738,7 +1899,7 @@ function kindValue_(kind, value) {
  * The Hours emails tab's rows as [{row, id, result, ms, date, by, sendId}] for the Last
  * emailed line, the hours request job's limits, its answered-already check and its record
  * step (row is the sheet row), or null when there is no tab. Sent at is read as a time (ms NaN when it can't be) and
- * date is its Central yyyy-MM-dd, or the cell's text when it isn't a time. Throws when
+ * date is its kiosk yyyy-MM-dd, or the cell's text when it isn't a time. Throws when
  * row 1 lacks a header.
  */
 function readHoursEmailSends_() {

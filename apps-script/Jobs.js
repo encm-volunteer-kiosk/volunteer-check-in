@@ -2,7 +2,7 @@
  * The daily jobs: functions that run on installable triggers rather than from the tablet
  * or the Kiosk admin menu. They are the weekly flags email (runFlagsEmail), which checks
  * every hour whether it is due, the auto clock-out (runAutoClockOut), which runs once a
- * day at about 4 AM Central and closes open rows nobody checked out of, and the nightly
+ * day at about 4 AM kiosk time and closes open rows nobody checked out of, and the nightly
  * Hours refresh (runHoursRefresh) at about 5 AM, which then runs the Log check. The Log
  * check also runs from the Kiosk admin menu (checkLogNow). Apart from them, the hours
  * request job (runHoursRequests) runs every 15 minutes and, with Settings "Hours
@@ -54,11 +54,14 @@
  * (ensureLogChangeTrigger_) and says in its log line whether it kept, installed or failed
  * to install it. Then it logs how many open rows the auto clock-out would close if it ran
  * now, since a first run may close a backlog. Running it again replaces this account's
- * triggers, so one account never has two copies. Runs only from the Apps Script editor.
+ * triggers, so one account never has two copies. While the Settings Time zone row is blank
+ * or isn't a time zone it changes nothing and throws the staff step (requireKioskZone_).
+ * Runs only from the Apps Script editor.
  */
 function setupDailyJobs() {
   requireEditorRun_();
-  readSettings_(); // The Settings tab must be there before any trigger changes.
+  // The Settings tab and a time zone must be there before any trigger changes.
+  requireKioskZone_();
   const removed = deleteJobTriggers_();
   const jobs = dailyJobs();
   jobs.forEach(createJobTrigger_);
@@ -111,6 +114,10 @@ function removeDailyJobs() {
 
 // ---------------------------------------------------------------------------
 // Trigger handlers
+//
+// Each handler, once its trigger is checked and any lock it takes is held, stops with the
+// staff step while the Settings Time zone row is blank or isn't a time zone
+// (requireKioskZone_), so the owner gets Google's failure email saying what to do.
 
 /**
  * The weekly flags email, run every hour by its trigger. Under the script lock: stops
@@ -130,6 +137,7 @@ function runFlagsEmail(e) {
     return;
   }
   try {
+    requireKioskZone_();
     sendFlagsEmailIfDue_(new Date());
   } finally {
     lock.releaseLock();
@@ -137,7 +145,7 @@ function runFlagsEmail(e) {
 }
 
 /**
- * The auto clock-out, run once a day at about 4 AM Central by its trigger. Under the
+ * The auto clock-out, run once a day at about 4 AM kiosk time by its trigger. Under the
  * script lock, closes every open row the run's time makes old enough (autoClockOutRows),
  * with a guessed time and a flag, and flags once each old row on which no time reads.
  * When the lock isn't free within 30 seconds it throws: the owner gets Google's failure
@@ -151,6 +159,7 @@ function runAutoClockOut(e) {
     throw new Error("Auto clock-out: the script lock was busy; tomorrow's run will catch up.");
   }
   try {
+    requireKioskZone_();
     autoClockOut_(new Date());
   } finally {
     lock.releaseLock();
@@ -158,7 +167,7 @@ function runAutoClockOut(e) {
 }
 
 /**
- * The nightly Hours refresh, run once a day at about 5 AM Central by its trigger, an hour
+ * The nightly Hours refresh, run once a day at about 5 AM kiosk time by its trigger, an hour
  * after the auto clock-out so the rows it closes show, and then the Log check.
  *
  * The refresh always rewrites the tables unless a newer whole table is already in, which
@@ -179,6 +188,7 @@ function runAutoClockOut(e) {
 function runHoursRefresh(e) {
   requireEditorRun_();
   requireTriggerRun_(e, "runHoursRefresh");
+  requireKioskZone_();
   const hold = hoursHold_();
   const out = {};
   let hoursError = null;
@@ -214,6 +224,7 @@ function runHoursRefresh(e) {
 function runHoursRequests(e) {
   requireEditorRun_();
   requireTriggerRun_(e, "runHoursRequests");
+  requireKioskZone_();
   hoursRequestRun_(new Date());
 }
 
@@ -268,7 +279,7 @@ function logCheck_(entries, now) {
   try {
     const rows = entries || readReportLog_().entries;
     checked = logCheckRowCount(rows);
-    const problems = logCheckProblems(rows, adminClock_);
+    const problems = logCheckProblems(rows, adminClock_, now.getTime(), kioskDate_(now));
     const found = logCheckPlan(problems, [], 0, 0);
     counted = { found: found.found, byLabel: found.byLabel };
     const lock = LockService.getScriptLock();
@@ -408,7 +419,7 @@ function logChangeTriggerLine_(result) {
   return "The Log change trigger (onSheetChange) wasn't installed: " + result.message;
 }
 
-/** Creates the trigger for one dailyJobs entry: every few hours, or daily at an hour Central. */
+/** Creates the trigger for one dailyJobs entry: every few hours, or daily at an hour, kiosk time. */
 function createJobTrigger_(job) {
   const time = ScriptApp.newTrigger(job.handler).timeBased();
   if (job.everyHours) {
@@ -422,13 +433,13 @@ function createJobTrigger_(job) {
 function jobLabel_(job) {
   return job.everyHours
     ? job.handler + " every " + job.everyHours + " hour(s)"
-    : job.handler + " daily at " + job.atHour + ":00 Central";
+    : job.handler + " daily at " + job.atHour + ":00 " + kioskTimeZone();
 }
 
 // ---------------------------------------------------------------------------
 // Weekly flags email
 
-/** The Central wall-clock time of a Date as "yyyy-MM-dd HH:mm". */
+/** The kiosk wall-clock time of a Date as "yyyy-MM-dd HH:mm". */
 function wallClock_(date) {
   return Utilities.formatDate(date, kioskTimeZone(), "yyyy-MM-dd HH:mm");
 }
@@ -459,6 +470,8 @@ function sendFlagsEmailIfDue_(now) {
     ) ||
     (to.valid.length > 0 && flagsEmailNotSent(lastRun));
   if (!due) return;
+  // Before the email is built, so it says what the Time zone problem row now says.
+  const zoneProblem = compareTimeZones_(settings);
   if (!to.valid.length) {
     // Said in the sheet, where staff look, once a slot: the write makes the run not due
     // again until the next slot.
@@ -475,6 +488,7 @@ function sendFlagsEmailIfDue_(now) {
     skipped: to.invalid,
     autoSent: hoursAutoSentCount_(now),
     requestsWaiting: hoursRequestsWaiting_(settings, now),
+    zoneProblem,
   });
   if (!message) {
     setSetting_("Flags email last run", lastRunText(nowText, "nothing to send"));
@@ -584,7 +598,7 @@ function autoClockOut_(now) {
     entries,
     nowMs,
     autoClockOutWindowMs(settings["Auto clock-out after hours"]),
-    centralDate_(now),
+    kioskDate_(now),
     launch,
   );
   const shifts = plan.close.length ? readShifts_() : { windows: [], problem: "" };
@@ -655,7 +669,7 @@ function autoClockOutCountLine_(now) {
       readLog_(readLogColumns_()),
       now.getTime(),
       autoClockOutWindowMs(settings["Auto clock-out after hours"]),
-      centralDate_(now),
+      kioskDate_(now),
       launch,
     );
     return (
@@ -853,7 +867,7 @@ function decideHoursRequests_(settings, waiting, now) {
     console.log("Hours requests: the Flags tab couldn't be read: " + errorMessage_(err));
   }
   const quota = MailApp.getRemainingDailyQuota();
-  const today = centralDate_(now);
+  const today = kioskDate_(now);
   const base = {
     entries,
     flags,
@@ -929,7 +943,7 @@ function hoursRequestEmail_(base, request, volunteer, address) {
     contact: base.contact,
     signature: base.signature,
     request: {
-      date: centralDate_(new Date(request.requestedMs)),
+      date: kioskDate_(new Date(request.requestedMs)),
       unchecked: picked.unchecked,
     },
   });
@@ -1050,7 +1064,7 @@ function claimHoursRequests_(stale, decided, sendId, nowMs, run) {
       if (r) hold(r, h.code, h.reason);
     });
 
-    const today = centralDate_(new Date(nowMs));
+    const today = kioskDate_(new Date(nowMs));
     const own = [];
     const claims = [];
     decided.candidates.forEach((c) => {

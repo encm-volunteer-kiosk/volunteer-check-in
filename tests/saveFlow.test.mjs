@@ -190,6 +190,7 @@ test("ALREADY_IN and NOT_IN open the status screen, phone refusals the phone ste
   assert.equal(refusalOutcome("PHONE_NEEDED"), "phone-entry");
   assert.equal(refusalOutcome("PHONE_MISSING"), "phone-missing");
   assert.equal(refusalOutcome("ACCESS"), "lock");
+  assert.equal(refusalOutcome("ZONE_NOT_SET"), "lock");
   for (const code of [
     "NOT_FOUND",
     "BUSY",

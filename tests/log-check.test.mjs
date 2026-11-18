@@ -325,7 +325,7 @@ test("bad-date: a Date is good from 2000-01-01 to the end of the run's month", (
   assert.deepEqual(found([dateOnly("2062-11-13")]), bad("2062-11-13"));
 });
 
-test("bad-date: the run's month is read in UTC, never behind Central's", () => {
+test("bad-date: the run's month is read in UTC, never behind a zone west of it", () => {
   // 9 PM on 30 November, Central, is already December in UTC.
   const late = Date.parse("2026-11-30T21:00:00-06:00");
   const row = shift({
@@ -337,6 +337,25 @@ test("bad-date: the run's month is read in UTC, never behind Central's", () => {
     recordedHours: "",
   });
   assert.deepEqual(found([row], late), []);
+});
+
+test("bad-date: in a zone ahead of UTC, the kiosk's day sets the month once it is later", () => {
+  // 3 AM on 1 December in Kolkata is still 30 November in UTC.
+  const early = Date.parse("2026-11-30T21:30:00Z");
+  const row = shift({
+    date: "2026-12-01",
+    recordedIn: "",
+    statedIn: "9:00 AM",
+    recordedOut: "",
+    statedOut: "11:30 AM",
+    recordedHours: "",
+  });
+  const codes = (today) =>
+    plain(L.logCheckProblems(entriesFor([row]), clock, early, today)).map((p) => p.code);
+  assert.deepEqual(codes(undefined), ["bad-date"]);
+  assert.deepEqual(codes("2026-12-01"), []);
+  // A kiosk day behind UTC's month changes nothing.
+  assert.deepEqual(codes("2026-11-30"), ["bad-date"]);
 });
 
 test("bad-date: with no run time given, the check uses the clock", () => {

@@ -36,6 +36,7 @@ import {
   type PageSettings,
 } from "./words";
 import { cardTime, DEFAULT_LONG_SHIFT_HOURS } from "./cardTime";
+import { kioskZone, setKioskZone } from "./kioskZone";
 import {
   appreciationMessages,
   FAIL_NEXT_SAVE_KEY,
@@ -146,7 +147,6 @@ type Result = SaveOwner & {
   status?: StatusCode;
 };
 type PhoneStep = "entry" | "missing" | null;
-const TZ = "America/Chicago";
 const ACCESS_CODE_KEY = brandKey("kiosk-access-code");
 // The header clock reads the time this often, so it is never more than this behind the iPad's.
 const CLOCK_TICK_MS = 5_000;
@@ -219,13 +219,13 @@ function DateBlock() {
     return () => clearInterval(timer);
   }, []);
   const day = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
+    timeZone: kioskZone(),
     weekday: "long",
     month: "short",
     day: "numeric",
   }).format(now);
   const time = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
+    timeZone: kioskZone(),
     hour: "numeric",
     minute: "2-digit",
   }).format(now);
@@ -1523,15 +1523,15 @@ function DevTools({ onReset }: { onReset: () => void }) {
 
 function formatTime(iso: string) {
   return new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
+    timeZone: kioskZone(),
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(iso));
 }
 
-function centralTimeValue(date = new Date()) {
+function kioskTimeValue(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
+    timeZone: kioskZone(),
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
@@ -1550,16 +1550,16 @@ function floorQuarter(minutes: number) {
   return minutes - (minutes % 15);
 }
 
-/** The latest quarter hour at or before now, Central, as HH:MM. */
+/** The latest quarter hour at or before now, in the kiosk's zone, as HH:MM. */
 function latestQuarterHour() {
-  const quarter = floorQuarter(minutesOfDay(centralTimeValue()));
+  const quarter = floorQuarter(minutesOfDay(kioskTimeValue()));
   return `${String(Math.floor(quarter / 60)).padStart(2, "0")}:${String(quarter % 60).padStart(2, "0")}`;
 }
 
-/** Central minutes since midnight of an instant, seconds and milliseconds as a fraction. */
-function centralMinutesOf(ms: number) {
+/** Minutes since midnight of an instant in the kiosk's zone, seconds and milliseconds as a fraction. */
+function kioskMinutesOf(ms: number) {
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
+    timeZone: kioskZone(),
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -1650,6 +1650,9 @@ export default function App() {
   const [pageSettings, setPageSettings] = useState<PageSettings>(
     () => keptList?.pageSettings ?? brandPageSettings,
   );
+  // Every time the page shows or works out is in their zone (kioskZone.ts), set before
+  // anything below reads it.
+  setKioskZone(pageSettings.timeZone);
   const wordsRef = useRef(pageSettings.words);
   wordsRef.current = pageSettings.words;
   const worded = (text: string) => wordText(text, wordsRef.current);
@@ -1718,14 +1721,14 @@ export default function App() {
   const saveFlow = useRef(noSaves);
   const [error, setError] = useState("");
   const [result, setResult] = useState<Result | null>(null);
-  // A picked time keeps the Central day it was picked on, so a tap after midnight sends it
+  // A picked time keeps the day it was picked on, in the kiosk's zone, so a tap after midnight sends it
   // on that day.
-  const [arrivalTime, setArrivalTime] = useState(() => pickTime(centralTimeValue()));
+  const [arrivalTime, setArrivalTime] = useState(() => pickTime(kioskTimeValue()));
   // Check-in sends no time, so the server uses its own clock, unless the volunteer opens
   // the arrival-time picker.
   const [arrivalPicker, setArrivalPicker] = useState(false);
   // Check-out likewise sends no time unless the volunteer opens the check-out picker.
-  const [checkOutTime, setCheckOutTime] = useState(() => pickTime(centralTimeValue()));
+  const [checkOutTime, setCheckOutTime] = useState(() => pickTime(kioskTimeValue()));
   const [checkOutPicker, setCheckOutPicker] = useState(false);
   // Change on the check-out screen: its open picker, whether the Change is out, and whether
   // "Arrival time saved." shows. changeSeq numbers the Changes: an answer moves the screen
@@ -1760,7 +1763,7 @@ export default function App() {
   const inactivityRef = useRef<number | null>(null);
   const selected = shown.find((v) => v.id === selectedId) ?? null;
   const checkOutFloorMs = selected ? checkOutLowerBound(selected, shown) : null;
-  const checkOutMinMinutes = checkOutFloorMs === null ? null : centralMinutesOf(checkOutFloorMs);
+  const checkOutMinMinutes = checkOutFloorMs === null ? null : kioskMinutesOf(checkOutFloorMs);
   // The check-out picker is offered only when the lower bound is today and at least one
   // quarter hour lies between it and now. The picker offers times of today only, so an
   // arrival on an earlier date (an evening shift checked out after midnight) gets no picker
@@ -1770,7 +1773,7 @@ export default function App() {
     checkOutFloorMs !== null &&
     checkOutMinMinutes !== null &&
     isToday(new Date(checkOutFloorMs).toISOString()) &&
-    Math.ceil(checkOutMinMinutes / 15) * 15 <= floorQuarter(minutesOfDay(centralTimeValue()));
+    Math.ceil(checkOutMinMinutes / 15) * 15 <= floorQuarter(minutesOfDay(kioskTimeValue()));
 
   const goHome = (byTap = false) => {
     setFocusNameBox(!byTap);
@@ -1778,9 +1781,9 @@ export default function App() {
     setSelectedId(null);
     setError("");
     setResult(null);
-    setArrivalTime(pickTime(centralTimeValue()));
+    setArrivalTime(pickTime(kioskTimeValue()));
     setArrivalPicker(false);
-    setCheckOutTime(pickTime(centralTimeValue()));
+    setCheckOutTime(pickTime(kioskTimeValue()));
     setCheckOutPicker(false);
     dropArrivalChange();
     setPhoneStep(null);
@@ -1796,9 +1799,9 @@ export default function App() {
     closeTabletKeyboard();
     setSelectedId(volunteer.id);
     setError("");
-    setArrivalTime(pickTime(centralTimeValue()));
+    setArrivalTime(pickTime(kioskTimeValue()));
     setArrivalPicker(false);
-    setCheckOutTime(pickTime(centralTimeValue()));
+    setCheckOutTime(pickTime(kioskTimeValue()));
     setCheckOutPicker(false);
     dropArrivalChange();
     const asked = digitsAskedAtTap(isCheckedIn(volunteer), volunteer, shown);
@@ -1854,8 +1857,9 @@ export default function App() {
           if (!isCurrent()) return;
           // A refusal applies nothing, so an older call's list still out can land after it.
           if (isRefusal(reply)) {
-            if (reply.refusal === "ACCESS") lockKiosk(reply.message);
-            else failed();
+            if (reply.refusal === "ACCESS" || reply.refusal === "ZONE_NOT_SET") {
+              lockKiosk(reply.message);
+            } else failed();
             return;
           }
           listApplied.current = seq;
@@ -1867,6 +1871,7 @@ export default function App() {
             listStamp: stamp,
             pageSettings: reply.pageSettings,
           };
+          setKioskZone(reply.pageSettings?.timeZone);
           setPageSettings(reply.pageSettings ?? brandPageSettings);
           setListStamp(stamp);
           setHeldMarks(heldMarksRef.current.filter((m) => !heldMarkCovered(m, stamp)));

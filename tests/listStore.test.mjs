@@ -4,8 +4,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { kioskDay } from "../src/kioskZone.ts";
 import {
-  centralDay,
   clearStoredList,
   LIST_STORE_KEY,
   LIST_STORE_VERSION,
@@ -78,8 +78,8 @@ test("a list saved for this code today and under 10 minutes ago is used", () => 
 test("a list 10 minutes old, from yesterday, with a savedAt in the future, or for another code is ignored and removed", () => {
   // 11:58 PM Central on Nov 12, read 5 minutes later, just after midnight.
   const lateYesterday = Date.parse("2026-11-13T05:58:00Z");
-  assert.equal(centralDay(lateYesterday), "2026-11-12");
-  assert.equal(centralDay(lateYesterday + 5 * MINUTE), "2026-11-13");
+  assert.equal(kioskDay(lateYesterday), "2026-11-12");
+  assert.equal(kioskDay(lateYesterday + 5 * MINUTE), "2026-11-13");
   const cases = [
     ["10 minutes old", "4417", T0, T0 + 10 * MINUTE],
     ["an hour old", "4417", T0, T0 + 60 * MINUTE],

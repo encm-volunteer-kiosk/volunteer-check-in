@@ -857,7 +857,7 @@ export function outcomeOf(kind: SaveKind, reply: unknown): Outcome {
   const r = reply as Record<string, unknown>;
   if (typeof r.refusal === "string") {
     if (r.refusal === "BUSY") return "retry";
-    if (r.refusal === "ACCESS") return "lock";
+    if (r.refusal === "ACCESS" || r.refusal === "ZONE_NOT_SET") return "lock";
     if (kind === "in" && r.refusal === "ALREADY_IN") return "landed";
     if (kind === "out" && r.refusal === "NOT_IN") return "landed";
     return "refused";

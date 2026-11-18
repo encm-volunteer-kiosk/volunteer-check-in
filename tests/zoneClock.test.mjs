@@ -1,4 +1,4 @@
-// Tests for the wall-clock reads in apps-script/Sheets.js (centralDate_, cellText_,
+// Tests for the wall-clock reads in apps-script/Sheets.js (kioskDate_, cellText_,
 // cellTime_, zoneDate_) and importCell_ in apps-script/Import.js. Each must return exactly
 // what Utilities.formatDate returns for the same Date, zone and pattern. Each UTC hour's
 // offset comes from Intl.DateTimeFormat, or from one formatDate call where Intl can't be
@@ -105,7 +105,7 @@ function assertReads(ctx, date) {
   const day = formatInZone(date, TZ, "yyyy-MM-dd");
   const clock = formatInZone(date, TZ, "HH:mm");
   const at = date.toISOString();
-  assert.equal(ctx.centralDate_(date), day, "centralDate_ " + at);
+  assert.equal(ctx.kioskDate_(date), day, "kioskDate_ " + at);
   assert.equal(ctx.cellText_(date), day, "cellText_ " + at);
   const time = ctx.cellTime_(date);
   assert.equal(time.ms, date.getTime(), "cellTime_ ms " + at);
@@ -231,10 +231,10 @@ for (const [mode, opts] of MODES) {
 test("a date before 1583 or an unreadable Date goes to formatDate itself", () => {
   const { ctx, calls } = server();
   const old = new Date("1500-02-28T23:30:00Z");
-  assert.equal(ctx.centralDate_(old), formatInZone(old, TZ, "yyyy-MM-dd"));
+  assert.equal(ctx.kioskDate_(old), formatInZone(old, TZ, "yyyy-MM-dd"));
   assert.equal(ctx.cellTime_(old).clock, formatInZone(old, TZ, "HH:mm"));
   const before = calls.formatDate;
-  ctx.centralDate_(old);
+  ctx.kioskDate_(old);
   assert.equal(calls.formatDate, before + 1, "no cached offset for a Julian-calendar year");
   assert.deepEqual({ ...ctx.cellTime_(new Date(NaN)) }, { ms: NaN, date: "", clock: "" });
 });

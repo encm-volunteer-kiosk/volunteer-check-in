@@ -217,6 +217,7 @@ test("every setting the server code writes has a description", () => {
     "Past hours file ID",
     "Past hours tab",
     "Profiles problems",
+    "Time zone problem",
   ]);
   const d = plain(L.settingsDescriptions());
   written.forEach((name) => assert.ok(d[name], name));
@@ -533,9 +534,13 @@ const BLANK_TEXT =
   "If the kiosk or this sheet isn't working and this tab doesn't help, ask whoever looks after the kiosk. To name them here, type their name and an email or phone in Kiosk contact on the Settings tab.";
 const PREFIX = "If the kiosk or this sheet isn't working and this tab doesn't help, contact: ";
 
-// The rows before the general settings, which come after every older row.
+// The rows before the general settings and the time zone rows, which come after every
+// older row.
 const olderRows = () =>
-  plain(L.settingsDefaults("2026-11-13")).slice(0, -L.generalSettingsDefaults().length);
+  plain(L.settingsDefaults("2026-11-13")).slice(
+    0,
+    -L.generalSettingsDefaults().length - L.timeZoneSettingsDefaults().length,
+  );
 
 test("Kiosk contact is the last Settings row before the hours email rows, blank by default, with its sentence", () => {
   const rows = olderRows();
