@@ -25,6 +25,7 @@
 
 import { brandKey } from "./brand.ts";
 import { clearStoredList, type ListStorage } from "./listStore.ts";
+import { wordText, type Words } from "./words.ts";
 
 export const SAVE_QUEUE_KEY = brandKey("kiosk-save-queue");
 export const SAVE_QUEUE_VERSION = 1;
@@ -1091,12 +1092,13 @@ export type SavingContext = {
  * none. "Try again in a moment" only while a send of that save is going (this page holds the
  * runner lock, or the save was sent within one attempt's wait), the tablet is online, the
  * save is the head and no attempt of it has failed; otherwise the line asks a volunteer who
- * is leaving to tell a board member the time.
+ * is leaving to tell a board member the time. The line is in words (wordText, words.ts).
  */
 export function stillSavingText(
   queue: SaveQueue,
   volunteerId: string,
   ctx: SavingContext,
+  words?: Words,
 ): string | null {
   const save = queue.saves.find((s) => s.volunteerId === volunteerId);
   if (!save) return null;
@@ -1105,9 +1107,12 @@ export function stillSavingText(
   const sending =
     ctx.runnerHeld || (save.lastSendAt > 0 && sinceSend >= 0 && sinceSend < ATTEMPT_MS);
   if (ctx.online && queue.saves[0].key === save.key && save.retries === 0 && sending) {
-    return `We're still saving your last ${what}. Please try again in a moment.`;
+    return wordText(`We're still saving your last ${what}. Please try again in a moment.`, words);
   }
-  return `Your last ${what} hasn't reached the sheet yet. If you're leaving now, please tell a board member the time.`;
+  return wordText(
+    `Your last ${what} hasn't reached the sheet yet. If you're leaving now, please tell a board member the time.`,
+    words,
+  );
 }
 
 /**

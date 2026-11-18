@@ -211,6 +211,7 @@ test("every setting the server code writes has a description", () => {
     "Auto clock-out last run",
     "Daily jobs installed by",
     "Flags email last run",
+    "Header word",
     "Hours requests last run",
     "Past hours file ID",
     "Past hours tab",

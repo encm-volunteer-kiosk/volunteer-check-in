@@ -1729,7 +1729,8 @@ test("Kiosk contact: a staff value survives every run; a tab without the row get
   const rows = [["Setting", "Value"]].concat(
     plain(S.settingsDefaults("2026-11-13"))
       .filter((r) => r[0] !== "Kiosk contact")
-      .map((r) => [r[0], r[1] || "kept"]),
+      // Header word stays blank: setupSheets writes it while the Log holds no rows.
+      .map((r) => [r[0], r[1] || (r[0] === "Header word" ? "" : "kept")]),
   );
   const tab = sheetWith(old, "Settings", rows);
   const O = server(old);
@@ -1777,7 +1778,8 @@ test("the hours email rows: staff values survive every run; a tab without them g
   const rows = [["Setting", "Value"]].concat(
     plain(S.settingsDefaults("2026-11-13"))
       .filter((r) => !r[0].startsWith("Hours email"))
-      .map((r) => [r[0], r[1] || "kept"]),
+      // Header word stays blank: setupSheets writes it while the Log holds no rows.
+      .map((r) => [r[0], r[1] || (r[0] === "Header word" ? "" : "kept")]),
   );
   const tab = sheetWith(old, "Settings", rows);
   const O = server(old);
@@ -1874,4 +1876,54 @@ test("How to, stop cases: an unmarked tab of that name in any capitals, and two 
     () => S.setupSheets(),
     /^Error: These tabs all carry the kiosk's How to mark: Help, Copy of Help\. Delete the copy, then run setupSheets again\.$/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// The header words
+
+const settingValue = (tab, name) => {
+  const row = tab
+    .getDataRange()
+    .getValues()
+    .find((r) => r[0] === name);
+  return row ? row[1] : undefined;
+};
+
+test("a sheet whose Log and Flags hold no rows takes the person word into its headers and Header word", () => {
+  const ss = new FakeSpreadsheet();
+  const log = sheetWith(ss, "Log", [LOG_HEADERS]);
+  const settings = sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Word for a person", "an usher"],
+  ]);
+  const S = server(ss);
+  S.setupSheets();
+  assert.equal(log.get(1, 3), "Usher\nName");
+  assert.equal(log.get(1, 4), "Usher\nRole/Type");
+  assert.equal(ss.getSheetByName("Flags").get(1, 2), "Usher Name");
+  assert.equal(settingValue(settings, "Header word"), "usher");
+  assert.match(notesRow(log)[2], /^The usher's first and last name/);
+  // The Log still reads, and a second run changes nothing.
+  assert.equal(S.readLogColumns_()["Volunteer\nName"], 2);
+  const before = JSON.stringify([log.row(1), notesRow(log), settings.getDataRange().getValues()]);
+  S.setupSheets();
+  assert.equal(
+    JSON.stringify([log.row(1), notesRow(log), settings.getDataRange().getValues()]),
+    before,
+  );
+});
+
+test("with a shift on the Log, the headers and Header word stay as they are", () => {
+  const ss = new FakeSpreadsheet();
+  const shift = LOG_HEADERS.map(() => "");
+  shift[0] = "2026-11-02";
+  const log = sheetWith(ss, "Log", [LOG_HEADERS, shift]);
+  const settings = sheetWith(ss, "Settings", [
+    ["Setting", "Value"],
+    ["Word for a person", "usher"],
+  ]);
+  server(ss).setupSheets();
+  assert.deepEqual(log.row(1).slice(0, LOG_HEADERS.length), LOG_HEADERS);
+  assert.equal(ss.getSheetByName("Flags").get(1, 2), "Volunteer Name");
+  assert.equal(settingValue(settings, "Header word"), "");
 });

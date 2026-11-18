@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   api,
   callRecord,
@@ -18,7 +26,14 @@ import {
   showsArrivalChange,
   type ArrivalPick,
 } from "./arrivalChange";
-import { BRAND_LOGO_URL, BRAND_ORGANIZATION_NAME, BRAND_THANKS_LINE, brandKey } from "./brand";
+import { BRAND_THANKS_LINE, brandKey } from "./brand";
+import {
+  brandPageSettings,
+  logoUrlOf,
+  organizationNameOf,
+  wordText,
+  type PageSettings,
+} from "./words";
 import { cardTime, DEFAULT_LONG_SHIFT_HOURS } from "./cardTime";
 import {
   appreciationMessages,
@@ -221,11 +236,26 @@ function DateBlock() {
   );
 }
 
-/** The brand's logo, or its name as a heading for a brand with no logo. */
+// The Settings the page shows with: from the list in use, or the brand's before one arrives.
+const PageSettingsContext = createContext<PageSettings>(brandPageSettings);
+
+/** Text written with the default words, in the sheet's words (wordText, words.ts). */
+function useWords(): (text: string) => string {
+  const words = useContext(PageSettingsContext).words;
+  return (text) => wordText(text, words);
+}
+
+/**
+ * The Logo link's image, else the brand's logo, with the organisation's name as its alt
+ * text; the name as a heading when there is no image or the image fails to load.
+ */
 function BrandLogo({ className }: { className: string }) {
-  if (!BRAND_LOGO_URL)
-    return <h1 className={className + " logo-name"}>{BRAND_ORGANIZATION_NAME}</h1>;
-  return <img className={className} src={BRAND_LOGO_URL} alt={BRAND_ORGANIZATION_NAME} />;
+  const settings = useContext(PageSettingsContext);
+  const name = organizationNameOf(settings);
+  const url = logoUrlOf(settings);
+  const [failed, setFailed] = useState<string | null>(null);
+  if (!url || failed === url) return <h1 className={className + " logo-name"}>{name}</h1>;
+  return <img className={className} src={url} alt={name} onError={() => setFailed(url)} />;
 }
 
 function Header() {
@@ -369,6 +399,7 @@ function Welcome({
   // on a name goes to onSelect, which there opens the hours steps.
   hours?: { onBack: () => void };
 }) {
+  const w = useWords();
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const welcomeNotes = [
@@ -423,7 +454,7 @@ function Welcome({
         <p>{hours ? "Type your name, then tap it." : "Tap the box below and type your name."}</p>
       </section>
 
-      <section className="name-search-card" aria-label="Find your volunteer profile">
+      <section className="name-search-card" aria-label={w("Find your volunteer profile")}>
         {banner}
         <label className="search-field name-search-field">
           <Icon name="search" size={29} />
@@ -477,8 +508,8 @@ function Welcome({
         <div className="name-results" aria-live="polite">
           {listState === "failed" ? (
             <div className="no-name">
-              <strong>This kiosk can&apos;t reach the volunteer list right now.</strong>
-              <span className="board-member-message">Please see a board member.</span>
+              <strong>{w("This kiosk can't reach the volunteer list right now.")}</strong>
+              <span className="board-member-message">{w("Please see a board member.")}</span>
             </div>
           ) : (
             <>
@@ -517,15 +548,15 @@ function Welcome({
                 results.length === 0 &&
                 (listState === "loading" ? (
                   <div className="no-name">
-                    <strong>Loading volunteers…</strong>
+                    <strong>{w("Loading volunteers…")}</strong>
                     <span>This can take a few seconds.</span>
                   </div>
                 ) : (
                   <div className="no-name">
-                    <strong>No matching volunteer found</strong>
+                    <strong>{w("No matching volunteer found")}</strong>
                     <span>Double-check the spelling.</span>
                     <span className="board-member-message">
-                      If you still don&apos;t see your name, please see a board member for help.
+                      {w("If you still don't see your name, please see a board member for help.")}
                     </span>
                   </div>
                 ))}
@@ -703,6 +734,7 @@ function Confirmation({
   // Change on the check-out screen's line, and its picker. Absent on the check-in screen.
   arrivalChange?: ArrivalChangeProps;
 }) {
+  const w = useWords();
   const showTimeKeyboard = Boolean(!phoneStep && picker && time && onTimeChange);
   // Change's own picker: a third picker state, whose Save time calls only the Change.
   const changePicker = !phoneStep && arrivalChange?.pick ? arrivalChange : null;
@@ -821,7 +853,7 @@ function Confirmation({
                 </Button>
               )}
               <Button variant="secondary" onClick={onBack} disabled={saving}>
-                {checkout && !phoneStep ? "Keep Volunteering" : "Go back"}
+                {checkout && !phoneStep ? w("Keep Volunteering") : "Go back"}
               </Button>
             </div>
           )}
@@ -905,6 +937,7 @@ function HoursConfirm({
   onSend: () => void;
   onBack: () => void;
 }) {
+  const w = useWords();
   const sending = state.kind === "sending";
   const done = state.kind === "line" && !state.again;
   return (
@@ -918,7 +951,7 @@ function HoursConfirm({
           <i />
           <i />
         </div>
-        <div className="eyebrow">Your volunteer hours</div>
+        <div className="eyebrow">{w("Your volunteer hours")}</div>
         <h1>Hi, {volunteer.firstName}!</h1>
         <p aria-live="polite">
           {phoneStep ? (
@@ -991,6 +1024,7 @@ function SaveBanner({
   // True when the typed code is the kiosk's and the lines were cleared.
   onDismiss: (typed: string) => boolean;
 }) {
+  const w = useWords();
   const [asking, setAsking] = useState(false);
   const [typed, setTyped] = useState("");
   const [wrong, setWrong] = useState(false);
@@ -1000,7 +1034,7 @@ function SaveBanner({
   const dismissable = failed.length > 0 || unreadable;
   return (
     <div className="save-banner" role="alert">
-      {dismissable && <strong>These didn&apos;t save. Please tell a board member.</strong>}
+      {dismissable && <strong>{w("These didn't save. Please tell a board member.")}</strong>}
       <ul>
         {failed.map((f) => (
           <li key={f.key}>
@@ -1034,7 +1068,7 @@ function SaveBanner({
             }}
           >
             <label>
-              Board member: kiosk access code
+              {w("Board member: kiosk access code")}
               <input
                 type="password"
                 value={typed}
@@ -1065,6 +1099,7 @@ function ErrorNotice({ text }: { text: string }) {
 }
 
 function ShiftThanks({ checkedInAt }: { checkedInAt: string }) {
+  const w = useWords();
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -1081,7 +1116,7 @@ function ShiftThanks({ checkedInAt }: { checkedInAt: string }) {
         Your time so far
       </span>
       <strong>{formatDuration(minutes)}</strong>
-      <small>Thank you for volunteering with us.</small>
+      <small>{w("Thank you for volunteering with us.")}</small>
     </div>
   );
 }
@@ -1355,6 +1390,7 @@ function SavingScreen({ save }: { save: SaveRecord }) {
  * never called checked out: it also covers a shift that aged out, which staff fix.
  */
 function StatusScreen({ result, onDone }: { result: Result; onDone: () => void }) {
+  const w = useWords();
   const already = result.status === "ALREADY_IN";
   return (
     <main className="center-screen screen-enter">
@@ -1365,7 +1401,7 @@ function StatusScreen({ result, onDone }: { result: Result; onDone: () => void }
         <p>
           {already
             ? "Don't forget to check out before you leave."
-            : "If you just checked out, you're all set. If not, please see a board member."}
+            : w("If you just checked out, you're all set. If not, please see a board member.")}
         </p>
         <div className="button-stack">
           <Button onClick={onDone}>Done</Button>
@@ -1377,11 +1413,12 @@ function StatusScreen({ result, onDone }: { result: Result; onDone: () => void }
 
 /** A save given up by its watchdog. The server may still finish it; the list will show it. */
 function Unconfirmed({ firstName, onDone }: { firstName: string; onDone: () => void }) {
+  const w = useWords();
   return (
     <main className="center-screen screen-enter">
       <section className="panel confirmation-panel" aria-live="polite">
         <h1>This is taking too long, {firstName}.</h1>
-        <p>Please try again in a minute, or see a board member.</p>
+        <p>{w("Please try again in a minute, or see a board member.")}</p>
         <div className="button-stack">
           <Button onClick={onDone}>Done</Button>
         </div>
@@ -1399,6 +1436,7 @@ function Setup({
   error: string;
   onSave: (code: string) => void;
 }) {
+  const w = useWords();
   const [code, setCode] = useState("");
   const codeRef = useRef<HTMLInputElement>(null);
   const save = () => {
@@ -1409,7 +1447,7 @@ function Setup({
     <main className="welcome name-entry screen-enter">
       <section className="hero name-entry-hero">
         <h1>Set up this kiosk</h1>
-        <p>Board member: tap the box below, type the kiosk access code, then tap Save.</p>
+        <p>{w("Board member: tap the box below, type the kiosk access code, then tap Save.")}</p>
       </section>
 
       <section className="name-search-card" aria-label="Kiosk access code">
@@ -1613,6 +1651,14 @@ export default function App() {
   const [longShiftHours, setLongShiftHours] = useState(
     () => keptList?.longShiftHours ?? DEFAULT_LONG_SHIFT_HOURS,
   );
+  // The page's Settings from the list in use: the kept list's, then each fresh list's; the
+  // brand's while there is none. wordsRef is their words for text made outside a render.
+  const [pageSettings, setPageSettings] = useState<PageSettings>(
+    () => keptList?.pageSettings ?? brandPageSettings,
+  );
+  const wordsRef = useRef(pageSettings.words);
+  wordsRef.current = pageSettings.words;
+  const worded = (text: string) => wordText(text, wordsRef.current);
   // The list's hoursRequests. The kept list doesn't hold it, so after a reload the Request my
   // hours link stays hidden until a fresh list arrives (a request can't go offline anyway).
   const [hoursRequests, setHoursRequests] = useState(false);
@@ -1821,7 +1867,9 @@ export default function App() {
             milestones: reply.milestones,
             clockOffsetMs: reply.serverNow === null ? null : reply.serverNow - receivedAt,
             listStamp: stamp,
+            pageSettings: reply.pageSettings,
           };
+          setPageSettings(reply.pageSettings ?? brandPageSettings);
           setListStamp(stamp);
           setHeldMarks(heldMarksRef.current.filter((m) => !heldMarkCovered(m, stamp)));
           setVolunteers(reply.volunteers.map(toVolunteer));
@@ -2157,11 +2205,16 @@ export default function App() {
   async function tryInstant(kind: SaveKind, entry: Volunteer): Promise<boolean> {
     const now = Date.now();
     const savingLine = (q: SaveQueue) =>
-      stillSavingText(q, entry.id, {
-        online: navigator.onLine,
-        now,
-        runnerHeld: runnerActive.current,
-      });
+      stillSavingText(
+        q,
+        entry.id,
+        {
+          online: navigator.onLine,
+          now,
+          runnerHeld: runnerActive.current,
+        },
+        wordsRef.current,
+      );
     const still = savingLine(queueRef.current);
     if (still) {
       setError(still);
@@ -2254,11 +2307,16 @@ export default function App() {
     if (ended) {
       setScreen(ended.from);
       setError(
-        stillSavingText(queueRef.current, volunteerId, {
-          online: navigator.onLine,
-          now: Date.now(),
-          runnerHeld: runnerActive.current,
-        }) ?? "",
+        stillSavingText(
+          queueRef.current,
+          volunteerId,
+          {
+            online: navigator.onLine,
+            now: Date.now(),
+            runnerHeld: runnerActive.current,
+          },
+          wordsRef.current,
+        ) ?? "",
       );
     }
     void kickRunner();
@@ -2310,7 +2368,9 @@ export default function App() {
       if (!reply) {
         setScreen(ended.from);
         setError(
-          "We couldn't save your check-in. Please try again or ask a volunteer coordinator for help.",
+          worded(
+            "We couldn't save your check-in. Please try again or ask a volunteer coordinator for help.",
+          ),
         );
       } else if (isRefusal(reply)) {
         showRefusal(reply, ended);
@@ -2382,7 +2442,9 @@ export default function App() {
       if (!reply) {
         setScreen(ended.from);
         setError(
-          "We couldn't save your check-out. Please try again or ask a volunteer coordinator for help.",
+          worded(
+            "We couldn't save your check-out. Please try again or ask a volunteer coordinator for help.",
+          ),
         );
       } else if (isRefusal(reply)) {
         showRefusal(reply, ended);
@@ -2431,11 +2493,16 @@ export default function App() {
       if (!current()) return;
       setChangeSaving(false);
       setError(
-        stillSavingText(queueRef.current, volunteerId, {
-          online: navigator.onLine,
-          now: Date.now(),
-          runnerHeld: runnerActive.current,
-        }) ?? "",
+        stillSavingText(
+          queueRef.current,
+          volunteerId,
+          {
+            online: navigator.onLine,
+            now: Date.now(),
+            runnerHeld: runnerActive.current,
+          },
+          wordsRef.current,
+        ) ?? "",
       );
       return;
     }
@@ -2538,7 +2605,7 @@ export default function App() {
       setError((reply as Refusal).message);
       return;
     }
-    const next = afterHoursRequest(reply, firstName);
+    const next = afterHoursRequest(reply, firstName, wordsRef.current);
     if ("lock" in next) lockKiosk(next.lock);
     else setHoursRequest(next);
   }
@@ -2565,7 +2632,7 @@ export default function App() {
   // The hours search keeps the welcome screen's layout, with its own fixed landscape place.
   const shellScreen = screen === "hours" ? "welcome hours-search" : screen;
 
-  return (
+  const shell = (
     <div
       className={`app-shell screen-${code ? shellScreen : "welcome"}${code ? "" : " setup"}${searchOpen && screen === "welcome" ? " search-open" : ""}`}
     >
@@ -2732,4 +2799,5 @@ export default function App() {
       )}
     </div>
   );
+  return <PageSettingsContext.Provider value={pageSettings}>{shell}</PageSettingsContext.Provider>;
 }

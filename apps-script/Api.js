@@ -64,11 +64,22 @@
  * record: a failed copy is logged and never changes the reply.
  */
 
-/** Serves the page shell, which holds no volunteer data. */
+/**
+ * Serves the page shell, which holds no volunteer data. Its title is the one Settings value
+ * it reads (pageTitle): when Settings can't be read, the title takes the brand's word, so
+ * the title never stops the page loading.
+ */
 function doGet() {
+  let title;
+  try {
+    title = pageTitle(cachedSettings_().settings);
+  } catch (e) {
+    console.error("Settings not read for the page title: " + (e && e.message ? e.message : e));
+    title = pageTitle(brandSettingsDefaults());
+  }
   // From a file, not a template: the bundled page can contain the "<?" scriptlet marker.
   return HtmlService.createHtmlOutputFromFile("Index")
-    .setTitle("Volunteer Check-In")
+    .setTitle(title)
     .addMetaTag("viewport", "width=device-width, initial-scale=1")
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
 }
@@ -92,8 +103,9 @@ function apiCheckAccess(code) {
  * them. longShiftHours is "Long shift flag hours" (parseLongShiftHours), the time in past
  * which the page marks a card. hoursRequests is true when Settings "Hours requests" is
  * Approve or Auto (parseHoursRequestsMode), false when Off. milestones are [{id, title, message}], the texts the steps
- * name. serverNow is the server's clock in ms, taken last, so the page can tell how far
- * its own clock is off.
+ * name. words, organizationName and logoLink are the page's Settings (pageSettings).
+ * serverNow is the server's clock in ms, taken last, so the page can tell how far its own
+ * clock is off.
  *
  * Reads every row of every Profiles volunteer (listLogStates_), since the notice answer
  * and the milestone steps need the whole history.
@@ -118,6 +130,7 @@ function apiListVolunteers(code) {
     longShiftHours: parseLongShiftHours(settings["Long shift flag hours"]),
     hoursRequests: parseHoursRequestsMode(settings[hoursRequestsSetting()]) !== "off",
     milestones: milestones().map((m) => ({ id: m.id, title: m.title, message: m.message })),
+    ...pageSettings(settings),
     serverNow: Date.now(),
   };
 }

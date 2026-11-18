@@ -42,8 +42,9 @@ function requireEditorRun_() {
  * the Flags tab's Reviewed checkbox and its "Flags: Unreviewed" view, and the look; never
  * changes a cell with text in it or deletes a row, except for the help it rewrites on
  * every run: Settings column C, the How to tab, and a header note that is empty or still
- * exactly one of the kiosk's own texts. So running it twice changes nothing. Runs only
- * from the Apps Script editor.
+ * exactly one of the kiosk's own texts; and the person-word headers and Header word while
+ * the Log, Flags and Removed shifts hold no rows (setupHeaderWord_). So running it twice
+ * changes nothing. Runs only from the Apps Script editor.
  */
 function setupSheets() {
   requireEditorRun_();
@@ -80,10 +81,48 @@ function setupSheets() {
   markSettingsEdited_();
 
   setupFlags_(ss);
-  writeHeaderNotes_(sheet_(LOG_TAB), logHeaderNames(), logHeaderNotes());
-  writeHeaderNotes_(sheet_(FLAGS_TAB), flagHeaderNames(), flagHeaderNotes());
+  const word = setupHeaderWord_(ss);
+  writeHeaderNotes_(sheet_(LOG_TAB), logHeaderNames(word), logHeaderNotes(word), word);
+  writeHeaderNotes_(sheet_(FLAGS_TAB), flagHeaderNames(word), flagHeaderNotes(word), word);
   applyLooks_(ss);
   setupHowTo_(ss);
+}
+
+/**
+ * The header words part of setupSheets. When the person word isn't the word the headers
+ * have (headerWordToWrite, Logic.js), and the Log and Flags hold no row below their header
+ * and Removed shifts is missing or holds none, writes the person word into the Log's Name
+ * and Role/Type headers, the Flags Name header, the Log headers on Removed shifts, and
+ * Header word. With a row on any of the three, changes nothing. Returns the Header word
+ * the headers have after it.
+ */
+function setupHeaderWord_(ss) {
+  const settings = readSettings_();
+  const from = headerWord(settings);
+  const to = headerWordToWrite(settings);
+  if (to === null) return from;
+  const log = sheet_(LOG_TAB);
+  const flags = sheet_(FLAGS_TAB);
+  const removed = ss.getSheetByName(removedTabName());
+  if ([log, flags, removed].some((sheet) => sheet && sheet.getLastRow() > 1)) return from;
+  const write = (sheet, names, keys) => {
+    if (!sheet) return;
+    headerWordWrites(logHeaderRow_(sheet), names, keys, from, to).forEach((w) =>
+      sheet.getRange(1, w.col).setValue(w.header),
+    );
+  };
+  // The Log's header changes, so it is stamped first and last, as setupLog_ is.
+  markLogChanged_();
+  try {
+    write(log, logHeaderNames, ["name", "role"]);
+  } finally {
+    markLogChanged_();
+  }
+  write(flags, flagHeaderNames, ["name"]);
+  write(removed, logHeaderNames, ["name", "role"]);
+  setSetting_(headerWordSetting(), to);
+  useSettings(Object.assign({}, settings, { [headerWordSetting()]: to }));
+  return to;
 }
 
 /**
@@ -519,7 +558,8 @@ function sheet_(name) {
 
 /**
  * Settings as {name: text}; the first row with a name wins. Read from the tab on every
- * call; a check-in or check-out takes Settings from cachedSettings_ instead.
+ * call; a check-in or check-out takes Settings from cachedSettings_ instead. Both keep the
+ * Settings they read for this run (useSettings, Logic.js).
  */
 function readSettings_() {
   const values = sheet_(SETTINGS_TAB).getDataRange().getValues();
@@ -530,6 +570,7 @@ function readSettings_() {
       settings[name] = cellText_(values[i][1]);
     }
   }
+  useSettings(settings);
   return settings;
 }
 
@@ -616,7 +657,10 @@ function cachedSettings_() {
     console.error("Settings cache not read: " + (e && e.message ? e.message : String(e)));
     hit = null;
   }
-  if (hit) return { settings: hit, cached: true };
+  if (hit) {
+    useSettings(hit);
+    return { settings: hit, cached: true };
+  }
   return { settings: refreshSettingsCache_(), cached: false };
 }
 
@@ -1791,7 +1835,7 @@ function writeRowCells_(sheet, cols, kinds, row, changes) {
 /**
  * Settings column C from row 2 down: one settingsDescriptionColumn (Logic.js) text per row
  * down to the last row with a name, each name read by cellText_ as readSettings_ reads it,
- * in one setValues. C below that row, down to the tab's last row, is cleared, so text left
+ * in the words of the Settings setupSheets read (wordsInUse), in one setValues. C below that row, down to the tab's last row, is cleared, so text left
  * by a deleted row never sits beside the next appended setting. Writes no other column.
  */
 function writeSettingsDescriptions_(settings) {
@@ -1808,7 +1852,7 @@ function writeSettingsDescriptions_(settings) {
   if (named) {
     settings
       .getRange(2, 3, named, 1)
-      .setValues(settingsDescriptionColumn(names.slice(0, named)).map((t) => [t]));
+      .setValues(settingsDescriptionColumn(names.slice(0, named), wordsInUse()).map((t) => [t]));
   }
   if (named + 1 < last) settings.getRange(named + 2, 3, last - named - 1, 1).clearContent();
 }
@@ -1825,14 +1869,14 @@ function protectOnce_(existing, description, protect) {
 
 /**
  * The header notes on a Log or Flags tab's row 1, from A to the header's width: one
- * getNotes, then headerNotesRow (Logic.js) with headerNoteKioskTexts(), and a setNote only
+ * getNotes, then headerNotesRow (Logic.js) with headerNoteKioskTexts(word), and a setNote only
  * on each cell whose note changes. A note the rule keeps, a staff note above all, is never
  * written back, so it can't be altered by a round trip through Sheets.
  */
-function writeHeaderNotes_(sheet, names, notes) {
+function writeHeaderNotes_(sheet, names, notes, word) {
   const header = logHeaderRow_(sheet);
   const existing = sheet.getRange(1, 1, 1, header.length).getNotes()[0];
-  const wanted = headerNotesRow(header, names, notes, existing, headerNoteKioskTexts());
+  const wanted = headerNotesRow(header, names, notes, existing, headerNoteKioskTexts(word));
   wanted.forEach((note, i) => {
     if (note !== existing[i]) sheet.getRange(1, i + 1).setNote(note);
   });
@@ -1901,7 +1945,7 @@ function setupHowTo_(ss) {
     () => sheet.protect(),
   );
 
-  const rows = howToRows();
+  const rows = howToRows(wordsInUse());
   const styles = howToStyles();
   const pick = (field) => rows.map((r) => [styles[r.kind][field]]);
   sheet.clear();

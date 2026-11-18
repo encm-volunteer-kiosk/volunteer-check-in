@@ -5395,6 +5395,7 @@ const LOG_WRITE_CLASSES = {
   deleteLogRow_: { class: "log", why: "a stamping helper" },
   appendLogValues_: { class: "log", why: "a stamping helper" },
   setupLog_: { class: "log", why: "stamps first and last" },
+  setupHeaderWord_: { class: "log", why: "stamps first and last around its Log header writes" },
 
   writeLogCells_: {
     class: "log, no value change",
@@ -5564,7 +5565,10 @@ test("every function that can write a cell is classed, and only the stamping one
   for (const [name, entry] of Object.entries(LOG_WRITE_CLASSES)) {
     const fn = functions[name];
     if (entry.class === "log") {
-      assert.ok(STAMPING_HELPERS.includes(name) || name === "setupLog_", name);
+      assert.ok(
+        STAMPING_HELPERS.includes(name) || ["setupLog_", "setupHeaderWord_"].includes(name),
+        name,
+      );
     } else if (entry.class === "array") {
       assert.deepEqual([...fn.writes], ["sort"], name + " calls only sort");
     } else if (entry.class === "tab") {

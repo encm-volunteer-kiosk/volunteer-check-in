@@ -457,7 +457,7 @@ function adminHoursPreview(key, request) {
       const plan = b.plan;
       return {
         id: b.id,
-        label: labels.get(b.id) || "Not on the volunteer list",
+        label: labels.get(b.id) || wordText("Not on the volunteer list", wordsInUse()),
         profilesRow: b.address && b.address.row ? b.address.row : v ? v.row : 0,
         startDate: v ? v.startDate || "" : "",
         to: b.problem ? "" : b.address.email,
@@ -891,8 +891,9 @@ function adminGuard_(key) {
 }
 
 /**
- * Opens a dialog from AdminDialog.html with a new key and the Kiosk contact line
- * (kioskContactNote) in it. mode is "add", "fix", "remove", "restore" or "email". The
+ * Opens a dialog from AdminDialog.html with a new key, the Kiosk contact line
+ * (kioskContactNote) and the window's words (adminDialogWords) in it, under a title in the
+ * sheet's words. mode is "add", "fix", "remove", "restore" or "email". The
  * dialog is 480 wide and height tall, 600 when height isn't given.
  */
 function openAdminDialog_(mode, title, height) {
@@ -904,12 +905,20 @@ function openAdminDialog_(mode, title, height) {
   page.key = key;
   page.mode = mode;
   page.contactNote = kioskContactNote(kioskContact_());
+  // kioskContact_ read Settings, so the words in use are the sheet's (the defaults when the
+  // read failed).
+  const words = wordsInUse();
+  const dialog = adminDialogWords(words);
+  page.person = dialog.person;
+  page.people = dialog.people;
+  page.findShiftHint = dialog.findShiftHint;
+  page.texts = JSON.stringify(dialog.texts);
   ui.showModalDialog(
     page
       .evaluate()
       .setWidth(480)
       .setHeight(height || 600),
-    title,
+    wordText(title, words),
   );
 }
 

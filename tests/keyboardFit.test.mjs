@@ -224,7 +224,7 @@ test("the logo and date sit under the card, not in the panel", () => {
     app.indexOf("function Welcome("),
     app.indexOf("function CheckedInSidebar("),
   );
-  const card = welcome.indexOf('aria-label="Find your volunteer profile"');
+  const card = welcome.indexOf('aria-label={w("Find your volunteer profile")}');
   const start = welcome.indexOf('<div className="welcome-header">');
   assert.ok(card > 0, "the name card");
   assert.ok(start > card, "the row comes after the name card");

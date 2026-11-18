@@ -222,10 +222,17 @@ function settingsDescriptions() {
  * - the same known name again: the not-used line, since only the first row counts;
  * - a name the kiosk doesn't know, every time: the unknown line;
  * - no name: "".
- * Known means an own key of settingsDescriptions(), so "toString" is unknown.
+ * Known means an own key of settingsDescriptions(), so "toString" is unknown. Each sentence
+ * is in words (wordText), but for the word rows' own, which name the default words.
  */
-function settingsDescriptionColumn(names) {
+function settingsDescriptionColumn(names, words) {
   const descriptions = settingsDescriptions();
+  const asTyped = [
+    personWordSetting(),
+    peopleWordSetting(),
+    staffWordSetting(),
+    headerWordSetting(),
+  ];
   const seen = {};
   return (names || []).map((raw) => {
     const name = cellString(raw);
@@ -237,7 +244,7 @@ function settingsDescriptionColumn(names) {
       return "Not used: an earlier row has the same name, and only the first one counts.";
     }
     seen[name] = true;
-    return descriptions[name];
+    return asTyped.indexOf(name) >= 0 ? descriptions[name] : wordText(descriptions[name], words);
   });
 }
 
@@ -422,6 +429,275 @@ function kioskWords(settings) {
 /** The word the person-word headers were written with: Header word, bare; blank is volunteer. */
 function headerWord(settings) {
   return parseWordSetting((settings || {})[headerWordSetting()], wordDefaults().person).word;
+}
+
+/** How a person-word header starts: word, bare and capitalised, or Volunteer when blank. */
+function headerWordText(word) {
+  return capitalized(parseWordSetting(word, "Volunteer").word);
+}
+
+/**
+ * The person-word headers' names under the Header word in use, folded onto today's, as
+ * {normalized worded name: normalized today's name}; {} while the Header word is blank or
+ * volunteer. Kept for the Settings it was made from, since a header map asks for it per cell.
+ */
+function personHeaderFolds() {
+  const word = wordsInUse().header;
+  if (personHeaderFoldsMemo && personHeaderFoldsMemo.word === word) {
+    return personHeaderFoldsMemo.folds;
+  }
+  const folds = {};
+  if (normalizeHeader(word) !== normalizeHeader(wordDefaults().person)) {
+    const today = [logHeaderNames().name, logHeaderNames().role, flagHeaderNames().name];
+    const worded = [
+      logHeaderNames(word).name,
+      logHeaderNames(word).role,
+      flagHeaderNames(word).name,
+    ];
+    worded.forEach((h, i) => (folds[normalizeHeader(h)] = normalizeHeader(today[i])));
+  }
+  personHeaderFoldsMemo = { word, folds };
+  return folds;
+}
+let personHeaderFoldsMemo = null;
+
+/**
+ * A Log, Flags or Removed shifts header as the code matches it: normalizeHeader's form, with
+ * a person-word header under the Header word in use read as today's name, so code that
+ * finds, copies or matches a header by name takes either as one header.
+ */
+function headerKey(header) {
+  const k = normalizeHeader(header);
+  const folds = personHeaderFolds();
+  return Object.prototype.hasOwnProperty.call(folds, k) ? folds[k] : k;
+}
+
+/** A header as a message names it: today's name, or under the Header word in use, its name. */
+function headerInUse(header) {
+  const word = wordsInUse().header;
+  const today = [logHeaderNames(), flagHeaderNames()];
+  const worded = [logHeaderNames(word), flagHeaderNames(word)];
+  for (let t = 0; t < today.length; t++) {
+    const key = Object.keys(today[t]).find((k) => today[t][k] === header);
+    if (key) return worded[t][key];
+  }
+  return header;
+}
+
+/**
+ * The word setupSheets writes into the person-word headers and Header word: the person
+ * word, bare, when it isn't the word the headers have now (Header word, blank as
+ * volunteer), else null. Whether it may write is setupSheets' (no rows on the three tabs).
+ */
+function headerWordToWrite(settings) {
+  const wanted = kioskWords(settings).person;
+  return normalizeHeader(wanted) === normalizeHeader(headerWord(settings)) ? null : wanted;
+}
+
+/**
+ * The person-word header cells of headerRow to rewrite in word to, as [{col (1-based),
+ * header}]. names is logHeaderNames or flagHeaderNames, keys the person-word keys of it
+ * that the tab holds. A cell named as one of them, under today's word or under from (the
+ * Header word now), gets that header under to. Every other cell is left alone.
+ */
+function headerWordWrites(headerRow, names, keys, from, to) {
+  const wanted = {};
+  keys.forEach((k) => {
+    wanted[normalizeHeader(names()[k])] = names(to)[k];
+    wanted[normalizeHeader(names(from)[k])] = names(to)[k];
+  });
+  const writes = [];
+  (headerRow || []).forEach((cell, i) => {
+    const k = normalizeHeader(cell);
+    if (k && Object.prototype.hasOwnProperty.call(wanted, k) && cell !== wanted[k]) {
+      writes.push({ col: i + 1, header: wanted[k] });
+    }
+  });
+  return writes;
+}
+
+/** The page's title: the person word, capitalised, and " Check-In". */
+function pageTitle(settings) {
+  return capitalized(kioskWords(settings).person) + " Check-In";
+}
+
+/**
+ * The Settings the page reads from the list reply: words (kioskWords), organizationName
+ * (Settings "Organization name", "" while blank, when the page shows the brand's name) and
+ * logoLink (parseLogoLink, "" for the brand's logo).
+ */
+function pageSettings(settings) {
+  const s = settings || {};
+  return {
+    words: kioskWords(s),
+    organizationName: cellString(s[organizationNameSetting()]),
+    logoLink: parseLogoLink(s[logoLinkSetting()]),
+  };
+}
+
+/** A word with its first letter capitalised, as at the start of a sentence or a header. */
+function capitalized(word) {
+  const s = String(word);
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** The words of a sheet's Settings for wordText: kioskWords and the Header word. */
+function sheetWords(settings) {
+  return Object.assign(kioskWords(settings), { header: headerWord(settings) });
+}
+
+/** The default words, as sheetWords gives them for a sheet whose word rows are blank. */
+function defaultWords() {
+  return sheetWords({});
+}
+
+/** True when words would write every text as it is: the default words, or none. */
+function wordsAreDefault(words) {
+  if (!words) return true;
+  const d = wordDefaults();
+  return (
+    words.person === d.person &&
+    words.personArticle === "a" &&
+    words.people === d.people &&
+    words.staff === d.staff &&
+    words.staffArticle === "a" &&
+    (words.header || d.person).toLowerCase() === d.person
+  );
+}
+
+/**
+ * Text written with the default words, in a sheet's words (sheetWords). With the default
+ * words it returns the text as it is. Otherwise "volunteer", "volunteers" and "board
+ * member" become the person, people and staff words, capitalised where the text
+ * capitalises them, and an "a" before one takes that word's article. A sentence that uses
+ * the verb becomes a neutral one, since a noun setting can't conjugate a verb. Interface
+ * names keep their text: Settings rows and roster headers such as Volunteer Profiles and
+ * Volunteer First Name. The Log and Flags header names (Volunteer Name, Volunteer
+ * Role/Type) take the Header word, as the headers on the sheet do.
+ *
+ * The page (src/words.ts) and the admin window (AdminDialog.html) hold the same rewrite;
+ * a test holds the three to the same output.
+ */
+function wordText(text, words) {
+  if (wordsAreDefault(words) || typeof text !== "string" || text === "") return text;
+  let out = text;
+  wordVerbSentences().forEach(([from, to]) => {
+    out = out.split(from).join(to);
+  });
+  return out.replace(
+    /\b(?:([Aa]) )?(volunteer coordinator|[Vv]olunteers?|[Bb]oard members?)\b(?!-)/g,
+    (match, article, noun, offset, whole) => {
+      const rest = whole.slice(offset + (article ? 2 : 0));
+      if (wordKeptNames().some((name) => rest.startsWith(name))) return match;
+      const cap = (w, like) => (/^[A-Z]/.test(like) ? capitalized(w) : w);
+      if (wordHeaderNames().some((name) => rest.startsWith(name))) {
+        return (article ? article + " " : "") + cap(words.header || wordDefaults().person, noun);
+      }
+      let word;
+      let wordArticle;
+      if (/^volunteers$/i.test(noun)) {
+        word = words.people;
+      } else if (/^volunteer$/i.test(noun)) {
+        word = words.person;
+        wordArticle = words.personArticle;
+      } else {
+        // "a volunteer coordinator" is ENCM's other name for staff.
+        word = /s$/.test(noun) ? words.staff + "s" : words.staff;
+        wordArticle = words.staffArticle;
+      }
+      return article ? cap(wordArticle || "a", article) + " " + word : cap(word, noun);
+    },
+  );
+}
+
+/** Sentences that use the verb, and the neutral form wordText gives them. */
+function wordVerbSentences() {
+  return [
+    ["Thank you for volunteering with us.", "Thank you."],
+    ["Thank you for volunteering.", "Thank you."],
+    ["Keep Volunteering", "Not yet"],
+    ["without volunteering", "without doing the shift"],
+  ];
+}
+
+/** Interface names that start with the person word and keep their text under any words. */
+function wordKeptNames() {
+  return [
+    "Volunteer Profiles",
+    "volunteer profiles",
+    "Volunteer First Name",
+    "volunteer first name",
+    "Volunteer Last Name",
+    "volunteer last name",
+    "Volunteer Phone",
+    "volunteer phone",
+    "Volunteer hour value",
+    "Volunteer ID",
+    "Volunteer Kiosk",
+    "Volunteer Hours",
+  ];
+}
+
+/** Log and Flags header names, as text names them, that take the Header word. */
+function wordHeaderNames() {
+  return [
+    "Volunteer Name",
+    "Volunteer\nName",
+    "volunteer name",
+    "Volunteer Role/Type",
+    "Volunteer\nRole/Type",
+    "volunteer role/type",
+  ];
+}
+
+/** The admin window's own lines that name people (AdminDialog.html's w("…")). */
+function adminDialogLines() {
+  return [
+    "Paste a Shift ID, or choose a volunteer and a date.",
+    "Please choose a volunteer.",
+    "Please tick at least one volunteer.",
+    "The ticked volunteers changed. Press Preview again.",
+    "None of the ticked volunteers can be sent; see the preview.",
+    "volunteer",
+    "volunteers",
+    " of these volunteers at the same moment, so they may get two emails. See the Hours emails tab.",
+  ];
+}
+
+/**
+ * What AdminDialog.html prints in words: its two labels, the Shift ID hint, and texts, each
+ * of its own lines whose words differ, keyed by its text in the default words ({} under the
+ * default words).
+ */
+function adminDialogWords(words) {
+  const texts = {};
+  adminDialogLines().forEach((line) => {
+    const worded = wordText(line, words);
+    if (worded !== line) texts[line] = worded;
+  });
+  return {
+    person: wordText("Volunteer", words),
+    people: wordText("Volunteers", words),
+    findShiftHint: wordText("(paste it, or find the shift by volunteer and date)", words),
+    texts,
+  };
+}
+
+// The Settings this run read last (useSettings), for text built where Settings aren't
+// passed: refusals, the emails' sender name, and the Log, Flags and Removed shifts header
+// lookups. Each server call reads Settings before it builds such a text or reads a header,
+// and Apps Script starts every call with this unset. Unset reads as blank Settings: the
+// default words and the brand's name.
+let settingsInUse = null;
+
+/** Keeps Settings just read for this run (wordsInUse, flagsEmailSenderName). */
+function useSettings(settings) {
+  settingsInUse = settings || null;
+}
+
+/** The words of the Settings this run read last, or the default words. */
+function wordsInUse() {
+  return sheetWords(settingsInUse);
 }
 
 /** Settings "Organization name", or the brand's name while it's blank. */
@@ -1125,14 +1401,18 @@ function milestoneCrossed(beforeShifts, beforeMinutes, addMinutes, startDate, la
 /**
  * The kiosk's Log headers, keyed by the short names the code uses, in the order a new Log
  * gets them. The first fourteen are the staff's own layout, from the Log tab the kiosk was
- * first fitted to, line breaks included. The last four are the kiosk's.
+ * first fitted to, line breaks included. The last four are the kiosk's. With word (a
+ * Header word), Name and Role/Type start with it, capitalised, in place of Volunteer; with
+ * none, or volunteer, they are today's names. The code keys a header map by the names
+ * without word, which match either (headerKey).
  */
-function logHeaderNames() {
+function logHeaderNames(word) {
+  const person = headerWordText(word);
   return {
     date: "Date",
     day: "Day",
-    name: "Volunteer\nName",
-    role: "Volunteer\nRole/Type",
+    name: person + "\nName",
+    role: person + "\nRole/Type",
     recordedIn: "Check-In\nRecorded\n(timestamp)",
     statedIn: "Check-In\nStated\n(user)",
     recordedOut: "Check-Out\nRecorded\n(timestamp)",
@@ -1199,12 +1479,12 @@ function isOldLogLayout(headerRow) {
   return old.every((h, i) => normalizeHeader(headerRow[i]) === normalizeHeader(h));
 }
 
-/** 0-based indexes of every cell in headerRow whose header is this one. */
+/** 0-based indexes of every cell in headerRow whose header is this one (headerKey). */
 function logHeaderIndexes(headerRow, header) {
-  const wanted = normalizeHeader(header);
+  const wanted = headerKey(header);
   const found = [];
   headerRow.forEach((cell, i) => {
-    if (normalizeHeader(cell) === wanted) found.push(i);
+    if (headerKey(cell) === wanted) found.push(i);
   });
   return found;
 }
@@ -1252,7 +1532,9 @@ function logColumnFormats(headerRow) {
 }
 
 function missingLogColumnError(header) {
-  return new Error('The Log has no "' + normalizeHeader(header) + '" column. Run setupSheets().');
+  return new Error(
+    'The Log has no "' + normalizeHeader(headerInUse(header)) + '" column. Run setupSheets().',
+  );
 }
 
 /**
@@ -1271,7 +1553,7 @@ function logColumns(headerRow) {
       if (found.length > 1) {
         throw new Error(
           'The Log has more than one "' +
-            normalizeHeader(h) +
+            normalizeHeader(headerInUse(h)) +
             '" column. Rename or remove the extra one.',
         );
       }
@@ -3112,7 +3394,7 @@ function hoursEmailProblemText(problem, rows, cell) {
         " have the same User Token. Fix it there, then press Preview again."
       );
     default:
-      return "Not on the volunteer list any more; press Preview again.";
+      return wordText("Not on the volunteer list any more; press Preview again.", wordsInUse());
   }
 }
 
@@ -3199,7 +3481,7 @@ function hoursEmailRowsText(rows) {
 
 /** The sentence a same-name warning adds. */
 function hoursEmailSameNameText() {
-  return "Two volunteers share this name; check whose they are.";
+  return wordText("Two volunteers share this name; check whose they are.", wordsInUse());
 }
 
 /**
@@ -3308,8 +3590,10 @@ function hoursEmailPlan(input) {
       " under this name with a User Token no listed volunteer has, " +
       hoursOf(otherToken) +
       " hours",
-    "they aren't in these totals; this may be an old or mistyped User Token. If they're this volunteer's, change it to their current User Token on those rows." +
-      sameName,
+    wordText(
+      "they aren't in these totals; this may be an old or mistyped User Token. If they're this volunteer's, change it to their current User Token on those rows.",
+      wordsInUse(),
+    ) + sameName,
   );
   const auto = counted.filter(isAuto);
   warn(
@@ -3351,8 +3635,10 @@ function hoursEmailPlan(input) {
       " under this name with an import: User Token, " +
       hoursOf(standIns) +
       " hours",
-    "they aren't in these totals; if they're this volunteer's, type their User Token over the import: token on those rows." +
-      sameName,
+    wordText(
+      "they aren't in these totals; if they're this volunteer's, type their User Token over the import: token on those rows.",
+      wordsInUse(),
+    ) + sameName,
   );
   if (!input.flags) {
     warnings.push({
@@ -3368,7 +3654,7 @@ function hoursEmailPlan(input) {
       count: 0,
       rows: [],
       text:
-        "This volunteer has no counted hours yet; the email will say so." +
+        wordText("This volunteer has no counted hours yet; the email will say so.", wordsInUse()) +
         (input.attach === true ? " " + hoursEmailNoFileText() : ""),
     });
   }
@@ -3490,9 +3776,11 @@ function hoursEmailTotalLines(plan) {
  * printed as zero rather than the no-hours line when nothing else counts. Every email names who to contact, since nobody can reply to it;
  * the contact's lines are joined with ", " as the Kiosk contact line joins them. The
  * signature's lines go one per line under the thanks. The file line shows only when the
- * email carries the file (hoursEmailHasFile).
+ * email carries the file (hoursEmailHasFile). The kiosk's own lines are in the words in use
+ * (wordText); the name, contact and signature are as typed.
  */
 function hoursEmailMessage(input) {
+  const w = (text) => wordText(text, wordsInUse());
   const plan = input.plan;
   const period = plan.period;
   const month = monthName(period.month);
@@ -3502,19 +3790,19 @@ function hoursEmailMessage(input) {
   const blocks = [["Hi " + cellString(input.firstName) + ","]];
   if (request) {
     blocks.push([
-      "You asked for your hours at the volunteer kiosk on " +
+      w("You asked for your hours at the volunteer kiosk on ") +
         hoursEmailLongDate(request.date) +
         ".",
     ]);
   }
   blocks.push([
-    "Here are the volunteer hours we have for you " +
+    w("Here are the volunteer hours we have for you ") +
       (last ? "through " : "as of ") +
       hoursEmailLongDate(period.asOf) +
       ":",
   ]);
   if (!plan.all.shifts && !left) {
-    blocks.push(["We don't have any volunteer hours recorded for you yet."]);
+    blocks.push([w("We don't have any volunteer hours recorded for you yet.")]);
   } else if (!plan.all.shifts) {
     blocks.push(hoursEmailTotalLines(plan).map((line) => "  " + line));
   } else {
@@ -3545,9 +3833,9 @@ function hoursEmailMessage(input) {
     "This email comes from an address that can't take replies. If anything looks wrong, please contact:",
     settingLines(input.contact).join(", "),
   ]);
-  blocks.push(["Thank you for volunteering."].concat(settingLines(input.signature)));
+  blocks.push([w("Thank you for volunteering.")].concat(settingLines(input.signature)));
   return {
-    subject: "Your volunteer hours for " + month,
+    subject: w("Your volunteer hours for ") + month,
     body: blocks.map((b) => b.join("\n")).join("\n\n"),
   };
 }
@@ -3590,12 +3878,18 @@ function hoursEmailDigestText(d) {
 
 /** The set problem a blank Hours email contact gives. */
 function hoursEmailContactProblem() {
-  return "Type who volunteers should contact about their hours in Hours email contact on the Settings tab, then press Preview again.";
+  return wordText(
+    "Type who volunteers should contact about their hours in Hours email contact on the Settings tab, then press Preview again.",
+    wordsInUse(),
+  );
 }
 
 /** The set problem when no ticked volunteer can be sent. */
 function hoursEmailNoneProblem() {
-  return "None of the ticked volunteers can be sent; fix the problems shown, then press Preview again.";
+  return wordText(
+    "None of the ticked volunteers can be sent; fix the problems shown, then press Preview again.",
+    wordsInUse(),
+  );
 }
 
 /**
@@ -4164,7 +4458,7 @@ function hoursRequestHoldReason(code, detail) {
         " have the same User Token."
       );
     case "not-found":
-      return "Not on the volunteer list any more.";
+      return wordText("Not on the volunteer list any more.", wordsInUse());
     case "flags-unreadable":
       return "The Flags tab couldn't be read, so shifts couldn't be checked.";
     case "checked-in":
@@ -4172,7 +4466,10 @@ function hoursRequestHoldReason(code, detail) {
     case "send-failed":
       return "The send failed: " + hoursEmailLogText(d.message);
     case "stopped":
-      return "An automatic send stopped part way and may have gone. Check this volunteer's Hours emails row (Result stopped) and the Sent mail of the account in its Sent from before sending again.";
+      return wordText(
+        "An automatic send stopped part way and may have gone. Check this volunteer's Hours emails row (Result stopped) and the Sent mail of the account in its Sent from before sending again.",
+        wordsInUse(),
+      );
     default:
       return cellString(d.reason);
   }
@@ -4396,11 +4693,17 @@ function hoursRequestHeldLine(request) {
 function hoursRequestNotListedLine(n) {
   if (!(n > 0)) return "";
   if (n === 1) {
-    return "1 hours request is from a volunteer not on the volunteer list. Close it on the Hours requests tab.";
+    return wordText(
+      "1 hours request is from a volunteer not on the volunteer list. Close it on the Hours requests tab.",
+      wordsInUse(),
+    );
   }
   return (
     n +
-    " hours requests are from volunteers not on the volunteer list. Close them on the Hours requests tab."
+    wordText(
+      " hours requests are from volunteers not on the volunteer list. Close them on the Hours requests tab.",
+      wordsInUse(),
+    )
   );
 }
 
@@ -4503,7 +4806,7 @@ function isRemovedExtraHeader(header) {
 function headerCounts(headerRow) {
   const counts = {};
   (headerRow || []).forEach((h) => {
-    const k = normalizeHeader(h);
+    const k = headerKey(h);
     if (k) counts[k] = (Object.prototype.hasOwnProperty.call(counts, k) ? counts[k] : 0) + 1;
   });
   return counts;
@@ -4540,32 +4843,33 @@ function removedHeaderWrites(logHeader, removedHeader) {
   const have = headerCounts(removedHeader);
   const wanted = [];
   (logHeader || []).forEach((h) => {
-    const k = normalizeHeader(h);
+    const k = headerKey(h);
     if (!k || have[k] || isRemovedExtraHeader(h)) return;
     have[k] = 1;
     wanted.push(cellString(h));
   });
   extraList.forEach((h) => {
-    if (!have[normalizeHeader(h)]) wanted.push(h);
+    if (!have[headerKey(h)]) wanted.push(h);
   });
   return wanted.map((header, i) => ({ col: last + 2 + i, header }));
 }
 
 /**
  * A row of width cells for toHeader, each copied from the fromRow cell under the same
- * header in fromHeader (normalizeHeader forms; the leftmost when one repeats). A header
+ * header in fromHeader (headerKey forms, so a person-word header under either word is one
+ * header; the leftmost when one repeats). A header
  * goes to its leftmost column in toHeader only. A cell with no match, or under a blank
  * header, is null, so the caller decides what goes there.
  */
 function headerMapCopy(fromHeader, fromRow, toHeader, width) {
   const from = {};
   (fromHeader || []).forEach((h, i) => {
-    const k = normalizeHeader(h);
+    const k = headerKey(h);
     if (k && !Object.prototype.hasOwnProperty.call(from, k)) from[k] = i;
   });
   const used = {};
   return Array.from({ length: width }, (_, j) => {
-    const k = normalizeHeader((toHeader || [])[j]);
+    const k = headerKey((toHeader || [])[j]);
     if (!k || used[k] || !Object.prototype.hasOwnProperty.call(from, k)) return null;
     used[k] = true;
     const value = (fromRow || [])[from[k]];
@@ -4705,7 +5009,7 @@ function shiftChoiceLabel(entry, clock) {
   ].join(" · ");
   const lines = [
     "Date: " + (cellString(e.dateText) || "blank"),
-    "Volunteer: " + (cellString(e.name) || "blank"),
+    wordText("Volunteer: ", wordsInUse()) + (cellString(e.name) || "blank"),
     "Status: " + (cellString(e.status) || "blank"),
     "Check-in: stated " + time(e.statedInMs) + ", recorded " + time(e.recordedInMs),
     "Check-out: stated " + time(e.statedOutMs) + ", recorded " + time(e.recordedOutMs),
@@ -4775,7 +5079,7 @@ function removeFlagMatches(flag, only) {
 function refusal(code) {
   const message = refusalMessages()[code];
   if (!message) throw new Error("Unknown refusal code: " + code);
-  return { ok: false, refusal: code, message };
+  return { ok: false, refusal: code, message: wordText(message, wordsInUse()) };
 }
 
 // ---------------------------------------------------------------------------
@@ -5427,11 +5731,12 @@ function percentChange(change, previous) {
  * "count"). current and previous are monthFigures results.
  */
 function monthOverMonth(current, previous) {
+  const L = (label) => wordText(label, wordsInUse());
   return [
     ["hours", "Stated hours", "hours", "hundredths"],
     ["shifts", "Shifts", "count", "shifts"],
-    ["headcount", "Volunteers", "count", "headcount"],
-    ["newVolunteers", "New volunteers", "count", "newVolunteers"],
+    ["headcount", L("Volunteers"), "count", "headcount"],
+    ["newVolunteers", L("New volunteers"), "count", "newVolunteers"],
   ].map(([id, label, unit, key]) => {
     const change = current[key] - previous[key];
     return {
@@ -5806,6 +6111,7 @@ function openShiftsLine(count, period) {
  * cell holds a User Token.
  */
 function reportRows(report, month, initials, madeAtText) {
+  const L = (label) => wordText(label, wordsInUse());
   const period = asPeriod(month);
   const isMonth = period.kind === "month";
   const values = [];
@@ -5849,21 +6155,21 @@ function reportRows(report, month, initials, madeAtText) {
   addAs("section", "Summary");
   add("Stated hours", Hh(report.hundredths));
   add("Shifts", N(report.shifts));
-  add("Volunteers", N(report.headcount));
+  add(L("Volunteers"), N(report.headcount));
   if (isMonth) {
-    add("New volunteers", N(report.newVolunteers.length), report.newVolunteers.join(", "));
+    add(L("New volunteers"), N(report.newVolunteers.length), report.newVolunteers.join(", "));
   } else {
-    add("New volunteers", N(report.newVolunteers.length));
+    add(L("New volunteers"), N(report.newVolunteers.length));
   }
   add(
     "Average shift (hours)",
     report.averageHundredths === null ? "" : Hh(report.averageHundredths),
   );
   if (report.value.cents === null) {
-    add("Volunteer value", report.value.message);
+    add(L("Volunteer value"), report.value.message);
   } else {
     add(
-      "Volunteer value",
+      L("Volunteer value"),
       [report.value.cents / 100, "$#,##0.00"],
       "at " + moneyText(report.value.rateCents) + " an hour",
     );
@@ -5909,7 +6215,7 @@ function reportRows(report, month, initials, madeAtText) {
     );
     add("Stated hours", Hh(report.yearToDate.hundredths));
     add("Shifts", N(report.yearToDate.shifts));
-    add("Volunteers", N(report.yearToDate.headcount));
+    add(L("Volunteers"), N(report.yearToDate.headcount));
   }
 
   [
@@ -5919,7 +6225,7 @@ function reportRows(report, month, initials, madeAtText) {
     if (!list) return;
     table(
       title,
-      [name, "Shifts", "Stated hours", "Volunteers", "New volunteers"],
+      [name, "Shifts", "Stated hours", L("Volunteers"), L("New volunteers")],
       list.map((r) => [r.label, N(r.shifts), Hh(r.hundredths), N(r.headcount), N(r.newVolunteers)]),
     );
     if (list.length) {
@@ -5936,15 +6242,15 @@ function reportRows(report, month, initials, madeAtText) {
   const hoursRows = (list, labelKey) =>
     list.map((g) => [g[labelKey], N(g.shifts), Hh(g.hundredths)]);
   table(
-    "Hours per volunteer",
-    ["Volunteer", "Shifts", "Stated hours"],
+    L("Hours per volunteer"),
+    [L("Volunteer"), "Shifts", "Stated hours"],
     hoursRows(report.volunteers, "label"),
   );
   if (report.volunteers.length) add("Total", N(report.shifts), Hh(report.hundredths));
   if (period.kind === "quarter" || period.kind === "year" || period.kind === "range") {
     table(
-      "New volunteers",
-      ["Volunteer", "First shift"],
+      L("New volunteers"),
+      [L("Volunteer"), "First shift"],
       report.newVolunteerShifts.map((v) => [v.label, v.date]),
     );
   }
@@ -5958,7 +6264,7 @@ function reportRows(report, month, initials, madeAtText) {
   });
   table(
     isMonth ? "Milestones crossed this month" : "Milestones crossed in this period",
-    ["Volunteer", "Milestone", "Date", "Log row"],
+    [L("Volunteer"), "Milestone", "Date", "Log row"],
     report.milestones.map((m) => [m.label, m.title, m.date, N(m.row)]),
   );
 
@@ -5967,7 +6273,7 @@ function reportRows(report, month, initials, madeAtText) {
   report.review.forEach((g) => {
     addAs("section", g.title + ": " + g.rows.length);
     if (!g.rows.length) return;
-    addAs("header", "Date", "Volunteer", "Status", "Log row", "Detail");
+    addAs("header", "Date", L("Volunteer"), "Status", "Log row", "Detail");
     g.rows.forEach((r) => add(r.date, r.name, r.status || "(blank)", N(r.row), r.detail));
   });
 
@@ -7852,11 +8158,14 @@ function hoursTabPlan(hoursSheetId, dataSheetId, openPath, choices) {
 // raised again on the next check. Reviewed By and Notes are staff's; the script writes
 // Reviewed once, unticked, on the row it appends.
 
-/** The Flags headers, keyed by the short names the code uses, in the order a new tab gets them. */
-function flagHeaderNames() {
+/**
+ * The Flags headers, keyed by the short names the code uses, in the order a new tab gets
+ * them. With word (a Header word), Name starts with it, as logHeaderNames.
+ */
+function flagHeaderNames(word) {
   return {
     date: "Date",
-    name: "Volunteer Name",
+    name: headerWordText(word) + " Name",
     shiftId: "Shift ID",
     reason: "Reason",
     raisedAt: "Raised At",
@@ -7926,13 +8235,15 @@ function flagColumns(headerRow) {
     if (required.indexOf(h) >= 0) {
       if (!found.length) {
         throw new Error(
-          'The Flags tab has no "' + normalizeHeader(h) + '" column. Run setupSheets().',
+          'The Flags tab has no "' +
+            normalizeHeader(headerInUse(h)) +
+            '" column. Run setupSheets().',
         );
       }
       if (found.length > 1) {
         throw new Error(
           'The Flags tab has more than one "' +
-            normalizeHeader(h) +
+            normalizeHeader(headerInUse(h)) +
             '" column. Rename or remove the extra one.',
         );
       }
@@ -8541,9 +8852,12 @@ function defaultFlagsEmailHour() {
   return 8;
 }
 
-/** The weekly email's sender name. The address is the job owner's domain no-reply address. */
+/**
+ * The kiosk's emails' sender name (kioskSenderName), from the Settings this run read last.
+ * The address is the job owner's domain no-reply address.
+ */
 function flagsEmailSenderName() {
-  return brandSenderName();
+  return kioskSenderName(settingsInUse);
 }
 
 /** How many of the week's flags the email lists before "and N more". */
@@ -8773,8 +9087,10 @@ function flagsEmailMessage(input) {
   const counts =
     plural(recent.length, "new flag", "new flags") + " this week, " + unreviewed + " unreviewed";
   const subject = flagsNews
-    ? "Volunteer kiosk: " + (auto.stale ? "auto clock-out not running, " : "") + counts
-    : "Volunteer kiosk: hours requests this week";
+    ? wordText("Volunteer kiosk: ", wordsInUse()) +
+      (auto.stale ? "auto clock-out not running, " : "") +
+      counts
+    : wordText("Volunteer kiosk: hours requests this week", wordsInUse());
 
   const text = [];
   const html = [];
@@ -8848,8 +9164,11 @@ function flagsEmailMessage(input) {
     );
   }
   para(
-    'Sent by the volunteer kiosk because Settings "Flags email" is On. Set it to Off to stop' +
-      " these emails.",
+    wordText(
+      'Sent by the volunteer kiosk because Settings "Flags email" is On. Set it to Off to stop' +
+        " these emails.",
+      wordsInUse(),
+    ),
   );
   return { subject, body: text.join("\n\n"), htmlBody: html.join("\n") };
 }
@@ -10314,8 +10633,13 @@ function logCheckMessage(result) {
 // text lives here, so each release that runs setupSheets keeps it current. Staff text
 // never names code: it quotes only what staff see on screen.
 
-/** The hover note on each Log header, keyed like logHeaderNames(). */
-function logHeaderNotes() {
+/** The hover note on each Log header, keyed like logHeaderNames(), in word (headerNoteWords). */
+function logHeaderNotes(word) {
+  return headerNotesInWord(todayLogHeaderNotes(), word);
+}
+
+/** The Log's hover notes with the Header word blank. */
+function todayLogHeaderNotes() {
   return {
     date: "The shift's date, as yyyy-mm-dd. Filled by the kiosk; change it only to fix a mistake.",
     day: "The weekday of the Date. Filled by the kiosk.",
@@ -10350,8 +10674,13 @@ function logHeaderNotes() {
   };
 }
 
-/** The hover note on each Flags header, keyed like flagHeaderNames(). */
-function flagHeaderNotes() {
+/** The hover note on each Flags header, keyed like flagHeaderNames(), in word. */
+function flagHeaderNotes(word) {
+  return headerNotesInWord(todayFlagHeaderNotes(), word);
+}
+
+/** The Flags tab's hover notes with the Header word blank. */
+function todayFlagHeaderNotes() {
   return {
     date: "The flagged shift's Date on the Log. Filled by the kiosk.",
     name: "The flagged shift's volunteer. Filled by the kiosk.",
@@ -10381,14 +10710,37 @@ function headerNotePastTexts() {
   return [];
 }
 
-/** Every text the kiosk counts as its own note: the current Log and Flags notes, then the past ones. */
-function headerNoteKioskTexts() {
-  const log = logHeaderNotes();
-  const flags = flagHeaderNotes();
-  return Object.keys(log)
-    .map((k) => log[k])
-    .concat(Object.keys(flags).map((k) => flags[k]))
-    .concat(headerNotePastTexts());
+/**
+ * The words a header note is written in: the default words with the person word the Header
+ * word, so a note reads as the header above it does.
+ */
+function headerNoteWords(word) {
+  const person = parseWordSetting(word, wordDefaults().person);
+  return Object.assign(defaultWords(), {
+    person: person.word,
+    personArticle: person.article,
+    header: person.word,
+  });
+}
+
+/** notes, keyed as they are, each in word (headerNoteWords); as they are with no word. */
+function headerNotesInWord(notes, word) {
+  const words = headerNoteWords(word);
+  const out = {};
+  Object.keys(notes).forEach((k) => (out[k] = wordText(notes[k], words)));
+  return out;
+}
+
+/**
+ * Every text the kiosk counts as its own note: the current Log and Flags notes under
+ * today's word and under word (a Header word), then the past ones.
+ */
+function headerNoteKioskTexts(word) {
+  const texts = [];
+  [logHeaderNotes(), flagHeaderNotes(), logHeaderNotes(word), flagHeaderNotes(word)].forEach(
+    (notes) => Object.keys(notes).forEach((k) => texts.push(notes[k])),
+  );
+  return Array.from(new Set(texts.concat(headerNotePastTexts())));
 }
 
 /**
@@ -10398,19 +10750,19 @@ function headerNoteKioskTexts() {
  * on a cell whose note is empty or is exactly one of its own texts, compared with ===,
  * nothing trimmed or folded first; every other note is returned as it is, character for
  * character, so words staff wrote are kept unless they are exactly a kiosk text.
- * - A kiosk header (normalizeHeader match, every place it appears): its own current text
+ * - A kiosk header (headerKey match, every place it appears): its own current text
  *   when the note is empty or a kiosk text; else the note as it is.
  * - Any other cell: "" when the note is a kiosk text, which there describes the wrong
  *   column; else the note as it is.
  */
 function headerNotesRow(headerRow, names, notes, existing, kioskTexts) {
   const byHeader = new Map();
-  Object.keys(names).forEach((k) => byHeader.set(normalizeHeader(names[k]), notes[k]));
+  Object.keys(names).forEach((k) => byHeader.set(headerKey(names[k]), notes[k]));
   const kiosk = new Set(kioskTexts || []);
   const have = existing || [];
   return (headerRow || []).map((cell, i) => {
     const e = have[i] === null || have[i] === undefined ? "" : String(have[i]);
-    const h = normalizeHeader(cell);
+    const h = headerKey(cell);
     if (h !== "" && byHeader.has(h)) return e === "" || kiosk.has(e) ? byHeader.get(h) : e;
     return kiosk.has(e) ? "" : e;
   });
@@ -10546,13 +10898,16 @@ function withKioskContact(text, note) {
  * "text", "step", "tip" or "item"; a step's text carries its own number. The one contact
  * line has text "" and a formula, kioskContactFormula. setupSheets rewrites the whole tab
  * from this on every run, so a release that changes this text, or the Hours lines it copies
- * from hoursHowTo() and hoursDateNote(), runs setupSheets after the push.
+ * from hoursHowTo() and hoursDateNote(), runs setupSheets after the push. The text is in
+ * words (wordText), and the column sections in the Header word, as the headers and their
+ * notes are on the sheet; with no words, as written.
  */
-function howToSections() {
-  const text = (t) => ({ kind: "text", text: t });
-  const step = (t) => ({ kind: "step", text: t });
-  const tip = (t) => ({ kind: "tip", text: t });
-  const item = (t) => ({ kind: "item", text: t });
+function howToSections(words) {
+  const text = (t) => ({ kind: "text", text: wordText(t, words) });
+  const step = (t) => ({ kind: "step", text: wordText(t, words) });
+  const tip = (t) => ({ kind: "tip", text: wordText(t, words) });
+  const item = (t) => ({ kind: "item", text: wordText(t, words) });
+  const header = (words || defaultWords()).header;
   return [
     {
       title: "Problems with the kiosk",
@@ -10765,6 +11120,48 @@ function howToSections() {
       ],
     },
     {
+      title: "Use your own words, name and logo",
+      lines: [
+        text(
+          "The kiosk calls the people who check in volunteers, and the people they ask for help board members. Three rows on the Settings tab change those words on the tablet, in the Kiosk admin windows, in the emails and on this tab, from the next tap.",
+        ),
+        step(
+          "1. Type the word for one person in Word for a person, such as usher, and the word for more than one in Word for people, such as ushers. Type a or an first when the kiosk would pick the wrong one, as in an hourly helper.",
+        ),
+        step(
+          "2. Type the word for the people someone at the tablet asks for help in Word for staff, such as staff member.",
+        ),
+        tip(
+          "The Log and Flags headers take the word only while the Log, Flags and Removed shifts tabs hold no rows, when the kiosk's tabs are set up. After that, change them by hand: rename Volunteer Name and Volunteer Role/Type on the Log, Volunteer Name on the Flags tab and the same two on Removed shifts if it exists, then type the same word in Header word, all before the next tap.",
+        ),
+        text(
+          "Organization name puts your organization's name in the logo's place when there is no logo, as the logo's description, and at the start of the emails' sender name. Logo link takes the web address of an image, starting https://; the tablet shows it as the logo, and the Organization name if it won't load.",
+        ),
+      ],
+    },
+    {
+      title: "Turn parts of the kiosk on or off",
+      lines: [
+        text(
+          "Milestones, Email hours, Import past hours, Tablet arrival changes and Tablet check-out changes on the Settings tab each take On or Off; blank or anything else means On. Off hides that part on the tablet and in the Kiosk admin menu, and the kiosk refuses it. The menu changes the next time the spreadsheet is opened.",
+        ),
+        text(
+          "With Tablet arrival changes or Tablet check-out changes Off, volunteers can't choose an earlier time on the tablet; staff still fix times with Add a shift and Fix a sign-out.",
+        ),
+      ],
+    },
+    {
+      title: "Read your own volunteer list",
+      lines: [
+        text(
+          "The kiosk reads the volunteer list from the spreadsheet in Volunteer Profiles file ID, on the tab in Volunteer Profiles tab. When your list's headers differ from the kiosk's, type each header, as it is on your list, in its Roster column row on the Settings tab. Blank means the kiosk's own header, and a header that isn't on the list stops the tablet's list until it is fixed.",
+        ),
+        text(
+          "A list with one column for the whole name: type its header in Roster column: full name and leave first name and last name blank. Choose this before the first Import past hours.",
+        ),
+      ],
+    },
+    {
       title: "Look up hours (the Hours tab)",
       lines: [
         text(
@@ -10832,11 +11229,11 @@ function howToSections() {
         text(
           "Each Log and Flags column header has a hover note with the text below. Once you write your own note on a header, or change the kiosk's, the kiosk leaves it exactly as you left it, and its own text stays here. If you delete a note, the kiosk puts its own back the next time it is updated.",
         ),
-      ].concat(howToColumnLines(logHeaderNames(), logHeaderNotes())),
+      ].concat(howToColumnLines(logHeaderNames(header), logHeaderNotes(header))),
     },
     {
       title: "What the Flags columns hold",
-      lines: howToColumnLines(flagHeaderNames(), flagHeaderNotes()),
+      lines: howToColumnLines(flagHeaderNames(header), flagHeaderNotes(header)),
     },
   ];
 }
@@ -10844,11 +11241,11 @@ function howToSections() {
 /**
  * The How to tab's rows, one per line of column A, as [{kind, text, formula?}]: the title,
  * the two notes under it, then per section a blank row, its heading and its lines. Only
- * the contact line has a formula.
+ * the contact line has a formula. The text is in words (howToSections).
  */
-function howToRows() {
+function howToRows(words) {
   const rows = [
-    { kind: "title", text: "How to: the volunteer kiosk sheet" },
+    { kind: "title", text: wordText("How to: the volunteer kiosk sheet", words) },
     {
       kind: "note",
       text: "Short how-tos for the jobs staff do in this spreadsheet. The kiosk writes this tab and rewrites it whenever the kiosk is updated, so changes made here won't last; to suggest a change, tell the kiosk's developers.",
@@ -10858,9 +11255,9 @@ function howToRows() {
       text: "Hover over a column header on the Log or the Flags tab to see what that column holds; the same notes are at the end of this tab. On the Settings tab, the What it does column explains each setting.",
     },
   ];
-  howToSections().forEach((section) => {
+  howToSections(words).forEach((section) => {
     rows.push({ kind: "blank", text: "" });
-    rows.push({ kind: "heading", text: section.title });
+    rows.push({ kind: "heading", text: wordText(section.title, words) });
     section.lines.forEach((line) =>
       rows.push(
         line.formula

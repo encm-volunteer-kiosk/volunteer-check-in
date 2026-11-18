@@ -46,3 +46,15 @@ export const BRAND_LOCAL_MILESTONE_MESSAGES: Record<string, string> = {
   "hours-50": "50 hours of care, kindness, and community.",
   "hours-100": "100 hours of making East Nashville stronger.",
 };
+
+/**
+ * The words the page uses before the first list arrives (the access screen), and when the
+ * server sends none: the brand's Word for a person, Word for people and Word for staff.
+ */
+export const BRAND_WORDS = {
+  person: "volunteer",
+  personArticle: "a",
+  people: "volunteers",
+  staff: "board member",
+  staffArticle: "a",
+};
